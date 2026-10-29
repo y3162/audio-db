@@ -1,0 +1,17 @@
+{
+    "files.autoSave": "afterDelay",
+    "files.autoSaveDelay": 1000,
+    "workbench.colorTheme": "GitHub Dark Dimmed",
+    "workbench.iconTheme": "file-icons-dark",
+    "editor.cursorBlinking": "expand",
+    "editor.formatOnSave": true,
+    "workbench.editorAssociations": {
+        "*.csv": "default",
+        // "*.md": "markdown-preview-enhanced",
+        "*.pdf": "pdf.preview",
+        "*.parquet": "parquet-visualizer.parquetVisualizer",
+        "*.duckdb": "duckdb.dataFileViewer",
+        "*.tsv": "duckdb.dataFileViewer",
+        "*.xlsx": "duckdb.dataFileViewer"
+    }
+}
