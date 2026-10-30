@@ -1,4 +1,4 @@
-/.venv/
+/.venvs/
 /data/*/*
 !/data/duckdb/.gitkeep
 !/data/corpora/.gitkeep

@@ -1,5 +1,3 @@
-### audio_files
-
 |カラム|CHiME3|DEMAND|LibriSpeech|LibriTTS|VCTK|
 |:-|:-:|:-:|:-:|:-:|:-:|
 |path|o|o|o|o|o|
