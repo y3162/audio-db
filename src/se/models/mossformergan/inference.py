@@ -69,9 +69,43 @@ class MossFormerEnhancer(Enhancer):
 
 
 def _enhance_16k(model, audio, n_fft, win_len, hop):
-    """Match ClearerVoice's non-segment MossFormerGAN_SE_16K decode."""
+    """Match ClearVoice's MossFormerGAN_SE_16K decode, including its 10 s window."""
+    window = SAMPLE_RATE * 10
+    if audio.numel() > window:
+        return _enhance_segments(model, audio, n_fft, win_len, hop, window)
+    return _enhance_chunk(model, audio, n_fft, win_len, hop)
+
+
+def _enhance_segments(model, audio, n_fft, win_len, hop, window):
+    """Sliding 10 s windows with a 75% stride, dropping (window-stride)//2 at each edge.
+
+    The energy norm is computed once on the whole utterance, which is what
+    ``decode_one_audio_mossformergan_se_16k`` does before it segments.
+    """
+    stride = int(window * 0.75)
+    give_up = (window - stride) // 2
+    total = audio.numel()
+    norm = torch.sqrt(audio.new_full((), total / audio.square().sum().clamp_min(1e-12)))
+    output = audio.new_zeros(total)
+    cursor = 0
+    while cursor + window <= total:
+        piece = _enhance_chunk(model, audio[cursor:cursor + window], n_fft, win_len, hop, norm)
+        if cursor == 0:
+            output[:window - give_up] = piece[:-give_up]
+        else:
+            output[cursor + give_up:cursor + window - give_up] = piece[give_up:-give_up]
+        cursor += stride
+    if cursor < total:
+        start = cursor - give_up
+        piece = _enhance_chunk(model, audio[start:], n_fft, win_len, hop, norm)
+        output[cursor:] = piece[give_up:]
+    return output
+
+
+def _enhance_chunk(model, audio, n_fft, win_len, hop, norm=None):
     original = audio.shape[-1]
-    norm = torch.sqrt(audio.new_full((), original / audio.square().sum().clamp_min(1e-12)))
+    if norm is None:
+        norm = torch.sqrt(audio.new_full((), original / audio.square().sum().clamp_min(1e-12)))
     frames = math.ceil(original / hop)
     padded = frames * hop
     if padded > original:

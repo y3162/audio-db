@@ -10,7 +10,7 @@
 
 ## MossFormerGAN
 
-[ClearerVoice-Studio](https://github.com/modelscope/ClearerVoice-Studio) commit `6b3774dc79c46ae8bed2a4fa5f706f0ac8c75c61`、Apache-2.0（`src/se/models/mossformergan/LICENSE`）。推論対象は SyncANet。Discriminator は含まない。公開チェックポイントの周波数次元は 201 なので `n_fft=400`。`last_best_checkpoint.pt` の `model` を `strict=True` で読む。
+[ClearerVoice-Studio](https://github.com/modelscope/ClearerVoice-Studio) commit `6b3774dc79c46ae8bed2a4fa5f706f0ac8c75c61`、Apache-2.0（`src/se/models/mossformergan/LICENSE`）。推論対象は SyncANet。Discriminator は含まない。公開チェックポイントの `mask_decoder.prelu_out` は長さ 201、推論 YAML の `fft_len` は 400 なので `n_fft=400`。argparse の 512 はこの重みでは使わない。`last_best_checkpoint.pt` の `model` を `strict=True` で読む。10 秒を超える発話は公式 decode と同じく 10 秒窓、ストライド 75% でつなぐ。
 
 ## SEMamba++
 
@@ -22,7 +22,7 @@
 
 ## StuPASE
 
-PASE 参照 commit `45614efae73dc49bf36018d1ca6a9319b3050038`、Apache-2.0 と同梱の個別ライセンス。DeWavLM-R、CFM、Vocoder_Mel-16k。`torchdiffeq` と `x-transformers` は lab にないため、Euler 積分と rotary を `flow/compat.py` に置いた。CFM の `load_state_dict` は上流と同じ `strict=False`。
+PASE 参照 commit `45614efae73dc49bf36018d1ca6a9319b3050038`、Apache-2.0 と同梱の個別ライセンス。DeWavLM-R、CFM、Vocoder_Mel-16k。`torchdiffeq` と `x-transformers` は lab にないため、Euler 積分と rotary を `flow/compat.py` に置いた。rotary は x-transformers 2.14.2 の隣接ペア回転。CFM の `load_state_dict` は上流と同じ `strict=False`。配布中の `CFM.pt` は missing も unexpected も 0 件。
 
 ## 追記: 以前の未実装調査
 

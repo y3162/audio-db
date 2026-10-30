@@ -64,3 +64,34 @@ CUDA は `CUDA_VISIBLE_DEVICES=1` の Quadro RTX 5000。公式実装との GPU �
 SEMamba++、UniPASE、StuPASE の CUDA 比較は未実施。StuPASE はサンプリングノイズを含むため、比較には呼び出し前の乱数種が必要。種 5 の再実行差は 0。
 
 公式出力との数値差は、今回追加した5モデルについては未計測。DeepFilterNet3 は `libdf` が無く、SEMamba++ は `mamba_ssm` が無く、MossFormerGAN の公式モジュールは `einops` と `rotary-embedding-torch` が無く、StuPASE は `torchdiffeq` と `x-transformers` が無い。UniPASE の 16 kHz 経路は上流推論クラスそのものだが、別プロセスの公式出力とは突き合わせていない。これらを公式一致とは記録しない。
+
+## 公式参照環境での波形比較
+
+turing。`.venvs/ref` は Python 3.10.12、PyTorch 2.6.0+cu124、torchaudio 2.6.0+cu124、NumPy 1.26.4。追加は `einops==0.8.2`、`rotary-embedding-torch==0.8.3`、`torchdiffeq==0.2.5`、`x-transformers==2.14.2`、`omegaconf==2.3.0`、`librosa==0.10.2.post1`、`yamlargparse==1.31.1`、`pydub==0.25.1`、`maturin==1.4.0`。`libdf` は Rust 1.76.0 で `pyDF` を `CARGO_TARGET_DIR=data/results/se-repro/cargo-target` にビルドした wheel `DeepFilterLib-0.5.7rc0`。公式ツリーは編集していない。GPU は `CUDA_VISIBLE_DEVICES=1` の Quadro RTX 5000。
+
+入力は `torch.manual_seed` の正規乱数。比較は最大絶対誤差。SI-SDR は誤差 0 でも分母を 1e-12 で下駄上げしているため、完全一致でも有限値になる。判定は最大絶対誤差を見る。
+
+| 比較 | 条件 | 最大絶対誤差 |
+|---|---|---:|
+| MP-SENet VB/DNS 対公式 `mag_pha_stft` | CPU、16 kHz、1 秒・5 秒・20 秒、seed 11 | 0 |
+| MP-SENet VB GPU公式 対 GPU独立 | 1 秒、seed 7 | 3.73e-9 |
+| MP-SENet DNS GPU公式 対 GPU独立 | 1 秒、seed 7 | 2.33e-10 |
+| MP-SENet VB CPU公式 対 GPU公式 | 同じ入力 | 4.16e-3 |
+| MP-SENet DNS CPU公式 対 GPU公式 | 同じ入力 | 1.29e-4 |
+| TF-GridNet urgent24 | CPU、8 kHz と 16 kHz、1 秒と 20 秒 | 0 |
+| TF-GridNet ms-snsd | CPU、16 kHz、1 秒と 20 秒 | 0 |
+| MossFormerGAN | CPU、16 kHz、1 秒。修正前の 11 秒は 0.151 | 1 秒は 0 |
+| MossFormerGAN 分割修正後 | CPU、16 kHz、11 秒 | 0 |
+| DeepFilterNet3 対 `libdf` `enhance` | CPU、48 kHz、0.1 秒 / 1 秒 / 20 秒 / 正弦 / 小振幅 | 1.19e-7 / 4.10e-8 / 6.52e-8 / 8.94e-7 / 1.62e-8 |
+| SEMamba++ 対公式グラフ＋参照スキャン | CPU、16 kHz、1 秒波形 | 2.38e-8 |
+| UniPASE `forward` | CPU、16 kHz・0.5 秒、および 48 kHz 指定の 16000 samples | 0 |
+| StuPASE rotary | x-transformers 2.14.2、dim 64、長さ 17 | 0 |
+| StuPASE `forward` | CPU、16 kHz、0.5 秒、seed 5、steps 8、CFG 0.5、sway -1 | 0 |
+
+無音の MP-SENet は公式のエネルギー正規化がゼロ除算になる。API は無音を無音のまま返す。これは公式波形との不一致として数えない。
+
+SEMamba++ の位相の最大絶対誤差は 6.02e-4 だが、波形は 2.38e-8。位相の差は振幅が小さいビンに寄っている。`mamba_ssm` の CUDA カーネルとは比べていない。
+
+再現は `tests/se/reference/run_lab.py`（lab）、`run_ref.py`、`run_semamba.py`、`run_df.py`（ref）。20 秒は MP-SENet、TF-GridNet、DeepFilterNet3 で計測済み。MossFormerGAN の 20 秒は未計測で、11 秒の窓境界は 0。UniPASE と StuPASE の 20 秒は未実施。
+
+`.venvs/lab/bin/python -m unittest discover -s tests/se -v` は 21 tests OK（既存 19 に rotary の 2 件）。

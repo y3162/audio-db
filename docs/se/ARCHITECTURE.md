@@ -14,4 +14,4 @@
 
 `enhancer.enhance_batch(waveforms, sample_rate, lengths=None)` は `(batch, time)` と発話長を受け、各発話を独立推論し `(zero-padded output, lengths)` を返す。バッチ内の異なるサンプルレートは未対応。TF-GridNet の `urgent24` と `ms-snsd` は構造が異なるため `variant` を明示する。`wsj0-2mix` は未対応。URGENT24 は入力サンプルレートに応じて STFT を変更し、MS-SNSD は内部で 16 kHz に変換する。公式の resampling 実装との数値比較は未実施。
 
-DeepFilterNet3 は 48 kHz。各 `enhance` の開始時に STFT の overlap と指数正規化状態を捨てる。MossFormerGAN の公開重みは 201 ビン（`n_fft=400`、窓 400、hop 100、periodic Hamming）。SEMamba++ は 16 kHz、`n_fft=400`、hop 100、Hann、ピーク正規化のあと復元する。UniPASE は入力レートを保持し、16 kHz 超では PostNet を通す。出力ピークは入力ピークへ合わせる。StuPASE は内部を 16 kHz にし、公式CLIと同じ 8 step / CFG 0.5 / sway -1.0 の Euler 積分でサンプリングする。同じ乱数種を呼び出し前に固定すると短音声の結果は再現する。
+DeepFilterNet3 は 48 kHz。各 `enhance` の開始時に STFT の overlap と指数正規化状態を捨てる。MossFormerGAN の公開重みは 201 ビン（`n_fft=400`、窓 400、hop 100、periodic Hamming）。10 秒を超える入力は 10 秒窓で分割し、エネルギー正規化は分割前の発話全体で一度だけ計算する。SEMamba++ は 16 kHz、`n_fft=400`、hop 100、Hann、ピーク正規化のあと復元する。UniPASE は入力レートを保持し、16 kHz 超では PostNet を通す。出力ピークは入力ピークへ合わせる。StuPASE は内部を 16 kHz にし、公式CLIと同じ 8 step / CFG 0.5 / sway -1.0 の Euler 積分でサンプリングする。同じ乱数種を呼び出し前に固定すると短音声の結果は再現する。
