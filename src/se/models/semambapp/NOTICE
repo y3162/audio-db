@@ -1,0 +1,10 @@
+SEMamba++ upstream (https://github.com/Eddieyjlee/SEMambapp, commit
+cd369c89a8106072c077b468417b765b227afd74) does not ship a license file.
+The Hugging Face weight card is marked GPL-2.0; that marking is not treated
+here as permission to copy the upstream Python sources.
+
+This package is an independent reconstruction of the published configuration
+(16 kHz, n_fft 400, hop 100, hidden size 48, four bottleneck stages, magnitude
+compression 0.3) and of the checkpoint's module names. The selective state-space
+step follows the Mamba recurrence (Apache-2.0, state-spaces/mamba), implemented
+in PyTorch without mamba_ssm or causal-conv1d.
