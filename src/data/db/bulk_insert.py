@@ -1,10 +1,11 @@
 import csv
 import os
 import tempfile
-from collections.abc import Iterable, Sequence
+from collections.abc import Callable, Iterable, Sequence
 
 import duckdb
 
+from src.data.constants import INGEST_BATCH_SIZE
 from src.data.models.audio_file import AUDIO_FILE_COLUMNS, AudioFileRow
 
 
@@ -33,7 +34,8 @@ def copy_insert_batched(
     con: duckdb.DuckDBPyConnection,
     rows: Iterable[AudioFileRow],
     *,
-    batch_size: int = 100_000,
+    batch_size: int = INGEST_BATCH_SIZE,
+    on_progress: Callable[[int], None] | None = None,
 ) -> int:
     total = 0
     batch: list[AudioFileRow] = []
@@ -42,8 +44,12 @@ def copy_insert_batched(
         if len(batch) >= batch_size:
             copy_insert_rows(con, batch)
             total += len(batch)
+            if on_progress is not None:
+                on_progress(total)
             batch.clear()
     if batch:
         copy_insert_rows(con, batch)
         total += len(batch)
+        if on_progress is not None:
+            on_progress(total)
     return total

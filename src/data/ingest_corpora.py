@@ -1,6 +1,6 @@
-import argparse
+import sys
 import time
-from collections.abc import Iterator
+from collections.abc import Callable, Iterator
 
 import duckdb
 
@@ -11,37 +11,33 @@ from src.data.db.schema import create_corpora_schema
 from src.data.models.audio_file import AudioFileRow
 
 
-def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
-    parser = argparse.ArgumentParser(description="Ingest audio file metadata from data/corpora into DuckDB")
-    parser.add_argument(
-        "--corpus",
-        action="append",
-        choices=sorted(AUDIO_FILE_ROW_ITERATORS),
-        help="limit to one or more corpora (default: all)",
-    )
-    parser.add_argument(
-        "--replace",
-        action="store_true",
-        help="delete existing rows for selected corpora before insert",
-    )
-    return parser.parse_args(argv)
+def _insert_progress_reporter() -> tuple[Callable[[int], None], Callable[[], None]]:
+    use_tty = sys.stdout.isatty()
+
+    def on_progress(inserted: int) -> None:
+        if not use_tty:
+            return
+        print(f"\r  inserted {inserted:,} rows", end="", flush=True)
+
+    def finish() -> None:
+        if use_tty:
+            print(flush=True)
+
+    return on_progress, finish
 
 
-def main(argv: list[str] | None = None) -> None:
-    args = parse_args(argv)
-    corpora = args.corpus or list(AUDIO_FILE_ROW_ITERATORS)
+def main() -> None:
+    corpora = sorted(AUDIO_FILE_ROW_ITERATORS)
     con = duckdb.connect(DUCKDB_MAIN_PATH)
-    replacing_all = args.replace and args.corpus is None
-    create_corpora_schema(con, recreate=replacing_all)
-    if args.replace and not replacing_all:
-        placeholders = ", ".join("?" for _ in corpora)
-        con.execute(f"DELETE FROM corpora.audio_files WHERE corpus IN ({placeholders})", corpora)
+    create_corpora_schema(con, recreate=True)
     total = 0
     for corpus in corpora:
         started = time.perf_counter()
         print(f"Ingesting {corpus}...", flush=True)
         rows: Iterator[AudioFileRow] = AUDIO_FILE_ROW_ITERATORS[corpus]()
-        inserted = copy_insert_batched(con, rows)
+        on_progress, finish_progress = _insert_progress_reporter()
+        inserted = copy_insert_batched(con, rows, on_progress=on_progress)
+        finish_progress()
         elapsed = time.perf_counter() - started
         total += inserted
         print(f"  inserted {inserted:,} rows in {elapsed:.1f}s", flush=True)
