@@ -1,5 +1,7 @@
-def create_corpora_schema(con) -> None:
+def create_corpora_schema(con, *, recreate: bool = False) -> None:
     con.execute("CREATE SCHEMA IF NOT EXISTS corpora;")
+    if recreate:
+        con.execute("DROP TABLE IF EXISTS corpora.audio_files;")
 
     con.execute("""
         CREATE TABLE IF NOT EXISTS corpora.audio_files (
@@ -10,6 +12,9 @@ def create_corpora_schema(con) -> None:
             relative_dir VARCHAR,
             file_name VARCHAR NOT NULL,
             extension VARCHAR,
+            sample_rate INTEGER NOT NULL,
+            frames BIGINT NOT NULL,
+            channels INTEGER NOT NULL,
 
             -- LibriSpeech / LibriTTS
             -- path: {subset}/{speaker_id}/{chapter_id}/...

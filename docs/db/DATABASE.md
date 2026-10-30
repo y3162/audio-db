@@ -8,6 +8,9 @@
 |relative_dir|o|o|o|o|o|
 |file_name|o|o|o|o|o|
 |extension|o|o|o|o|o|
+|sample_rate|o|o|o|o|o|
+|frames|o|o|o|o|o|
+|channels|o|o|o|o|o|
 |speaker_id|||o|o|o|
 |chapter_id|||o|o||
 |utterance_id|||o|o|o|

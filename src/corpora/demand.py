@@ -2,6 +2,7 @@ import os
 from collections.abc import Iterator
 from pathlib import Path
 
+from src.audio import read_audio_stream_info
 from src.constants import CORPORA_ROOT, SCENE_CLASS_BY_PREFIX
 from src.corpora.parallel_scan import iter_in_threads
 from src.corpora.paths import common_path_fields, is_audio_file
@@ -31,6 +32,7 @@ def _rows_for_scene_dir(scene_dir: Path) -> list[AudioFileRow]:
             path, corpus, subset, rel_dir, file_name, extension = common_path_fields(
                 audio_path, "DEMAND", scene_code
             )
+            sample_rate, frames, channels = read_audio_stream_info(audio_path)
             rows.append(
                 AudioFileRow(
                     path=path,
@@ -39,6 +41,9 @@ def _rows_for_scene_dir(scene_dir: Path) -> list[AudioFileRow]:
                     relative_dir=rel_dir,
                     file_name=file_name,
                     extension=extension,
+                    sample_rate=sample_rate,
+                    frames=frames,
+                    channels=channels,
                     scene_code=scene_code,
                     scene_class=scene_class,
                     channel_label=channel_label,

@@ -3,6 +3,7 @@ from collections.abc import Iterator
 from dataclasses import dataclass
 from pathlib import Path
 
+from src.audio import read_audio_stream_info
 from src.constants import CORPORA_ROOT
 from src.corpora.parallel_scan import iter_in_threads
 from src.corpora.paths import common_path_fields, is_audio_file, rel_corpus_path
@@ -72,6 +73,7 @@ def _rows_for_speaker_dir(
             path, corpus, subset, rel_dir, file_name, extension = common_path_fields(
                 audio_path, "VCTK", "wav48"
             )
+            sample_rate, frames, channels = read_audio_stream_info(audio_path)
             rows.append(
                 AudioFileRow(
                     path=path,
@@ -80,6 +82,9 @@ def _rows_for_speaker_dir(
                     relative_dir=rel_dir,
                     file_name=file_name,
                     extension=extension,
+                    sample_rate=sample_rate,
+                    frames=frames,
+                    channels=channels,
                     speaker_id=speaker_id,
                     utterance_id=utterance_index,
                     utterance_index=utterance_index,

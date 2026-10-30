@@ -6,7 +6,7 @@ from src.db.schema import create_corpora_schema
 
 def main() -> None:
     con = duckdb.connect(DUCKDB_MAIN_PATH)
-    create_corpora_schema(con)
+    create_corpora_schema(con, recreate=True)
     con.close()
 
 

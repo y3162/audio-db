@@ -2,6 +2,7 @@ import os
 from collections.abc import Iterator
 from pathlib import Path
 
+from src.audio import read_audio_stream_info
 from src.constants import CORPORA_ROOT
 from src.corpora.parallel_scan import iter_in_threads
 from src.corpora.paths import common_path_fields, is_audio_file
@@ -39,6 +40,7 @@ def _rows_for_condition_dir(args: tuple[str, Path]) -> list[AudioFileRow]:
             path, corpus, subset, rel_dir, file_name, extension = common_path_fields(
                 audio_path, "CHiME3", track_type
             )
+            sample_rate, frames, channels = read_audio_stream_info(audio_path)
             rows.append(
                 AudioFileRow(
                     path=path,
@@ -47,6 +49,9 @@ def _rows_for_condition_dir(args: tuple[str, Path]) -> list[AudioFileRow]:
                     relative_dir=rel_dir,
                     file_name=file_name,
                     extension=extension,
+                    sample_rate=sample_rate,
+                    frames=frames,
+                    channels=channels,
                     track_type=track_type,
                     condition_label=condition_label,
                     eval_split=eval_split,

@@ -2,6 +2,7 @@ import os
 from collections.abc import Iterator
 from pathlib import Path
 
+from src.audio import read_audio_stream_info
 from src.constants import CORPORA_ROOT
 from src.corpora.libri_pipe_metadata import ChapterMeta, SpeakerMeta, load_chapters, load_speakers
 from src.corpora.parallel_scan import iter_in_threads, iter_libri_chapter_dirs
@@ -52,6 +53,7 @@ def _rows_for_chapter(
             path, corpus, subset, rel_dir, file_name, extension = common_path_fields(
                 audio_path, "LibriTTS", subset_name
             )
+            sample_rate, frames, channels = read_audio_stream_info(audio_path)
             rows.append(
                 AudioFileRow(
                     path=path,
@@ -60,6 +62,9 @@ def _rows_for_chapter(
                     relative_dir=rel_dir,
                     file_name=file_name,
                     extension=extension,
+                    sample_rate=sample_rate,
+                    frames=frames,
+                    channels=channels,
                     speaker_id=speaker_id,
                     chapter_id=chapter_id,
                     utterance_id=tail.replace("_", "-"),

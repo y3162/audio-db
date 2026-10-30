@@ -9,6 +9,9 @@ AUDIO_FILE_COLUMNS: tuple[str, ...] = (
     "relative_dir",
     "file_name",
     "extension",
+    "sample_rate",
+    "frames",
+    "channels",
     "speaker_id",
     "chapter_id",
     "utterance_id",
@@ -40,7 +43,7 @@ AUDIO_FILE_COLUMNS: tuple[str, ...] = (
 )
 
 
-@dataclass(frozen=True, slots=True)
+@dataclass(frozen=True, slots=True, kw_only=True)
 class AudioFileRow:
     path: str
     corpus: str
@@ -48,6 +51,9 @@ class AudioFileRow:
     relative_dir: str | None = None
     file_name: str = ""
     extension: str | None = None
+    sample_rate: int
+    frames: int
+    channels: int
     speaker_id: str | None = None
     chapter_id: str | None = None
     utterance_id: str | None = None

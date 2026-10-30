@@ -31,8 +31,9 @@ def main(argv: list[str] | None = None) -> None:
     args = parse_args(argv)
     corpora = args.corpus or list(AUDIO_FILE_ROW_ITERATORS)
     con = duckdb.connect(DUCKDB_MAIN_PATH)
-    create_corpora_schema(con)
-    if args.replace:
+    replacing_all = args.replace and args.corpus is None
+    create_corpora_schema(con, recreate=replacing_all)
+    if args.replace and not replacing_all:
         placeholders = ", ".join("?" for _ in corpora)
         con.execute(f"DELETE FROM corpora.audio_files WHERE corpus IN ({placeholders})", corpora)
     total = 0
