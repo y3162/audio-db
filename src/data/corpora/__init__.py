@@ -1,6 +1,6 @@
 from collections.abc import Callable, Iterator
 
-from src.models.audio_file import AudioFileRow
+from src.data.models.audio_file import AudioFileRow
 
 from . import chime3, demand, librispeech, libritts, vctk
 

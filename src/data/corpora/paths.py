@@ -1,6 +1,6 @@
 from pathlib import Path
 
-from src.constants import AUDIO_EXTENSIONS, CORPORA_ROOT
+from src.data.constants import AUDIO_EXTENSIONS, CORPORA_ROOT
 
 
 def rel_corpus_path(path: Path) -> str:

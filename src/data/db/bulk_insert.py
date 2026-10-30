@@ -5,7 +5,7 @@ from collections.abc import Iterable, Sequence
 
 import duckdb
 
-from src.models.audio_file import AUDIO_FILE_COLUMNS, AudioFileRow
+from src.data.models.audio_file import AUDIO_FILE_COLUMNS, AudioFileRow
 
 
 def copy_insert_rows(con: duckdb.DuckDBPyConnection, rows: Sequence[AudioFileRow]) -> None:

@@ -4,11 +4,11 @@ from collections.abc import Iterator
 
 import duckdb
 
-from src.constants import DUCKDB_MAIN_PATH
-from src.corpora import AUDIO_FILE_ROW_ITERATORS
-from src.db.bulk_insert import copy_insert_batched
-from src.db.schema import create_corpora_schema
-from src.models.audio_file import AudioFileRow
+from src.data.constants import DUCKDB_MAIN_PATH
+from src.data.corpora import AUDIO_FILE_ROW_ITERATORS
+from src.data.db.bulk_insert import copy_insert_batched
+from src.data.db.schema import create_corpora_schema
+from src.data.models.audio_file import AudioFileRow
 
 
 def parse_args(argv: list[str] | None = None) -> argparse.Namespace:

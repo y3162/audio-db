@@ -2,13 +2,13 @@ import os
 from collections.abc import Iterator
 from pathlib import Path
 
-from src.audio import read_audio_stream_info
-from src.constants import CORPORA_ROOT
-from src.corpora.libri_pipe_metadata import ChapterMeta, SpeakerMeta, load_chapters, load_speakers
-from src.corpora.parallel_scan import iter_in_threads, iter_libri_chapter_dirs
-from src.corpora.paths import common_path_fields, is_audio_file, rel_corpus_path
-from src.corpora.transcripts import load_libritts_chapter_transcripts
-from src.models.audio_file import AudioFileRow
+from src.data.audio import read_audio_stream_info
+from src.data.constants import CORPORA_ROOT
+from src.data.corpora.libri_pipe_metadata import ChapterMeta, SpeakerMeta, load_chapters, load_speakers
+from src.data.corpora.parallel_scan import iter_in_threads, iter_libri_chapter_dirs
+from src.data.corpora.paths import common_path_fields, is_audio_file, rel_corpus_path
+from src.data.corpora.transcripts import load_libritts_chapter_transcripts
+from src.data.models.audio_file import AudioFileRow
 
 
 def iter_rows() -> Iterator[AudioFileRow]:

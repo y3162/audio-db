@@ -2,11 +2,11 @@ import os
 from collections.abc import Iterator
 from pathlib import Path
 
-from src.audio import read_audio_stream_info
-from src.constants import CORPORA_ROOT
-from src.corpora.parallel_scan import iter_in_threads
-from src.corpora.paths import common_path_fields, is_audio_file
-from src.models.audio_file import AudioFileRow
+from src.data.audio import read_audio_stream_info
+from src.data.constants import CORPORA_ROOT
+from src.data.corpora.parallel_scan import iter_in_threads
+from src.data.corpora.paths import common_path_fields, is_audio_file
+from src.data.models.audio_file import AudioFileRow
 
 CHIME3_AUDIO_ROOT = Path("data") / "audio" / "16kHz"
 
