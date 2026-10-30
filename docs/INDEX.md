@@ -4,6 +4,12 @@
 
 ---
 
+### [TSUBAME.md](envs/TSUBAME.md)
+
+TSUBAME4.0用の環境構築手順書
+
+---
+
 ### [DATASETS.md](db/DATASETS.md)
 
 対応コーパスに関する説明
