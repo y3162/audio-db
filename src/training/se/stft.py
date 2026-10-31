@@ -32,6 +32,31 @@ def _reflect_pad(waveform: torch.Tensor, pad: int) -> torch.Tensor:
     return torch.cat((left, waveform, right), dim=-1)
 
 
+def centered_stft(
+    waveform: torch.Tensor,
+    n_fft: int,
+    hop: int,
+    window: torch.Tensor,
+    *,
+    normalized: bool = False,
+) -> torch.Tensor:
+    """Hann or custom-window STFT matching ``center=True`` without ``reflection_pad1d``."""
+    pad = n_fft // 2
+    if int(waveform.shape[-1]) <= pad:
+        waveform = torch.nn.functional.pad(waveform, (0, pad + 1 - int(waveform.shape[-1])))
+    framed = _reflect_pad(waveform, pad)
+    return torch.stft(
+        framed,
+        n_fft,
+        hop_length=hop,
+        win_length=int(window.shape[-1]),
+        window=window,
+        center=False,
+        normalized=normalized,
+        return_complex=True,
+    )
+
+
 def mag_pha_stft(
     waveform: torch.Tensor,
     n_fft: int,

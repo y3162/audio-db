@@ -67,4 +67,26 @@ VoiceBank-DEMAND での長時間学習と、公式チェックポイントとの
 
 同じ日、物理 GPU 0（使用メモリ 18 MiB）で公式損失を 1 step、2 回実行した。損失はどちらも Generator 1.705775、Discriminator 0.437144。Generator の SHA-256 はどちらも `3f27a11466229721003b99d14e838f7a4a48d891e61468b02f307b0e1dba6f9e`。物理 GPU 0 と 1（どちらも使用メモリ 13–18 MiB）の `torchrun --nproc_per_node=2` を 2 回実行し、rank 0 の SHA-256 はどちらも `7ff01c656bf9bcd87852ddba9476a9b1402b21c26ef5ea2caf482e21366d3078`。Generator 損失はどちらも 1.704373。ファイルは `/tmp` にあり、リポジトリには残していない。
 
-TF-GridNet、SEMamba++、MossFormerGAN、DeepFilterNet3、StuPASE の 1 step は `tests/training/test_model_tasks.py` が CPU で確認した。レベルは [OTHER_MODELS.md](OTHER_MODELS.md)。SEMamba++ の `A_log` は未初期化だと selective scan が非有限になる。S6 の `A_i = i` で初期化する。CUDA の `mamba_ssm` 融合カーネルとの学習ステップ比較はしていない。
+TF-GridNet、SEMamba++、MossFormerGAN、DeepFilterNet3、StuPASE、UniPASE の 1 step は `tests/training/test_model_tasks.py` が CPU で確認した。レベルは [OTHER_MODELS.md](OTHER_MODELS.md)。SEMamba++ の `A_log` は未初期化だと selective scan が非有限になる。S6 の `A_i = i` で初期化する。CUDA の `mamba_ssm` 融合カーネルとの学習ステップ比較はしていない。
+
+## MP-SENet の AdamW 更新差（2026-10-31）
+
+同じ縮小条件（`dense_channel=4`、`n_fft=64`、長さ 2048、batch 2、eval）で公式モジュールと 1 step を比較した。STFT、Generator、Discriminator、損失の最大絶対誤差は 0。Discriminator 勾配の最大絶対誤差は 0。Generator 勾配の最大絶対誤差は 6.43e-8。AdamW（lr `5e-4`、betas `(0.8, 0.99)`、weight decay `0.01`、epsilon `1e-8`、初期モーメント 0）のあとの重みの最大絶対誤差は 4.052668809890747e-4。
+
+初回ステップは `param * (1 - lr * weight_decay) - lr * grad / (|grad| + eps)` である。独立実装の更新後重みは、この式と最大絶対誤差 1e-6 未満で一致した。二つのモデルの重み差も、同じ式を二つの勾配に適用した差と 1e-6 未満で一致した。weight decay は同じ初期重みに掛かるので、重み差には残らない。
+
+最大の重み差が出た要素は `dense_encoder.dense_block.dense_block.3.1.bias` の 1 要素である。独立実装の勾配は -8.90e-9、公式の勾配は 5.14e-9 で、符号は逆、絶対差は 1.40e-8 である。どちらも epsilon より小さく、`grad / (|grad| + eps)` は符号付きで約 -0.47 と 0.34 になる。その差に lr `5e-4` を掛けると 4.05e-4 になる。勾配の絶対値が 1e-6 を超える 4930 要素では、符号の不一致は 0 だった。したがって、重みの最大差は「勾配の最大誤差 6e-8 がそのまま増幅された」のではなく、epsilon 未満で符号が違う要素が初回 AdamW で O(lr) まで広がった結果である。学習式は変えていない。
+
+## DeepFilterNet3、TF-GridNet、段階学習（2026-10-31）
+
+ホスト `turing`。lab 環境。CPU の `tests/training` は 47 件、`tests/se` は 28 件、`tests/evaluation` は 81 件、`tests/asr` は 5 件。いずれも失敗 0。
+
+| 確認 | 結果 |
+|---|---|
+| DeepFilterNet3 公式幅（`conv_ch=64`、48 kHz、長さ 4800）の 1 step。損失と勾配は有限。checkpoint を `load_enhancer` で読み、同じ発話の 2 回は一致 | PASS（CPU） |
+| 同じ公式幅を物理 GPU 0（使用メモリ 15 MiB）で 2 回。`deterministic` と `CUBLAS_WORKSPACE_CONFIG=:4096:8`。損失はどちらも 38.875637。重みの SHA-256 はどちらも `89595b78d09bd7ec36be47e2e68576f3f2de7f0cee57f0ec35c3a5435d477d46`。学習後重みの推論は 2 回一致 | PASS |
+| 物理 GPU 0 と 1 の `torchrun --nproc_per_node=2`。両 rank に同じ 1 発話を置いた 1 step を 2 回。rank 0 の損失と SHA-256 は単一 GPU と同じ | PASS。これは分割バッチの勾配一致ではない。両 rank の入力が同じなので、平均勾配は単一 GPU と一致する |
+| TF-GridNet `ms-snsd` の公式幅（4 層、`n_fft=512`、stride 256、`emb_dim=32`、LSTM 128）で 1 step し、`load_enhancer` で長さ 1024 を処理 | PASS（CPU） |
+| StuPASE の縮小 DeWavLM（層 1）、縮小 Vocoder、縮小 CFM。UniPASE の縮小 Adapter、Vocoder、PostNet。各 1 step、checkpoint 再開、Generator の重みが変わる | PASS（CPU）。WavLM-Large は使っていない |
+
+WavLM-Large の公開先は Microsoft の [unilm/wavlm](https://github.com/microsoft/unilm/tree/master/wavlm)（コードは MIT）。README の Azure URL への HEAD は 403 で、ファイルは取得していない。`DeWavLM.pt` と `Vocoder_L24.pt` は公開配布を確認できず、ローカルにも無い。あるのは StuPASE の `DeWavLM-R.pt`（24 層、dim 1024）、`CFM.pt`、`Vocoder_Mel-16k.pt` と、UniPASE の `DeWavLM-Omni.pt`、`Adapter.pt`、`Vocoder_DWO-L1.pt`、`Vocoder_WavLM-L24.pt`、`PostNet.pt` である。名前が近いファイルを WavLM-Large や `Vocoder_L24.pt` としては使っていない。

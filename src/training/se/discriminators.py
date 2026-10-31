@@ -13,6 +13,8 @@ from __future__ import annotations
 import torch
 from torch import nn
 
+from src.training.se.stft import centered_stft
+
 
 class _ScoreStack(nn.Module):
     def __init__(self, channels: int) -> None:
@@ -52,14 +54,11 @@ class MultiResolutionDiscriminator(nn.Module):
         features: list[torch.Tensor] = []
         for window, stack in zip(self.windows, self.stacks, strict=True):
             hop = window // 4
-            spectrum = torch.stft(
+            spectrum = centered_stft(
                 waveform,
-                n_fft=window,
-                hop_length=hop,
-                win_length=window,
-                window=torch.hann_window(window, device=waveform.device, dtype=waveform.dtype),
-                center=True,
-                return_complex=True,
+                window,
+                hop,
+                torch.hann_window(window, device=waveform.device, dtype=waveform.dtype),
             )
             magnitude = spectrum.abs().unsqueeze(1)
             score, feats = stack(magnitude)
@@ -79,14 +78,11 @@ class SubbandDiscriminator(nn.Module):
 
     def forward(self, waveform: torch.Tensor) -> tuple[list[torch.Tensor], list[torch.Tensor]]:
         hop = self.n_fft // 4
-        spectrum = torch.stft(
+        spectrum = centered_stft(
             waveform,
-            n_fft=self.n_fft,
-            hop_length=hop,
-            win_length=self.n_fft,
-            window=torch.hann_window(self.n_fft, device=waveform.device, dtype=waveform.dtype),
-            center=True,
-            return_complex=True,
+            self.n_fft,
+            hop,
+            torch.hann_window(self.n_fft, device=waveform.device, dtype=waveform.dtype),
         ).abs()
         bins = spectrum.shape[-2]
         edges = [int(round(index * bins / self.bands)) for index in range(self.bands + 1)]
@@ -101,15 +97,24 @@ class SubbandDiscriminator(nn.Module):
 
 
 class WaveformGANDiscriminator(nn.Module):
-    """Multi-period waveform discriminator for vocoder stages.
+    """Multi-period waveform discriminator plus optional STFT resolutions.
 
-    Periods follow the published HiFi-GAN / Vocos setup at a smaller width.
+    Periods ``(2, 3, 5, 7, 11)`` and resolutions ``(512, 1024, 2048)`` are the
+    lists in the StuPASE and UniPASE vocoder configs. The convolutional width
+    is smaller than the published HiFi-GAN stack.
     """
 
-    def __init__(self, periods: tuple[int, ...] = (2, 3, 5), channels: int = 16) -> None:
+    def __init__(
+        self,
+        periods: tuple[int, ...] = (2, 3, 5, 7, 11),
+        channels: int = 16,
+        resolutions: tuple[int, ...] = (512, 1024, 2048),
+    ) -> None:
         super().__init__()
         self.periods = periods
+        self.resolutions = resolutions
         self.heads = nn.ModuleList(_PeriodHead(period, channels) for period in periods)
+        self.resolutions_heads = nn.ModuleList(_ScoreStack(channels) for _ in resolutions)
 
     def forward(self, waveform: torch.Tensor) -> tuple[list[torch.Tensor], list[torch.Tensor]]:
         scores = []
@@ -118,7 +123,71 @@ class WaveformGANDiscriminator(nn.Module):
             score, feats = head(waveform)
             scores.append(score)
             features.extend(feats)
+        for window, stack in zip(self.resolutions, self.resolutions_heads, strict=True):
+            hop = max(window // 4, 1)
+            spectrum = centered_stft(
+                waveform,
+                window,
+                hop,
+                torch.hann_window(window, device=waveform.device, dtype=waveform.dtype),
+            )
+            score, feats = stack(spectrum.abs().unsqueeze(1))
+            scores.append(score)
+            features.extend(feats)
         return scores, features
+
+
+class FeatureScaleDiscriminator(nn.Module):
+    """1D convolutional scores on a feature sequence ``[batch, time, channels]``.
+
+    This is the HiFi-GAN-style stack used for the UniPASE adapter (MIT).
+    ``sub_dims`` is the channel width of each scale. The published adapter
+    config uses six widths up to 1024; a smoke run may pass fewer.
+    """
+
+    def __init__(self, in_dim: int, sub_dims: tuple[int, ...] = (32, 64, 128, 256, 512, 1024)) -> None:
+        super().__init__()
+        self.scales = nn.ModuleList(_FeatureScale(in_dim, width) for width in sub_dims)
+
+    def forward(self, reference: torch.Tensor, estimate: torch.Tensor):
+        real_scores = []
+        fake_scores = []
+        real_features: list[torch.Tensor] = []
+        fake_features: list[torch.Tensor] = []
+        for scale in self.scales:
+            real_score, real_maps = scale(reference)
+            fake_score, fake_maps = scale(estimate)
+            real_scores.append(real_score)
+            fake_scores.append(fake_score)
+            real_features.extend(real_maps)
+            fake_features.extend(fake_maps)
+        return real_scores, fake_scores, real_features, fake_features
+
+
+class _FeatureScale(nn.Module):
+    def __init__(self, in_dim: int, width: int) -> None:
+        super().__init__()
+        self.convs = nn.ModuleList(
+            [
+                nn.utils.weight_norm(nn.Conv1d(in_dim, width, 1)),
+                nn.utils.weight_norm(nn.Conv1d(width, width, 7, stride=2, padding=3)),
+                nn.utils.weight_norm(nn.Conv1d(width, width, 7, stride=2, padding=3)),
+                nn.utils.weight_norm(nn.Conv1d(width, width, 7, stride=2, padding=3)),
+                nn.utils.weight_norm(nn.Conv1d(width, width, 3, stride=1, padding=1)),
+            ]
+        )
+        self.score = nn.utils.weight_norm(nn.Conv1d(width, 1, 3, padding=1))
+        self.act = nn.LeakyReLU(0.1)
+
+    def forward(self, sequence: torch.Tensor) -> tuple[torch.Tensor, list[torch.Tensor]]:
+        hidden = sequence.transpose(1, 2)
+        features = []
+        for conv in self.convs:
+            hidden = self.act(conv(hidden))
+            features.append(hidden)
+        score = self.score(hidden)
+        features.append(score)
+        return score.flatten(1), features
 
 
 class _PeriodHead(nn.Module):

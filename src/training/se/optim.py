@@ -23,9 +23,9 @@ def build_optimizer(parameters, config: dict[str, Any], *, lr: float | None = No
     }
     name = optimizer["name"]
     if name == "adamw":
-        return torch.optim.AdamW(parameters, **kwargs)
+        return torch.optim.AdamW(parameters, amsgrad=bool(optimizer.get("amsgrad", False)), **kwargs)
     if name == "adam":
-        return torch.optim.Adam(parameters, **kwargs)
+        return torch.optim.Adam(parameters, amsgrad=bool(optimizer.get("amsgrad", False)), **kwargs)
     raise TrainingError(f"unsupported optimizer {name}")
 
 

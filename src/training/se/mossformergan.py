@@ -36,6 +36,7 @@ from src.training.errors import TrainingError
 from src.training.se.discriminators import MagnitudePairDiscriminator
 from src.training.se.losses import metric_targets
 from src.training.se.optim import build_optimizer, build_scheduler, clip_gradients, step_scheduler
+from src.training.se.stft import centered_stft
 
 _RI = 0.1
 _MAG = 0.9
@@ -217,7 +218,9 @@ class MossFormerGANTask:
 
 def _stft(waveform: torch.Tensor, n_fft: int, hop: int, win: int) -> torch.Tensor:
     window = torch.hamming_window(win, periodic=False, device=waveform.device, dtype=waveform.dtype)
-    return torch.stft(waveform, n_fft, hop, win, window=window, center=True, return_complex=False)
+    # Same frames as center=True. The pad is an index reflection so CUDA
+    # deterministic mode does not need reflection_pad1d_backward.
+    return torch.view_as_real(centered_stft(waveform, n_fft, hop, window))
 
 
 def _istft(spectrum: torch.Tensor, n_fft: int, hop: int, win: int, length: int) -> torch.Tensor:

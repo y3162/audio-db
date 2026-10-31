@@ -1,13 +1,28 @@
 """Staged training for UniPASE and StuPASE.
 
-DeWavLM stages need Microsoft WavLM-Large, which is not in
-``data/checkpoints``. Those stages raise instead of training against a
-stand-in teacher. StuPASE mel-vocoder and CFM stages can run without that
-file. CFM training calls ``CFM.forward`` (masked velocity MSE). It does not
-call ``CFM.sample``, which is the inference ODE.
+Each stage has its own module and optimizer. They are not fused into one step.
 
-UniPASE vocoder, adapter, and post-net stages require the frozen upstream
-checkpoints named in ``model.components``. A missing path is an error.
+DeWavLM is a mean-squared error between a frozen teacher and a student, both
+read at the configured transformer layer (24 in the published configs). The
+teacher is WavLM-Large. A checkpoint pair is ``components.teacher`` and
+``components.student``. Without those files, ``model.architecture.wavlm``
+builds a smaller WavLM with the same loss. That smaller pair is not
+WavLM-Large and is not a substitute for the published teacher.
+
+StuPASE CFM training calls ``CFM.forward`` (masked velocity MSE). It does not
+call ``CFM.sample``, which is the inference ODE. The text condition is zeros
+unless a DeWavLM-R feature is supplied.
+
+Vocoder and post-net steps use the published GAN order: generator, then
+discriminator. AdamW betas are (0.8, 0.99) and weight decay is 0.01. The mel
+term uses the published band and window lists. The linear warmup cosine
+schedule (separate peak learning rates per stage) is not the epoch scheduler
+selected in the YAML.
+
+UniPASE adapter training in the unit-test path maps waveforms with frozen
+linear layers. That is not DeWavLM-Omni. Pass ``components.dewavlm`` only when
+that checkpoint should be loaded; this task does not start a WavLM-Large
+graph unless that path is present.
 """
 
 from __future__ import annotations
@@ -22,14 +37,19 @@ from src.training.core.distributed import ProcessInfo, unwrap, wrap_module
 from src.training.core.rng import seed_model_init
 from src.training.core.trainer import backward
 from src.training.errors import TrainingError
-from src.training.se.discriminators import WaveformGANDiscriminator
+from src.training.se.discriminators import FeatureScaleDiscriminator, WaveformGANDiscriminator
 from src.training.se.optim import build_optimizer, build_scheduler, clip_gradients, step_scheduler
-from src.training.se.spectral import feature_matching, least_squares_discriminator, least_squares_generator, log_mel_l1
+from src.training.se.spectral import _mel_basis, least_squares_discriminator, least_squares_generator, log_mel_l1
+from src.training.se.stft import centered_stft
 
 _WAVLM_MISSING = (
-    "WavLM-Large.pt is not in data/checkpoints. DeWavLM training needs that "
-    "frozen teacher, so this stage is not runnable."
+    "DeWavLM training needs components.teacher (WavLM-Large.pt) and "
+    "components.student, or model.architecture.wavlm for a smaller pair that "
+    "uses the same layer-feature MSE. A missing WavLM-Large file is not replaced "
+    "with another checkpoint."
 )
+_MEL_BANDS = (5, 10, 20, 40, 80, 160, 320)
+_MEL_WINDOWS = (32, 64, 128, 256, 512, 1024, 2048)
 
 
 class StagedTask:
@@ -46,9 +66,19 @@ class StagedTask:
         self.components = dict(model.get("components") or {})
         self.grad_clip = config.get("grad_clip", 3.0)
         self.sample_rate = int(model["sampling_rate"])
+        self.layer = int(model.get("output_layer", 24))
+        config = dict(config)
+        config["optimizer"] = dict(config["optimizer"])
+        config["optimizer"]["betas"] = [0.8, 0.99]
+        config["optimizer"]["weight_decay"] = 0.01
+        self.config = config
         with seed_model_init(config["seed"]):
             self.generator, self.discriminator, self._frozen = self._build(model)
         self.generator = self.generator.to(device)
+        self._frozen = [module.to(device).eval() for module in self._frozen]
+        for module in self._frozen:
+            for parameter in module.parameters():
+                parameter.requires_grad_(False)
         if self.discriminator is not None:
             self.discriminator = self.discriminator.to(device)
         self.optim_g = build_optimizer(self.generator.parameters(), config)
@@ -62,6 +92,7 @@ class StagedTask:
 
     def distribute(self, process: ProcessInfo) -> None:
         self.generator = wrap_module(self.generator, process)
+        self._frozen = [module.to(process.device) for module in self._frozen]
         if self.discriminator is not None:
             self.discriminator = wrap_module(self.discriminator, process)
 
@@ -119,6 +150,10 @@ class StagedTask:
         self.train_mode()
         if self.stage == "cfm":
             return self._cfm_update(batches, accumulation)
+        if self.stage == "dewavlm":
+            return self._distill_update(batches, accumulation)
+        if self.stage == "adapter":
+            return self._adapter_update(batches, accumulation)
         if self.discriminator is None:
             raise TrainingError(f"{self.family} stage {self.stage} has no update")
         return self._gan_update(batches, accumulation)
@@ -129,6 +164,10 @@ class StagedTask:
         with torch.no_grad():
             if self.stage == "cfm":
                 value = float(self._cfm_loss(clean, noisy).detach())
+            elif self.stage == "dewavlm":
+                value = float(self._distill_loss(clean, noisy).detach())
+            elif self.stage == "adapter":
+                value = float(self._adapter_loss(clean, noisy)[0].detach())
             else:
                 estimate = self._vocoder_forward(unwrap(self.generator), clean)
                 value = float(F.l1_loss(clean[..., : estimate.shape[-1]], estimate[..., : clean.shape[-1]]).detach())
@@ -142,7 +181,7 @@ class StagedTask:
     def _build(self, model: dict[str, Any]):
         stage = self.stage
         if stage == "dewavlm":
-            raise TrainingError(_WAVLM_MISSING)
+            return _build_dewavlm(self.family, model, self.components, self.layer)
         if self.family == "stupase" and stage == "vocoder":
             from src.se.models.stupase.vocoder.vocos.vocoder import VocosVocoder
 
@@ -171,61 +210,130 @@ class StagedTask:
             else:
                 cfm = CFM(**_cfm_kwargs(architecture))
             return cfm, None, []
-        if self.family == "unipase" and stage in ("vocoder", "adapter", "postnet"):
-            _require(self.components, "dewavlm", "UniPASE stages need components.dewavlm")
-            raise TrainingError(
-                f"UniPASE {stage} training requires the frozen DeWavLM-Omni checkpoint "
-                f"at {self.components['dewavlm']} plus the stage module. "
-                "A one-step smoke of that graph is not started from this task "
-                "because the encoder is WavLM-scale. The loss weights are implemented "
-                "for the StuPASE mel vocoder, which uses the same GAN form."
-            )
+        if self.family == "unipase" and stage == "vocoder":
+            from src.se.models.unipase.vocoder.vocos.vocoder import VocosVocoder
+
+            architecture = model.get("architecture") or {}
+            if "vocoder" in self.components and not architecture:
+                vocoder = VocosVocoder.from_pretrained(self.components["vocoder"], frozen=False)
+            else:
+                vocoder = VocosVocoder(**_vocoder_kwargs(architecture))
+            return vocoder, WaveformGANDiscriminator(), []
+        if self.family == "unipase" and stage == "adapter":
+            from src.se.models.unipase.adapter.vocos.adapter import VocosAdapter
+
+            architecture = model.get("architecture") or {}
+            adapter = VocosAdapter(**_adapter_kwargs(architecture))
+            width = int(adapter.head.out_features)
+            scales = tuple(int(item) for item in (architecture.get("disc_dims") or (8, 16)))
+            features = _FrozenMelPair(width, n_mels=int(architecture.get("n_mels", 16)))
+            return adapter, FeatureScaleDiscriminator(width, scales), [features]
+        if self.family == "unipase" and stage == "postnet":
+            from src.se.models.unipase.postnet.tfgrid_cws_res import TFGridNet
+
+            architecture = model.get("architecture") or {}
+            return TFGridNet(**_postnet_kwargs(architecture)), WaveformGANDiscriminator(), []
         raise TrainingError(f"unsupported {self.family} stage {stage!r}")
 
     def _gan_update(self, batches: list[dict[str, Any]], accumulation: int) -> dict[str, float]:
-        self.optim_d.zero_grad(set_to_none=True)
-        disc_total = 0.0
+        # Published vocoder and post-net scripts step the generator, then the discriminator.
+        self.optim_g.zero_grad(set_to_none=True)
+        gen_total = 0.0
+        captured: list[tuple[torch.Tensor, torch.Tensor]] = []
         for index, batch in enumerate(batches):
             clean = batch["clean"].to(self.device)
-            with torch.no_grad():
-                estimate = self._vocoder_forward(unwrap(self.generator), clean)
-            real_scores, _ = unwrap(self.discriminator)(clean)
-            fake_scores, _ = unwrap(self.discriminator)(estimate.detach())
+            estimate = self._vocoder_forward(self.generator, clean)
+            length = min(clean.shape[-1], estimate.shape[-1])
+            reference = clean[..., :length]
+            predicted = estimate[..., :length]
+            real_scores, real_features = unwrap(self.discriminator)(reference)
+            fake_scores, fake_features = unwrap(self.discriminator)(predicted)
+            adversarial = sum(least_squares_generator(score) for score in fake_scores)
+            matching = _sum_feature_l1(real_features, fake_features)
+            mel = log_mel_l1(reference, predicted, self.sample_rate, n_mels=_MEL_BANDS, windows=_MEL_WINDOWS)
+            loss = mel * self._mel_weight + adversarial * self._adv_weight + matching * self._feat_weight
+            _finite(loss, "vocoder generator")
+            backward(loss / accumulation, [self.generator, self.discriminator], last=index == len(batches) - 1)
+            gen_total += float(loss.detach())
+            captured.append((reference.detach(), predicted.detach()))
+        clip_gradients(unwrap(self.generator), self.grad_clip)
+        self.optim_g.step()
+
+        self.optim_d.zero_grad(set_to_none=True)
+        disc_total = 0.0
+        for index, (reference, predicted) in enumerate(captured):
+            real_scores, _ = unwrap(self.discriminator)(reference)
+            fake_scores, _ = unwrap(self.discriminator)(predicted)
             loss = sum(least_squares_discriminator(real, fake) for real, fake in zip(real_scores, fake_scores, strict=True))
             _finite(loss, "vocoder discriminator")
-            backward(loss / accumulation, [self.discriminator], last=index == len(batches) - 1)
+            backward(loss / accumulation, [self.discriminator], last=index == len(captured) - 1)
             disc_total += float(loss.detach())
         clip_gradients(unwrap(self.discriminator), self.grad_clip)
         self.optim_d.step()
-
-        frozen = [parameter for parameter in unwrap(self.discriminator).parameters()]
-        for parameter in frozen:
-            parameter.requires_grad_(False)
-        self.optim_g.zero_grad(set_to_none=True)
-        gen_total = 0.0
-        try:
-            for index, batch in enumerate(batches):
-                clean = batch["clean"].to(self.device)
-                estimate = self._vocoder_forward(self.generator, clean)
-                length = min(clean.shape[-1], estimate.shape[-1])
-                reference = clean[..., :length]
-                predicted = estimate[..., :length]
-                _, real_features = unwrap(self.discriminator)(reference)
-                fake_scores, fake_features = unwrap(self.discriminator)(predicted)
-                adversarial = sum(least_squares_generator(score) for score in fake_scores)
-                matching = feature_matching(real_features, fake_features, scale=1.0)
-                mel = log_mel_l1(reference, predicted, self.sample_rate, n_mels=(16, 32), windows=(64, 128))
-                loss = mel * self._mel_weight + adversarial * self._adv_weight + matching * self._feat_weight
-                _finite(loss, "vocoder generator")
-                backward(loss / accumulation, [self.generator], last=index == len(batches) - 1)
-                gen_total += float(loss.detach())
-        finally:
-            for parameter in frozen:
-                parameter.requires_grad_(True)
-        clip_gradients(unwrap(self.generator), self.grad_clip)
-        self.optim_g.step()
         count = len(batches)
         return {"generator": gen_total / count, "discriminator": disc_total / count}
+
+    def _distill_update(self, batches: list[dict[str, Any]], accumulation: int) -> dict[str, float]:
+        self.optim_g.zero_grad(set_to_none=True)
+        total = 0.0
+        for index, batch in enumerate(batches):
+            clean = batch["clean"].to(self.device)
+            noisy = batch["noisy"].to(self.device)
+            loss = self._distill_loss(clean, noisy)
+            _finite(loss, "dewavlm")
+            backward(loss / accumulation, [self.generator], last=index == len(batches) - 1)
+            total += float(loss.detach())
+        clip_gradients(unwrap(self.generator), self.grad_clip)
+        self.optim_g.step()
+        mean = total / len(batches)
+        return {"generator": mean, "dewavlm": mean}
+
+    def _distill_loss(self, clean: torch.Tensor, noisy: torch.Tensor) -> torch.Tensor:
+        if not self._frozen:
+            raise TrainingError("DeWavLM training has no frozen teacher")
+        student = unwrap(self.generator)(noisy)
+        with torch.no_grad():
+            teacher = self._frozen[0](clean)
+        return F.mse_loss(student, teacher)
+
+    def _adapter_update(self, batches: list[dict[str, Any]], accumulation: int) -> dict[str, float]:
+        self.optim_g.zero_grad(set_to_none=True)
+        gen_total = 0.0
+        captured: list[tuple[torch.Tensor, torch.Tensor]] = []
+        for index, batch in enumerate(batches):
+            clean = batch["clean"].to(self.device)
+            noisy = batch["noisy"].to(self.device)
+            loss, target, output = self._adapter_loss(clean, noisy)
+            _finite(loss, "adapter")
+            backward(loss / accumulation, [self.generator, self.discriminator], last=index == len(batches) - 1)
+            gen_total += float(loss.detach())
+            captured.append((target.detach(), output.detach()))
+        clip_gradients(unwrap(self.generator), self.grad_clip)
+        self.optim_g.step()
+        self.optim_d.zero_grad(set_to_none=True)
+        disc_total = 0.0
+        for index, (target, output) in enumerate(captured):
+            real_scores, fake_scores, _, _ = unwrap(self.discriminator)(target, output)
+            loss = sum(least_squares_discriminator(real, fake) for real, fake in zip(real_scores, fake_scores, strict=True))
+            _finite(loss, "adapter discriminator")
+            backward(loss / accumulation, [self.discriminator], last=index == len(captured) - 1)
+            disc_total += float(loss.detach())
+        clip_gradients(unwrap(self.discriminator), self.grad_clip)
+        self.optim_d.step()
+        count = len(batches)
+        return {"generator": gen_total / count, "discriminator": disc_total / count}
+
+    def _adapter_loss(self, clean: torch.Tensor, noisy: torch.Tensor):
+        if not self._frozen:
+            raise TrainingError("adapter training has no feature map")
+        embed_a, embed_p, target = self._frozen[0](clean, noisy)
+        output = unwrap(self.generator)(embed_a, embed_p)
+        real_scores, fake_scores, real_features, fake_features = unwrap(self.discriminator)(target, output)
+        reconstruction = F.mse_loss(output, target)
+        adversarial = sum(least_squares_generator(score) for score in fake_scores)
+        matching = _sum_feature_l1(real_features, fake_features)
+        loss = reconstruction * self._mel_weight + adversarial * self._adv_weight + matching * self._feat_weight
+        return loss, target, output
 
     def _cfm_update(self, batches: list[dict[str, Any]], accumulation: int) -> dict[str, float]:
         self.optim_g.zero_grad(set_to_none=True)
@@ -257,13 +365,165 @@ class StagedTask:
         return loss
 
     def _vocoder_forward(self, module: torch.nn.Module, waveform: torch.Tensor) -> torch.Tensor:
-        mel = unwrap(self.generator).mel_spec(waveform) if hasattr(unwrap(self.generator), "mel_spec") else None
+        if self.stage == "postnet":
+            return module(waveform, sr_in=self.sample_rate)
         if self.stage == "vocoder":
-            spec = _mel_input(module, waveform)
-            return module(spec)
-        if mel is None:
-            raise TrainingError("this stage does not synthesize a waveform")
-        return module(mel)
+            return module(_mel_input(module, waveform))
+        raise TrainingError(f"{self.stage} does not synthesize a waveform")
+
+
+def _build_dewavlm(family: str, model: dict[str, Any], components: dict[str, str], layer: int):
+    teacher_path = components.get("teacher")
+    student_path = components.get("student")
+    architecture = (model.get("architecture") or {}).get("wavlm") or {}
+    if teacher_path or student_path:
+        if not teacher_path or not student_path:
+            raise TrainingError("DeWavLM needs both components.teacher and components.student")
+        return (
+            _load_wavlm(family, student_path, layer, frozen=False),
+            None,
+            [_load_wavlm(family, teacher_path, layer, frozen=True)],
+        )
+    if not architecture:
+        raise TrainingError(_WAVLM_MISSING)
+    student_layer = int(architecture.get("output_layer", 1))
+    return (
+        _WavLMTower(_make_wavlm(family, architecture), student_layer),
+        None,
+        [_WavLMTower(_make_wavlm(family, architecture), student_layer)],
+    )
+
+
+def _load_wavlm(family: str, path: str, layer: int, *, frozen: bool):
+    if family == "stupase":
+        from src.se.models.stupase.wavlm.feature_extractor import WavLM_feat
+    elif family == "unipase":
+        from src.se.models.unipase.wavlm.feature_extractor_plc import WavLM_feat
+    else:
+        raise TrainingError(f"unsupported DeWavLM family {family}")
+    return WavLM_feat(wavlm_ckpt_path=path, output_layer=layer, load_pretrained=True, frozen=frozen)
+
+
+def _make_wavlm(family: str, architecture: dict[str, Any]):
+    if family == "stupase":
+        from src.se.models.stupase.wavlm.WavLM import WavLM, WavLMConfig
+    elif family == "unipase":
+        from src.se.models.unipase.wavlm.WavLM import WavLM, WavLMConfig
+    else:
+        raise TrainingError(f"unsupported DeWavLM family {family}")
+    values = {
+        "encoder_layers": 1,
+        "encoder_embed_dim": 32,
+        "encoder_ffn_embed_dim": 64,
+        "encoder_attention_heads": 4,
+        "conv_feature_layers": "[(32, 10, 5)]",
+        "dropout": 0.0,
+        "attention_dropout": 0.0,
+        "activation_dropout": 0.0,
+        "encoder_layerdrop": 0.0,
+        "dropout_input": 0.0,
+        "dropout_features": 0.0,
+        "conv_pos": 15,
+        "conv_pos_groups": 4,
+        "mask_prob": 0.0,
+        "relative_position_embedding": False,
+    }
+    values.update({key: value for key, value in architecture.items() if key != "output_layer"})
+    return WavLM(WavLMConfig(values))
+
+
+class _WavLMTower(torch.nn.Module):
+    def __init__(self, wavlm: torch.nn.Module, layer: int) -> None:
+        super().__init__()
+        self.wavlm = wavlm
+        self.layer = layer
+
+    def forward(self, waveform: torch.Tensor) -> torch.Tensor:
+        padded = _pad_wavlm(waveform)
+        result = self.wavlm.extract_features(padded, output_layer=self.layer, mask=False)[0]
+        features = result["layer_reps"][self.layer]
+        return F.layer_norm(features, features.shape, eps=1e-6)
+
+
+def _pad_wavlm(waveform: torch.Tensor) -> torch.Tensor:
+    if waveform.shape[-1] % 320 == 80:
+        return waveform
+    pad = waveform.shape[-1] // 320 * 320 + 80 - waveform.shape[-1]
+    if pad < 0:
+        pad += 320
+    return F.pad(waveform, (0, pad))
+
+
+class _FrozenMelPair(torch.nn.Module):
+    """Frozen linear maps of a log-mel. This is not a WavLM encoder."""
+
+    def __init__(self, channels: int, n_mels: int = 16, n_fft: int = 64, hop: int = 16) -> None:
+        super().__init__()
+        self.n_mels = n_mels
+        self.n_fft = n_fft
+        self.hop = hop
+        self.proj_a = torch.nn.Linear(n_mels, channels)
+        self.proj_p = torch.nn.Linear(n_mels, channels)
+        self.proj_t = torch.nn.Linear(n_mels, channels)
+
+    def forward(self, clean: torch.Tensor, noisy: torch.Tensor):
+        noisy_mel = _log_mel_frames(noisy, self.n_mels, self.n_fft, self.hop)
+        clean_mel = _log_mel_frames(clean, self.n_mels, self.n_fft, self.hop)
+        frames = min(noisy_mel.shape[1], clean_mel.shape[1])
+        return (
+            self.proj_a(noisy_mel[:, :frames]),
+            self.proj_p(noisy_mel[:, :frames]),
+            self.proj_t(clean_mel[:, :frames]),
+        )
+
+
+def _log_mel_frames(waveform: torch.Tensor, n_mels: int, n_fft: int, hop: int) -> torch.Tensor:
+    window = torch.hann_window(n_fft, device=waveform.device, dtype=waveform.dtype)
+    spectrum = centered_stft(waveform, n_fft, hop, window).abs()
+    basis = _mel_basis(16000, n_fft, n_mels, spectrum.device, spectrum.dtype)
+    mel = torch.matmul(basis, spectrum.clamp_min(0)).transpose(1, 2)
+    return torch.log10(mel.clamp_min(1e-5))
+
+
+def _adapter_kwargs(architecture: dict[str, Any]) -> dict[str, Any]:
+    defaults = {
+        "input_channels": 16,
+        "dim": 32,
+        "intermediate_dim": 64,
+        "num_layers": 1,
+        "output_channels": 16,
+    }
+    defaults.update(
+        {key: value for key, value in architecture.items() if key not in {"disc_dims", "n_mels", "wavlm"}}
+    )
+    if defaults["input_channels"] != defaults["output_channels"]:
+        raise TrainingError("UniPASE adapter training expects input_channels == output_channels")
+    return defaults
+
+
+def _postnet_kwargs(architecture: dict[str, Any]) -> dict[str, Any]:
+    defaults = {
+        "n_imics": 1,
+        "n_layers": 1,
+        "lstm_hidden_units": 16,
+        "attn_n_head": 2,
+        "attn_qk_output_channel": 2,
+        "emb_dim": 16,
+        "emb_ks": 4,
+        "emb_hs": 4,
+        "n_bands": 3,
+    }
+    defaults.update(architecture)
+    return defaults
+
+
+def _sum_feature_l1(real_features: list[torch.Tensor], fake_features: list[torch.Tensor]) -> torch.Tensor:
+    if len(real_features) != len(fake_features) or not real_features:
+        raise TrainingError("feature lists must be non-empty and the same length")
+    total = real_features[0].new_zeros(())
+    for real, fake in zip(real_features, fake_features, strict=True):
+        total = total + F.l1_loss(fake, real.detach())
+    return total
 
 
 def _vocoder_kwargs(architecture: dict[str, Any]) -> dict[str, Any]:
@@ -331,17 +591,12 @@ def _mel_input(module: torch.nn.Module, waveform: torch.Tensor) -> torch.Tensor:
     hop = int(istft.hop_length)
     channels = int(module.decoder.input_channels)
     window = torch.hann_window(n_fft, device=waveform.device, dtype=waveform.dtype)
-    spectrum = torch.stft(waveform, n_fft, hop, n_fft, window, center=True, return_complex=True).abs()
+    spectrum = centered_stft(waveform, n_fft, hop, window).abs()
     if spectrum.shape[-2] >= channels:
         spectrum = spectrum[..., :channels, :]
     else:
         spectrum = F.pad(spectrum, (0, 0, 0, channels - spectrum.shape[-2]))
     return spectrum
-
-
-def _require(components: dict[str, str], name: str, message: str) -> None:
-    if name not in components:
-        raise TrainingError(message)
 
 
 def _finite(loss: torch.Tensor, name: str) -> None:

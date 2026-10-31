@@ -50,7 +50,7 @@
 - VoiceBank-DEMAND 全件での学習と、論文のスコア比較。
 - 公式 Discriminator checkpoint の読み込み検証。
 - 複数ノード。
-- 公式学習ステップとの数値比較は [VERIFICATION.md](VERIFICATION.md) の L3 節。長時間の学習曲線は未実施。
+- 公式学習ステップとの数値比較は [VERIFICATION.md](VERIFICATION.md) の L3 節。更新後の重み差は、勾配の最大値ではなく、絶対値が epsilon 未満で符号が違う要素が AdamW で増幅された結果である。長時間の学習曲線は未実施。
 - ASR の学習、ASR 特徴の損失。
 
 ## 学習データ

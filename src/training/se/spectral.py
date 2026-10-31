@@ -13,6 +13,7 @@ import torch
 import torch.nn.functional as F
 
 from src.training.se.losses import phase_losses
+from src.training.se.stft import centered_stft
 
 
 def multi_resolution_l1(
@@ -58,15 +59,7 @@ def _rect_magnitude_l1(reference: torch.Tensor, estimate: torch.Tensor, window: 
 
 def _rect_stft(waveform: torch.Tensor, window: int, hop: int) -> torch.Tensor:
     rectangular = torch.ones(window, device=waveform.device, dtype=waveform.dtype)
-    return torch.stft(
-        waveform,
-        n_fft=window,
-        hop_length=hop,
-        win_length=window,
-        window=rectangular,
-        center=True,
-        return_complex=True,
-    )
+    return centered_stft(waveform, window, hop, rectangular)
 
 
 def log_mel_l1(
@@ -95,14 +88,11 @@ def _log_mel(waveform: torch.Tensor, sample_rate: int, n_mels: int, window: int,
     padded = waveform
     if padded.shape[-1] < window:
         padded = F.pad(padded, (0, window - padded.shape[-1]))
-    spec = torch.stft(
+    spec = centered_stft(
         padded,
-        n_fft=window,
-        hop_length=hop,
-        win_length=window,
-        window=torch.hann_window(window, device=padded.device, dtype=padded.dtype),
-        center=True,
-        return_complex=True,
+        window,
+        hop,
+        torch.hann_window(window, device=padded.device, dtype=padded.dtype),
     ).abs()
     mel_basis = _mel_basis(sample_rate, window, n_mels, spec.device, spec.dtype)
     mel = torch.matmul(mel_basis, spec.clamp_min(0))

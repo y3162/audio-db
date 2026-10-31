@@ -102,25 +102,87 @@ class OfficialStepTests(unittest.TestCase):
         official["total"].backward()
         grad_gap = 0.0
         disc_grad = 0.0
-        for left, right in zip(generator.parameters(), official_generator.parameters(), strict=True):
-            grad_gap = max(grad_gap, float((left.grad - right.grad).abs().max()))
+        named_grads = []
+        for (name, left), right in zip(generator.named_parameters(), official_generator.parameters(), strict=True):
+            gap = (left.grad - right.grad).abs()
+            grad_gap = max(grad_gap, float(gap.max()))
+            named_grads.append((name, left.detach().clone(), left.grad.detach().clone(), right.grad.detach().clone()))
         for left, right in zip(discriminator.parameters(), official_discriminator.parameters(), strict=True):
             if left.grad is None or right.grad is None:
                 continue
             disc_grad = max(disc_grad, float((left.grad - right.grad).abs().max()))
+        report = _adamw_report(named_grads)
         optim_a = torch.optim.AdamW(generator.parameters(), lr=5e-4, betas=(0.8, 0.99), weight_decay=0.01)
         optim_b = torch.optim.AdamW(official_generator.parameters(), lr=5e-4, betas=(0.8, 0.99), weight_decay=0.01)
         optim_a.step()
         optim_b.step()
-        weight_gap = max(float((left - right).abs().max()) for left, right in zip(generator.parameters(), official_generator.parameters(), strict=True))
+        weight_gap = 0.0
+        formula_gap = 0.0
+        for (name, before, grad_a, grad_b), left, right in zip(
+            named_grads, generator.parameters(), official_generator.parameters(), strict=True
+        ):
+            weight_gap = max(weight_gap, float((left - right).abs().max()))
+            predicted_a = _adamw_first_step(before, grad_a)
+            predicted_b = _adamw_first_step(before, grad_b)
+            formula_gap = max(formula_gap, float((predicted_a - predicted_b).abs().max()))
+            # The independent model must follow the same first AdamW step.
+            self.assertLess(float((left - predicted_a).abs().max()), 1e-6, name)
         errors["generator_grad_max_abs"] = grad_gap
         errors["discriminator_grad_max_abs"] = disc_grad
         errors["weight_max_abs"] = weight_gap
+        errors["adamw_formula_weight_max_abs"] = formula_gap
+        errors["adamw_worst"] = report
         print("MP-SENet L3", errors)
         self.assertLess(grad_gap, 1e-6, errors)
-        # AdamW amplifies a sub-1e-7 gradient difference through the 1e-8 epsilon.
+        self.assertLess(disc_grad, 1e-6, errors)
+        # The weight gap is the AdamW map of the gradient gap. Both use a fresh
+        # optimizer state, so weight decay cancels and only g / (|g| + eps) remains.
+        self.assertLess(abs(weight_gap - formula_gap), 1e-6, errors)
         self.assertLess(weight_gap, 5e-4, errors)
         self.assertTrue(torch.isfinite(ours["disc"]).all())
+
+
+def _adamw_first_step(param: torch.Tensor, grad: torch.Tensor, lr: float = 5e-4, eps: float = 1e-8, weight_decay: float = 0.01) -> torch.Tensor:
+    """First AdamW step from a zero moment state.
+
+    Bias correction cancels ``(1 - beta)``, so the update is
+    ``param * (1 - lr * weight_decay) - lr * grad / (|grad| + eps)``.
+    Near-zero gradients are divided by ``eps`` (1e-8), which is why a
+    sub-1e-7 gradient difference can move a weight by about 1e-4.
+    """
+    return param * (1 - lr * weight_decay) - lr * grad / (grad.abs() + eps)
+
+
+def _adamw_report(named_grads: list) -> dict[str, float | str | int | bool]:
+    worst_weight = -1.0
+    worst: dict[str, float | str | int | bool] = {}
+    sign_mismatch = 0
+    compared = 0
+    for name, param, grad_a, grad_b in named_grads:
+        # Shared parameters make the weight-decay term identical, so the gap
+        # depends only on the two gradients.
+        weight = (_adamw_first_step(param, grad_a) - _adamw_first_step(param, grad_b)).abs()
+        index = int(weight.argmax())
+        value = float(weight.reshape(-1)[index])
+        if value > worst_weight:
+            worst_weight = value
+            flat_a = grad_a.reshape(-1)[index]
+            flat_b = grad_b.reshape(-1)[index]
+            worst = {
+                "name": name,
+                "grad": float(flat_a),
+                "official_grad": float(flat_b),
+                "grad_abs_gap": float((flat_a - flat_b).abs()),
+                "grad_rel_gap": float((flat_a - flat_b).abs() / flat_b.abs().clamp_min(1e-8)),
+                "same_sign": bool(flat_a.sign() == flat_b.sign()),
+                "weight_gap": value,
+            }
+        large = grad_b.abs() > 1e-6
+        compared += int(large.sum())
+        sign_mismatch += int((grad_a[large].sign() != grad_b[large].sign()).sum())
+    worst["sign_mismatches_above_1e-6"] = sign_mismatch
+    worst["compared_above_1e-6"] = compared
+    return worst
 
 
 def _step(generator, discriminator, clean, noisy, h, stft, istft, loss_fn):

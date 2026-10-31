@@ -2,19 +2,27 @@
 
 The network is ``DfNet`` from ``src.se``. Each batch builds ERB and deep-filter
 features on a fresh ``DFStream``, so utterances do not share STFT or
-normalization state. The released ``config.ini`` is not in this checkout.
-``df/loss.py`` therefore leaves mask, spectral, and SI-SDR factors at 0 unless
-a config sets them, and applies local SNR at 5e-4. This task turns on the
-loss terms the source comments give as examples, with these coefficients:
+normalization state.
 
-- mask: factor 1, IAM, gamma 0.6, under-estimate weight 2, powers 2 and 4
-- spectral magnitude: factor 1 (the comment's 1e4 is not used; no ini confirms it)
-- SI-SDR: factor 0.2, the ``SdrLoss`` class default
-- local SNR: factor 5e-4 against the frame SNR of clean versus noisy-clean
+The shipped DeepFilterNet3 ``config.ini`` (SHA-256
+``415eb925d44990d938fb739f514aa3662c1ec0ea836cff044fa1291b82cb4290``,
+next to ``model_120.ckpt.best``) sets these loss factors:
 
-ASR loss stays off. AdamW uses the released defaults: lr 5e-4, betas
-(0.9, 0.999), weight decay 0.05. The cosine schedule is not reproduced; the
-configured scheduler is whatever the YAML selects.
+- multi-resolution spectral: magnitude 500, complex 500, gamma 0.3,
+  FFT sizes 256, 512, 1024, 2048
+- local SNR: 1e-3
+- mask, single-resolution spectral, SI-SDR, and ASR: 0
+
+The multi-resolution term is an MSE on Hann STFTs (``normalized=True``,
+hop = n_fft / 4) of the waveforms rebuilt from the complex spectra with the
+Vorbis window and ``torch.istft``. Local SNR is the 20 ms windowed ratio of
+clean and noise energies, in dB, clamped to ``[lsnr_min - 1, lsnr_max + 1]``.
+
+AdamW in that ini is lr 0.001, betas (0.9, 0.999), weight decay 1e-12,
+``amsgrad=True``. The per-step cosine (warmup 3 epochs from 1e-4 to 1e-3,
+then down to 1e-6, weight decay cosine toward 0.01) depends on the number of
+steps in an epoch. This task does not invent that length; the YAML scheduler
+is used as configured.
 """
 
 from __future__ import annotations
@@ -31,14 +39,16 @@ from src.training.core.distributed import ProcessInfo, unwrap, wrap_module
 from src.training.core.rng import seed_model_init
 from src.training.core.trainer import backward
 from src.training.errors import TrainingError
+from src.se.models.deepfilternet3.dsp import vorbis_window
 from src.training.se.optim import build_optimizer, build_scheduler, clip_gradients, step_scheduler
-from src.training.se.spectral import si_sdr_loss
+from src.training.se.stft import centered_stft
 
-_MASK = 1.0
-_SPECTRAL = 1.0
-_SDR = 0.2
-_LSNR = 0.0005
-_GAMMA = 0.6
+_MR_FACTOR = 500.0
+_MR_COMPLEX = 500.0
+_MR_GAMMA = 0.3
+_MR_FFTS = (256, 512, 1024, 2048)
+_LSNR = 1e-3
+_LSNR_MS = 20
 
 
 class DeepFilterNetTask:
@@ -146,16 +156,34 @@ class DeepFilterNetTask:
         noisy_spec, noisy_erb, noisy_feat, noisy_complex = self._analyze_features(noisy)
         enhanced, mask, lsnr, _coefs = module(noisy_spec, noisy_erb, noisy_feat)
         enhanced_complex = torch.view_as_complex(enhanced.squeeze(1))
-        enhanced_wave = self._synthesize(enhanced_complex, clean.shape[-1])
         clean_complex = torch.view_as_complex(clean_spec.squeeze(1))
-        mask_loss = _mask_loss(mask, clean_complex, noisy_complex, unwrap(module).erb_fb)
-        spectral = _spectral_loss(enhanced_complex, clean_complex)
-        sdr = si_sdr_loss(enhanced_wave, clean_wave) * _SDR
-        target_lsnr = _frame_snr(clean_wave, noisy[: clean_wave.shape[0], : clean_wave.shape[-1]] - clean_wave, mask.shape[-2] if mask.ndim >= 2 else 1)
-        predicted = lsnr.reshape(target_lsnr.shape[0], -1)
-        frames = min(predicted.shape[-1], target_lsnr.shape[-1])
-        local = F.mse_loss(predicted[:, :frames], target_lsnr[:, :frames]) * _LSNR
-        return mask_loss * _MASK + spectral * _SPECTRAL + sdr + local
+        frames = min(enhanced_complex.shape[-2], clean_complex.shape[-2], noisy_complex.shape[-2])
+        bins = min(enhanced_complex.shape[-1], clean_complex.shape[-1], noisy_complex.shape[-1])
+        enhanced_complex = enhanced_complex[..., :frames, :bins]
+        clean_complex = clean_complex[..., :frames, :bins]
+        noisy_complex = noisy_complex[..., :frames, :bins]
+        params = unwrap(module).params
+        window = vorbis_window(params.fft_size).to(device=enhanced_complex.device, dtype=enhanced_complex.real.dtype)
+        enhanced_wave = _vorbis_istft(enhanced_complex, params.fft_size, params.hop_size, window)
+        clean_td = _vorbis_istft(clean_complex, params.fft_size, params.hop_size, window)
+        spectral = _multi_resolution_spectral(enhanced_wave, clean_td)
+        target = _local_snr_db(
+            clean_complex,
+            noisy_complex - clean_complex,
+            sample_rate=params.sr,
+            n_fft=params.fft_size,
+            hop=params.hop_size,
+            low=params.lsnr_min - 1,
+            high=params.lsnr_max + 1,
+        )
+        predicted = lsnr.reshape(target.shape[0], -1)
+        if predicted.shape[-1] != target.shape[-1]:
+            raise TrainingError(
+                f"local SNR length {predicted.shape[-1]} does not match the 20 ms target {target.shape[-1]}"
+            )
+        local = F.mse_loss(predicted, target) * _LSNR
+        del mask, clean_wave
+        return spectral + local
 
     def _analyze(self, waveform: torch.Tensor):
         spec, _erb, _feat, complex_spec = self._analyze_features(waveform)
@@ -169,43 +197,87 @@ class DeepFilterNetTask:
         spec, erb, feat = self.stream.features(complex_spec)
         return spec, erb, feat, complex_spec
 
-    def _synthesize(self, spectrum: torch.Tensor, length: int) -> torch.Tensor:
-        self.stream.synthesis_memory.zero_()
-        waveform = self.stream.synthesize(spectrum)
-        delay = unwrap(self.generator).params.fft_size - unwrap(self.generator).params.hop_size
-        return waveform[:, delay : delay + length]
+def _vorbis_istft(spectrum: torch.Tensor, n_fft: int, hop: int, window: torch.Tensor) -> torch.Tensor:
+    packed = F.pad(spectrum.transpose(-1, -2), (0, 1))
+    return torch.istft(packed, n_fft=n_fft, hop_length=hop, window=window, normalized=True)
 
 
-def _mask_loss(mask: torch.Tensor, clean: torch.Tensor, noisy: torch.Tensor, erb_fb: torch.Tensor) -> torch.Tensor:
-    iam = (clean.abs() / noisy.abs().clamp_min(1e-8)).clamp(0, 1)
-    target = iam.matmul(erb_fb).clamp_min(1e-8).pow(_GAMMA)
-    predicted = mask.squeeze(1).clamp_min(1e-8).pow(_GAMMA)
-    frames = min(target.shape[-2], predicted.shape[-2])
-    bands = min(target.shape[-1], predicted.shape[-1])
-    residual = (target[..., :frames, :bands] - predicted[..., :frames, :bands]).square()
-    under = torch.where(predicted[..., :frames, :bands] < target[..., :frames, :bands], 2.0, 1.0)
-    weighted = residual * under
-    return weighted.mean() + weighted.clamp_min(1e-13).sqrt().mean() * 10
+def _multi_resolution_spectral(estimate: torch.Tensor, reference: torch.Tensor) -> torch.Tensor:
+    length = min(estimate.shape[-1], reference.shape[-1])
+    estimate = estimate[..., :length]
+    reference = reference[..., :length]
+    loss = estimate.new_zeros(())
+    for n_fft in _MR_FFTS:
+        hop = n_fft // 4
+        window = torch.hann_window(n_fft, device=estimate.device, dtype=estimate.dtype)
+        predicted = centered_stft(estimate, n_fft, hop, window, normalized=True)
+        target = centered_stft(reference, n_fft, hop, window, normalized=True)
+        predicted_abs = predicted.abs().clamp_min(1e-12).pow(_MR_GAMMA)
+        target_abs = target.abs().clamp_min(1e-12).pow(_MR_GAMMA)
+        loss = loss + F.mse_loss(predicted_abs, target_abs) * _MR_FACTOR
+        predicted_compressed = _compressed_complex(predicted, predicted_abs)
+        target_compressed = _compressed_complex(target, target_abs)
+        loss = loss + F.mse_loss(
+            torch.view_as_real(predicted_compressed), torch.view_as_real(target_compressed)
+        ) * _MR_COMPLEX
+    return loss
 
 
-def _spectral_loss(enhanced: torch.Tensor, clean: torch.Tensor) -> torch.Tensor:
-    frames = min(enhanced.shape[-2], clean.shape[-2])
-    bins = min(enhanced.shape[-1], clean.shape[-1])
-    pred = enhanced[..., :frames, :bins].abs().clamp_min(1e-12).pow(_GAMMA)
-    ref = clean[..., :frames, :bins].abs().clamp_min(1e-12).pow(_GAMMA)
-    return F.mse_loss(pred, ref)
+def _compressed_complex(spectrum: torch.Tensor, magnitude: torch.Tensor) -> torch.Tensor:
+    phase = _StableAngle.apply(spectrum)
+    return torch.complex(magnitude * torch.cos(phase), magnitude * torch.sin(phase))
 
 
-def _frame_snr(clean: torch.Tensor, noise: torch.Tensor, frames: int) -> torch.Tensor:
-    if frames < 1:
-        frames = 1
-    hop = max(clean.shape[-1] // frames, 1)
-    count = min(frames, clean.shape[-1] // hop)
-    clean_frames = clean[:, : count * hop].reshape(clean.shape[0], count, hop)
-    noise_frames = noise[:, : count * hop].reshape(noise.shape[0], count, hop)
-    signal = clean_frames.square().mean(dim=-1).clamp_min(1e-8)
-    disturbance = noise_frames.square().mean(dim=-1).clamp_min(1e-8)
-    return 10.0 * torch.log10(signal / disturbance)
+class _StableAngle(torch.autograd.Function):
+    """Angle whose backward stays finite when the magnitude is zero."""
+
+    @staticmethod
+    def forward(ctx, spectrum: torch.Tensor) -> torch.Tensor:
+        ctx.save_for_backward(spectrum)
+        return torch.atan2(spectrum.imag, spectrum.real)
+
+    @staticmethod
+    def backward(ctx, grad: torch.Tensor):
+        (spectrum,) = ctx.saved_tensors
+        denom = (spectrum.real.square() + spectrum.imag.square()).clamp_min(1e-10)
+        scale = grad / denom
+        return torch.complex(-spectrum.imag * scale, spectrum.real * scale)
+
+
+def _local_snr_db(
+    clean: torch.Tensor,
+    noise: torch.Tensor,
+    *,
+    sample_rate: int,
+    n_fft: int,
+    hop: int,
+    low: float,
+    high: float,
+) -> torch.Tensor:
+    speech = _local_energy(torch.view_as_real(clean).unsqueeze(1), _stft_window(_LSNR_MS, sample_rate, n_fft, hop))
+    disturbance = _local_energy(
+        torch.view_as_real(noise).unsqueeze(1),
+        _stft_window(_LSNR_MS, sample_rate, n_fft, hop) * 2,
+    )
+    ratio = speech / disturbance.clamp_min(1e-12)
+    return (10.0 * torch.log10(ratio.clamp_min(1e-12))).clamp(low, high).squeeze(1)
+
+
+def _stft_window(milliseconds: int, sample_rate: int, n_fft: int, hop: int) -> int:
+    fft_ms = n_fft / sample_rate * 1000
+    hop_ms = hop / sample_rate * 1000
+    windows = 1 + (milliseconds - fft_ms) / hop_ms
+    return max(int(round(windows)), 1)
+
+
+def _local_energy(spectrum: torch.Tensor, windows: int) -> torch.Tensor:
+    if windows % 2 == 0:
+        windows += 1
+    half = windows // 2
+    power = spectrum.pow(2).sum(-1).sum(-1)
+    power = F.pad(power, (half, half, 0, 0))
+    window = torch.hann_window(windows, device=spectrum.device, dtype=power.dtype)
+    return (power.unfold(-1, windows, 1) * window).sum(-1) / windows
 
 
 def _finite(loss: torch.Tensor, name: str) -> None:
