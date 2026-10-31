@@ -1,6 +1,5 @@
-# SEMamba++. Generator losses and the discriminator-then-generator order follow
-# the published weights. The discriminators in src/training are independent;
-# the reference training source has no license and is not imported.
+# SEMamba++. Losses, update order, and the CQT / multi-resolution discriminators
+# follow the published training setup. The reference tree is not imported.
 
 seed: 1234
 deterministic: true

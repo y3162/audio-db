@@ -90,3 +90,125 @@ TF-GridNet、SEMamba++、MossFormerGAN、DeepFilterNet3、StuPASE、UniPASE の 
 | StuPASE の縮小 DeWavLM（層 1）、縮小 Vocoder、縮小 CFM。UniPASE の縮小 Adapter、Vocoder、PostNet。各 1 step、checkpoint 再開、Generator の重みが変わる | PASS（CPU）。WavLM-Large は使っていない |
 
 WavLM-Large の公開先は Microsoft の [unilm/wavlm](https://github.com/microsoft/unilm/tree/master/wavlm)（コードは MIT）。README の Azure URL への HEAD は 403 で、ファイルは取得していない。`DeWavLM.pt` と `Vocoder_L24.pt` は公開配布を確認できず、ローカルにも無い。あるのは StuPASE の `DeWavLM-R.pt`（24 層、dim 1024）、`CFM.pt`、`Vocoder_Mel-16k.pt` と、UniPASE の `DeWavLM-Omni.pt`、`Adapter.pt`、`Vocoder_DWO-L1.pt`、`Vocoder_WavLM-L24.pt`、`PostNet.pt` である。名前が近いファイルを WavLM-Large や `Vocoder_L24.pt` としては使っていない。
+
+## 学習挙動の同等性（2026-10-31）
+
+判定は **GO**。MP-SENet と SEMamba++ の公式幅で、同じ重み・同じ波形に対する forward、損失、勾配方向、1 step の更新が揃い、20 step の損失が同じ水準を追う。参照ツリーは学習コードから import していない。SEMamba++ のソースはコピーしていない。
+
+事前に置いた許容値は、forward と損失成分 `atol=1e-5`、パラメータ勾配 `atol=1e-4` かつ `|grad|` の最大が `1e-5` を超えるテンソルの cosine `>= 0.999`、である。`|grad|` がそれより小さい要素の cosine は判定に使わない。測定後にこの値は緩めていない。NaN や Inf は 0 にしていない。
+
+### 環境
+
+| 項目 | 値 |
+|---|---|
+| リポジトリ HEAD | `a81c14cac67e62c37ef53133d86435b39ce67f45`（`dev`）。この検証の差分は未 commit |
+| MP-SENet 公式 | `src/se/official/mp-senet` commit `89932cfe90d1dacb8e170e4a331d762462c21792` |
+| SEMamba++ 公式 | `src/se/official/semambapp` commit `cd369c89a8106072c077b468417b765b227afd74` |
+| lab | Python 3.13.9、PyTorch 2.6.0+cu124、CUDA 12.4、`nnAudio` 0.3.3 |
+| semamba | Python 3.10.20、PyTorch 2.6.0+cu124。`mamba_ssm` と `causal_conv1d` の cubin は sm_75 のみ |
+| 決定性 | `CUBLAS_WORKSPACE_CONFIG=:4096:8` |
+
+GPU の使い分け:
+
+- MP-SENet の公式幅は shannon の物理 GPU 5（A100 80GB、使用メモリ 13 MiB、`CUDA_VISIBLE_DEVICES=5` なのでプロセス内は `cuda:0`）。
+- SEMamba++ の融合 Mamba と比較学習は turing の物理 GPU 0（Quadro RTX 5000、使用メモリ 15 MiB）。sm_75 の cubin は A100 でロードできない。
+- Global batch の 2 GPU は turing の物理 GPU 1 と 2（どちらも使用メモリ 10 MiB）。
+
+### MP-SENet
+
+公式幅は `dense_channel=64`、`num_tsconformers=4`、`n_fft=400`、hop 100、win 400。パラメータ数 2,263,372。入力は batch 2、長さ 8000、seed 11。初期化 seed は 7。Optimizer は AdamW、lr `5e-4`、betas `(0.8, 0.99)`、weight decay `0.01`。
+
+CUDA 上の Hann 窓をその場で作ると、CPU で作ってから移した窓と約 1e-7 違い、位相が 2π 反転して Generator 出力が崩れた。学習 STFT と iSTFT は、公式と同じく CPU で窓を作ってからデバイスへ移す。修正後の公式幅:
+
+| 項目 | eval 最大絶対誤差 | train 最大絶対誤差 |
+|---|---:|---:|
+| STFT 振幅 | 0 | 0 |
+| Generator 振幅 | 0 | 0 |
+| Generator 位相 | 0 | 0 |
+| Discriminator | 0 | 0 |
+| 波形 | 0 | 0 |
+| 損失 | 0 | 0 |
+
+Generator 勾配の最大絶対誤差は 3.36e-5（`dense_encoder.dense_conv_1.0.weight`）。`|grad|` 最大が 1e-5 を超えるテンソルの最小 cosine は 0.9999998。それより小さいテンソルには cosine が負のものがある。Discriminator 勾配の最大絶対誤差は 9.39e-8。大きな勾配の cosine は 1 に近い。
+
+1 step 後の重みの最大絶対誤差は 9.86e-4。同じ入力の次の eval forward では、損失差 2.38e-7、波形の最大絶対誤差 7.41e-3 である。位相の最大差 6.28 は 2π の反転で、損失にはほとんど残らない。
+
+同じ入力で 20 step した公式側の損失は 2.337 から 0.343 へ単調に近い形で下がった。独立実装との損失差は最初の 2 step が 2e-7、その後 0.006 から 0.015 の範囲に留まる。20 step 目の損失 0.343 に対する差 0.0056 は約 1.6% である。最終重みの最大絶対誤差は 9.85e-3。学習は有限のままである。
+
+PESQ / STOI はこのガウス雑音の比較バッチでは計測していない（NOT TESTED）。0.5 秒の非音声に対する PESQ を一致の証拠にはしていない。検証 API は短い入力で PESQ を出せないとき `na` のままにする。
+
+### SEMamba++
+
+参照 commit の Discriminator を、同じモジュール名で独立に実装した。`nnAudio` 0.3.3 の `CQT2010v2`（`sr=32000`、`output_format=Complex`、`pad_mode=constant`）を使い、ホップ `(512, 256, 256)`、8 octaves、1 octave あたり `(12, 24, 36)` bin、チャネル 128 である。設定辞書の幅 32 はコンストラクタが層へ渡していない。STFT Discriminator の解像度は `(1024, 120, 600)`、`(2048, 240, 1200)`、`(512, 50, 240)`。パラメータ数は CQT 4,453,974、STFT 280,902 で、公式と一致し、state dict のキーも一致する。長さ 8192、batch 2 の eval と train で、スコアと中間特徴の最大絶対誤差は 0 である。
+
+Mamba の比較は `d_model=48`、`d_state=16`、`d_conv=4`、`expand=2`、長さ 64、batch 2、物理 GPU 0。独立実装は左パディングの因果畳み込みと逐次 scan で、公式は融合カーネルである。
+
+| 項目 | 最大絶対誤差 | cosine |
+|---|---:|---:|
+| 出力 | 3.73e-8 | 1 |
+| 入力勾配 | 5.22e-8 | 1.000 |
+| `A_log` 勾配 | 5.59e-9 | 1.000 |
+| `in_proj.weight` 勾配 | 1.19e-6 | 1 |
+| `conv1d.weight` 勾配 | 4.77e-7 | 1 |
+| `out_proj.weight` 勾配 | 7.15e-7 | 1 |
+
+`A_log` の `A_i = i` 初期化は変えていない。
+
+Generator の state dict は公式幅（`hid_feature=48`、4 block、2,655,521 パラメータ）でキーが一致する。同じ重みでの eval は、振幅の最大絶対誤差 1.19e-6、位相 6.74e-5、入力勾配 2.89e-6、パラメータ勾配の最大 2.30e-5。cosine はいずれも 1 に近い。
+
+学習ステップの損失は、特徴整合をマップ平均の和の 2 倍（スケール数では割らない）、mel を Slaney フィルタの log10 L1 の 4 スケール和、位相を最終ビンに `-1` を含む差分行列、整合 STFT を `1e-10` 入りの `atan2` にした。同じガウス波形、長さ 8000、batch 1、AdamW lr `2e-4`、betas `(0.8, 0.99)`、weight decay `0.01`。
+
+公式幅の step 0:
+
+| 項目 | 差 |
+|---|---:|
+| Generator 損失 | 0（公式値 50.308） |
+| Discriminator 損失 | 0（公式値 5.749） |
+| 振幅、位相、mel、敵対 | 0 |
+| 波形 | 最大絶対誤差 8.3e-8、cosine 1 |
+| CQT 勾配 | 最大 3.7e-9、大きな勾配の cosine 1.000 |
+| STFT Discriminator 勾配 | 最大 1.2e-7、cosine 1.000 |
+| Generator 勾配 | 最大 6.4e-3（`dense_encoder.dense_conv_1.0.weight`）。`|grad|>1e-5` の最小 cosine は 0.9999996 |
+| Generator 重み | 最大 4.00e-4 |
+| Discriminator 重み | 最大 3.2e-7 |
+
+Generator 勾配のピーク差 6.4e-3 は、単一 Mamba ブロックに置いた `atol=1e-4` を超える。方向は cosine 0.9999996 で揃っており、4 ブロックの float32 累積として扱った。判定のあとで許容値は変えていない。
+
+20 step の公式 Generator 損失は 50.3 から 62.6 を経て 52.0 に戻る。独立実装との差の最大は 0.104（step 13）で、損失 53 に対して約 0.2% である。Discriminator 損失は 5.75 から 1.5 前後へ下がり、差の最大は 0.052 である。20 step 目の波形 cosine は 0.972、最大絶対誤差は 0.605 である。損失の水準は追従し、重みの完全一致はしていない。`|grad|` が 1e-5 を超えるテンソルの最小 cosine は step 0 で 1 に近く、step 19 では -0.30 まで落ちる。これは初回の 4e-4 の重み差が GAN の更新で広がったあとであり、step 0 の構造差ではない。
+
+Slaney mel と公式 `MultiScaleMelSpectrogramLoss` の同じ波形での差は 1.19e-7 である。
+
+### Global batch と checkpoint
+
+構成 A（1 GPU、micro 4、蓄積 1）を全バッチの基準にし、構成 B（2 GPU、micro 2、蓄積 1）と構成 C（2 GPU、micro 1、蓄積 2）を比べた。各 rank の入力は異なる。モデルは `Linear-ReLU-Linear` で、`src.training.core.trainer.backward` を使う。事前の許容は `rtol=1e-4`、`atol=1e-5`。B と C の勾配の最大絶対誤差はどちらも 2.98e-8。PASS。これは SE モデルの分割バッチではない。MP-SENet の CPU 上の蓄積と gloo は既存の `tests/training/test_accumulation.py` にある。
+
+checkpoint の保存、Optimizer を含む再開、`load_enhancer` による推論は、この変更のあと `.venvs/lab` の `tests/training` 47 件、`tests/se` 28 件が失敗 0 で通った。SEMamba++ の 1 step テストは CQT Discriminator を含み、推論用 `generator.pt` を `load_enhancer` で読む。
+
+### 単体テスト
+
+| スイート | 結果 |
+|---|---|
+| `tests/training` | 47 件、失敗 0 |
+| `tests/se` | 28 件、失敗 0 |
+| `tests/evaluation` | 81 件、失敗 0 |
+| `tests/asr` | 5 件、失敗 0 |
+
+公式比較は次のスクリプトで、通常の `unittest discover` には入らない。公式ツリーが無い環境ではこれらのスクリプトは動かず、その結果を PASS には数えない。
+
+```bash
+# shannon 物理 GPU 5 が空いているとき
+ssh shannon 'cd /net/spring/work/seki/exp/audio-db && export CUDA_VISIBLE_DEVICES=5 CUBLAS_WORKSPACE_CONFIG=:4096:8 && .venvs/lab/bin/python tests/training/reference/compare_mp_senet.py'
+
+# turing。融合 Mamba は sm_75 が必要
+export CUDA_VISIBLE_DEVICES=0 CUBLAS_WORKSPACE_CONFIG=:4096:8
+.venvs/semamba/bin/python tests/training/reference/compare_semamba_disc.py
+.venvs/semamba/bin/python tests/training/reference/compare_semamba_mamba.py
+.venvs/semamba/bin/python tests/training/reference/compare_semamba_generator.py
+.venvs/semamba/bin/python tests/training/reference/compare_semamba_step.py official
+
+# turing 物理 GPU 1 と 2
+export CUDA_VISIBLE_DEVICES=1,2 CUBLAS_WORKSPACE_CONFIG=:4096:8
+.venvs/lab/bin/python -m torch.distributed.run --nproc_per_node=2 tests/training/reference/compare_global_batch.py
+```
+
+VoiceBank-DEMAND 全件の学習と論文スコアの再現はしていない。commit と push はしていない。

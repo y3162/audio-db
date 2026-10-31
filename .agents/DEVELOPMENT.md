@@ -6,9 +6,9 @@
 
 | 環境 | 用途 |
 |---|---|
-| `.venvs/lab` | Python 3.13、torch 2.6.0+cu124、NumPy 2.5.4、DuckDB 2.0.0。SE、評価、`make db-init`、通常のテスト |
+| `.venvs/lab` | Python 3.13、torch 2.6.0+cu124、NumPy 2.5.4、DuckDB 2.0.0、`nnAudio==0.3.3`。SE、評価、`make db-init`、通常のテスト。SEMamba++ の CQT Discriminator が `nnAudio` を使う |
 | `.venvs/asr` | Python 3.12、NeMo、Whisper、Transformers、NumPy 2.1.3。実 ASR を使う評価・スモーク。SE と ASR を同じプロセスでつなぐため、DuckDB・PESQ・STOI も入っている |
-| `.venvs/ref`、`.venvs/semamba`、`.venvs/cuda-nvcc` | 公式実装との比較とそのためのビルド専用。公式の依存を含む。`semamba` は `mamba-ssm` と `causal-conv1d` を sm_75（turing の Quadro RTX 5000）向けにソースビルドしてある。ライブラリ本体はこれらを import しない |
+| `.venvs/ref`、`.venvs/semamba`、`.venvs/cuda-nvcc` | 公式実装との比較とそのためのビルド専用。公式の依存を含む。`semamba` は `mamba-ssm` と `causal-conv1d` を sm_75（turing の Quadro RTX 5000）向けにソースビルドしてあり、cubin は sm_75 だけなので A100 ではロードできない。`nnAudio==0.3.3` と librosa も入っている。ライブラリ本体は `mamba_ssm` を import しない |
 
 - NeMo は Python 3.13・NumPy 2.5.4 の lab と依存関係が合わないため、ASR の環境を分けている。NeMo などを lab に入れない。lab にパッケージを足すときは NumPy を上げない（`requirements/evaluation.txt` の手順）。
 - Numba と NeMo は、`.venvs/*` の `nvidia/cuda_nvcc`（ptxas 12.2）を使う。システムの `/usr/local/cuda` は使わない。

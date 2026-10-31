@@ -2,10 +2,11 @@
 
 The generator is the independent network in ``src.se``. The loss weights match
 the published training config: adversarial 1, feature matching 1 (the matching
-term itself is scaled by 2), mel 0.1, magnitude 0.9, phase 0.3, complex 0.1,
-consistency 0.1. The waveform L1 term is not in that sum. The discriminators
-are an independent multi-resolution stack and a four-band stack. The reference
-repository has no license file, so its discriminator source is not copied.
+term itself is the sum of per-map L1 means scaled by 2), mel 0.1, magnitude
+0.9, phase 0.3, complex 0.1, consistency 0.1. The waveform L1 term is commented
+out of that sum. Discriminators are the published multi-scale sub-band CQT
+stack and the three-resolution magnitude stack, implemented in
+``semamba_disc`` without importing the reference tree.
 
 Update order is discriminator, then generator. ExponentialLR steps once per
 finished epoch.
@@ -24,16 +25,16 @@ from src.training.core.distributed import ProcessInfo, unwrap, wrap_module
 from src.training.core.rng import seed_model_init
 from src.training.core.trainer import backward
 from src.training.errors import TrainingError
-from src.training.se.discriminators import MultiResolutionDiscriminator, SubbandDiscriminator
+from src.training.se.semamba_disc import MultiResolutionDiscriminator, MultiScaleSubbandCQTDiscriminator
 from src.training.se.optim import build_optimizer, build_scheduler, clip_gradients, step_scheduler
 from src.training.se.spectral import (
     compressed_complex_losses,
     feature_matching,
     least_squares_discriminator,
     least_squares_generator,
-    log_mel_l1,
+    summed_slaney_log_mel,
 )
-from src.training.se.stft import mag_pha_istft, mag_pha_stft
+from src.training.se.stft import semamba_mag_phase_istft, semamba_mag_phase_stft
 
 _MAG = 0.9
 _PHASE = 0.3
@@ -58,13 +59,11 @@ class SEMambaTask:
         self.win = int(stft.get("win", self.n_fft))
         self.compress = 0.3
         self.sample_rate = int(model["sampling_rate"])
-        windows = stft.get("disc_windows") or (256, 512, 1024)
-        self.disc_windows = tuple(int(item) for item in windows)
         self.grad_clip = config.get("grad_clip")
         with seed_model_init(config["seed"]):
             self.generator = build_model("semambapp", architecture or None, variant=model.get("variant")).to(device)
-            self.discriminator_mrd = MultiResolutionDiscriminator(self.disc_windows).to(device)
-            self.discriminator_band = SubbandDiscriminator(self.n_fft).to(device)
+            self.discriminator_mrd = MultiResolutionDiscriminator().to(device)
+            self.discriminator_band = MultiScaleSubbandCQTDiscriminator(self.sample_rate).to(device)
         discriminator_parameters = list(self.discriminator_mrd.parameters()) + list(self.discriminator_band.parameters())
         self.optim_g = build_optimizer(self.generator.parameters(), config)
         self.optim_d = build_optimizer(discriminator_parameters, config)
@@ -163,7 +162,7 @@ class SEMambaTask:
                     unwrap(self.discriminator_mrd), unwrap(self.discriminator_band), parts["audio"]
                 )
                 adversarial = sum(least_squares_generator(score) for score in fake_scores)
-                matching = feature_matching(real_features, fake_features, scale=2.0)
+                matching = feature_matching(real_features, fake_features, scale=2.0, reduction="sum")
                 spectral = compressed_complex_losses(
                     parts["clean_mag"],
                     parts["mag"],
@@ -172,8 +171,9 @@ class SEMambaTask:
                     parts["clean_complex"],
                     parts["complex"],
                     parts["recomputed"],
+                    phase_mode="matrix",
                 )
-                mel = log_mel_l1(clean, parts["audio"], self.sample_rate)
+                mel = summed_slaney_log_mel(clean, parts["audio"], self.sample_rate)
                 loss = (
                     adversarial * _ADV
                     + matching * _FM
@@ -211,17 +211,25 @@ class SEMambaTask:
         }
 
     def _generate(self, clean: torch.Tensor, noisy: torch.Tensor, generator: torch.nn.Module) -> dict[str, torch.Tensor]:
-        clean_mag, clean_phase, clean_complex = mag_pha_stft(clean, self.n_fft, self.hop, self.win, self.compress)
-        noisy_mag, noisy_phase, _ = mag_pha_stft(noisy, self.n_fft, self.hop, self.win, self.compress)
+        clean_mag, clean_phase, clean_complex = semamba_mag_phase_stft(
+            clean, self.n_fft, self.hop, self.win, self.compress, addeps=False
+        )
+        noisy_mag, noisy_phase, _ = semamba_mag_phase_stft(
+            noisy, self.n_fft, self.hop, self.win, self.compress, addeps=False
+        )
         magnitude, phase = generator(noisy_mag, noisy_phase)
         if magnitude.shape != noisy_mag.shape:
             magnitude = _match_bins(magnitude, noisy_mag.shape[-2])
             phase = _match_bins(phase, noisy_phase.shape[-2])
         complex_spectrum = torch.stack((magnitude * torch.cos(phase), magnitude * torch.sin(phase)), dim=-1)
-        audio = mag_pha_istft(magnitude, phase, self.n_fft, self.hop, self.win, self.compress)
+        audio = semamba_mag_phase_istft(
+            magnitude, phase, self.n_fft, self.hop, self.win, self.compress, length=clean.shape[-1]
+        )
         if audio.shape[-1] != clean.shape[-1]:
             audio = _fit_time(audio, clean.shape[-1])
-        recomputed_mag, _, recomputed = mag_pha_stft(audio, self.n_fft, self.hop, self.win, self.compress)
+        recomputed_mag, _, recomputed = semamba_mag_phase_stft(
+            audio, self.n_fft, self.hop, self.win, self.compress, addeps=True
+        )
         del recomputed_mag
         return {
             "clean_mag": clean_mag,

@@ -1,11 +1,10 @@
 """Discriminators owned by the training package.
 
-SEMamba++ has no license file in the reference tree, so this is an independent
-multi-resolution and sub-band convolutional discriminator. It implements the
-published least-squares objective, not a copy of that repository. MossFormerGAN
-uses a convolutional score on the pair of compressed magnitudes. The released
-discriminator also has a Conformer after a NISQA-style CNN; that block is not
-reimplemented here and the difference is recorded in the training notes.
+SEMamba++ uses ``semamba_disc`` (CQT sub-bands and the published STFT
+resolutions). The stacks in this file are the waveform GAN used by StuPASE and
+UniPASE, plus an earlier convolutional magnitude pair that is not the SEMamba++
+discriminator. MossFormerGAN's released discriminator also has a Conformer
+after a NISQA-style CNN; that block is not reimplemented here.
 """
 
 from __future__ import annotations

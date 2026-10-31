@@ -58,7 +58,10 @@ class SelectiveSSM(nn.Module):
         batch, length, _ = hidden.shape
         x, z = self.in_proj(hidden).chunk(2, dim=-1)
         x = x.transpose(1, 2)
-        x = self.conv1d(x)[..., :length]
+        # Left pad only. The fused causal conv uses the current sample as the
+        # last kernel tap. Symmetric Conv1d padding does not.
+        kernel = int(self.conv1d.kernel_size[0])
+        x = F.conv1d(F.pad(x, (kernel - 1, 0)), self.conv1d.weight, self.conv1d.bias, groups=self.conv1d.groups)
         x = F.silu(x).transpose(1, 2)
         delta, b_mat, c_mat = torch.split(self.x_proj(x), [self.dt_rank, self.d_state, self.d_state], dim=-1)
         delta = F.linear(delta, self.dt_proj.weight)

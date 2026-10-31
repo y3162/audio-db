@@ -12,7 +12,7 @@ import math
 import torch
 import torch.nn.functional as F
 
-from src.training.se.losses import phase_losses
+from src.training.se.losses import anti_wrapping, phase_losses
 from src.training.se.stft import centered_stft
 
 
@@ -123,6 +123,30 @@ def _mel_to_hz(mel: torch.Tensor) -> torch.Tensor:
     return 700.0 * (torch.pow(10.0, mel / 2595.0) - 1.0)
 
 
+def matrix_phase_losses(reference: torch.Tensor, generated: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+    """SEMamba++ phase terms.
+
+    Group delay and angular frequency use a first-difference matrix with a
+    final ``-1`` on the diagonal. That is wider than ``torch.diff`` by one bin.
+    """
+    frequency = _difference_matrix(int(reference.shape[-2]), reference)
+    time = _difference_matrix(int(reference.shape[-1]), reference)
+    group_reference = torch.matmul(reference.transpose(1, 2), frequency)
+    group_generated = torch.matmul(generated.transpose(1, 2), frequency)
+    angular_reference = torch.matmul(reference, time)
+    angular_generated = torch.matmul(generated, time)
+    return (
+        anti_wrapping(reference - generated).mean(),
+        anti_wrapping(group_reference - group_generated).mean(),
+        anti_wrapping(angular_reference - angular_generated).mean(),
+    )
+
+
+def _difference_matrix(size: int, like: torch.Tensor) -> torch.Tensor:
+    ones = torch.ones(size, size, device=like.device, dtype=like.dtype)
+    return torch.triu(ones, diagonal=1) - torch.triu(ones, diagonal=2) - torch.eye(size, device=like.device, dtype=like.dtype)
+
+
 def compressed_complex_losses(
     clean_mag: torch.Tensor,
     generated_mag: torch.Tensor,
@@ -131,10 +155,13 @@ def compressed_complex_losses(
     clean_complex: torch.Tensor,
     generated_complex: torch.Tensor,
     recomputed_complex: torch.Tensor,
+    *,
+    phase_mode: str = "diff",
 ) -> dict[str, torch.Tensor]:
     """Magnitude MSE, anti-wrapped phase, and the doubled complex terms."""
     magnitude = F.mse_loss(clean_mag, generated_mag)
-    instantaneous, group_delay, angular = phase_losses(clean_phase, generated_phase)
+    phase_fn = matrix_phase_losses if phase_mode == "matrix" else phase_losses
+    instantaneous, group_delay, angular = phase_fn(clean_phase, generated_phase)
     phase = instantaneous + group_delay + angular
     complex_loss = F.mse_loss(clean_complex, generated_complex) * 2
     consistency = F.mse_loss(generated_complex, recomputed_complex) * 2
@@ -149,13 +176,114 @@ def least_squares_generator(fake_score: torch.Tensor) -> torch.Tensor:
     return torch.mean((1 - fake_score).square())
 
 
-def feature_matching(real_features: list[torch.Tensor], fake_features: list[torch.Tensor], scale: float = 2.0) -> torch.Tensor:
+def feature_matching(
+    real_features: list[torch.Tensor],
+    fake_features: list[torch.Tensor],
+    scale: float = 2.0,
+    *,
+    reduction: str = "mean",
+) -> torch.Tensor:
+    """Sum or mean of per-map L1 distances, then ``scale``.
+
+    SEMamba++ sums the map means and multiplies by 2. Averaging would change
+    the loss coefficient by the number of maps.
+    """
     if len(real_features) != len(fake_features) or not real_features:
         raise ValueError("feature lists must be non-empty and the same length")
     total = real_features[0].new_zeros(())
     for real, fake in zip(real_features, fake_features, strict=True):
         total = total + F.l1_loss(fake, real.detach())
-    return total / len(real_features) * scale
+    if reduction == "sum":
+        return total * scale
+    if reduction == "mean":
+        return total / len(real_features) * scale
+    raise ValueError(f"unsupported feature-matching reduction {reduction}")
+
+
+def summed_slaney_log_mel(
+    reference: torch.Tensor,
+    estimate: torch.Tensor,
+    sample_rate: int,
+    *,
+    n_mels: tuple[int, ...] = (40, 80, 160, 320),
+    windows: tuple[int, ...] = (256, 512, 1024, 2048),
+    clamp: float = 1e-5,
+) -> torch.Tensor:
+    """Sum of mean L1 distances between log10 Slaney mel spectrograms.
+
+    This is the multi-scale mel term used by SEMamba++: four windows, hop
+    equal to one quarter of the window, Hann, centered STFT, log10, and no
+    extra magnitude term. The four scales are added, not averaged.
+    """
+    if len(n_mels) != len(windows):
+        raise ValueError("n_mels and windows must have the same length")
+    if reference.ndim == 3:
+        reference = reference.squeeze(1)
+        estimate = estimate.squeeze(1)
+    total = reference.new_zeros(())
+    for bands, window in zip(n_mels, windows, strict=True):
+        hop = window // 4
+        ref = _slaney_log_mel(reference, sample_rate, bands, window, hop, clamp)
+        est = _slaney_log_mel(estimate, sample_rate, bands, window, hop, clamp)
+        frames = min(ref.shape[-1], est.shape[-1])
+        total = total + F.l1_loss(ref[..., :frames], est[..., :frames])
+    return total
+
+
+def _slaney_log_mel(
+    waveform: torch.Tensor,
+    sample_rate: int,
+    n_mels: int,
+    window: int,
+    hop: int,
+    clamp: float,
+) -> torch.Tensor:
+    spec = centered_stft(
+        waveform,
+        window,
+        hop,
+        torch.hann_window(window, device=waveform.device, dtype=waveform.dtype),
+    ).abs()
+    basis = _slaney_basis(sample_rate, window, n_mels, spec.device, spec.dtype)
+    mel = torch.matmul(basis, spec.clamp_min(0))
+    return torch.log10(mel.clamp_min(clamp))
+
+
+def _slaney_basis(sample_rate: int, n_fft: int, n_mels: int, device, dtype) -> torch.Tensor:
+    bins = n_fft // 2 + 1
+    fft_hz = torch.linspace(0, sample_rate / 2, bins, device=device, dtype=dtype)
+    mel_min = _hz_to_mel_slaney(fft_hz.new_tensor(0.0))
+    mel_max = _hz_to_mel_slaney(fft_hz.new_tensor(sample_rate / 2))
+    points = torch.linspace(mel_min, mel_max, n_mels + 2, device=device, dtype=dtype)
+    hz = _mel_to_hz_slaney(points)
+    weights = torch.zeros(n_mels, bins, device=device, dtype=dtype)
+    gaps = hz[1:] - hz[:-1]
+    for index in range(n_mels):
+        lower = (fft_hz - hz[index]) / gaps[index].clamp_min(1e-12)
+        upper = (hz[index + 2] - fft_hz) / gaps[index + 1].clamp_min(1e-12)
+        weights[index] = torch.clamp(torch.minimum(lower, upper), min=0)
+    scale = 2.0 / (hz[2:] - hz[:n_mels]).clamp_min(1e-12)
+    return weights * scale.unsqueeze(1)
+
+
+def _hz_to_mel_slaney(hz: torch.Tensor) -> torch.Tensor:
+    spacing = 200.0 / 3.0
+    min_log_hz = 1000.0
+    min_log_mel = min_log_hz / spacing
+    logstep = math.log(6.4) / 27.0
+    linear = hz / spacing
+    logarithmic = min_log_mel + torch.log(hz.clamp_min(min_log_hz) / min_log_hz) / logstep
+    return torch.where(hz >= min_log_hz, logarithmic, linear)
+
+
+def _mel_to_hz_slaney(mel: torch.Tensor) -> torch.Tensor:
+    spacing = 200.0 / 3.0
+    min_log_hz = 1000.0
+    min_log_mel = min_log_hz / spacing
+    logstep = math.log(6.4) / 27.0
+    linear = mel * spacing
+    logarithmic = min_log_hz * torch.exp(logstep * (mel - min_log_mel))
+    return torch.where(mel >= min_log_mel, logarithmic, linear)
 
 
 def si_sdr_loss(estimate: torch.Tensor, reference: torch.Tensor, eps: float = 1e-8) -> torch.Tensor:
