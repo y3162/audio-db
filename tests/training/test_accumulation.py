@@ -46,29 +46,19 @@ class AccumulationTests(unittest.TestCase):
         micro_grad = torch.cat([parameter.grad.reshape(-1) for parameter in micro.parameters()])
         self.assertTrue(torch.allclose(full_grad, micro_grad, rtol=1e-5, atol=1e-6))
 
-    def test_scheduler_follows_optimizer_updates(self):
+    def test_scheduler_steps_once_per_completed_epoch(self):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
-            config = tiny_config(root / "ckpt", max_steps=2, global_batch_size=4, micro_batch_size_per_gpu=2)
-            dataset = paired_dataset(root / "wav", 8, seed=config["seed"])
-            task = MPSENetTask(config, torch.device("cpu"))
-            plan = plan_batches(4, 2, 1)
-            self.assertEqual((plan.micro_batch_size, plan.accumulation_steps), (2, 2))
-            trainer = Trainer(
-                task,
-                plan,
-                cpu_process(),
-                max_steps=2,
-                seed=config["seed"],
-                checkpoint_dir=root / "ckpt",
-                checkpoint_interval=0,
-                validation_interval=0,
-                config=config,
-            )
-            trainer.fit(dataset)
-            self.assertEqual(trainer.global_step, 2)
-            expected = 0.001 * (0.5**2)
-            self.assertAlmostEqual(task.learning_rates()["generator"], expected)
+            accumulated = _run_scheduler(root / "accum", micro_limit=2)
+            single = _run_scheduler(root / "single", micro_limit=4)
+        self.assertEqual(accumulated[0], 2)
+        self.assertEqual(single[0], 2)
+        # Eight waveforms and global batch 4 are one epoch at either accumulation.
+        expected = 0.001 * 0.5
+        self.assertAlmostEqual(accumulated[1], expected)
+        self.assertAlmostEqual(single[1], expected)
+        self.assertEqual(accumulated[2], 1)
+        self.assertEqual(single[2], 1)
 
     def test_two_processes_keep_the_global_batch_gradient(self):
         features, target = shared_batch()
@@ -81,6 +71,31 @@ class AccumulationTests(unittest.TestCase):
                 self.assertEqual(len(gradients), 2)
                 for gradient in gradients:
                     self.assertTrue(torch.allclose(gradient, expected, rtol=1e-5, atol=1e-6))
+
+
+def _run_scheduler(root: Path, *, micro_limit: int) -> tuple[int, float, int]:
+    config = tiny_config(
+        root / "ckpt",
+        max_steps=2,
+        global_batch_size=4,
+        micro_batch_size_per_gpu=micro_limit,
+    )
+    dataset = paired_dataset(root / "wav", 8, seed=config["seed"])
+    task = MPSENetTask(config, torch.device("cpu"))
+    plan = plan_batches(4, micro_limit, 1)
+    trainer = Trainer(
+        task,
+        plan,
+        cpu_process(),
+        max_steps=2,
+        seed=config["seed"],
+        checkpoint_dir=root / "ckpt",
+        checkpoint_interval=0,
+        validation_interval=0,
+        config=config,
+    )
+    trainer.fit(dataset)
+    return trainer.global_step, task.learning_rates()["generator"], int(task.sched_g.last_epoch)
 
 
 def _run_workers(mode: str) -> list[torch.Tensor]:

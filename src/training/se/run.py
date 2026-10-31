@@ -15,6 +15,8 @@ from src.training.core.trainer import Trainer
 from src.training.data.dataset import load_recipe_dataset
 from src.training.se.config import load_training_config
 from src.training.se.mp_senet import MPSENetTask
+from src.training.se.waveform import WaveformTask
+from src.training.se.waveform import WaveformTask
 
 
 def execute(config_path: str | Path, *, resume: str | Path | None = None) -> None:
@@ -37,7 +39,13 @@ def execute(config_path: str | Path, *, resume: str | Path | None = None) -> Non
             f"world={plan.world_size} accumulation={plan.accumulation_steps}",
             flush=True,
         )
-    task = MPSENetTask(config, process.device)
+    if config["model"]["name"] == "mp_senet":
+        if config["model"]["name"] == "mp_senet":
+        task = MPSENetTask(config, process.device)
+    else:
+        task = WaveformTask(config, process.device)
+    else:
+        task = WaveformTask(config, process.device)
     data = config["data"]
     train = load_recipe_dataset(
         data["database"],

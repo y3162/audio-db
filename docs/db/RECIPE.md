@@ -53,4 +53,4 @@
 
 `eval.cases` は `case_id`、`kind`、`dataset`、`split`、`sample_rate`、`transcript`、`speaker_id`、`recipe_json`、`content_hash`、`metadata` だけを持つ。`sample_rate` は `output.sample_rate` と同じ値である。SNR やパスは列にしない。
 
-`content_hash` は、`case_id` を除いたケース本体のハッシュである。同じ `case_id` で transcript や metadata が違う登録はエラーになる。
+`content_hash` は、`case_id` を除いたケース本体のハッシュである。同じ `case_id` で transcript や metadata が違う登録はエラーになる。例外は、旧 DB からの移行で metadata に残る `legacy_case_id` と、その旧 ID を写した `source_id` だけである。この差では行を書き換えず、再登録は unchanged になる。合成ケースの混合 seed は、操作名ではなく歴史的なプロトコル名 `rms_v1` を入力にする。こうすると、保存済みの `noise_start` と seed を `db-init` が計算し直しても同じレシピになる。

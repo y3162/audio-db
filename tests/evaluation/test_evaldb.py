@@ -9,6 +9,7 @@ import torch
 import torchaudio
 
 from src.data.db.schema import create_corpora_schema
+from src.data.recipe import case_content_hash
 from src.evaluation.datasets.evaldb import EvaluationDB
 from src.evaluation.errors import DatasetError
 from src.evaluation.pipeline import execute
@@ -43,6 +44,60 @@ class EvaluationDBTests(unittest.TestCase):
             finally:
                 connection.close()
             self.assertEqual(count, 1)
+
+    def test_reregistration_keeps_migrated_legacy_case_id(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            database = root / "sets.duckdb"
+            db = EvaluationDB(database, project_root=root, corpora_root=root / "corpora")
+            manifest = self._manifest(root, [("c1", "clean")])
+            db.import_manifest(manifest, "once", description="clean")
+            connection = _connect(database)
+            try:
+                case_id, kind, dataset, split, rate, transcript, speaker, recipe, metadata = connection.execute(
+                    """
+                    SELECT case_id, kind, dataset, split, sample_rate, transcript, speaker_id,
+                           recipe_json::VARCHAR, metadata::VARCHAR
+                    FROM eval.cases
+                    """
+                ).fetchone()
+                stored = json.loads(metadata)
+                legacy = "corpus:old-id"
+                stored["legacy_case_id"] = legacy
+                stored["source_id"] = legacy
+                body = {
+                    "kind": kind,
+                    "dataset": dataset,
+                    "split": split,
+                    "sample_rate": rate,
+                    "transcript": transcript,
+                    "speaker_id": speaker,
+                    "recipe": json.loads(recipe),
+                    "metadata": stored,
+                }
+                connection.execute(
+                    """
+                    UPDATE eval.cases
+                    SET metadata = ?::JSON, content_hash = ?
+                    WHERE case_id = ?
+                    """,
+                    [json.dumps(stored, sort_keys=True), case_content_hash(body), case_id],
+                )
+            finally:
+                connection.close()
+            again = db.import_manifest(manifest, "once", description="clean")
+            self.assertEqual(again.inserted, 0)
+            self.assertEqual(again.unchanged, 1)
+            self.assertEqual(again.set_status, "unchanged")
+            connection = _connect(database)
+            try:
+                kept = json.loads(
+                    connection.execute("SELECT metadata::VARCHAR FROM eval.cases").fetchone()[0]
+                )
+            finally:
+                connection.close()
+            self.assertEqual(kept["legacy_case_id"], "corpus:old-id")
+            self.assertEqual(kept["source_id"], "corpus:old-id")
 
     def test_manifest_round_trip_survives_deleting_the_file(self):
         with tempfile.TemporaryDirectory() as directory:

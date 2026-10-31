@@ -12,7 +12,7 @@
 - 損失の係数は公式 `train.py` のままである。振幅 MSE × 0.9、位相（瞬時・群遅延・瞬時角周波数）× 0.3、複素 MSE × 2 × 0.1、STFT 整合 MSE × 2 × 0.1、時間 L1 × 0.2、Discriminator を 1 に近づける MSE × 0.05。
 - Discriminator は実ペアを 1 へ、生成振幅を wideband PESQ の `(score - 1) / 3.5` へ近づける。PESQ が失敗したバッチは生成側の項を足さない。
 - 更新順は Discriminator、そのあと Generator。Generator の metric 項は Discriminator を通すが、Discriminator の重みは凍結する。
-- Optimizer は AdamW、学習率 `5e-4`、betas `(0.8, 0.99)`、weight decay `0.01`（公式が引数を省略したときの PyTorch 既定）。Scheduler は `ExponentialLR`、`gamma=0.99`。
+- Optimizer は AdamW、学習率 `5e-4`、betas `(0.8, 0.99)`、weight decay `0.01`（公式が引数を省略したときの PyTorch 既定）。Scheduler は `ExponentialLR`、`gamma=0.99` で、エポックの学習ステップが終わってから 1 回進む。
 - 入力は noisy のエネルギーで正規化し、その係数を教師にも掛ける。短い区間は 0 で `segment_size` まで埋める。正規化は切り出しの前である。
 - 複数 GPU は DistributedDataParallel。勾配を累積する間は最後の micro-batch 以外で `no_sync()` を使う。
 
@@ -22,8 +22,7 @@
 
 | 項目 | 公式 | ここ |
 |---|---|---|
-| バッチ | `batch_size` を GPU 数で整数除算し、余りは捨てて実効バッチが変わる | `global_batch_size = micro × world_size × accumulation` を厳密に保つ。割れない構成はエラー。micro は上限以下の最大の約数 |
-| Scheduler | エポックごと | Optimizer 更新ごと。Global step もその回数 |
+| バッチ | `batch_size` を GPU 数で整数除算し、余りは捨てて実効バッチが変わる | `global_batch_size = micro × world_size × accumulation` を厳密に保つ。割れない構成はエラー。micro は上限以下の最大の約数。Global step は Optimizer 更新の回数で、Scheduler とは別 |
 | 再現性 | `cudnn.benchmark = True`。seed は CUDA に一度置く | `deterministic: true` で `use_deterministic_algorithms(True)`、`cudnn.benchmark = False`、`cudnn.deterministic = True`、TF32 オフ。`CUBLAS_WORKSPACE_CONFIG=:4096:8` |
 | STFT の reflect | `torch.stft(center=True, pad_mode="reflect")` | 同じ値になる index による reflect のあと `center=False`。CUDA の `reflection_pad1d` 逆伝播に決定的実装が無い |
 | 全体最大 | `AdaptiveMaxPool2d(1)` | `amax`。順伝播の値は一致する。CUDA の `adaptive_max_pool2d_backward` に決定的実装が無い |
@@ -37,19 +36,26 @@
 
 モデル初期化の乱数、dropout の乱数、データの順列、切り出しは別々に種を付ける。切り出しと順列はグローバルな PyTorch 乱数を消費しない。
 
+## 検証と best checkpoint
+
+検証は rank 0 だけが、勾配を切って評価モードで計算する。終わったら学習モードに戻し、学習用の乱数状態は検証の前に保存して戻す。指標を出せないときは 0 ではなく `na` または `unavailable` と理由を残す。PESQ と STOI はレシピの教師波形を参照にする。
+
+公式は epoch 40 以降、検証 PESQ が改善したときだけ Generator を `g_best` に保存する。ここも `best_checkpoint_start_epoch`（既定 40）以降で、検証 PESQ の平均が改善したときだけ `best_generator.pt` を書く。中身は `generator` キーだけで、`load_enhancer()` が読む。ステップ、指標、設定は隣の `best_generator.json` に書く。再開用の `step_XXXXXXXX.pt` とは別である。
+
+学習ログは `checkpoint_dir/metrics.jsonl` である。先頭は run レコード、その後に step と validation のレコードが続く。再開時は、checkpoint の global step より後の行を消してから続ける。DuckDB には書かない。
+
 ## 未実装
 
 - TensorBoard。
-- 検証 PESQ が改善したときの `g_best` 保存（公式は epoch 40 以降）。検証ループは rank 0 で重みを更新せず、時間損失・振幅損失と、採点できた発話の正規化 PESQ を出す。
 - VoiceBank-DEMAND 全件での学習と、論文のスコア比較。
 - 公式 Discriminator checkpoint の読み込み検証。
 - 複数ノード。
-- 他の 6 モデルの学習、ASR の学習、ASR 特徴の損失。
-- 本番 `data/db/resource.duckdb` の置き換え。
+- 公式学習ステップとの数値比較（L3）。
+- ASR の学習、ASR 特徴の損失。
 
 ## 学習データ
 
-`data.database` はレシピスキーマの DuckDB である。`data/db/resource.duckdb` は名前でも拒否する。`train_set` と `validation_set` は別名にする。
+`data.database` はレシピスキーマの DuckDB である。`data/db/resource.duckdb` は評価セットの本番ファイルなので、名前でも拒否する。`train_set` と `validation_set` は別名にする。
 
 教師が `dry_clean` または `reverberant_clean` のケースだけを使う。`none` はエラーにする。`dry_clean` を残響教師の代わりには使わない。ケースの識別子はレシピの SHA-256 で、採番 ID は使わない。
 

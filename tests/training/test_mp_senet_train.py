@@ -1,6 +1,7 @@
 """MP-SENet training step, reproducibility, resume, and the inference path."""
 
 import hashlib
+import json
 import tempfile
 import unittest
 from pathlib import Path
@@ -263,9 +264,118 @@ class StepTests(unittest.TestCase):
         self.assertEqual(config["optimizer"]["betas"], [0.8, 0.99])
         self.assertEqual(config["optimizer"]["weight_decay"], 0.01)
         self.assertEqual(config["scheduler"]["gamma"], 0.99)
+        self.assertEqual(config["best_checkpoint_start_epoch"], 40)
         self.assertEqual(config["loss"], "official")
         self.assertEqual(config["model"]["n_fft"], 400)
         self.assertTrue(config["deterministic"])
+
+
+class ValidationTests(unittest.TestCase):
+    @classmethod
+    def setUpClass(cls):
+        set_determinism(True, cuda=False)
+
+    def test_short_audio_metrics_are_na_and_best_checkpoint_loads(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            config = tiny_config(
+                root / "ckpt",
+                max_steps=1,
+                global_batch_size=1,
+                micro_batch_size_per_gpu=1,
+                best_checkpoint_start_epoch=0,
+            )
+            dataset = paired_dataset(root / "wav", 1, seed=config["seed"])
+            task = MPSENetTask(config, torch.device("cpu"))
+            task.eval_mode()
+            report = task.validation_report(dataset.collate([0]))
+            self.assertEqual(report["pesq"]["status"], "na")
+            self.assertIsNone(report["pesq"]["value"])
+            self.assertEqual(report["stoi"]["status"], "na")
+            self.assertIsNone(report["stoi"]["value"])
+            self.assertEqual(report["losses"]["time"]["status"], "ok")
+            self.assertGreater(report["losses"]["time"]["value"], 0.0)
+            self.assertEqual(report["losses"]["discriminator"]["status"], "na")
+
+            scores = iter((2.5, 1.0))
+
+            def fake_report(_batch):
+                score = next(scores)
+                return {
+                    "losses": {
+                        "generator": {"status": "ok", "value": 1.0, "reason": None},
+                        "discriminator": {"status": "na", "value": None, "reason": "test"},
+                        "time": {"status": "ok", "value": 0.2, "reason": None},
+                    },
+                    "pesq": {"status": "ok", "value": score, "reason": None},
+                    "stoi": {"status": "na", "value": None, "reason": "short"},
+                }
+
+            task.validation_report = fake_report
+            validation = paired_dataset(
+                root / "wav",
+                1,
+                seed=config["seed"],
+                role="validation",
+                name="toy_valid",
+                training=False,
+            )
+            trainer = Trainer(
+                task,
+                plan_batches(1, 1, 1),
+                cpu_process(),
+                max_steps=2,
+                seed=config["seed"],
+                checkpoint_dir=root / "ckpt",
+                checkpoint_interval=1,
+                validation_interval=1,
+                config=config,
+            )
+            trainer.fit(dataset, validation)
+            best = json.loads((root / "ckpt" / "best_generator.json").read_text(encoding="utf-8"))
+            self.assertEqual(best["pesq"], 2.5)
+            self.assertEqual(best["global_step"], 1)
+            self.assertEqual(best["model"]["name"], "mp_senet")
+            enhancer = load_enhancer(
+                "mp_senet",
+                root / "ckpt" / "best_generator.pt",
+                device="cpu",
+                config=config["model"],
+            )
+            enhanced = enhancer.enhance(torch.randn(1000), 16000)
+            self.assertEqual(tuple(enhanced.shape), (1000,))
+            lines = [
+                json.loads(line)
+                for line in (root / "ckpt" / "metrics.jsonl").read_text(encoding="utf-8").splitlines()
+            ]
+            train_steps = [row["global_step"] for row in lines if row["type"] == "train"]
+            self.assertEqual(train_steps, [1, 2])
+            self.assertEqual(sum(row["type"] == "validation" for row in lines), 2)
+            self.assertEqual(lines[0]["type"], "run")
+            self.assertEqual(lines[0]["scheduler"], "epoch")
+
+            with (root / "ckpt" / "metrics.jsonl").open("a", encoding="utf-8") as handle:
+                handle.write(json.dumps({"type": "train", "global_step": 9}) + "\n")
+            resumed = MPSENetTask(config, torch.device("cpu"))
+            again = Trainer(
+                resumed,
+                plan_batches(1, 1, 1),
+                cpu_process(),
+                max_steps=3,
+                seed=config["seed"],
+                checkpoint_dir=root / "ckpt",
+                checkpoint_interval=1,
+                validation_interval=0,
+                config=config,
+            )
+            again.fit(dataset, resume=root / "ckpt" / "step_00000002.pt")
+            repeated = [
+                json.loads(line)
+                for line in (root / "ckpt" / "metrics.jsonl").read_text(encoding="utf-8").splitlines()
+            ]
+            self.assertEqual([row["global_step"] for row in repeated if row["type"] == "train"], [1, 2, 3])
+            self.assertNotIn(9, [row.get("global_step") for row in repeated])
+            self.assertEqual(again.best_pesq, 2.5)
 
 
 def _train(checkpoint_dir: Path, wav: Path, *, max_steps: int, resume: Path | None) -> MPSENetTask:

@@ -13,7 +13,7 @@
 - `data/db/resource.duckdb`、`data/corpora/`（外部の実データへのシンボリックリンク）、`data/checkpoints/`、`data/results/`、`data/staging/` は Git 管理外で、再取得・再生成が重い。削除・上書き・再作成をしない。`make db-ingest` は `corpora.audio_files` を DROP して作り直す。ユーザーが明示したときだけ、DB を退避してから実行する。
 - 生成条件の正本はレシピ JSON。`case_id` は正規化したレシピの SHA-256 で、レシピ自身には含めない。操作ごとの列を `eval.cases` に足さない。
 - 登録用データは DuckDB へ書く前に `data/staging/` へ保存する。これは再構築元であり、登録後に消す一時ファイルではない。
-- 現在の `data/db/resource.duckdb` は以前の `eval.cases` のままである。新しい `make db-init` は、そのスキーマを検知すると変更せず拒否する。本番ファイルの置き換えは、退避と検証のあと、ユーザーが明示したときだけ行う。
+- `data/db/resource.duckdb` はレシピスキーマである。旧固定列のファイルは `data/db/backups/resource-legacy-20261031.duckdb` に残してある。`make db-init` は `recipe_json` の無い `eval.cases` を見つけると、変更せず拒否する。
 - 評価の入力は DuckDB の名前付き評価セットだけ。評価の実行時に Manifest を読まない。
 - `na`・`unavailable`・skip を 0 として扱わない。部分音声に全文テキストを対応させた WER を計算しない。
 - CHiME3 の CH0 を clean 参照とみなさない。CHiME3 real と元 WSJ を、時間整合したペアとみなさない。

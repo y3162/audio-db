@@ -20,7 +20,7 @@ make db-ingest
 
 `make db-init` は既存の `corpora.audio_files` を変更しません。空の DB、またはレシピスキーマの DB に対して `eval` スキーマを作り、`configs/db/init.yaml` に書いた Manifest、コーパス選択、CHiME3 の公式アノテーション、MP-SENet の VoiceBank-DEMAND リストを登録します。同じコマンドを重ねて実行しても行は増えません。音声や Manifest が無い項目は、`required: false` なら理由を出してスキップします。内容が違う再登録はエラーになり、一部だけは残りません。
 
-現在の `data/db/resource.duckdb` は、レシピより前の `eval.cases` です。このファイルに対する `make db-init` はスキーマを検知して拒否し、中身は変えません。レシピスキーマのコピーは `data/db/rebuild-a.duckdb` と `data/db/rebuild-b.duckdb` です。置き換えは、退避したあとに明示してから行います。
+`data/db/resource.duckdb` はレシピスキーマです。切り替え前の固定列ファイルは `data/db/backups/resource-legacy-20261031.duckdb` です。SHA-256 は `f3fdcd89b34cf44eda9853e71278806c1ecc4042f03173821805be054b61d156` で、同じディレクトリの `resource-legacy-20261031.sha256` にも書いてあります。戻すときは、開いている接続が無いことを確認してから、このファイルを `data/db/resource.duckdb` へコピーします。`rebuild-a.duckdb` と `rebuild-b.duckdb` は切り替え前の再構築コピーです。`recipe_json` の無い `eval.cases` に対する `make db-init` は、スキーマを検知して拒否し、中身は変えません。
 
 ```bash
 make db-init
@@ -57,4 +57,4 @@ data/staging/
 
 `src.data.staging.register_staging` がファイルを検証してから、1 トランザクションで登録します。同じ内容は増えず、同じ ID で内容が違うとエラーになり、そのバッチは残りません。`rebuild_database` は新しいファイルを作り、既存ファイルは上書きしません。
 
-以前の `eval.cases` からの一度きりの変換は `python -m src.data.migrate_legacy` です。`resource.duckdb` は読み取り専用で開きます。実行時に旧列を読む互換層ではありません。
+以前の `eval.cases` からの一度きりの変換は `python -m src.data.migrate_legacy` です。出力先が既にあるときは上書きしません。実行時に旧列を読む互換層ではありません。本番の切り替えは済んでいます。

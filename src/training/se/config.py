@@ -23,6 +23,7 @@ _TOP = {
     "checkpoint_dir",
     "checkpoint_interval",
     "validation_interval",
+    "best_checkpoint_start_epoch",
     "optimizer",
     "scheduler",
     "model",
@@ -60,13 +61,18 @@ def load_training_config(path: str | Path) -> dict[str, Any]:
         "micro_batch_size_per_gpu": _int(raw["micro_batch_size_per_gpu"], "micro_batch_size_per_gpu"),
         "max_steps": _int(raw["max_steps"], "max_steps"),
         "segment_size": _int(raw["segment_size"], "segment_size"),
-        "loss": _choice(raw["loss"], "loss", {"official", "reconstruction"}),
+        "loss": _choice(raw["loss"], "loss", {"official", "reconstruction", "waveform_l1"}),
         "checkpoint_dir": str(raw["checkpoint_dir"]),
         "checkpoint_interval": _int(raw["checkpoint_interval"], "checkpoint_interval", minimum=0),
         "validation_interval": _int(raw["validation_interval"], "validation_interval", minimum=0),
+        "best_checkpoint_start_epoch": _int(
+            raw.get("best_checkpoint_start_epoch", 40),
+            "best_checkpoint_start_epoch",
+            minimum=0,
+        ),
         "optimizer": _optimizer(raw["optimizer"]),
         "scheduler": _scheduler(raw["scheduler"]),
-        "model": _model(raw["model"]),
+        "model": _model(raw["model"], raw["loss"]),
         "data": _data(raw["data"]),
         "runtime": _runtime(raw["runtime"]),
     }
@@ -103,12 +109,34 @@ def _scheduler(raw: Any) -> dict[str, Any]:
     return {"name": "exponential", "gamma": _float(raw["gamma"], "scheduler.gamma")}
 
 
-def _model(raw: Any) -> dict[str, Any]:
+def _model(raw: Any, loss: str) -> dict[str, Any]:
     if not isinstance(raw, dict):
         raise TrainingError("model must be a mapping")
-    _unknown(raw, _MODEL, "model")
-    if raw["name"] != "mp_senet":
-        raise TrainingError("model.name must be mp_senet")
+    name = raw.get("name")
+    if name == "mp_senet":
+        if loss == "waveform_l1":
+            raise TrainingError("mp_senet does not use loss waveform_l1")
+        _unknown(raw, _MODEL, "model")
+        return _mp_senet_model(raw)
+    if name != "tf_gridnet":
+        raise TrainingError(
+            "model.name must be mp_senet or tf_gridnet. Other SE models do not have a training task yet."
+        )
+    if loss != "waveform_l1":
+        raise TrainingError(f"{name} training currently accepts only loss waveform_l1")
+    allowed = {"name", "variant", "architecture", "stft"}
+    _unknown(raw, allowed, "model")
+    architecture = raw.get("architecture") or {}
+    stft = raw.get("stft") or {}
+    if not isinstance(architecture, dict) or not isinstance(stft, dict):
+        raise TrainingError("model.architecture and model.stft must be mappings")
+    variant = raw.get("variant")
+    if variant is not None and not isinstance(variant, str):
+        raise TrainingError("model.variant must be a string")
+    return {"name": name, "variant": variant, "architecture": dict(architecture), "stft": dict(stft)}
+
+
+def _mp_senet_model(raw: dict[str, Any]) -> dict[str, Any]:
     return {
         "name": "mp_senet",
         "dense_channel": _int(raw["dense_channel"], "model.dense_channel"),

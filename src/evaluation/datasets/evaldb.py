@@ -397,7 +397,7 @@ class EvaluationDB:
                 ],
             )
             return "inserted"
-        if row[0] != digest:
+        if row[0] != digest and not _same_registered_case(connection, case):
             source = case.metadata.get("source_id", case.case_id)
             raise DatasetError(f"case {case.case_id} ({source}) is already registered with different content")
         return "unchanged"
@@ -525,7 +525,9 @@ class EvaluationDB:
         noise_stored = self._store_audio(str(self.corpora_root / noise_row["path"]))
         rate = int(row["sample_rate"]) if row.get("sample_rate") is not None else _rate_of(self._absolute(clean_stored))
         snr = canonical_snr(snr_db)
-        mix_seed = derive_seed("eval-mix", seed, clean_stored, noise_stored, snr, "additive_noise", max_seconds)
+        # ``rms_v1`` is the historical seed input. Using the operation name would
+        # change noise crops that are already stored in production recipes.
+        mix_seed = derive_seed("eval-mix", seed, clean_stored, noise_stored, snr, "rms_v1", max_seconds)
         recipe = self._synthetic_recipe(
             clean_stored,
             noise_stored,
@@ -566,7 +568,7 @@ class EvaluationDB:
             raise DatasetError("hard clipping is not a recipe operation")
         supplied = metadata.get("mix_seed")
         if supplied is None:
-            mix_seed = derive_seed(*seed_parts, clean, noise, snr_db, "additive_noise")
+            mix_seed = derive_seed(*seed_parts, clean, noise, snr_db, protocol)
         elif isinstance(supplied, bool) or not isinstance(supplied, int):
             raise DatasetError("mix_seed must be an integer")
         else:
@@ -927,6 +929,57 @@ def _json_object(value: Any, where: str) -> dict[str, Any]:
     if not isinstance(value, dict):
         raise DatasetError(f"{where} must be an object")
     return value
+
+
+def _same_registered_case(connection, case: _Case) -> bool:
+    """True when the stored row matches this case aside from migration provenance.
+
+    The one-time conversion keeps the previous case id in ``legacy_case_id`` and
+    copies it into ``source_id``. A later ``db-init`` does not write that key
+    and uses the current source id. The recipe and the other fields must match.
+    The stored row is left as it is.
+    """
+    row = connection.execute(
+        """
+        SELECT kind, dataset, split, sample_rate, transcript, speaker_id,
+               recipe_json::VARCHAR, metadata::VARCHAR
+        FROM eval.cases WHERE case_id = ?
+        """,
+        [case.case_id],
+    ).fetchone()
+    if row is None:
+        return False
+    kind, dataset, split, sample_rate, transcript, speaker_id, recipe_json, metadata_json = row
+    speaker = None if speaker_id is None else str(speaker_id)
+    if (
+        kind != case.kind
+        or dataset != case.dataset
+        or split != case.split
+        or sample_rate != case.sample_rate
+        or transcript != case.transcript
+        or speaker != case.speaker_id
+    ):
+        return False
+    try:
+        stored_recipe = canonical_recipe(_json_object(recipe_json, "stored recipe"))
+    except Exception:
+        return False
+    if stored_recipe != case.recipe:
+        return False
+    stored_meta = _json_object(metadata_json, "stored metadata")
+    return _metadata_matches_registered(stored_meta, case.metadata)
+
+
+def _metadata_matches_registered(stored: dict[str, Any], incoming: dict[str, Any]) -> bool:
+    left = dict(stored)
+    legacy = left.pop("legacy_case_id", None)
+    right = dict(incoming)
+    if left == right:
+        return True
+    if legacy is None or left.get("source_id") != legacy:
+        return False
+    left["source_id"] = right.get("source_id")
+    return left == right
 
 
 def _frame_count(path: Path, max_seconds: float | None) -> tuple[int, int]:

@@ -68,7 +68,7 @@ db.create_set_from_corpus(
 
 同じレシピからは同じ `case_id` と、同じ波形が再生成されます。条件の形は [レシピ](docs/db/RECIPE.md)、取り出し方は [評価パイプライン](docs/evaluation/PIPELINE.md) と [DB の準備](docs/db/SETUP.md) です。
 
-現在の `data/db/resource.duckdb` はレシピ導入前のスキーマです。`make db-init` はこのファイルを変更しません。
+`data/db/resource.duckdb` はレシピスキーマです。`make db-init` は同じ内容を足さず、`corpora.audio_files` も変えません。切り替え前のファイルは `data/db/backups/resource-legacy-20261031.duckdb` です。
 
 ## 音声認識
 

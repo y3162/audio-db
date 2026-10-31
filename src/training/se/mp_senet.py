@@ -140,6 +140,66 @@ class MPSENetTask:
                 metrics["pesq_normalized"] = float(targets.mean())
         return metrics
 
+    def validation_report(self, batch: dict[str, Any]) -> dict[str, Any]:
+        """Losses and reference metrics for one validation batch.
+
+        The caller has already switched to eval mode and disabled gradients.
+        PESQ and STOI use the recipe teacher. A score that cannot be computed
+        is ``na`` or ``unavailable``, never zero.
+        """
+        clean, noisy = self._waveforms(batch)
+        with torch.no_grad():
+            parts = self._generate(clean, noisy, generator=unwrap(self.generator))
+        time = float(F.l1_loss(clean, parts["audio"]).detach())
+        magnitude = float(F.mse_loss(parts["clean_mag"], parts["mag"]).detach())
+        losses: dict[str, dict[str, Any]] = {
+            "time": _metric(time),
+            "magnitude": _metric(magnitude),
+        }
+        generator_value = time
+        if self.loss_name == "official" and self.discriminator is not None:
+            try:
+                _require_discriminator_resolution(parts["clean_mag"].shape[-2], parts["clean_mag"].shape[-1])
+                ones = torch.ones(clean.shape[0], device=self.device)
+                raw = unwrap(self.discriminator)
+                metric = raw(parts["clean_mag"], parts["mag_hat"])
+                detailed = generator_losses(
+                    parts["clean_mag"],
+                    parts["mag"],
+                    parts["clean_phase"],
+                    parts["phase"],
+                    parts["clean_complex"],
+                    parts["complex"],
+                    parts["recomputed_complex"],
+                    clean,
+                    parts["audio"],
+                    metric,
+                    ones,
+                )
+                generator_value = float(detailed["total"].detach())
+                for name in ("phase", "complex", "consistency", "metric"):
+                    losses[name] = _metric(float(detailed[name].detach()))
+                real = raw(parts["clean_mag"], parts["clean_mag"])
+                fake = raw(parts["clean_mag"], parts["mag_hat"])
+                targets = metric_targets(clean, parts["audio"], int(self.spec["sampling_rate"]))
+                losses["discriminator"] = _metric(float(discriminator_loss(real, fake, ones, targets).detach()))
+            except (TrainingError, RuntimeError, ValueError) as exc:
+                losses["discriminator"] = _metric(status="na", reason=str(exc))
+        else:
+            losses["discriminator"] = _metric(
+                status="na",
+                reason="reconstruction loss has no discriminator",
+            )
+        losses["generator"] = _metric(generator_value)
+        rate = int(self.spec["sampling_rate"])
+        pesq_scores = [_reference_score(row_clean, row_audio, rate, kind="pesq") for row_clean, row_audio in _rows(clean, parts["audio"])]
+        stoi_scores = [_reference_score(row_clean, row_audio, rate, kind="stoi") for row_clean, row_audio in _rows(clean, parts["audio"])]
+        return {
+            "losses": losses,
+            "pesq": _combine_scores(pesq_scores),
+            "stoi": _combine_scores(stoi_scores),
+        }
+
     def _reconstruction(self, batches: list[dict[str, Any]], accumulation: int) -> dict[str, float]:
         self.optim_g.zero_grad(set_to_none=True)
         total = 0.0
@@ -150,7 +210,8 @@ class MPSENetTask:
             backward(loss, [self.generator], last=index == len(batches) - 1)
             total += float(loss.detach()) * accumulation
         self.optim_g.step()
-        return {"time": total / len(batches)}
+        mean = total / len(batches)
+        return {"generator": mean, "time": mean}
 
     def _official(self, batches: list[dict[str, Any]], accumulation: int) -> dict[str, float]:
         if self.discriminator is None or self.optim_d is None:
@@ -176,7 +237,9 @@ class MPSENetTask:
         for parameter in frozen:
             parameter.requires_grad_(False)
         self.optim_g.zero_grad(set_to_none=True)
-        generator_total = 0.0
+        component_totals = {
+            name: 0.0 for name in ("total", "magnitude", "phase", "complex", "consistency", "metric", "time")
+        }
         try:
             for index, batch in enumerate(batches):
                 clean, noisy = self._waveforms(batch)
@@ -200,14 +263,22 @@ class MPSENetTask:
                 )
                 loss = losses["total"] / accumulation
                 backward(loss, [self.generator], last=index == len(batches) - 1)
-                generator_total += float(loss.detach()) * accumulation
+                for name, value in losses.items():
+                    component_totals[name] += float(value.detach())
         finally:
             for parameter in frozen:
                 parameter.requires_grad_(True)
         self.optim_g.step()
+        count = len(batches)
         return {
-            "generator": generator_total / len(batches),
-            "discriminator": discriminator_total / len(batches),
+            "generator": component_totals["total"] / count,
+            "discriminator": discriminator_total / count,
+            "magnitude": component_totals["magnitude"] / count,
+            "phase": component_totals["phase"] / count,
+            "complex": component_totals["complex"] / count,
+            "consistency": component_totals["consistency"] / count,
+            "metric": component_totals["metric"] / count,
+            "time": component_totals["time"] / count,
         }
 
     def _waveforms(self, batch: dict[str, Any]) -> tuple[torch.Tensor, torch.Tensor]:
@@ -269,3 +340,41 @@ def _require_discriminator_resolution(n_freq: int, n_time: int) -> None:
                 "official loss needs a larger spectrogram so the metric discriminator "
                 "InstanceNorm sees more than one spatial location. Increase segment_size or n_fft."
             )
+
+
+def _metric(value: float | None = None, *, status: str = "ok", reason: str | None = None) -> dict[str, Any]:
+    if status == "ok" and (value is None or value != value or value in (float("inf"), float("-inf"))):
+        return {"status": "na", "value": None, "reason": "non-finite loss"}
+    return {"status": status, "value": value, "reason": reason}
+
+
+def _rows(clean: torch.Tensor, audio: torch.Tensor):
+    return zip(clean.detach().cpu(), audio.detach().cpu(), strict=True)
+
+
+def _reference_score(reference: torch.Tensor, estimate: torch.Tensor, sample_rate: int, *, kind: str) -> dict[str, Any]:
+    if kind == "pesq":
+        from src.evaluation.metrics.pesq import score_pesq
+
+        result = score_pesq(reference, estimate, sample_rate)
+    else:
+        from src.evaluation.metrics.stoi import score_stoi
+
+        result = score_stoi(reference, estimate, sample_rate, extended=False)
+    status = result["status"]
+    if status == "ok":
+        return _metric(float(result["value"]))
+    if status == "unavailable":
+        return _metric(status="unavailable", reason=str(result["reason"]))
+    return _metric(status="na", reason=str(result.get("reason") or status))
+
+
+def _combine_scores(scores: list[dict[str, Any]]) -> dict[str, Any]:
+    if any(item["status"] == "unavailable" for item in scores):
+        reason = next(item["reason"] for item in scores if item["status"] == "unavailable")
+        return {"status": "unavailable", "value": None, "reason": reason, "count": 0}
+    values = [float(item["value"]) for item in scores if item["status"] == "ok" and item["value"] is not None]
+    if values:
+        return {"status": "ok", "value": sum(values) / len(values), "reason": None, "count": len(values)}
+    reason = next((item["reason"] for item in scores if item["reason"]), "no score")
+    return {"status": "na", "value": None, "reason": reason, "count": 0}

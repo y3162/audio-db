@@ -8,7 +8,7 @@ DuckDB は `data/db/resource.duckdb`（`src/data/constants.py`）。
 
 - `corpora.audio_files`: `make db-ingest` が作る。`path` が主キーで、値は `data/corpora` からの相対パス（コーパス名を含む）。採番した ID は無い。
 - `eval.cases` / `eval.sets` / `eval.set_items` / `eval.runs` / `eval.results`: 新しいスキーマを `make db-init` が空の DB に作る。`eval.cases` の生成条件は `recipe_json` だけに置き、SNR や切り出し位置の列は持たない。`corpora.audio_files` への外部キーは無く、レシピ内の相対パスと metadata の `corpus_path` で対応する。`case_id` は正規化レシピの SHA-256 で、採番や rowid ではない。
-- 現在の `data/db/resource.duckdb` は、このレシピスキーマへまだ切り替わっていない。`recipe_json` の無い `eval.cases` を見つけると、`make db-init` は何も変更せず拒否する。検証用の再構築先は `data/db/rebuild-a.duckdb` と `data/db/rebuild-b.duckdb`。
+- `data/db/resource.duckdb` はこのレシピスキーマである。旧固定列のファイルは `data/db/backups/resource-legacy-20261031.duckdb`（SHA-256 `f3fdcd89b34cf44eda9853e71278806c1ecc4042f03173821805be054b61d156`）にある。`recipe_json` の無い `eval.cases` を見つけると、`make db-init` は何も変更せず拒否する。`data/db/rebuild-a.duckdb` と `data/db/rebuild-b.duckdb` は切り替え前の再構築コピーで、本番と同じ内容である。
 - DB ファイル名の stem を `eval` にしない。DuckDB のカタログ名と衝突して `eval.cases` が曖昧になる。
 
 ## `make db-init` と `make db-ingest`
@@ -24,7 +24,7 @@ DuckDB は `data/db/resource.duckdb`（`src/data/constants.py`）。
 `make db-ingest` の危険:
 
 - 実行した時点で既存の `corpora.audio_files` が消える。ユーザーが明示したときだけ、`data/db/resource.duckdb` を退避してから実行する。
-- `eval` スキーマは消えない。本番の `resource.duckdb` は旧スキーマなので、そこへの `db-init` は変更せず拒否する。レシピスキーマでは、相対パスが変わると別の `case_id` になり、ファイル内容が変わると SHA-256 の不一致で再生を拒否する。
+- `eval` スキーマは消えない。レシピスキーマでは、相対パスが変わると別の `case_id` になり、ファイル内容が変わると SHA-256 の不一致で再生を拒否する。`recipe_json` の無い `eval.cases` への `db-init` は変更せず拒否する。
 - `db-init` から `db-ingest` を呼ばない。
 
 ## 評価セット
@@ -44,7 +44,7 @@ DuckDB は `data/db/resource.duckdb`（`src/data/constants.py`）。
 - `data/staging/` が再構築元である。`metadata.json`、`corpora/audio_files.parquet`、`evaluation/cases.parquet`、`evaluation/sets.parquet`、`evaluation/set_items.parquet`、`results/runs.parquet`、`results/results.parquet`。Git 管理外。DB へ登録したあとも消さない。バックアップは DB ファイルと一緒に取る。
 - 登録は `src.data.staging.register_staging`。検証してから 1 トランザクションで書く。同じ内容の再登録は増えない。同じ ID で内容が違うとエラーになり、そのバッチは残らない。不完全なファイルは DB を作る前に拒否する。
 - 評価ランの一次記録は従来どおり `data/results/se-evaluation/<run_id>/` の `config.json` と `results.jsonl` である。DuckDB への登録は `register_run` で、そのあと行う。既存ランは自動では登録しない。
-- `src.data.migrate_legacy` は、以前の `eval.cases` を一度だけレシピへ写す。実行時の互換読み取りではない。`resource.duckdb` は読み取り専用で開き、`data/staging/` と `data/db/rebuild-a.duckdb`、`data/db/rebuild-b.duckdb` を作る。旧 `case_id` は metadata の `legacy_case_id` に残り、新しい `case_id` はレシピハッシュである。
+- `src.data.migrate_legacy` は、以前の `eval.cases` を一度だけレシピへ写す。実行時の互換読み取りではない。出力先が既にあるときは上書きしない。本番は切り替え済みなので、このコマンドを再実行する必要はない。旧 `case_id` は metadata の `legacy_case_id` に残り、新しい `case_id` はレシピハッシュである。
 
 ## 学習に使うセット
 
@@ -53,7 +53,7 @@ DuckDB は `data/db/resource.duckdb`（`src/data/constants.py`）。
 - 教師はレシピの `output.reference` だけである。`dry_clean` と `reverberant_clean` を取り違えない。`none` のケースは学習に入れず、エラーにする。
 - サンプルの識別子は `case_id`（レシピの SHA-256）である。rowid や登録順の採番は学習の並びに使わない。
 - `configs/db/init.yaml` の評価セット（LibriSpeech test-clean、CHiME3 et05 を含む）は学習にも検証にも使わない。
-- 学習は `data/db/resource.duckdb` を開かない。接続確認は `data/db/rebuild-a.duckdb` を読み取り専用で開く。
+- 学習は `data/db/resource.duckdb` を開かない。このファイルは評価用の名前付きセットを持つ本番 DB だからである。接続確認はレシピスキーマの別ファイル（`data/db/rebuild-a.duckdb` でもよい）を読み取り専用で開く。
 
 ## 指標の欠損と有効性
 
@@ -80,7 +80,7 @@ DuckDB は `data/db/resource.duckdb`（`src/data/constants.py`）。
 | `data/checkpoints/` | 配布チェックポイント。取得が重い。削除・上書きをしない。ライブラリのコードにはパスを固定せず、呼び出し側が渡す。設定やテストにある `data/checkpoints/...` は例で、無ければテストは skip する |
 | `data/results/` | `se-evaluation/<run_id>/` は評価結果の一次記録（`config.json` と `results.jsonl`）。`se-repro/` は公式再現の記録とビルドキャッシュ。新しい実行は新しい `run_id`。既存の run ディレクトリは `--resume` なしでは使えない。DuckDB へ載せるときは、このディレクトリを `register_run` で登録する |
 | `data/staging/` | DB の再構築元。登録後も残す。Git 管理外 |
-| `data/db/` | `resource.duckdb` は現行の本番ファイルで、まだ旧 `eval.cases`。`rebuild-a.duckdb` と `rebuild-b.duckdb` はレシピスキーマの検証用コピー |
+| `data/db/` | `resource.duckdb` はレシピスキーマの本番ファイル。`backups/resource-legacy-20261031.duckdb` は切り替え前の固定列スキーマ。`rebuild-a.duckdb` と `rebuild-b.duckdb` は切り替え前に作った同じ内容の再構築コピー |
 
 ## DB の書き込みと保護
 
