@@ -13,8 +13,8 @@
 |---|---|---|
 | `src/se/` | 独立した SE モデルと共通 API。MP-SENet、TF-GridNet、DeepFilterNet3、MossFormerGAN、SEMamba++、UniPASE、StuPASE | `load_enhancer()`、`build_model()` |
 | `src/asr/` | 独立した ASR モデルと共通 API。Parakeet、Whisper、Wav2Vec2、HuBERT、WavLM | `load_recognizer()` → `transcribe()` |
-| `src/evaluation/` | 評価パイプライン（入力 → 必要なら混合 → SE → ASR → 指標 → 結果保存）。SE と ASR は共通 API だけを呼ぶ | `python -m src.evaluation.cli` |
-| `src/data/` | コーパスの走査と DuckDB（`corpora`・`eval` スキーマ）の管理 | `make db-ingest`、`make db-init` |
+| `src/evaluation/` | 評価パイプライン（入力 → レシピがあれば波形生成 → SE → ASR → 指標 → 結果保存）。SE と ASR は共通 API だけを呼ぶ | `python -m src.evaluation.cli` |
+| `src/data/` | コーパスの走査、レシピの検証とケース ID、永続ステージング、DuckDB（`corpora`・`eval` スキーマ）の管理 | `make db-ingest`、`make db-init` |
 
 モデルの一覧と検証状況は `docs/se/`、`docs/asr/MODELS.md`、評価の仕様は `docs/evaluation/PIPELINE.md`。
 
@@ -23,8 +23,8 @@
 現状（import で確認）:
 
 - `src/se/` と `src/asr/` は、他の `src/` モジュールを import しない。`src/asr` は `tests/asr/test_independence.py` が、evaluation・se・モデルライブラリを import しないことを確認している。
-- `src/evaluation/` は `src/se`、`src/asr`（遅延 import）、`src/data`（列定義・スキーマ）を使う。
-- `src/data/` から `src/evaluation/` への依存もある。`src/data/init_eval.py` と注釈インポータ（`src/data/corpora/chime3_annotations.py`、`src/data/corpora/mpsenet_filelist.py`）が `EvaluationDB` と `AudioSample` を使う。data と evaluation は相互依存になっている。
+- `src/evaluation/` は `src/se`、`src/asr`（遅延 import）、`src/data`（列定義・スキーマ・レシピ検証）を使う。波形生成は `src/evaluation/audio/render.py` にあり、`src/data/` はそれを import しない。
+- `src/data/` から `src/evaluation/` への依存もある。`src/data/init_eval.py` と注釈インポータ（`src/data/corpora/chime3_annotations.py`、`src/data/corpora/mpsenet_filelist.py`）が `EvaluationDB` と `AudioSample` を使う。data と evaluation は相互依存のままである。レシピの検証を `src/data/recipe.py` に置いたので、この循環は広がっていない。
 
 方針:
 

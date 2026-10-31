@@ -12,7 +12,7 @@ src/evaluation/
 ├── config.py              # 設定の検証
 ├── pipeline.py            # 段階の接続
 ├── datasets/              # DuckDB の評価セット / synthetic
-├── audio/                 # 読み込みと rms_v1 混合
+├── audio/                 # 読み込み、レシピの波形生成、平均二乗 SNR
 ├── models/                # SE は src.se、ASR は src.asr を呼ぶ
 ├── metrics/               # WER / PESQ / STOI / ESTOI / SI-SDR
 └── results/               # JSONL・CSV・再開用のレコード
@@ -54,7 +54,7 @@ ASR が未導入でも SE までは実行できます。指標ライブラリが
 | clean | クリーン音声 |
 | noisy | 既存の雑音付き音声 |
 | paired | clean と noisy の対応 |
-| synthetic | clean と noise から `rms_v1` で作る音声 |
+| synthetic | レシピの操作列から作る音声 |
 
 ```yaml
 dataset:
@@ -140,7 +140,7 @@ db.create_set_from_corpus(
 )
 ```
 
-`role: synthetic` は clean ごとに雑音を 1 つ割り当て、SNR、seed、`rms_v1`、clean の先頭秒数、雑音の切り出し位置を case に保存します。雑音の対応はセットの seed と path から決まるので、実験の seed では変わりません。サンプリング周波数が違うときは切り出し位置を保存せず、同じ seed で再計算します。
+`role: synthetic` は clean ごとに雑音を 1 つ割り当て、加法ノイズのレシピを case に保存します。SNR、seed、clean の先頭秒数、雑音の切り出し位置はレシピの中だけにあります。切り出し位置は出力サンプリングレートでのサンプル番号で、サンプリング周波数が違っても登録時に確定します。再生時に seed から計算し直すことはしません。雑音の対応はセットの seed と path から決まるので、実験の seed では変わりません。`prevent_clip: true` は `peak_normalize`（limit 0.99）になります。`hard_clip` はレシピにしません。
 
 ```python
 db.create_set_from_corpus(
@@ -171,18 +171,19 @@ db.create_set_from_corpus(
 - セットが未登録、またはクエリが 0 件: エラー。
 - 行はあるが音声ファイルが無い: その発話は `skipped`。
 
-## 雑音混合（rms_v1）
+## レシピからの波形
 
-VoiceBank-DEMAND とも URGENT とも同じ手順ではありません。活性音声レベル（ITU-T P.56）も使いません。
+名前付きセットの発話は、保存されたレシピから作ります。操作の意味と参照の選び方は [レシピ](../db/RECIPE.md) です。実験の seed ではレシピは変わりません。
 
-定義は、リサンプリングと長さ合わせのあと、成分の平均二乗電力の比です。
+名前付きセットを使わないその場の混合だけが、次の平均二乗の定義を設定の `mixing` から直接呼びます。比較実験では使いません。VoiceBank-DEMAND とも URGENT とも同じ手順ではなく、活性音声レベル（ITU-T P.56）も使いません。
+
+定義は、リサンプリングと長さ合わせのあと、成分の平均二乗電力の比です。`additive_noise` バージョン 1 も同じ定義です。
 
 ```text
 SNR_dB = 10 * log10(mean(clean^2) / mean(scaled_noise^2))
 ```
 
-- 雑音が短ければ繰り返してから、seed で開始位置を決めて切り出します。
-- 雑音が長ければ、同じ方法で開始位置を決めます。seed は SHA-256 から作り、Python の `hash()` は使いません。
+- 雑音が短ければ繰り返してから切り出します。レシピでは、登録時に保存した `noise_start`（出力サンプリングレートのサンプル位置）を使います。その場の混合だけが、SHA-256 の seed から開始位置を決めます。Python の `hash()` は使いません。
 - 無音を含む区間も平均に入れます。VAD では切りません。
 - clean 全体の電力が `1e-12` 未満なら混合せず、発話は `clean_has_zero_energy` で skip します。
 - 雑音の電力が 0 ならエラーです。SNR が有限でない値もエラーです。

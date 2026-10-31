@@ -1,9 +1,9 @@
 """Named evaluation sets stored in DuckDB.
 
 Manifests and corpus queries are import paths. After registration, samples are
-read from the ``eval`` schema. Audio paths are stored relative to the database
-file so the checkout can move. This module does not create or modify
-``corpora.audio_files``.
+read from the ``eval`` schema. Generation is described only by the recipe JSON.
+Audio paths are stored relative to the database file. This module does not
+create or modify ``corpora.audio_files``.
 """
 
 from __future__ import annotations
@@ -11,17 +11,25 @@ from __future__ import annotations
 import json
 import os
 import re
-from dataclasses import asdict, dataclass, field
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
 from src.data.db.eval_schema import create_eval_schema
 from src.data.models.audio_file import AUDIO_FILE_COLUMNS
-from src.evaluation.audio.mixing import PROTOCOL_RMS_V1, crop_start
+from src.data.recipe import (
+    canonical_recipe,
+    case_content_hash,
+    case_id_for,
+    sha256_file,
+)
+from src.data.recipe import json_hash as recipe_json_hash
+from src.evaluation.audio.mixing import PEAK_LIMIT
+from src.evaluation.audio.render import prepare_noise_start
 from src.evaluation.datasets.duckdb import fetch_audio_files
 from src.evaluation.datasets.manifest import load_manifest
 from src.evaluation.errors import DatasetError
-from src.evaluation.identity import canonical_snr, derive_seed, sha256_json
+from src.evaluation.identity import canonical_snr, derive_seed
 from src.evaluation.sample import AudioSample
 
 SET_NAME_RE = re.compile(r"[A-Za-z0-9._-]{1,128}")
@@ -32,7 +40,7 @@ _WRITE_SQL = re.compile(
     re.IGNORECASE,
 )
 _ORDER_BY = re.compile(r"\border\s+by\b", re.IGNORECASE)
-_MIX_METADATA = ("mix_seed", "mix_protocol", "prevent_clip", "hard_clip", "max_seconds", "noise_start")
+_BUILDER_KEYS = {"mix_seed", "mix_protocol", "prevent_clip", "hard_clip", "max_seconds", "noise_start"}
 
 CASE_COLUMNS = (
     "case_id",
@@ -42,20 +50,9 @@ CASE_COLUMNS = (
     "sample_rate",
     "transcript",
     "speaker_id",
-    "snr_db",
-    "audio_path",
-    "clean_path",
-    "noisy_path",
-    "noise_path",
-    "corpus_path",
-    "mix_protocol",
-    "mix_seed",
-    "noise_start",
-    "max_seconds",
-    "prevent_clip",
-    "hard_clip",
-    "metadata",
+    "recipe_json",
     "content_hash",
+    "metadata",
 )
 
 
@@ -96,22 +93,22 @@ class _Case:
     sample_rate: int | None = None
     transcript: str | None = None
     speaker_id: str | None = None
-    snr_db: float | None = None
-    audio_path: str | None = None
-    clean_path: str | None = None
-    noisy_path: str | None = None
-    noise_path: str | None = None
-    corpus_path: str | None = None
-    mix_protocol: str | None = None
-    mix_seed: int | None = None
-    noise_start: int | None = None
-    max_seconds: float | None = None
-    prevent_clip: bool | None = None
-    hard_clip: bool | None = None
+    recipe: dict[str, Any] = field(default_factory=dict)
     metadata: dict[str, Any] = field(default_factory=dict)
 
     def content_hash(self) -> str:
-        return sha256_json(asdict(self))
+        return case_content_hash(
+            {
+                "kind": self.kind,
+                "dataset": self.dataset,
+                "split": self.split,
+                "sample_rate": self.sample_rate,
+                "transcript": self.transcript,
+                "speaker_id": self.speaker_id,
+                "recipe": self.recipe,
+                "metadata": self.metadata,
+            }
+        )
 
 
 class EvaluationDB:
@@ -132,7 +129,10 @@ class EvaluationDB:
         self.path.parent.mkdir(parents=True, exist_ok=True)
         connection = self._connect()
         try:
-            create_eval_schema(connection)
+            try:
+                create_eval_schema(connection)
+            except ValueError as exc:
+                raise DatasetError(str(exc)) from exc
         finally:
             connection.close()
 
@@ -205,6 +205,38 @@ class EvaluationDB:
         cases = [self._case_from_manifest(sample) for sample in samples]
         return self._register(cases, set_name, description)
 
+    def register_recipe(
+        self,
+        recipe: dict[str, Any],
+        set_name: str,
+        *,
+        dataset: str,
+        kind: str | None = None,
+        split: str | None = None,
+        transcript: str | None = None,
+        speaker_id: str | None = None,
+        source_id: str | None = None,
+        metadata: dict[str, Any] | None = None,
+        description: str | None = None,
+    ) -> RegistrationReport:
+        """Register one case from a recipe document."""
+        try:
+            document = canonical_recipe(recipe)
+        except ValueError as exc:
+            raise DatasetError(str(exc)) from exc
+        self._check_source_files(document)
+        case = self._make_case(
+            kind=kind or _kind_for_recipe(document),
+            dataset=dataset,
+            split=split,
+            transcript=transcript,
+            speaker_id=speaker_id,
+            recipe=document,
+            metadata=dict(metadata or {}),
+            source_id=source_id or case_id_for(document),
+        )
+        return self._register([case], set_name, description)
+
     def create_set_from_corpus(
         self,
         name: str,
@@ -220,7 +252,7 @@ class EvaluationDB:
         noise_limit: int | None = None,
         snr_db: float | None = None,
         seed: int = 0,
-        protocol: str = PROTOCOL_RMS_V1,
+        protocol: str = "rms_v1",
         max_seconds: float | None = None,
         prevent_clip: bool = False,
         hard_clip: bool = False,
@@ -233,10 +265,12 @@ class EvaluationDB:
             raise DatasetError("pass filters or query, not both")
         if noise_query and noise_filters:
             raise DatasetError("pass noise_filters or noise_query, not both")
-        if protocol != PROTOCOL_RMS_V1:
+        if protocol != "rms_v1":
             raise DatasetError(f"unknown mixing protocol: {protocol}")
         if isinstance(seed, bool) or not isinstance(seed, int):
             raise DatasetError("seed must be an integer")
+        if hard_clip:
+            raise DatasetError("hard clipping is not a recipe operation")
         clean_limit = _optional_seconds(max_seconds, "max_seconds")
         self.ensure_schema()
         connection = self._connect(read_only=True)
@@ -264,10 +298,8 @@ class EvaluationDB:
                         noises,
                         snr_db=float(snr_db),
                         seed=seed,
-                        protocol=protocol,
                         max_seconds=clean_limit,
                         prevent_clip=bool(prevent_clip),
-                        hard_clip=bool(hard_clip),
                     )
                     for row in rows
                 ]
@@ -306,12 +338,12 @@ class EvaluationDB:
             raise DatasetError(f"evaluation set not found: {name}")
         return EvaluationDataset(name, [self._sample_from_row(row) for row in rows])
 
-    def _register(
-        self,
-        cases: list[_Case],
-        set_name: str,
-        description: str | None,
-    ) -> RegistrationReport:
+    def export_staging(self, staging: str | Path):
+        from src.data.staging import export_database
+
+        return export_database(self.path, staging)
+
+    def _register(self, cases: list[_Case], set_name: str, description: str | None) -> RegistrationReport:
         _check_set_name(set_name)
         if not cases:
             raise DatasetError(f"evaluation set {set_name} has no cases")
@@ -346,25 +378,40 @@ class EvaluationDB:
             [case.case_id],
         ).fetchone()
         if row is None:
-            payload = asdict(case)
-            payload["metadata"] = json.dumps(case.metadata, sort_keys=True, ensure_ascii=False)
-            payload["content_hash"] = digest
-            placeholders = ", ".join("?" for _ in CASE_COLUMNS)
             connection.execute(
-                f"INSERT INTO eval.cases ({', '.join(CASE_COLUMNS)}) VALUES ({placeholders})",
-                [payload[name] for name in CASE_COLUMNS],
+                f"""
+                INSERT INTO eval.cases ({", ".join(CASE_COLUMNS)})
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?::JSON, ?, ?::JSON)
+                """,
+                [
+                    case.case_id,
+                    case.kind,
+                    case.dataset,
+                    case.split,
+                    case.sample_rate,
+                    case.transcript,
+                    case.speaker_id,
+                    json.dumps(case.recipe, ensure_ascii=False, sort_keys=True),
+                    digest,
+                    json.dumps(case.metadata, ensure_ascii=False, sort_keys=True),
+                ],
             )
             return "inserted"
         if row[0] != digest:
-            raise DatasetError(f"case {case.case_id} is already registered with different content")
+            source = case.metadata.get("source_id", case.case_id)
+            raise DatasetError(f"case {case.case_id} ({source}) is already registered with different content")
         return "unchanged"
 
     def _put_set(self, connection, name: str, description: str | None, case_ids: list[str]) -> str:
-        existing = connection.execute("SELECT 1 FROM eval.sets WHERE name = ?", [name]).fetchone()
+        digest = recipe_json_hash({"case_ids": case_ids, "description": description})
+        existing = connection.execute(
+            "SELECT content_hash FROM eval.sets WHERE name = ?",
+            [name],
+        ).fetchone()
         if existing is None:
             connection.execute(
-                "INSERT INTO eval.sets (name, description) VALUES (?, ?)",
-                [name, description],
+                "INSERT INTO eval.sets (name, description, content_hash) VALUES (?, ?, ?)",
+                [name, description, digest],
             )
             for position, case_id in enumerate(case_ids):
                 connection.execute(
@@ -372,28 +419,24 @@ class EvaluationDB:
                     [name, position, case_id],
                 )
             return "created"
-        rows = connection.execute(
-            "SELECT case_id FROM eval.set_items WHERE set_name = ? ORDER BY position",
-            [name],
-        ).fetchall()
-        current = [item[0] for item in rows]
-        if current != case_ids:
+        if existing[0] != digest:
             raise DatasetError(
-                f"evaluation set {name} is already registered with different cases or order"
+                f"evaluation set {name} is already registered with different cases, order, or description"
             )
         return "unchanged"
 
     def _case_from_manifest(self, sample: AudioSample) -> _Case:
         kind = _manifest_kind(sample)
-        metadata = {key: value for key, value in sample.metadata.items() if key not in _MIX_METADATA}
+        metadata = {key: value for key, value in sample.metadata.items() if key not in _BUILDER_KEYS}
         clean = self._store_audio(sample.clean_path)
         noisy = self._store_audio(sample.noisy_path)
         noise = self._store_audio(sample.noise_path)
         audio = self._store_audio(sample.audio_path)
         if kind == "clean" and clean is None:
             clean = audio
-            audio = None
         corpus_path = self._corpus_key(clean or noisy or audio or noise)
+        if corpus_path:
+            metadata["corpus_path"] = corpus_path
         corpus_row = self._corpus_row(corpus_path)
         transcript = sample.transcript
         speaker_id = sample.speaker_id
@@ -405,44 +448,65 @@ class EvaluationDB:
                 speaker_id = corpus_row.get("speaker_id")
             if sample_rate is None and corpus_row.get("sample_rate") is not None:
                 sample_rate = int(corpus_row["sample_rate"])
-        case = _Case(
-            case_id=sample.utterance_id,
+        primary = clean or noisy or audio
+        if sample_rate is None:
+            sample_rate = _rate_of(self._absolute(primary))
+        else:
+            file_rate = _rate_of(self._absolute(primary))
+            if int(sample_rate) != file_rate:
+                raise DatasetError(
+                    f"{sample.utterance_id} sample_rate {sample_rate} does not match the file ({file_rate})"
+                )
+            sample_rate = int(sample_rate)
+        if kind == "synthetic":
+            recipe = self._synthetic_recipe(
+                clean,
+                noise,
+                snr_db=canonical_snr(sample.snr_db),
+                metadata=sample.metadata,
+                seed_parts=("manifest", sample.utterance_id),
+                sample_rate=sample_rate,
+            )
+        elif kind == "paired":
+            recipe = self._recorded_recipe(sample_rate, "dry_clean", clean=clean, noisy=noisy)
+        elif kind == "noisy":
+            recipe = self._recorded_recipe(sample_rate, "none", noisy=noisy)
+        else:
+            recipe = self._recorded_recipe(sample_rate, "dry_clean", clean=clean)
+        return self._make_case(
             kind=kind,
             dataset=sample.dataset,
             split=sample.split,
-            sample_rate=sample_rate,
             transcript=transcript,
             speaker_id=None if speaker_id is None else str(speaker_id),
-            snr_db=None if kind != "synthetic" else canonical_snr(sample.snr_db),
-            audio_path=audio,
-            clean_path=clean,
-            noisy_path=noisy,
-            noise_path=noise if kind == "synthetic" else None,
-            corpus_path=corpus_path,
+            recipe=recipe,
             metadata=metadata,
+            source_id=sample.utterance_id,
+            sample_rate=sample_rate,
         )
-        if kind == "synthetic":
-            self._attach_mix(case, sample.metadata, seed_parts=("manifest", sample.utterance_id))
-        elif case.sample_rate is None:
-            case.sample_rate = _rate_of(self._absolute(clean or noisy or audio))
-        return case
 
     def _case_from_corpus_row(self, row: dict[str, Any], role: str) -> _Case:
         stored = self._store_audio(str(self.corpora_root / row["path"]))
         kind = "noisy" if role == "noisy" else "clean"
-        metadata = _corpus_metadata(row)
-        return _Case(
-            case_id=f"corpus:{row['path']}",
+        rate = int(row["sample_rate"]) if row.get("sample_rate") is not None else _rate_of(self._absolute(stored))
+        reference = "none" if kind == "noisy" else "dry_clean"
+        recipe = self._recorded_recipe(
+            rate,
+            reference,
+            clean=stored if kind == "clean" else None,
+            noisy=stored if kind == "noisy" else None,
+        )
+        return self._make_case(
             kind=kind,
             dataset=row["corpus"],
             split=row.get("subset") or row.get("eval_split"),
-            sample_rate=int(row["sample_rate"]) if row.get("sample_rate") is not None else None,
             transcript=row.get("transcript"),
-            speaker_id=row.get("speaker_id"),
-            clean_path=stored if kind == "clean" else None,
-            noisy_path=stored if kind == "noisy" else None,
+            speaker_id=None if row.get("speaker_id") is None else str(row["speaker_id"]),
+            recipe=recipe,
+            metadata=_corpus_metadata(row),
+            source_id=row["path"],
+            sample_rate=rate,
             corpus_path=row["path"],
-            metadata=metadata,
         )
 
     def _synthetic_corpus_case(
@@ -452,77 +516,170 @@ class EvaluationDB:
         *,
         snr_db: float,
         seed: int,
-        protocol: str,
         max_seconds: float | None,
         prevent_clip: bool,
-        hard_clip: bool,
     ) -> _Case:
         offset = derive_seed(seed, "noise-pair", row["path"]) % len(noises)
         noise_row = noises[offset]
         clean_stored = self._store_audio(str(self.corpora_root / row["path"]))
         noise_stored = self._store_audio(str(self.corpora_root / noise_row["path"]))
+        rate = int(row["sample_rate"]) if row.get("sample_rate") is not None else _rate_of(self._absolute(clean_stored))
         snr = canonical_snr(snr_db)
-        mix_seed = derive_seed(
-            "eval-mix",
-            seed,
+        mix_seed = derive_seed("eval-mix", seed, clean_stored, noise_stored, snr, "additive_noise", max_seconds)
+        recipe = self._synthetic_recipe(
             clean_stored,
             noise_stored,
-            snr,
-            protocol,
-            max_seconds,
+            snr_db=snr,
+            metadata={"mix_seed": mix_seed, "max_seconds": max_seconds, "prevent_clip": prevent_clip},
+            seed_parts=(),
+            sample_rate=rate,
         )
-        case = _Case(
-            case_id=(
-                f"synthetic:{row['path']}|{noise_row['path']}|{snr}|{mix_seed}|{protocol}"
-            ),
+        return self._make_case(
             kind="synthetic",
             dataset=row["corpus"],
             split=row.get("subset") or row.get("eval_split"),
-            sample_rate=int(row["sample_rate"]) if row.get("sample_rate") is not None else None,
             transcript=row.get("transcript"),
-            speaker_id=row.get("speaker_id"),
-            snr_db=snr,
-            clean_path=clean_stored,
-            noise_path=noise_stored,
-            corpus_path=row["path"],
-            mix_protocol=protocol,
-            mix_seed=mix_seed,
-            max_seconds=max_seconds,
-            prevent_clip=prevent_clip,
-            hard_clip=hard_clip,
+            speaker_id=None if row.get("speaker_id") is None else str(row["speaker_id"]),
+            recipe=recipe,
             metadata=_corpus_metadata(row),
+            source_id=row["path"],
+            sample_rate=rate,
+            corpus_path=row["path"],
         )
-        case.noise_start = self._noise_start(case)
-        return case
 
-    def _attach_mix(self, case: _Case, metadata: dict[str, Any], *, seed_parts: tuple[object, ...]) -> None:
-        protocol = metadata.get("mix_protocol", PROTOCOL_RMS_V1)
-        if protocol != PROTOCOL_RMS_V1:
-            raise DatasetError(f"{case.case_id} has unknown mix protocol {protocol!r}")
+    def _synthetic_recipe(
+        self,
+        clean: str | None,
+        noise: str | None,
+        *,
+        snr_db: float | None,
+        metadata: dict[str, Any],
+        seed_parts: tuple[object, ...],
+        sample_rate: int,
+    ) -> dict[str, Any]:
+        if clean is None or noise is None or snr_db is None:
+            raise DatasetError("synthetic cases require clean, noise, and snr_db")
+        protocol = metadata.get("mix_protocol", "rms_v1")
+        if protocol != "rms_v1":
+            raise DatasetError(f"unknown mix protocol {protocol!r}")
+        if _optional_bool(metadata.get("hard_clip"), "hard_clip"):
+            raise DatasetError("hard clipping is not a recipe operation")
         supplied = metadata.get("mix_seed")
         if supplied is None:
-            mix_seed = derive_seed(*seed_parts, case.clean_path, case.noise_path, case.snr_db, protocol)
+            mix_seed = derive_seed(*seed_parts, clean, noise, snr_db, "additive_noise")
         elif isinstance(supplied, bool) or not isinstance(supplied, int):
-            raise DatasetError(f"{case.case_id} mix_seed must be an integer")
+            raise DatasetError("mix_seed must be an integer")
         else:
             mix_seed = supplied
-        case.mix_protocol = protocol
-        case.mix_seed = mix_seed
-        case.max_seconds = _optional_seconds(metadata.get("max_seconds"), f"{case.case_id} max_seconds")
-        prevent_clip = _optional_bool(metadata.get("prevent_clip"), f"{case.case_id} prevent_clip")
-        hard_clip = _optional_bool(metadata.get("hard_clip"), f"{case.case_id} hard_clip")
-        case.prevent_clip = False if prevent_clip is None else prevent_clip
-        case.hard_clip = False if hard_clip is None else hard_clip
-        case.noise_start = self._noise_start(case)
-        if case.sample_rate is None:
-            case.sample_rate = _rate_of(self._absolute(case.clean_path))
+        max_seconds = _optional_seconds(metadata.get("max_seconds"), "max_seconds")
+        prevent_clip = _optional_bool(metadata.get("prevent_clip"), "prevent_clip")
+        supplied_start = metadata.get("noise_start")
+        if supplied_start is None:
+            noise_start = prepare_noise_start(
+                self._absolute(clean),
+                self._absolute(noise),
+                sample_rate,
+                mix_seed,
+                max_seconds,
+            )
+        elif isinstance(supplied_start, bool) or not isinstance(supplied_start, int) or supplied_start < 0:
+            raise DatasetError("noise_start must be a non-negative integer")
+        else:
+            noise_start = supplied_start
+        sources = {"clean": self._source_entry(clean), "noise": self._source_entry(noise)}
+        operations: list[dict[str, Any]] = [
+            {
+                "type": "additive_noise",
+                "version": 1,
+                "source": "noise",
+                "snr_db": snr_db,
+                "noise_start": noise_start,
+                "noise_start_unit": "sample",
+                "seed": mix_seed,
+            }
+        ]
+        if prevent_clip:
+            operations.append({"type": "peak_normalize", "version": 1, "limit": PEAK_LIMIT})
+        output: dict[str, Any] = {"sample_rate": sample_rate, "reference": "dry_clean"}
+        if max_seconds is not None:
+            output["max_seconds"] = max_seconds
+        return canonical_recipe(
+            {"recipe_version": 1, "sources": sources, "operations": operations, "output": output}
+        )
 
-    def _noise_start(self, case: _Case) -> int | None:
-        clean_frames, clean_rate = _frame_count(self._absolute(case.clean_path), case.max_seconds)
-        noise_frames, noise_rate = _frame_count(self._absolute(case.noise_path), None)
-        if clean_rate != noise_rate:
-            return None
-        return crop_start(noise_frames, clean_frames, int(case.mix_seed))
+    def _recorded_recipe(
+        self,
+        sample_rate: int,
+        reference: str,
+        *,
+        clean: str | None = None,
+        noisy: str | None = None,
+    ) -> dict[str, Any]:
+        sources = {}
+        if clean is not None:
+            sources["clean"] = self._source_entry(clean)
+        if noisy is not None:
+            sources["noisy"] = self._source_entry(noisy)
+        return canonical_recipe(
+            {
+                "recipe_version": 1,
+                "sources": sources,
+                "operations": [],
+                "output": {"sample_rate": sample_rate, "reference": reference},
+            }
+        )
+
+    def _make_case(
+        self,
+        *,
+        kind: str,
+        dataset: str,
+        split: str | None,
+        transcript: str | None,
+        speaker_id: str | None,
+        recipe: dict[str, Any],
+        metadata: dict[str, Any],
+        source_id: str,
+        sample_rate: int | None = None,
+        corpus_path: str | None = None,
+    ) -> _Case:
+        if kind not in KINDS:
+            raise DatasetError(f"unknown case kind: {kind}")
+        document = canonical_recipe(recipe)
+        rate = int(document["output"]["sample_rate"])
+        if sample_rate is not None and int(sample_rate) != rate:
+            raise DatasetError("sample_rate does not match the recipe")
+        stored = dict(metadata)
+        stored["source_id"] = source_id
+        if corpus_path:
+            stored["corpus_path"] = corpus_path
+        return _Case(
+            case_id=case_id_for(document),
+            kind=kind,
+            dataset=dataset,
+            split=split,
+            sample_rate=rate,
+            transcript=transcript,
+            speaker_id=speaker_id,
+            recipe=document,
+            metadata=stored,
+        )
+
+    def _source_entry(self, stored: str) -> dict[str, str]:
+        path = self._absolute(stored)
+        if not path.is_file():
+            raise DatasetError(f"audio file not found: {path}")
+        return {"path": stored, "sha256": sha256_file(path)}
+
+    def _check_source_files(self, recipe: dict[str, Any]) -> None:
+        for name, source in recipe["sources"].items():
+            path = self._absolute(source["path"])
+            self._ensure_inside(path)
+            if not path.is_file():
+                raise DatasetError(f"audio file not found: {path}")
+            digest = sha256_file(path)
+            if digest != source["sha256"]:
+                raise DatasetError(f"source {name} changed: {source['path']}")
 
     def _select_corpus(self, connection, *, filters, query, params, limit) -> list[dict[str, Any]]:
         try:
@@ -546,33 +703,35 @@ class EvaluationDB:
         return rows
 
     def _sample_from_row(self, row: dict[str, Any]) -> AudioSample:
-        metadata = json.loads(row["metadata"]) if row["metadata"] else {}
-        if not isinstance(metadata, dict):
-            raise DatasetError(f"case {row['case_id']} metadata is not an object")
+        recipe = _json_object(row["recipe_json"], f"case {row['case_id']} recipe")
+        metadata = _json_object(row["metadata"], f"case {row['case_id']} metadata")
+        try:
+            recipe = canonical_recipe(recipe)
+        except ValueError as exc:
+            raise DatasetError(f"case {row['case_id']} recipe is invalid: {exc}") from exc
+        if case_id_for(recipe) != row["case_id"]:
+            raise DatasetError(f"case {row['case_id']} does not match its recipe")
+        metadata = dict(metadata)
         metadata["eval_kind"] = row["kind"]
-        if row["corpus_path"]:
-            metadata["corpus_path"] = row["corpus_path"]
-        if row["kind"] == "synthetic":
-            metadata["mix"] = {
-                "protocol": row["mix_protocol"],
-                "seed": int(row["mix_seed"]),
-                "noise_start": None if row["noise_start"] is None else int(row["noise_start"]),
-                "max_seconds": None if row["max_seconds"] is None else float(row["max_seconds"]),
-                "prevent_clip": bool(row["prevent_clip"]),
-                "hard_clip": bool(row["hard_clip"]),
-            }
+        metadata["recipe"] = recipe
+        metadata["reference"] = recipe["output"]["reference"]
+        metadata["audio_root"] = self.path.parent.as_posix()
+        sources = recipe["sources"]
+        snr = None
+        for operation in recipe["operations"]:
+            if operation["type"] == "additive_noise":
+                snr = float(operation["snr_db"])
         return AudioSample(
             utterance_id=row["case_id"],
             dataset=row["dataset"],
             split=row["split"],
-            audio_path=self._resolve(row["audio_path"]),
             sample_rate=None if row["sample_rate"] is None else int(row["sample_rate"]),
             transcript=row["transcript"],
-            clean_path=self._resolve(row["clean_path"]),
-            noisy_path=self._resolve(row["noisy_path"]),
-            noise_path=self._resolve(row["noise_path"]),
-            snr_db=None if row["snr_db"] is None else float(row["snr_db"]),
-            speaker_id=row["speaker_id"],
+            clean_path=self._resolve(_source_path(sources, "clean")),
+            noisy_path=self._resolve(_source_path(sources, "noisy")),
+            noise_path=self._resolve(_source_path(sources, "noise")),
+            snr_db=snr,
+            speaker_id=None if row["speaker_id"] is None else str(row["speaker_id"]),
             metadata=metadata,
         )
 
@@ -589,7 +748,6 @@ class EvaluationDB:
         return relative
 
     def _ensure_inside(self, path: Path) -> None:
-        # Lexical check, so a corpus symlink under data/corpora stays portable.
         audio = os.path.normpath(path if path.is_absolute() else self.project_root / path)
         roots = (os.path.normpath(self.project_root), os.path.normpath(self.corpora_root))
         for root in roots:
@@ -644,7 +802,7 @@ class EvaluationDB:
         path = Path(stored)
         if not path.is_absolute():
             path = self.path.parent / path
-        return path
+        return Path(os.path.normpath(path))
 
     def _resolve(self, stored: str | None) -> str | None:
         if stored is None:
@@ -660,6 +818,27 @@ class EvaluationDB:
             return duckdb.connect(str(self.path), read_only=read_only)
         except duckdb.Error as exc:
             raise DatasetError(f"failed to open DuckDB: {exc}") from exc
+
+
+def _kind_for_recipe(recipe: dict[str, Any]) -> str:
+    if recipe["operations"]:
+        return "synthetic"
+    names = set(recipe["sources"])
+    if names == {"noisy"}:
+        return "noisy"
+    if names == {"clean", "noisy"}:
+        return "paired"
+    if names == {"clean"}:
+        return "clean"
+    raise DatasetError("recipe kind could not be inferred")
+
+
+def _source_path(sources: dict[str, Any], name: str) -> str | None:
+    item = sources.get(name)
+    if not isinstance(item, dict):
+        return None
+    path = item.get("path")
+    return None if not isinstance(path, str) else path
 
 
 def _manifest_kind(sample: AudioSample) -> str:
@@ -736,6 +915,17 @@ def _optional_bool(value: Any, where: str) -> bool | None:
         return None
     if not isinstance(value, bool):
         raise DatasetError(f"{where} must be a boolean")
+    return value
+
+
+def _json_object(value: Any, where: str) -> dict[str, Any]:
+    if isinstance(value, str):
+        try:
+            value = json.loads(value)
+        except json.JSONDecodeError as exc:
+            raise DatasetError(f"{where} is not JSON") from exc
+    if not isinstance(value, dict):
+        raise DatasetError(f"{where} must be an object")
     return value
 
 

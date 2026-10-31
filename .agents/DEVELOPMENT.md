@@ -26,7 +26,7 @@
 ```bash
 .venvs/lab/bin/python -m unittest discover -s tests/se -v          # SE
 .venvs/lab/bin/python -m unittest discover -s tests/asr -v         # ASR。重みをダウンロードしない
-.venvs/lab/bin/python -m unittest discover -s tests/evaluation -v  # 評価。実 DB への冪等な登録テストを含む（DATA.md）
+.venvs/lab/bin/python -m unittest discover -s tests/evaluation -v  # 評価。一時 DB だけを書き、resource.duckdb は変更しない
 .venvs/lab/bin/python -m src.evaluation.cli --config configs/evaluation/smoke.yaml --limit 2 --device cpu   # 合成音声 + mock
 .venvs/asr/bin/python -m tests.asr_smoke.run_smoke parakeet whisper wav2vec2   # 実 ASR のスモーク（GPU）
 ```

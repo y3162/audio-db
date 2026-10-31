@@ -8,11 +8,13 @@
 /.claude/settings.local.json
 CLAUDE.local.md
 AGENTS.override.md
+/PROMPT.md
 
 # .gitkeep
 /.venvs/*
 !/.venvs/.gitkeep
 /data/*/*
+/data/staging/
 !/data/checkpoints/.gitkeep
 !/data/results/.gitkeep
 !/data/db/.gitkeep

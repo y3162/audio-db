@@ -9,7 +9,6 @@ import torch
 import torchaudio
 
 from src.data.db.schema import create_corpora_schema
-from src.evaluation.audio.mixing import mix_snr
 from src.evaluation.datasets.evaldb import EvaluationDB
 from src.evaluation.errors import DatasetError
 from src.evaluation.pipeline import execute
@@ -65,19 +64,26 @@ class EvaluationDBTests(unittest.TestCase):
             manifest.unlink()
             first = db.load_dataset("kinds")
             second = db.load_dataset("kinds")
-            self.assertEqual([sample.utterance_id for sample in first], ["b", "a", "p", "s"])
+            self.assertEqual([sample.metadata["source_id"] for sample in first], ["b", "a", "p", "s"])
             self.assertEqual(
                 [sample.utterance_id for sample in second],
                 [sample.utterance_id for sample in first],
             )
-            by_id = {sample.utterance_id: sample for sample in first}
+            self.assertTrue(all(len(sample.utterance_id) == 64 for sample in first))
+            by_id = {sample.metadata["source_id"]: sample for sample in first}
             self.assertTrue(by_id["b"].clean_path.endswith("b-clean.wav"))
             self.assertIsNone(by_id["b"].clean_waveform)
+            self.assertEqual(by_id["b"].metadata["reference"], "dry_clean")
+            self.assertEqual(by_id["b"].metadata["recipe"]["operations"], [])
             self.assertTrue(by_id["a"].noisy_path.endswith("a-noisy.wav"))
+            self.assertEqual(by_id["a"].metadata["reference"], "none")
             self.assertTrue(by_id["p"].clean_path.endswith("p-clean.wav"))
             self.assertTrue(by_id["p"].noisy_path.endswith("p-noisy.wav"))
             self.assertEqual(by_id["s"].metadata["eval_kind"], "synthetic")
-            self.assertIsInstance(by_id["s"].metadata["mix"]["seed"], int)
+            noise = by_id["s"].metadata["recipe"]["operations"][0]
+            self.assertEqual(noise["type"], "additive_noise")
+            self.assertIsInstance(noise["seed"], int)
+            self.assertEqual(noise["noise_start_unit"], "sample")
             self.assertIsNone(by_id["s"].clean_waveform)
             self.assertEqual(by_id["s"].transcript, "text s")
             self.assertEqual(by_id["b"].speaker_id, "spk")
@@ -169,10 +175,11 @@ class EvaluationDBTests(unittest.TestCase):
             manifest = self._manifest(root, [("mix", "synthetic")])
             db.import_manifest(manifest, "mixes")
             sample = db.load_dataset("mixes")[0]
-            left = _mix_sample(sample)
-            right = _mix_sample(db.load_dataset("mixes")[0])
-            self.assertTrue(torch.equal(left.noisy, right.noisy))
-            self.assertEqual(left.noise_start, sample.metadata["mix"]["noise_start"])
+            left = _render_sample(sample)
+            right = _render_sample(db.load_dataset("mixes")[0])
+            self.assertTrue(torch.equal(left.observed, right.observed))
+            stored = sample.metadata["recipe"]["operations"][0]["noise_start"]
+            self.assertEqual(left.noise_start, stored)
             self.assertEqual(left.noise_start, right.noise_start)
 
     def test_pipeline_uses_the_stored_mixture_for_two_seeds(self):
@@ -252,13 +259,27 @@ class EvaluationDBTests(unittest.TestCase):
             self.assertTrue(Path(mixed[0].noise_path).is_file())
             with self.assertRaises(DatasetError):
                 db.create_set_from_corpus("bad_sql", query="DELETE FROM corpora.audio_files")
+            _write_wav(root / "corpora" / "Toy" / "c.wav", 1600, 440)
+            connection = _connect(database)
+            try:
+                connection.execute(
+                    """
+                    INSERT INTO corpora.audio_files (
+                        path, corpus, subset, file_name, sample_rate, frames, channels,
+                        speaker_id, utterance_id, transcript
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    """,
+                    ["Toy/c.wav", "Toy", "test", "c.wav", 16000, 1600, 1, "spk", "c", "third"],
+                )
+            finally:
+                connection.close()
             linked = root / "linked.jsonl"
             linked.write_text(
                 json.dumps(
                     {
                         "utterance_id": "linked",
                         "dataset": "Toy",
-                        "clean_path": "corpora/Toy/a.wav",
+                        "clean_path": "corpora/Toy/c.wav",
                     }
                 )
                 + "\n",
@@ -266,9 +287,9 @@ class EvaluationDBTests(unittest.TestCase):
             )
             db.import_manifest(linked, "linked")
             sample = db.load_dataset("linked")[0]
-            self.assertEqual(sample.transcript, "first")
+            self.assertEqual(sample.transcript, "third")
             self.assertEqual(sample.speaker_id, "spk")
-            self.assertEqual(sample.metadata["corpus_path"], "Toy/a.wav")
+            self.assertEqual(sample.metadata["corpus_path"], "Toy/c.wav")
 
     def test_initialize_skips_optional_inputs_and_does_not_duplicate(self):
         with tempfile.TemporaryDirectory() as directory:
@@ -362,89 +383,6 @@ class EvaluationDBTests(unittest.TestCase):
             connection.close()
 
 
-class RealDatabaseInitTests(unittest.TestCase):
-    def test_make_db_init_does_not_change_audio_files(self):
-        database = ROOT / "data/db/resource.duckdb"
-        if not database.is_file():
-            self.skipTest("resource.duckdb is not present")
-        db = EvaluationDB(database, project_root=ROOT, corpora_root=ROOT / "data/corpora")
-        before = db.corpora_fingerprint()
-        self.assertIsNotNone(before)
-        first = initialize(ROOT / "configs/db/init.yaml")
-        second = initialize(ROOT / "configs/db/init.yaml")
-        self.assertEqual(db.corpora_fingerprint(), before)
-        self.assertIn("unchanged", second)
-        self.assertIn(str(before[0]), first)
-        if "set libri_demand_snr0: skipped" in first:
-            self.skipTest("LibriSpeech or DEMAND is not available for the named set")
-        samples = list(db.load_dataset("libri_demand_snr0"))
-        again = list(db.load_dataset("libri_demand_snr0"))
-        self.assertEqual([sample.utterance_id for sample in samples], [sample.utterance_id for sample in again])
-        self.assertGreaterEqual(len(samples), 1)
-        sample = samples[0]
-        self.assertTrue(Path(sample.clean_path).is_file())
-        self.assertTrue(Path(sample.noise_path).is_file())
-        self.assertEqual(sample.metadata["eval_kind"], "synthetic")
-        left = _mix_sample(sample)
-        right = _mix_sample(again[0])
-        self.assertTrue(torch.equal(left.noisy, right.noisy))
-        self.assertAlmostEqual(left.snr_db_achieved, 0.0, places=2)
-        full = list(db.load_dataset("libri_testclean_full_smoke"))
-        self.assertEqual(len(full), 8)
-        self.assertEqual([item.utterance_id for item in full], sorted(item.utterance_id for item in full))
-        self.assertNotIn("mix", full[0].metadata)
-        self.assertTrue(full[0].transcript)
-        self.assertIsNone(full[0].noisy_path)
-        self.assertTrue(Path(full[0].clean_path).is_file())
-        self._assert_named_set_inference(database)
-
-
-    def _assert_named_set_inference(self, database: Path) -> None:
-        with tempfile.TemporaryDirectory() as directory:
-            demand = experiment_config(directory, run_id="demand")
-            demand.dataset.source = "duckdb"
-            demand.dataset.path = str(database)
-            demand.dataset.corpora_root = str(ROOT / "data/corpora")
-            demand.dataset.set_name = "libri_demand_snr0"
-            demand.experiment.limit = 1
-            demand.mixing.enabled = False
-            demand.metrics.pesq = False
-            demand.metrics.stoi = False
-            demand.runtime.device = "cpu"
-            cropped = execute(demand, enhancer_factory=lambda model, device: _CopyEnhancer())
-            record = cropped["records"][0]
-            self.assertEqual(record["status"], "ok")
-            self.assertIsNotNone(record["hypotheses"]["enhanced"]["text"])
-            self.assertTrue(record["reference_audio"]["truncated"])
-            self.assertEqual(record["wer"]["status"], "na")
-            self.assertEqual(record["wer"]["reason"], "partial_audio")
-            self.assertEqual(record["mix"]["protocol"], "rms_v1")
-
-            whole = experiment_config(directory, run_id="whole")
-            whole.dataset.source = "duckdb"
-            whole.dataset.path = str(database)
-            whole.dataset.corpora_root = str(ROOT / "data/corpora")
-            whole.dataset.set_name = "libri_testclean_full_smoke"
-            whole.experiment.limit = 1
-            whole.mixing.enabled = False
-            whole.metrics.pesq = False
-            whole.metrics.stoi = False
-            whole.runtime.device = "cpu"
-            scored = execute(whole, enhancer_factory=lambda model, device: _CopyEnhancer())
-            full_record = scored["records"][0]
-            self.assertEqual(full_record["status"], "ok")
-            self.assertFalse(full_record["reference_audio"]["truncated"])
-            self.assertIsNone(full_record["reference_audio"]["max_seconds"])
-            self.assertEqual(full_record["wer"]["status"], "ok")
-            self.assertGreater(full_record["wer"]["values"]["enhanced"]["normalized"]["N"], 0)
-            self.assertEqual(full_record["reference_audio"]["used_frames"], full_record["reference_audio"]["source_frames"])
-
-
-class _CopyEnhancer:
-    def enhance(self, waveform, sample_rate):
-        return waveform.clone()
-
-
 def _connect(database: Path):
     import duckdb
 
@@ -459,25 +397,10 @@ def _write_wav(path: Path, frames: int, frequency: float) -> None:
     torchaudio.save(str(path), wave, 16000)
 
 
-def _mix_sample(sample):
-    clean, clean_rate = torchaudio.load(sample.clean_path)
-    noise, noise_rate = torchaudio.load(sample.noise_path)
-    recipe = sample.metadata["mix"]
-    limit = recipe.get("max_seconds")
-    if limit is not None:
-        clean = clean[:, : max(1, int(limit * clean_rate))]
-    return mix_snr(
-        clean,
-        noise,
-        clean_rate,
-        noise_rate,
-        sample.snr_db,
-        int(recipe["seed"]),
-        protocol=recipe["protocol"],
-        prevent_clip=bool(recipe["prevent_clip"]),
-        hard_clip=bool(recipe["hard_clip"]),
-        noise_start=recipe["noise_start"],
-    )
+def _render_sample(sample):
+    from src.evaluation.audio.render import render_recipe
+
+    return render_recipe(sample.metadata["recipe"], sample.metadata["audio_root"])
 
 
 if __name__ == "__main__":

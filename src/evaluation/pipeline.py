@@ -419,6 +419,9 @@ def _prepare(config: ExperimentConfig, sample: AudioSample, noise_item: AudioSam
         "seconds": 0.0,
     }
     try:
+        stored_recipe = sample.metadata.get("recipe") if isinstance(sample.metadata, dict) else None
+        if isinstance(stored_recipe, dict):
+            return _prepare_stored_recipe(payload, started, sample)
         recipe = _mix_recipe(sample)
         if recipe is not None or config.mixing.enabled:
             clean_limit = config.dataset.max_seconds
@@ -670,6 +673,7 @@ def _finish_record(
         "snr_db": prepared["snr_db"],
         "max_seconds": config.dataset.max_seconds,
         "reference_audio": prepared.get("reference_audio"),
+        "reference_name": prepared.get("reference_name"),
         "mix": prepared["mix"],
         "seeds": {
             "experiment": config.experiment.seed,
@@ -865,6 +869,45 @@ def _paired_noise(config, bundle, sample, index):
     return bundle.noise_pool[offset]
 
 
+def _prepare_stored_recipe(payload: dict[str, Any], started: float, sample: AudioSample) -> dict[str, Any]:
+    """Generate or load the waveform described by the case recipe."""
+    from src.data.recipe import RecipeError
+    from src.evaluation.audio.render import render_recipe
+
+    root = sample.metadata.get("audio_root")
+    if not isinstance(root, str) or not root:
+        return _mark(payload, started, "error", "preparation_failed", error={"type": "RecipeError", "message": "audio_root is missing"})
+    try:
+        rendered = render_recipe(sample.metadata["recipe"], root)
+        payload["input_wave"] = rendered.observed
+        payload["clean_wave"] = rendered.reference
+        payload["sample_rate"] = rendered.sample_rate
+        payload["reference_audio"] = rendered.span
+        payload["reference_name"] = rendered.reference_name
+        payload["snr_db"] = canonical_snr(rendered.snr_db)
+        payload["mix_seed"] = rendered.seed
+        payload["mix"] = {
+            "operations": list(rendered.operations),
+            "reference": rendered.reference_name,
+            "snr_db_requested": rendered.snr_db,
+            "snr_db_achieved": rendered.snr_db_achieved,
+            "noise_start": rendered.noise_start,
+            "noise_start_unit": None if rendered.noise_start is None else "sample",
+            "seed": rendered.seed,
+            "peak_scaled": rendered.peak_scaled,
+            "clean_silent": rendered.clean_silent,
+        }
+        if rendered.clean_silent:
+            return _mark(payload, started, "skipped", "clean_has_zero_energy")
+        _check_wave(payload["input_wave"], "input")
+        if payload["clean_wave"] is not None:
+            _check_wave(payload["clean_wave"], "clean")
+    except (RecipeError, OSError, ValueError) as exc:
+        return _mark(payload, started, "error", "preparation_failed", error=_error_payload(exc))
+    payload["seconds"] = _perf() - started
+    return payload
+
+
 def _mix_recipe(sample: AudioSample) -> dict[str, Any] | None:
     """Stored mixture for a synthetic case. Experiment seed does not change it."""
     recipe = sample.metadata.get("mix")
@@ -877,7 +920,8 @@ def _mix_recipe(sample: AudioSample) -> dict[str, Any] | None:
 
 
 def _snrs(config: ExperimentConfig, sample: AudioSample) -> list[float | None]:
-    if _mix_recipe(sample) is not None:
+    stored = sample.metadata.get("recipe") if isinstance(sample.metadata, dict) else None
+    if isinstance(stored, dict) or _mix_recipe(sample) is not None:
         return [sample.snr_db]
     if config.mixing.enabled:
         return list(config.mixing.snr_db)

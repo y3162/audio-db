@@ -58,7 +58,9 @@ db.create_set_from_corpus(
 )
 ```
 
-同じ case と条件からは、同じ `rms_v1` の混合が再生成されます。詳細は [評価パイプライン](docs/evaluation/PIPELINE.md) と [DB の準備](docs/db/SETUP.md) です。
+同じレシピからは同じ `case_id` と、同じ波形が再生成されます。条件の形は [レシピ](docs/db/RECIPE.md)、取り出し方は [評価パイプライン](docs/evaluation/PIPELINE.md) と [DB の準備](docs/db/SETUP.md) です。
+
+現在の `data/db/resource.duckdb` はレシピ導入前のスキーマです。`make db-init` はこのファイルを変更しません。
 
 ## 音声認識
 

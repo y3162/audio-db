@@ -22,6 +22,12 @@ DBの仕様書
 
 ---
 
+### [RECIPE.md](db/RECIPE.md)
+
+音声生成レシピとケース ID
+
+---
+
 ### [CORPORA.md](db/CORPORA.md)
 
 `corpora` スキーマについて
