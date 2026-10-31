@@ -1,0 +1,39 @@
+# プロジェクトと責務
+
+## 研究目的
+
+固定した ASR（重みを更新しない）を使い、音声認識性能を上げる音声強調（SE）を研究する。SE の出力を固定 ASR に通して比べる。
+
+- 主指標は WER（`wer-norm-v1`、micro 集計）。PESQ / STOI は補助で、clean 参照があるときだけ意味を持つ。
+- 現在のリポジトリは推論と評価の基盤。SE も ASR も学習しない。
+
+## モジュールの責務
+
+| 場所 | 責務 | 入口 |
+|---|---|---|
+| `src/se/` | 独立した SE モデルと共通 API。MP-SENet、TF-GridNet、DeepFilterNet3、MossFormerGAN、SEMamba++、UniPASE、StuPASE | `load_enhancer()`、`build_model()` |
+| `src/asr/` | 独立した ASR モデルと共通 API。Parakeet、Whisper、Wav2Vec2、HuBERT、WavLM | `load_recognizer()` → `transcribe()` |
+| `src/evaluation/` | 評価パイプライン（入力 → 必要なら混合 → SE → ASR → 指標 → 結果保存）。SE と ASR は共通 API だけを呼ぶ | `python -m src.evaluation.cli` |
+| `src/data/` | コーパスの走査と DuckDB（`corpora`・`eval` スキーマ）の管理 | `make db-ingest`、`make db-init` |
+
+モデルの一覧と検証状況は `docs/se/`、`docs/asr/MODELS.md`、評価の仕様は `docs/evaluation/PIPELINE.md`。
+
+## 依存方向
+
+現状（import で確認）:
+
+- `src/se/` と `src/asr/` は、他の `src/` モジュールを import しない。`src/asr` は `tests/asr/test_independence.py` が、evaluation・se・モデルライブラリを import しないことを確認している。
+- `src/evaluation/` は `src/se`、`src/asr`（遅延 import）、`src/data`（列定義・スキーマ）を使う。
+- `src/data/` から `src/evaluation/` への依存もある。`src/data/init_eval.py` と注釈インポータ（`src/data/corpora/chime3_annotations.py`、`src/data/corpora/mpsenet_filelist.py`）が `EvaluationDB` と `AudioSample` を使う。data と evaluation は相互依存になっている。
+
+方針:
+
+- `src/se/` と `src/asr/` に、データ・評価・互いの知識を入れない。
+- 評価は SE と ASR の内部実装を参照せず、共通 API 経由で使う。
+- 現状の相互依存は広げない。新しい import は、既存の方向に足す。
+
+## 推論と学習の責務分離
+
+- `src.asr` の `transcribe()` は推論専用。モデルは `eval()`、全パラメータは `requires_grad=False`、実行は `torch.inference_mode()`。学習・fine-tuning・勾配を通す経路は無い。
+- `src.se` の `load_enhancer()` → `enhance()` は推論専用。`build_model()` は勾配を保つ未学習の `nn.Module` を返すだけで、学習ループ・損失・discriminator は含まない。
+- 学習処理を足すときは、推論 API（`transcribe()`、`enhance()`）の意味を変えず、別の入口に置く。評価パイプラインは推論 API だけを呼ぶ。学習の設計は未決定。

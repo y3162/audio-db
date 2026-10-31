@@ -1,8 +1,13 @@
 # agent settings
-/.agents/
-/.codex/
-/.cursor/
-AGENTS.md
+# Shared and tracked: AGENTS.md, CLAUDE.md, .agents/, .cursor/rules/, .codex/README.md.
+# Anything else under .cursor/ and .codex/ is local (MCP tokens, auth, caches) and stays untracked.
+/.cursor/*
+!/.cursor/rules/
+/.codex/*
+!/.codex/README.md
+/.claude/settings.local.json
+CLAUDE.local.md
+AGENTS.override.md
 
 # .gitkeep
 /.venvs/*
