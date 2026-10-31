@@ -49,3 +49,15 @@ ASR のモデル一覧と共通 API
 ### [PIPELINE.md](evaluation/PIPELINE.md)
 
 音声強調の評価パイプライン
+
+---
+
+### [MP_SENET.md](training/MP_SENET.md)
+
+MP-SENet の学習と公式実装との差
+
+---
+
+### [VERIFICATION.md](training/VERIFICATION.md)
+
+学習基盤で確認した条件と結果

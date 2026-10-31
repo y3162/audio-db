@@ -27,9 +27,12 @@
 .venvs/lab/bin/python -m unittest discover -s tests/se -v          # SE
 .venvs/lab/bin/python -m unittest discover -s tests/asr -v         # ASR。重みをダウンロードしない
 .venvs/lab/bin/python -m unittest discover -s tests/evaluation -v  # 評価。一時 DB だけを書き、resource.duckdb は変更しない
+.venvs/lab/bin/python -m unittest discover -s tests/training -v    # 学習。CPU。resource.duckdb は開かない
 .venvs/lab/bin/python -m src.evaluation.cli --config configs/evaluation/smoke.yaml --limit 2 --device cpu   # 合成音声 + mock
 .venvs/asr/bin/python -m tests.asr_smoke.run_smoke parakeet whisper wav2vec2   # 実 ASR のスモーク（GPU）
 ```
+
+学習の実行は `docs/training/MP_SENET.md`。決定的な CUDA 行列積には、プロセス起動前に `CUBLAS_WORKSPACE_CONFIG=:4096:8` を置く。複数 GPU は `CUDA_VISIBLE_DEVICES` と `torchrun` で、使用メモリが 1024 MiB 未満の GPU だけを見せる。
 
 - チェックポイントや公式コードが無いテストは skip される。SKIP は PASS ではない。
 - 実 SE と実 ASR をつなぐ接続確認は `configs/evaluation/e2e.yaml`。`.venvs/asr` で実行する。

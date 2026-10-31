@@ -21,3 +21,7 @@
 12. **`case_id` は正規化レシピの SHA-256 である。** キー順はソートし、浮動小数は小数 6 桁へ丸める。`case_id` 自身はハッシュに入れない。同じレシピは再構築しても同じ ID になる。
 13. **登録データは `data/staging/` に保存してから DuckDB へ入れる。** 参照は `case_id` と `path` で持ち、rowid や採番に依存しない。同じステージングから作った DB は、登録順が違っても内容が一致する。
 14. **旧 `eval.cases` の固定列を実行時に読まない。** 既存の `resource.duckdb` は削除・上書きしない。一度きりの変換は `src.data.migrate_legacy` で、出力はステージングと検証用 DB だけである。本番ファイルの置き換えはまだ行っていない。
+15. **SE の学習は `src/training/` に置き、`enhance()` と `transcribe()` には入れない。** 最初のモデルは MP-SENet。Generator は推論実装をそのまま使い、損失と Metric Discriminator は学習側にある。公式ツリーは実行時に import しない。
+16. **Global batch は厳密に保つ。** `micro_batch_size_per_gpu` は上限で、その範囲の最大の micro batch と整数の蓄積回数で global batch を作る。作れない構成はエラーにする。Scheduler と global step は Optimizer 更新の回数である。
+17. **学習の乱数は用途ごとに分ける。** 初期化、dropout、サンプル順、切り出しは独立である。切り出しと順序はサンプル ID と seed から再現し、消費順には依存させない。`deterministic: true` では決定的アルゴリズムを有効にし、決定的に計算できない CUDA 逆伝播は非決定的カーネルへ戻さず、同じ順伝播値の別実装にする。
+18. **学習データは名前付きセットのレシピだけを使う。** 教師が定義できないケースと、LibriSpeech test-clean・CHiME3 et05 を含む評価用セットは拒否する。ケースの識別はレシピハッシュで、採番 ID ではない。本番 `resource.duckdb` は学習から開かない。

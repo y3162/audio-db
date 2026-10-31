@@ -46,6 +46,15 @@ DuckDB は `data/db/resource.duckdb`（`src/data/constants.py`）。
 - 評価ランの一次記録は従来どおり `data/results/se-evaluation/<run_id>/` の `config.json` と `results.jsonl` である。DuckDB への登録は `register_run` で、そのあと行う。既存ランは自動では登録しない。
 - `src.data.migrate_legacy` は、以前の `eval.cases` を一度だけレシピへ写す。実行時の互換読み取りではない。`resource.duckdb` は読み取り専用で開き、`data/staging/` と `data/db/rebuild-a.duckdb`、`data/db/rebuild-b.duckdb` を作る。旧 `case_id` は metadata の `legacy_case_id` に残り、新しい `case_id` はレシピハッシュである。
 
+## 学習に使うセット
+
+学習は評価と同じ名前付きセットとレシピを読む。詳細は `docs/training/MP_SENET.md`。
+
+- 教師はレシピの `output.reference` だけである。`dry_clean` と `reverberant_clean` を取り違えない。`none` のケースは学習に入れず、エラーにする。
+- サンプルの識別子は `case_id`（レシピの SHA-256）である。rowid や登録順の採番は学習の並びに使わない。
+- `configs/db/init.yaml` の評価セット（LibriSpeech test-clean、CHiME3 et05 を含む）は学習にも検証にも使わない。
+- 学習は `data/db/resource.duckdb` を開かない。接続確認は `data/db/rebuild-a.duckdb` を読み取り専用で開く。
+
 ## 指標の欠損と有効性
 
 - 値を出せないときは `na`（`reason` 付き）、ライブラリが無ければ `unavailable`。理由は `no_reference_transcript`、`partial_audio`、`unknown_audio_span`、`no_clean_reference` など。値は null で、集計に 0 として入れない。

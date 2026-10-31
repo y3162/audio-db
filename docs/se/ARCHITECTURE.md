@@ -1,6 +1,6 @@
 # 音声強調 API
 
-`src.se` は `available_enhancers()`, `build_model(name, config=None)`, `load_enhancer(name, checkpoint, device='cpu', config=None)` を公開する。登録済みは MP-SENet、TF-GridNet、DeepFilterNet3、MossFormerGAN、SEMamba++、UniPASE、StuPASE。`build_model` は勾配を維持する `nn.Module` を返す。学習処理は含まない。単一ファイルのモデルはパスを渡し、UniPASE は `dewavlm` / `adapter` / `vocoder` / `postnet`、StuPASE は `dewavlm` / `cfm` / `vocoder` の辞書を渡す。キーの過不足は拒否する。
+`src.se` は `available_enhancers()`, `build_model(name, config=None)`, `load_enhancer(name, checkpoint, device='cpu', config=None)` を公開する。登録済みは MP-SENet、TF-GridNet、DeepFilterNet3、MossFormerGAN、SEMamba++、UniPASE、StuPASE。`build_model` は勾配を維持する `nn.Module` を返す。学習ループは `src/training` にあり、この API には含まれない。単一ファイルのモデルはパスを渡し、UniPASE は `dewavlm` / `adapter` / `vocoder` / `postnet`、StuPASE は `dewavlm` / `cfm` / `vocoder` の辞書を渡す。キーの過不足は拒否する。
 
 `enhance` は一次元浮動小数点 Tensor と整数サンプルレートを受け、元の長さ、dtype、デバイスの Tensor を返す。内部で 16 kHz にリサンプリング、RMS 正規化、複素 STFT、振幅圧縮、Generator、逆変換を行う。無音は無音として返す。非常に短い音声は reflect padding の制約により拒否する。公式の iSTFT は長さを hop の倍数に切り詰めるが、API は元の長さを明示する。リサンプリングは torchaudio を使う。複数チャンネルとストリーミングは未対応。MossFormerGAN は 10 秒超、UniPASE は 20 秒超で公式と同じ窓分割をする。
 

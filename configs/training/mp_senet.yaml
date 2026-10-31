@@ -1,0 +1,49 @@
+# MP-SENet training. Hyperparameters follow the official config.json at commit
+# 89932cfe (AdamW 5e-4, betas 0.8/0.99, weight decay 0.01, ExponentialLR 0.99).
+# The scheduler steps once per optimizer update. The official loop steps once
+# per epoch. See docs/training/MP_SENET.md.
+#
+# Replace the set names with training and validation sets that have a teacher
+# reference. LibriSpeech test-clean, CHiME3 et05, and the evaluation set names
+# in configs/db/init.yaml are refused. Do not point this at resource.duckdb.
+
+seed: 1234
+deterministic: true
+global_batch_size: 4
+micro_batch_size_per_gpu: 4
+max_steps: 100000
+segment_size: 32000
+loss: official
+checkpoint_dir: data/results/training/mp-senet
+checkpoint_interval: 5000
+validation_interval: 5000
+
+optimizer:
+  name: adamw
+  lr: 0.0005
+  betas: [0.8, 0.99]
+  weight_decay: 0.01
+
+scheduler:
+  name: exponential
+  gamma: 0.99
+
+model:
+  name: mp_senet
+  dense_channel: 64
+  num_tsconformers: 4
+  n_fft: 400
+  hop_size: 100
+  win_size: 400
+  compress_factor: 0.3
+  beta: 2.0
+  sampling_rate: 16000
+
+data:
+  database: data/db/training.duckdb
+  train_set: CHANGE_ME_TRAIN
+  validation_set: CHANGE_ME_VALID
+
+runtime:
+  device: cpu
+  allow_busy_gpu: false

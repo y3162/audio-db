@@ -2,7 +2,7 @@
 
 ## MP-SENet
 
-[論文](https://arxiv.org/abs/2305.13686)、[公式コード](https://github.com/yxlu-0102/MP-SENet)、参照 commit `89932cfe90d1dacb8e170e4a331d762462c21792`、MIT（ライセンスは `src/se/models/mp_senet/LICENSE`）。公式 Generator の encoder、二軸 Transformer と magnitude/phase decoder および Transformer を必要最小限移植した。学習損失・discriminator は含まない。16 kHz モノラル音声強調、`generator` キーを持つ PyTorch checkpoint。公式の VB と DNS の両重みで検証。依存は PyTorch と torchaudio。重みはユーザーが明示指定する。詳細な検証限界は VALIDATION.md を参照。
+[論文](https://arxiv.org/abs/2305.13686)、[公式コード](https://github.com/yxlu-0102/MP-SENet)、参照 commit `89932cfe90d1dacb8e170e4a331d762462c21792`、MIT（ライセンスは `src/se/models/mp_senet/LICENSE`）。公式 Generator の encoder、二軸 Transformer と magnitude/phase decoder および Transformer を必要最小限移植した。学習損失と Metric Discriminator は `src/se` には無く、`src/training/se` にある。仕様は `docs/training/MP_SENET.md`。16 kHz モノラル音声強調、`generator` キーを持つ PyTorch checkpoint。公式の VB と DNS の両重みで検証。依存は PyTorch と torchaudio。重みはユーザーが明示指定する。詳細な検証限界は VALIDATION.md を参照。
 
 ## DeepFilterNet3
 

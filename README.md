@@ -25,6 +25,14 @@ model_ms = build_model('tf_gridnet', variant='ms-snsd')
 
 可変長バッチは `enhancer.enhance_batch(padded_waveforms, 16000, lengths)` で処理できます。
 
+## 学習
+
+MP-SENet の学習は `src.training` にある。`enhance()` は推論のままである。手順と公式実装との差は [学習](docs/training/MP_SENET.md)、確認した条件は [検証記録](docs/training/VERIFICATION.md) を参照する。
+
+```bash
+.venvs/lab/bin/python -m src.training.se.cli --config configs/training/mp_senet.yaml
+```
+
 ## 評価データ
 
 評価の入力は DuckDB の名前付きセットです。Manifest は登録するときだけ読み、評価の実行時には使いません。`make db-init` は `eval` スキーマを作り、`configs/db/init.yaml` の対象を登録します。`corpora.audio_files` は削除も再作成もしません。

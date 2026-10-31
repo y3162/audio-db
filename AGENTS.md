@@ -1,6 +1,6 @@
 # audio-db
 
-固定した ASR を使う、音声認識指向型の音声強調（SE）の研究基盤。SE と ASR を独立に差し替え、DuckDB の名前付き評価セットで WER（主）と PESQ/STOI（補助）を比べる。現在は推論と評価の基盤で、SE も ASR も学習しない。
+固定した ASR を使う、音声認識指向型の音声強調（SE）の研究基盤。SE と ASR を独立に差し替え、DuckDB の名前付き評価セットで WER（主）と PESQ/STOI（補助）を比べる。推論と評価に加え、SE の学習基盤がある。最初の学習対象は MP-SENet で、ASR は学習しない。
 
 ## 正本
 
@@ -31,6 +31,7 @@
 | DB、コーパス、評価セット、結果、指標の欠損の扱い | `.agents/DATA.md` |
 | 仮想環境、GPU、テスト、公式コード、検証の区別 | `.agents/DEVELOPMENT.md` |
 | 設計判断、次回実装予定（レシピ JSON など） | `.agents/DECISIONS.md` |
+| SE の学習、再現性、勾配蓄積、checkpoint | `.agents/PROJECT.md`、`.agents/DATA.md`、`.agents/DEVELOPMENT.md`、`.agents/DECISIONS.md`、`docs/training/MP_SENET.md` |
 
 DB・評価・音声生成・データ形式に触れる前は、`.agents/DATA.md` と `.agents/DECISIONS.md` の両方を読む。
 
