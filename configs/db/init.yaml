@@ -28,3 +28,50 @@ corpus_sets:
     max_seconds: 2.0
     prevent_clip: true
     hard_clip: false
+
+annotation_sets:
+  - importer: chime3
+    set: chime3_et05_real_ch5
+    required: false
+    split: et05
+    condition: real
+    channel: CH5
+    description: >
+      CHiME3 et05 real, tablet channel 5. Official JSON prompt is the transcript.
+      This channel is not a clean reference, so PESQ and STOI are not defined here.
+  - importer: chime3
+    set: chime3_et05_real_ch0
+    required: false
+    split: et05
+    condition: real
+    channel: CH0
+    description: >
+      CHiME3 et05 real, close-talk channel 0. Recorded in the same noise as the
+      tablet channels. It is not a clean reference.
+  - importer: chime3
+    set: chime3_et05_simu_ch5
+    required: false
+    split: et05
+    condition: simu
+    channel: CH5
+    description: >
+      CHiME3 et05 simulated noisy speech, tablet channel 5. The original WSJ
+      waveform is not paired here.
+  - importer: chime3
+    set: chime3_tr05_org
+    required: false
+    split: tr05
+    condition: org
+    description: >
+      CHiME3 original training material. Clean speech with official prompts.
+      Not a time-aligned reference for the real noisy recordings.
+  - importer: mp_senet_voicebank
+    set: voicebank_demand_test
+    required: false
+    path: src/se/official/mp-senet/VoiceBank+DEMAND/test.txt
+    clean_dir: src/se/official/mp-senet/VoiceBank+DEMAND/wavs_clean
+    noisy_dir: src/se/official/mp-senet/VoiceBank+DEMAND/wavs_noisy
+    split: test
+    description: >
+      MP-SENet official VoiceBank-DEMAND test ids. Registered only when both
+      wav directories contain the listed files. The list has no transcript or SNR.

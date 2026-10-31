@@ -13,10 +13,11 @@ src/evaluation/
 ├── pipeline.py            # 段階の接続
 ├── datasets/              # DuckDB の評価セット / synthetic
 ├── audio/                 # 読み込みと rms_v1 混合
-├── models/                # SE は src.se を呼ぶ。ASR は差し替え口
+├── models/                # SE は src.se、ASR は src.asr を呼ぶ
 ├── metrics/               # WER / PESQ / STOI / ESTOI / SI-SDR
 └── results/               # JSONL・CSV・再開用のレコード
 
+src/asr/                    # 認識モデル本体。評価には依存しない
 configs/db/init.yaml         # make db-init が登録する Manifest と評価セット
 configs/evaluation/
 ├── smoke.yaml             # 合成音声 + mock
@@ -85,7 +86,18 @@ make db-init
 
 このコマンドは `make db-ingest` を呼びません。2 回実行しても case は増えません。同じ ID で内容が違う再登録はエラーです。Manifest や音声が無い任意項目は、何をスキップしたかを表示します。`required: true` の入力に不備があると、コマンドは失敗します。
 
-現在の任意項目は、例示用の `examples/manifests/example.jsonl` と、LibriSpeech test-clean の 2 発話を DEMAND と 0 dB で混ぜる `libri_demand_snr0` です。コーパスが無い環境では後者をスキップし、スキーマだけ作ります。
+現在の任意項目は、例示用の `examples/manifests/example.jsonl`、LibriSpeech test-clean の 2 発話を DEMAND と 0 dB で混ぜる `libri_demand_snr0`、CHiME3 の公式 JSON から作る評価セット、MP-SENet の VoiceBank-DEMAND テストリストです。音声が無い項目はスキップします。VoiceBank-DEMAND の wav はこのチェックアウトには無く、リストだけがあります。
+
+CHiME3 は `data/annotations/*.json` の `prompt` を正解テキストにします。評価セットはチャンネルを分けます。
+
+| セット | 内容 |
+|---|---|
+| `chime3_et05_real_ch5` | et05 の実録音。タブレットの CH5。clean 参照は無い |
+| `chime3_et05_real_ch0` | 同じ実録音の近接マイク CH0。雑音環境の収録であり、clean 参照ではない |
+| `chime3_et05_simu_ch5` | et05 の公式シミュレーション。CH5。元の WSJ 波形とはペアにしていない |
+| `chime3_tr05_org` | 学習用の元音声。clean。実録音の時間整合した参照ではない |
+
+CH1–CH6 はタブレット、CH0 は近接マイクです。インポータはほかの split とチャンネルも受け付けます。登録は `make db-init` の `annotation_sets` です。
 
 ### Manifest のインポート
 
@@ -206,15 +218,29 @@ UniPASE や StuPASE のように乱数を使うモデルのため、強調の直
 
 ## ASR
 
+認識本体は `src.asr` です。評価パッケージはそれを呼びます。
+
 ```python
-result = recognizer.transcribe(waveform, sample_rate=16000)
+from src.asr import load_recognizer
+
+asr = load_recognizer("parakeet", model_id="nvidia/parakeet-tdt-0.6b-v2", device="cuda:1")
+result = asr.transcribe(waveform, sample_rate=16000)
 ```
 
-設定できる項目は、モデル名、チェックポイント、デバイス、入力サンプリングレート、デコード、言語、`params`、書き起こし対象（`noisy` / `enhanced` / `clean`）です。
+```yaml
+asr:
+  enabled: true
+  name: parakeet
+  model_id: nvidia/parakeet-tdt-0.6b-v2
+  device: cuda:1
+  language: en
+```
 
-今動くのは `asr.name: mock` だけです。`parakeet`（Parakeet TDT 0.6B v2）、`whisper`（Whisper Large-v3）、`wav2vec2`（Wav2Vec 2.0）は名前だけ予約してあり、有効にすると未導入エラーになります。追加するときは `src/evaluation/models/asr.py` の `load_recognizer()` に、`transcribe(waveform, sample_rate)` を持つクラスを登録します。学習や微調整はしません。
+`name` は `mock`、`parakeet`、`whisper`、`wav2vec2`、`hubert`、`wavlm` です。`mock` 以外は `model_id` が必要です。デバイスを省略すると CPU です。SE の `runtime.device` とは別に指定できます。GPU を使うときは、その番号が空いていることを実行前に確認します。
 
-WER を有効にするには ASR も有効である必要があります。Clean / noisy / enhanced は同じ認識器と同じテキスト正規化で比較します。
+Whisper は `transcribe` だけで、翻訳にはしません。Parakeet の TDT / CTC / RNN-T はモデル ID のデコーダのままです。HuBERT と WavLM の自己教師ありチェックポイントは ASR として読みません。
+
+仮説の `text` は正規化前です。WER は `wer-norm-v1` を参照と仮説の両方に掛けます。モデル一覧は [ASR](../asr/MODELS.md) です。
 
 ## 指標
 
@@ -315,4 +341,4 @@ uv pip install --python .venvs/lab/bin/python "numpy==2.5.4" -r requirements/eva
 
 ## まだやらないこと
 
-全コーパスの推論、7 モデルの一括ベンチマーク、論文用 WER、ASR の導入と学習、SE の再学習、結果テーブルの DuckDB への書き込み、公式混合プロトコルへの置き換えは、この基盤ができてから別の作業です。結果ファイルは、あとから DuckDB へ登録できる JSON のままにしています。
+全コーパスの推論、7 モデルの一括ベンチマーク、論文用 WER、ASR の学習、SE の再学習、結果テーブルの DuckDB への書き込み、公式混合プロトコルへの置き換えは、この基盤の対象外です。ASR の推論入口は [ASR](../asr/MODELS.md) にあります。結果ファイルは、あとから DuckDB へ登録できる JSON のままにしています。

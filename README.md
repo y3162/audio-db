@@ -60,6 +60,24 @@ db.create_set_from_corpus(
 
 同じ case と条件からは、同じ `rms_v1` の混合が再生成されます。詳細は [評価パイプライン](docs/evaluation/PIPELINE.md) と [DB の準備](docs/db/SETUP.md) です。
 
+## 音声認識
+
+Parakeet、Whisper、Wav2Vec2、HuBERT、WavLM は `src.asr.load_recognizer()` から使います。モデル本体は `src/asr/` にあり、評価パッケージには依存しません。一覧と検証状況は [ASR](docs/asr/MODELS.md)、環境は [ASR 環境](docs/envs/ASR.md) です。
+
+```python
+from src.asr import load_recognizer
+
+asr = load_recognizer(
+    "whisper",
+    model_id="tiny",
+    device="cpu",
+    language="en",
+)
+result = asr.transcribe(waveform, sample_rate=16000)
+```
+
+評価設定では `asr.name` と `asr.model_id` を指定します。`mock` はテスト用です。
+
 ## 評価パイプライン
 
 データセット、SE、ASR、指標は差し替えられます。実コーパスや実チェックポイントが無いときは、合成音声と `mock` で一連の処理を確認できます。`mock` は音声強調モデルではありません。設計と SNR の定義は [評価パイプライン](docs/evaluation/PIPELINE.md) にあります。`rms_v1` は VoiceBank-DEMAND や URGENT の混合手順ではありません。

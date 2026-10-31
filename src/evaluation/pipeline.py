@@ -19,11 +19,7 @@ import torch
 
 from src.evaluation.audio.io import AudioNotFound, as_mono, load_waveform, save_waveform
 from src.evaluation.audio.mixing import MixResult, mix_snr
-from src.evaluation.config import (
-    PLANNED_ASR,
-    ExperimentConfig,
-    validate_registered_models,
-)
+from src.evaluation.config import ExperimentConfig, validate_registered_models
 from src.evaluation.config import config_hash as hash_config
 from src.evaluation.datasets.load import DatasetBundle, load_dataset
 from src.evaluation.envinfo import capture_environment, git_metadata
@@ -89,6 +85,8 @@ def execute(
         joined = "; ".join(plan["problems"])
         raise ConfigError(f"experiment is not ready: {joined}")
     assert_gpu_idle(config.runtime.device, allow_busy=config.runtime.allow_busy_gpu)
+    if config.asr.enabled and config.asr.device:
+        assert_gpu_idle(config.asr.device, allow_busy=config.runtime.allow_busy_gpu)
     fingerprints = [checkpoint_fingerprint(model) for model in config.models]
     _reject_identical_models(config, fingerprints)
     run_id, run_dir = _prepare_run(config, digest)
@@ -607,13 +605,18 @@ def _recognize(config, recognizer, sample, prepared, enhanced):
             result = recognizer.transcribe(waveform, prepared["sample_rate"])
             seconds = _perf() - started
             elapsed += seconds
-            hypotheses[condition] = {
+            hypothesis = {
                 "text": result.text,
                 "model": result.model,
                 "error": None,
                 "seconds": seconds,
                 "seed": seed,
             }
+            if getattr(result, "model_id", None):
+                hypothesis["model_id"] = result.model_id
+            if getattr(result, "decode", None):
+                hypothesis["decode"] = result.decode
+            hypotheses[condition] = hypothesis
         except Exception as exc:
             hypotheses[condition] = {
                 "text": None,
@@ -741,9 +744,12 @@ def _build_plan(config, digest, samples, bundle, dataset_error) -> dict[str, Any
     warnings = []
     if dataset_error:
         problems.append(dataset_error)
-    if config.asr.enabled and config.asr.name in PLANNED_ASR:
-        label = PLANNED_ASR[config.asr.name]
-        problems.append(f"ASR backend {config.asr.name} ({label}) is not installed")
+    if config.asr.enabled and config.asr.name != "mock":
+        from src.asr.catalog import backend_for, dependency_problem
+
+        problem = dependency_problem(backend_for(config.asr.name))
+        if problem:
+            problems.append(problem)
     if config.metrics.pesq:
         message = pesq_library_status()
         if message:

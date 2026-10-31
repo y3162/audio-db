@@ -16,11 +16,6 @@ PROTOCOL_RMS_V1 = "rms_v1"
 WER_NORM_V1 = "wer-norm-v1"
 MOCK_MODEL = "mock"
 ASR_CONDITIONS = ("noisy", "enhanced", "clean")
-PLANNED_ASR = {
-    "parakeet": "Parakeet TDT 0.6B v2",
-    "whisper": "Whisper Large-v3",
-    "wav2vec2": "Wav2Vec 2.0",
-}
 DATASET_SOURCES = ("duckdb", "synthetic")
 DATASET_ROLES = ("clean", "noisy", "noise")
 PAIR_MODES = ("hash", "cycle")
@@ -83,6 +78,7 @@ class ASRConfig:
     language: str | None = None
     decode: str | None = None
     checkpoint: str | None = None
+    model_id: str | None = None
     params: dict[str, Any] = field(default_factory=dict)
 
 
@@ -459,6 +455,7 @@ def _parse_asr(raw: dict[str, Any]) -> ASRConfig:
             "language",
             "decode",
             "checkpoint",
+            "model_id",
             "params",
         },
         "asr",
@@ -482,12 +479,27 @@ def _parse_asr(raw: dict[str, Any]) -> ASRConfig:
         raise ConfigError("asr.params must be a mapping")
     _jsonable(params, "asr.params")
     name = _str(raw.get("name", "mock"), "asr.name")
-    if name not in {MOCK_MODEL, *PLANNED_ASR}:
+    from src.asr.catalog import FAMILIES, resolve_model
+
+    if name not in {MOCK_MODEL, *FAMILIES}:
         raise ConfigError(
-            f"unknown ASR model {name!r}. Known names: mock, {', '.join(PLANNED_ASR)}"
+            f"unknown ASR model {name!r}. Known names: mock, {', '.join(FAMILIES)}"
         )
+    model_id = None if raw.get("model_id") is None else _str(raw["model_id"], "asr.model_id")
+    enabled = _bool(raw.get("enabled", False), "asr.enabled")
+    language = None if raw.get("language") is None else _str(raw["language"], "asr.language")
+    decode = None if raw.get("decode") is None else _str(raw["decode"], "asr.decode")
+    if name == MOCK_MODEL and model_id is not None:
+        raise ConfigError("asr.model_id applies only when asr.name is not mock")
+    if enabled and name != MOCK_MODEL:
+        if model_id is None:
+            raise ConfigError("asr.model_id is required when a real ASR model is enabled")
+        try:
+            resolve_model(name, model_id, decode=decode, language=language)
+        except ValueError as exc:
+            raise ConfigError(str(exc)) from exc
     return ASRConfig(
-        enabled=_bool(raw.get("enabled", False), "asr.enabled"),
+        enabled=enabled,
         name=name,
         default_text="" if raw.get("default_text") is None else _str(raw["default_text"], "asr.default_text"),
         scripts=scripts,
@@ -496,9 +508,10 @@ def _parse_asr(raw: dict[str, Any]) -> ASRConfig:
             None if raw.get("sample_rate") is None else _int(raw["sample_rate"], "asr.sample_rate", minimum=1)
         ),
         device=None if raw.get("device") is None else _str(raw["device"], "asr.device"),
-        language=None if raw.get("language") is None else _str(raw["language"], "asr.language"),
-        decode=None if raw.get("decode") is None else _str(raw["decode"], "asr.decode"),
+        language=language,
+        decode=decode,
         checkpoint=None if raw.get("checkpoint") is None else _str(raw["checkpoint"], "asr.checkpoint"),
+        model_id=model_id,
         params=dict(params),
     )
 

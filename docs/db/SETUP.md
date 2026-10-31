@@ -18,7 +18,7 @@ make db-ingest
 
 ### 評価セットの初期化
 
-`make db-init` は既存の `corpora.audio_files` を変更しません。`eval` スキーマを作り、`configs/db/init.yaml` に書いた Manifest とコーパス選択を登録します。同じコマンドを重ねて実行しても行は増えません。音声や Manifest が無い項目は、`required: false` なら理由を出してスキップします。
+`make db-init` は既存の `corpora.audio_files` を変更しません。`eval` スキーマを作り、`configs/db/init.yaml` に書いた Manifest、コーパス選択、CHiME3 の公式アノテーション、MP-SENet の VoiceBank-DEMAND リストを登録します。同じコマンドを重ねて実行しても行は増えません。音声や Manifest が無い項目は、`required: false` なら理由を出してスキップします。内容が違う再登録はエラーになり、一部だけは残りません。
 
 ```bash
 make db-init

@@ -1,26 +1,18 @@
-"""ASR interface.
+"""Evaluation adapter for ASR.
 
-Real backends are named so a later implementation can be dropped in. Only the
-mock recognizer is executable in this environment. ASR training is out of scope.
+Mock stays here. Real checkpoints are loaded from ``src.asr``.
 """
 
 from __future__ import annotations
 
-from dataclasses import dataclass, field
 from typing import Any
 
 import torch
 
-from src.evaluation.config import ASRConfig, PLANNED_ASR
+from src.asr import ASRResult, load_recognizer as load_asr
+from src.asr.catalog import backend_for, dependency_problem
+from src.evaluation.config import ASRConfig
 from src.evaluation.errors import ConfigError
-
-
-@dataclass
-class ASRResult:
-    text: str
-    model: str
-    language: str | None = None
-    extra: dict[str, Any] = field(default_factory=dict)
 
 
 class MockRecognizer:
@@ -58,20 +50,28 @@ def load_recognizer(config: ASRConfig):
         return None
     if config.name == "mock":
         return MockRecognizer(default_text=config.default_text, scripts=config.scripts)
-    if config.name in PLANNED_ASR:
-        label = PLANNED_ASR[config.name]
-        raise ConfigError(
-            f"ASR backend {config.name!r} ({label}) is not installed. "
-            "Use asr.name=mock, or add a class with transcribe(waveform, sample_rate) "
-            "in src/evaluation/models/asr.py. ASR training is out of scope."
+    if not config.model_id:
+        raise ConfigError("asr.model_id is required when a real ASR model is enabled")
+    problem = dependency_problem(backend_for(config.name))
+    if problem:
+        raise ConfigError(problem)
+    try:
+        return load_asr(
+            config.name,
+            model_id=config.model_id,
+            device=config.device or "cpu",
+            language=config.language,
+            decode=config.decode,
         )
-    raise ConfigError(f"unknown ASR model: {config.name}")
+    except ValueError as exc:
+        raise ConfigError(str(exc)) from exc
 
 
 def recognizer_settings(config: ASRConfig) -> dict[str, Any]:
     return {
         "enabled": config.enabled,
         "name": config.name,
+        "model_id": config.model_id,
         "conditions": list(config.conditions),
         "sample_rate": config.sample_rate,
         "device": config.device,

@@ -14,8 +14,21 @@ from typing import Any
 from src.evaluation.errors import DatasetError
 
 DEFAULT_CONFIG = Path("configs/db/init.yaml")
-_TOP_LEVEL = {"database", "corpora_root", "manifests", "corpus_sets"}
+_TOP_LEVEL = {"database", "corpora_root", "manifests", "corpus_sets", "annotation_sets"}
 _MANIFEST_KEYS = {"path", "set", "required", "description", "root"}
+_ANNOTATION_KEYS = {
+    "importer",
+    "set",
+    "required",
+    "description",
+    "split",
+    "condition",
+    "channel",
+    "path",
+    "clean_dir",
+    "noisy_dir",
+    "root",
+}
 _CORPUS_KEYS = {
     "name",
     "required",
@@ -56,6 +69,8 @@ def initialize(config_path: str | Path = DEFAULT_CONFIG) -> str:
         lines.append(_import_manifest(db, item))
     for item in raw.get("corpus_sets") or []:
         lines.append(_import_corpus_set(db, item))
+    for item in raw.get("annotation_sets") or []:
+        lines.append(_import_annotation(db, item, corpora_root))
     after = db.corpora_fingerprint()
     if before != after:
         raise DatasetError("corpora.audio_files changed during db-init")
@@ -135,6 +150,43 @@ def _import_corpus_set(db, item: dict[str, Any]) -> str:
     return f"set {name}: {report}"
 
 
+def _import_annotation(db, item: dict[str, Any], corpora_root: str) -> str:
+    set_name = item["set"]
+    required = bool(item.get("required", False))
+    importer = item["importer"]
+    try:
+        if importer == "chime3":
+            from src.data.corpora.chime3_annotations import load_chime3_samples
+
+            root = item.get("root") or str(Path(corpora_root) / "CHiME3")
+            samples = load_chime3_samples(
+                root,
+                split=item.get("split"),
+                condition=item.get("condition"),
+                channel=item.get("channel"),
+            )
+        elif importer == "mp_senet_voicebank":
+            from src.data.corpora.mpsenet_filelist import load_mpsenet_filelist
+
+            samples = load_mpsenet_filelist(
+                item["path"],
+                clean_dir=item["clean_dir"],
+                noisy_dir=item["noisy_dir"],
+                split=item.get("split") or "test",
+            )
+        else:
+            raise DatasetError(f"unknown annotation importer {importer!r}")
+        report = db.register_samples(samples, set_name, description=item.get("description"))
+    except (DatasetError, OSError, ValueError) as exc:
+        message = str(exc)
+        if "already registered with different" in message:
+            raise DatasetError(f"set {set_name}: {exc}") from exc
+        if required:
+            raise DatasetError(f"set {set_name}: {exc}") from exc
+        return f"set {set_name}: skipped ({exc})"
+    return f"set {set_name}: {report}"
+
+
 def _load(path: Path) -> dict[str, Any]:
     if not path.is_file():
         raise DatasetError(f"db-init config not found: {path}")
@@ -155,6 +207,8 @@ def _load(path: Path) -> dict[str, Any]:
         raise DatasetError("database must be a path")
     _check_list(raw.get("manifests", []), "manifests", _MANIFEST_KEYS, ("path", "set"))
     _check_list(raw.get("corpus_sets", []), "corpus_sets", _CORPUS_KEYS, ("name",))
+    _check_list(raw.get("annotation_sets", []), "annotation_sets", _ANNOTATION_KEYS, ("importer", "set"))
+    _check_annotation_importers(raw.get("annotation_sets") or [])
     return raw
 
 
@@ -173,6 +227,21 @@ def _check_list(items: Any, where: str, allowed: set[str], required: tuple[str, 
             raise DatasetError(f"missing fields in {label}: {', '.join(missing)}")
         if "required" in item and not isinstance(item["required"], bool):
             raise DatasetError(f"{label}.required must be a boolean")
+
+
+def _check_annotation_importers(items: list[dict[str, Any]]) -> None:
+    required_by_importer = {
+        "chime3": ("split", "condition"),
+        "mp_senet_voicebank": ("path", "clean_dir", "noisy_dir"),
+    }
+    for index, item in enumerate(items):
+        importer = item["importer"]
+        if importer not in required_by_importer:
+            known = ", ".join(sorted(required_by_importer))
+            raise DatasetError(f"annotation_sets[{index}] has unknown importer {importer!r}. Known: {known}")
+        missing = [key for key in required_by_importer[importer] if key not in item]
+        if missing:
+            raise DatasetError(f"annotation_sets[{index}] missing fields: {', '.join(missing)}")
 
 
 if __name__ == "__main__":

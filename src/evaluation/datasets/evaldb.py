@@ -192,6 +192,19 @@ class EvaluationDB:
         cases = [self._case_from_manifest(sample) for sample in samples]
         return self._register(cases, set_name, description)
 
+    def register_samples(
+        self,
+        samples: list[AudioSample],
+        set_name: str,
+        *,
+        description: str | None = None,
+    ) -> RegistrationReport:
+        """Register samples that were already resolved to audio files."""
+        if not samples:
+            raise DatasetError(f"evaluation set {set_name} has no cases")
+        cases = [self._case_from_manifest(sample) for sample in samples]
+        return self._register(cases, set_name, description)
+
     def create_set_from_corpus(
         self,
         name: str,

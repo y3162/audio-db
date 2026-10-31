@@ -28,6 +28,18 @@ DBの仕様書
 
 ---
 
+### [ASR.md](envs/ASR.md)
+
+NeMo / Whisper / Transformers 用の仮想環境
+
+---
+
+### [MODELS.md](asr/MODELS.md)
+
+ASR のモデル一覧と共通 API
+
+---
+
 ### [PIPELINE.md](evaluation/PIPELINE.md)
 
 音声強調の評価パイプライン
