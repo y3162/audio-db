@@ -33,6 +33,22 @@ from src.training.errors import TrainingError
 FORMAT = "audio-db-training-v1"
 
 
+def _inference_payload(task: Any) -> dict[str, Any] | None:
+    """File contents that ``load_enhancer`` can read back.
+
+    Tasks that need a different layout (ESPnet ``separator.`` keys, a raw
+    state dictionary) implement ``export_for_inference``. The default matches
+    the MP-SENet ``generator`` checkpoint.
+    """
+    export = getattr(task, "export_for_inference", None)
+    if export is not None:
+        return export()
+    generator = task.generator_state_dict()
+    if generator is None:
+        return None
+    return {"generator": generator}
+
+
 def backward(loss: torch.Tensor, modules: list[nn.Module], *, last: bool) -> None:
     """Backpropagate one scaled micro-batch.
 
@@ -152,11 +168,11 @@ class Trainer:
                 self._require_finite(metrics)
                 self.global_step += 1
                 epoch_done = cursor >= usable_batches
-                if epoch_done:
-                    self.task.step_schedulers()
                 validation_summary = None
                 if self.validation_interval and self.global_step % self.validation_interval == 0:
                     validation_summary = self._validate(validation, epoch)
+                if epoch_done:
+                    self.task.step_schedulers(validation_summary)
                 checkpoint_path = None
                 if self._should_save(self.global_step):
                     checkpoint_path = self._save(dataset, epoch, cursor, usable_batches)
@@ -202,9 +218,9 @@ class Trainer:
         }
         path = self.checkpoint_dir / f"step_{self.global_step:08d}.pt"
         save_atomic(path, payload)
-        generator = self.task.generator_state_dict()
-        if generator is not None:
-            save_atomic(self.checkpoint_dir / "generator.pt", {"generator": generator})
+        exported = _inference_payload(self.task)
+        if exported is not None:
+            save_atomic(self.checkpoint_dir / "generator.pt", exported)
         return str(path)
 
     def _validate(self, validation: RecipeDataset | None, epoch: int) -> dict[str, Any] | None:
@@ -295,12 +311,12 @@ class Trainer:
         score = float(pesq["value"])
         if self.best_pesq is not None and score <= self.best_pesq:
             return None
-        generator = self.task.generator_state_dict()
-        if generator is None:
+        exported = _inference_payload(self.task)
+        if exported is None:
             return None
         self.best_pesq = score
         path = self.checkpoint_dir / "best_generator.pt"
-        save_atomic(path, {"generator": generator})
+        save_atomic(path, exported)
         write_json(
             self.checkpoint_dir / "best_generator.json",
             {

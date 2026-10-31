@@ -1,0 +1,55 @@
+# StuPASE CFM smoke. This calls CFM.forward (masked velocity MSE).
+# It does not call CFM.sample. Text is zeros unless a frozen DeWavLM-R
+# condition is added. DeWavLM training itself needs WavLM-Large.pt, which
+# is not in data/checkpoints. Official CFM.pt is not loaded by this file.
+
+seed: 1234
+deterministic: true
+global_batch_size: 1
+micro_batch_size_per_gpu: 1
+max_steps: 1
+segment_size: 512
+loss: official
+grad_clip: 3.0
+checkpoint_dir: data/results/training/stupase-cfm
+checkpoint_interval: 0
+validation_interval: 0
+best_checkpoint_start_epoch: 40
+
+optimizer:
+  name: adamw
+  lr: 0.0001
+  betas: [0.8, 0.99]
+  weight_decay: 0.01
+
+scheduler:
+  name: none
+
+model:
+  name: stupase
+  stage: cfm
+  sampling_rate: 16000
+  architecture:
+    dit:
+      dim: 32
+      depth: 1
+      heads: 4
+      dim_head: 8
+      mel_dim: 16
+      text_in_dim: 16
+      ff_mult: 2
+    mel:
+      n_fft: 64
+      hop_length: 16
+      win_length: 64
+      n_mel_channels: 16
+      target_sample_rate: 16000
+
+data:
+  database: data/db/training.duckdb
+  train_set: libri_demand_smoke_train
+  validation_set: libri_demand_smoke_valid
+
+runtime:
+  device: cpu
+  allow_busy_gpu: false

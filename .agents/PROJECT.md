@@ -15,7 +15,7 @@
 | `src/asr/` | 独立した ASR モデルと共通 API。Parakeet、Whisper、Wav2Vec2、HuBERT、WavLM | `load_recognizer()` → `transcribe()` |
 | `src/evaluation/` | 評価パイプライン（入力 → レシピがあれば波形生成 → SE → ASR → 指標 → 結果保存）。SE と ASR は共通 API だけを呼ぶ | `python -m src.evaluation.cli` |
 | `src/data/` | コーパスの走査、レシピの検証とケース ID、永続ステージング、DuckDB（`corpora`・`eval` スキーマ）の管理 | `make db-ingest`、`make db-init` |
-| `src/training/` | SE の学習。共通の Trainer・バッチ計画・checkpoint、MP-SENet の損失・Discriminator、TF-GridNet の時間 L1。推論 API は呼ばない | `python -m src.training.se.cli` |
+| `src/training/` | SE の学習。共通の Trainer・バッチ計画・checkpoint。モデルごとの損失と更新順は `src/training/se/`。推論 API は呼ばない | `python -m src.training.se.cli` |
 
 モデルの一覧と検証状況は `docs/se/`、`docs/asr/MODELS.md`、評価の仕様は `docs/evaluation/PIPELINE.md`。
 

@@ -1,0 +1,43 @@
+# TF-GridNet. loss official is ESPnet mr_l1_tfd, not waveform L1.
+# urgent24: TFGridNetV3, STFT scaled from 8 kHz (256/128), Adam, StepLR.
+# ms-snsd: waveform TFGridNet, Adam, ReduceLROnPlateau. Set variant to ms-snsd.
+
+seed: 1234
+deterministic: true
+global_batch_size: 2
+micro_batch_size_per_gpu: 1
+max_steps: 2
+segment_size: 16000
+loss: official
+grad_clip: 1.0
+checkpoint_dir: data/results/training/tf-gridnet
+checkpoint_interval: 0
+validation_interval: 0
+best_checkpoint_start_epoch: 40
+
+optimizer:
+  name: adam
+  lr: 0.001
+  betas: [0.9, 0.999]
+  weight_decay: 0.00001
+
+scheduler:
+  name: steplr
+  gamma: 0.99
+  step_size: 2
+
+model:
+  name: tf_gridnet
+  variant: urgent24
+  sampling_rate: 16000
+  architecture: {}
+  stft: {}
+
+data:
+  database: data/db/training.duckdb
+  train_set: libri_demand_smoke_train
+  validation_set: libri_demand_smoke_valid
+
+runtime:
+  device: cpu
+  allow_busy_gpu: false

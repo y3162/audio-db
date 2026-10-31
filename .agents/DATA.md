@@ -53,7 +53,7 @@ DuckDB は `data/db/resource.duckdb`（`src/data/constants.py`）。
 - 教師はレシピの `output.reference` だけである。`dry_clean` と `reverberant_clean` を取り違えない。`none` のケースは学習に入れず、エラーにする。
 - サンプルの識別子は `case_id`（レシピの SHA-256）である。rowid や登録順の採番は学習の並びに使わない。
 - `configs/db/init.yaml` の評価セット（LibriSpeech test-clean、CHiME3 et05 を含む）は学習にも検証にも使わない。
-- 学習は `data/db/resource.duckdb` を開かない。このファイルは評価用の名前付きセットを持つ本番 DB だからである。接続確認はレシピスキーマの別ファイル（`data/db/rebuild-a.duckdb` でもよい）を読み取り専用で開く。
+- 学習は `data/db/resource.duckdb` を開かない。このファイルは評価用の名前付きセットを持つ本番 DB だからである。学習セットは `data/db/training.duckdb` にあり、再構築元は `data/staging/training/` である。`libri_demand_smoke_train` は LibriSpeech train-clean-100、`libri_demand_smoke_valid` は dev-clean で、DEMAND のシーンは重ならない。VoiceBank-DEMAND の公式セットではない。接続確認に `rebuild-a.duckdb` を読み取り専用で開いてもよい。
 
 ## 指標の欠損と有効性
 
@@ -80,7 +80,7 @@ DuckDB は `data/db/resource.duckdb`（`src/data/constants.py`）。
 | `data/checkpoints/` | 配布チェックポイント。取得が重い。削除・上書きをしない。ライブラリのコードにはパスを固定せず、呼び出し側が渡す。設定やテストにある `data/checkpoints/...` は例で、無ければテストは skip する |
 | `data/results/` | `se-evaluation/<run_id>/` は評価結果の一次記録（`config.json` と `results.jsonl`）。`se-repro/` は公式再現の記録とビルドキャッシュ。新しい実行は新しい `run_id`。既存の run ディレクトリは `--resume` なしでは使えない。DuckDB へ載せるときは、このディレクトリを `register_run` で登録する |
 | `data/staging/` | DB の再構築元。登録後も残す。Git 管理外 |
-| `data/db/` | `resource.duckdb` はレシピスキーマの本番ファイル。`backups/resource-legacy-20261031.duckdb` は切り替え前の固定列スキーマ。`rebuild-a.duckdb` と `rebuild-b.duckdb` は切り替え前に作った同じ内容の再構築コピー |
+| `data/db/` | `resource.duckdb` はレシピスキーマの本番ファイル。`training.duckdb` は学習スモークセット。`backups/resource-legacy-20261031.duckdb` は切り替え前の固定列スキーマ。`rebuild-a.duckdb` と `rebuild-b.duckdb` は切り替え前に作った同じ内容の再構築コピー |
 
 ## DB の書き込みと保護
 

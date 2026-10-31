@@ -47,7 +47,10 @@ class SelectiveSSM(nn.Module):
         self.conv1d = nn.Conv1d(inner, inner, d_conv, padding=d_conv - 1, groups=inner)
         self.x_proj = nn.Linear(inner, self.dt_rank + d_state * 2, bias=False)
         self.dt_proj = nn.Linear(self.dt_rank, inner)
-        self.A_log = nn.Parameter(torch.empty(inner, d_state))
+        # S6 state matrix A_i = i. An uninitialized parameter is non-finite and
+        # makes the selective scan, and any waveform loss, non-finite.
+        state = torch.arange(1, d_state + 1, dtype=torch.float32)
+        self.A_log = nn.Parameter(torch.log(state).repeat(inner, 1))
         self.D = nn.Parameter(torch.ones(inner))
         self.out_proj = nn.Linear(inner, d_model, bias=False)
 

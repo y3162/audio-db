@@ -3,10 +3,10 @@
 # ExponentialLR steps once per completed epoch, as in the official train.py.
 # Global step still counts optimizer updates. See docs/training/MP_SENET.md.
 #
-# Replace the set names with training and validation sets that have a teacher
-# reference. LibriSpeech test-clean, CHiME3 et05, and the evaluation set names
-# in configs/db/init.yaml are refused. resource.duckdb is the production
-# evaluation database and is refused by name.
+# data/db/training.duckdb holds libri_demand_smoke_train and
+# libri_demand_smoke_valid. Those are LibriSpeech train-clean-100 and
+# dev-clean mixed with disjoint DEMAND scenes. They are not VoiceBank-DEMAND.
+# LibriSpeech test-clean, CHiME3 et05, and resource.duckdb are refused.
 
 seed: 1234
 deterministic: true
@@ -43,8 +43,8 @@ model:
 
 data:
   database: data/db/training.duckdb
-  train_set: CHANGE_ME_TRAIN
-  validation_set: CHANGE_ME_VALID
+  train_set: libri_demand_smoke_train
+  validation_set: libri_demand_smoke_valid
 
 runtime:
   device: cpu

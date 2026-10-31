@@ -1,0 +1,49 @@
+# SEMamba++. Generator losses and the discriminator-then-generator order follow
+# the published weights. The discriminators in src/training are independent;
+# the reference training source has no license and is not imported.
+
+seed: 1234
+deterministic: true
+global_batch_size: 2
+micro_batch_size_per_gpu: 1
+max_steps: 2
+segment_size: 16000
+loss: official
+checkpoint_dir: data/results/training/semambapp
+checkpoint_interval: 0
+validation_interval: 0
+best_checkpoint_start_epoch: 40
+
+optimizer:
+  name: adamw
+  lr: 0.0002
+  betas: [0.8, 0.99]
+  weight_decay: 0.01
+
+scheduler:
+  name: exponential
+  gamma: 0.99
+
+model:
+  name: semambapp
+  sampling_rate: 16000
+  architecture:
+    hid_feature: 8
+    num_tfmamba: 1
+    d_state: 4
+    d_conv: 2
+    expand: 2
+    n_fft: 400
+  stft:
+    hop: 100
+    win: 400
+    disc_windows: [256, 512]
+
+data:
+  database: data/db/training.duckdb
+  train_set: libri_demand_smoke_train
+  validation_set: libri_demand_smoke_valid
+
+runtime:
+  device: cpu
+  allow_busy_gpu: false

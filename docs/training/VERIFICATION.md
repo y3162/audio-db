@@ -47,3 +47,24 @@ Seed はテスト内の値。再現実験の代表は seed 7、再構成損失�
 `AdaptiveMaxPool2d` の CUDA 逆伝播と `reflection_pad1d` の CUDA 逆伝播は、決定的アルゴリズムを有効にすると実行できない。順伝播の値が公式と同じになる `amax` と index reflect に置き換えたうえで、上の一致を確認した。非決定的カーネルへ黙って戻してはいない。
 
 VoiceBank-DEMAND での長時間学習と、公式チェックポイントとの学習曲線の比較は行っていない。
+
+## 公式 1 step（L3）と他モデル
+
+2026-10-31、同じホスト `turing`、同じ lab 環境。CPU。公式 MP-SENet と独立実装を、`dense_channel=4`、`n_fft=64`、hop 16、長さ 2048、batch 2、eval（Dropout なし）で 1 step 比べた。
+
+| 項目 | 最大絶対誤差 |
+|---|---|
+| STFT 振幅 | 0 |
+| Generator 振幅 | 0 |
+| Generator 位相 | 0 |
+| Discriminator 出力 | 0 |
+| 損失合計 | 0 |
+| Generator 勾配 | 6.43e-8 |
+| Discriminator 勾配 | 0 |
+| AdamW 更新後の重み | 4.05e-4 |
+
+重みの差は、6e-8 の勾配差が AdamW の epsilon 1e-8 を通ったあとである。
+
+同じ日、物理 GPU 0（使用メモリ 18 MiB）で公式損失を 1 step、2 回実行した。損失はどちらも Generator 1.705775、Discriminator 0.437144。Generator の SHA-256 はどちらも `3f27a11466229721003b99d14e838f7a4a48d891e61468b02f307b0e1dba6f9e`。物理 GPU 0 と 1（どちらも使用メモリ 13–18 MiB）の `torchrun --nproc_per_node=2` を 2 回実行し、rank 0 の SHA-256 はどちらも `7ff01c656bf9bcd87852ddba9476a9b1402b21c26ef5ea2caf482e21366d3078`。Generator 損失はどちらも 1.704373。ファイルは `/tmp` にあり、リポジトリには残していない。
+
+TF-GridNet、SEMamba++、MossFormerGAN、DeepFilterNet3、StuPASE の 1 step は `tests/training/test_model_tasks.py` が CPU で確認した。レベルは [OTHER_MODELS.md](OTHER_MODELS.md)。SEMamba++ の `A_log` は未初期化だと selective scan が非有限になる。S6 の `A_i = i` で初期化する。CUDA の `mamba_ssm` 融合カーネルとの学習ステップ比較はしていない。

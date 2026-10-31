@@ -27,7 +27,7 @@ model_ms = build_model('tf_gridnet', variant='ms-snsd')
 
 ## 学習
 
-MP-SENet の学習は `src.training` にある。`enhance()` は推論のままである。手順と公式実装との差は [学習](docs/training/MP_SENET.md)、確認した条件は [検証記録](docs/training/VERIFICATION.md) を参照する。
+SE の学習は `src.training` にある。`enhance()` は推論のままである。MP-SENet は [学習](docs/training/MP_SENET.md)、ほかのモデルの到達レベルは [OTHER_MODELS.md](docs/training/OTHER_MODELS.md)、確認した条件は [検証記録](docs/training/VERIFICATION.md) を参照する。
 
 ```bash
 .venvs/lab/bin/python -m src.training.se.cli --config configs/training/mp_senet.yaml

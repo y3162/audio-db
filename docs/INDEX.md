@@ -16,6 +16,12 @@ TSUBAME4.0用の環境構築手順書
 
 ---
 
+### [TRAINING_SETS.md](db/TRAINING_SETS.md)
+
+学習スモークセットの分割。VoiceBank-DEMAND ではない
+
+---
+
 ### [SETUP.md](db/SETUP.md)
 
 DBの仕様書

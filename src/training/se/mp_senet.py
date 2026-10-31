@@ -83,10 +83,14 @@ class MPSENetTask:
             rates["discriminator"] = float(self.optim_d.param_groups[0]["lr"])
         return rates
 
-    def step_schedulers(self) -> None:
+    def step_schedulers(self, validation: dict[str, Any] | None = None) -> None:
+        del validation
         self.sched_g.step()
         if self.sched_d is not None:
             self.sched_d.step()
+
+    def export_for_inference(self) -> dict[str, Any]:
+        return {"generator": self.generator_state_dict()}
 
     def generator_state_dict(self) -> dict[str, torch.Tensor]:
         return unwrap(self.generator).state_dict()

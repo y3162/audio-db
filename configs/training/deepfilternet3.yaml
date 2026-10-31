@@ -1,0 +1,55 @@
+# DeepFilterNet3 smoke geometry. emb_num_layers must stay >= 2 or ErbDecoder
+# builds a GRU with zero layers. The released training ini is not in this tree.
+# Coefficients are the examples next to df/loss.py, not a shipped config.ini.
+# Do not point checkpoint_dir at data/checkpoints.
+
+seed: 1234
+deterministic: true
+global_batch_size: 1
+micro_batch_size_per_gpu: 1
+max_steps: 1
+segment_size: 1024
+loss: official
+grad_clip: 1.0
+checkpoint_dir: data/results/training/deepfilternet3
+checkpoint_interval: 0
+validation_interval: 0
+best_checkpoint_start_epoch: 40
+
+optimizer:
+  name: adamw
+  lr: 0.0005
+  betas: [0.9, 0.999]
+  weight_decay: 0.05
+
+scheduler:
+  name: none
+
+model:
+  name: deepfilternet3
+  sampling_rate: 16000
+  architecture:
+    sr: 16000
+    fft_size: 128
+    hop_size: 64
+    nb_erb: 16
+    nb_df: 16
+    conv_ch: 16
+    emb_hidden_dim: 32
+    df_hidden_dim: 32
+    enc_lin_groups: 8
+    lin_groups: 8
+    emb_num_layers: 2
+    df_num_layers: 1
+    df_order: 5
+    conv_lookahead: 0
+    df_lookahead: 0
+
+data:
+  database: data/db/training.duckdb
+  train_set: libri_demand_smoke_train
+  validation_set: libri_demand_smoke_valid
+
+runtime:
+  device: cpu
+  allow_busy_gpu: false

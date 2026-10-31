@@ -61,8 +61,15 @@ class WaveformTask:
     def learning_rates(self) -> dict[str, float]:
         return {"generator": float(self.optim_g.param_groups[0]["lr"])}
 
-    def step_schedulers(self) -> None:
+    def step_schedulers(self, validation: dict[str, Any] | None = None) -> None:
+        del validation
         self.sched_g.step()
+
+    def export_for_inference(self) -> dict[str, torch.Tensor]:
+        state = unwrap(self.generator).state_dict()
+        if self.config["model"]["name"] == "tf_gridnet":
+            return {"separator." + name: value for name, value in state.items()}
+        return state
 
     def generator_state_dict(self) -> dict[str, torch.Tensor]:
         return unwrap(self.generator).state_dict()

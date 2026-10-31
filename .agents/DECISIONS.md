@@ -25,3 +25,4 @@
 16. **Global batch は厳密に保つ。** `micro_batch_size_per_gpu` は上限で、その範囲の最大の micro batch と整数の蓄積回数で global batch を作る。作れない構成はエラーにする。Global step は Optimizer 更新の回数である。MP-SENet の ExponentialLR は、公式と同じく、そのエポックの使える micro-batch を終えたときだけ進む。蓄積回数では進まない。
 17. **学習の乱数は用途ごとに分ける。** 初期化、dropout、サンプル順、切り出しは独立である。切り出しと順序はサンプル ID と seed から再現し、消費順には依存させない。`deterministic: true` では決定的アルゴリズムを有効にし、決定的に計算できない CUDA 逆伝播は非決定的カーネルへ戻さず、同じ順伝播値の別実装にする。
 18. **学習データは名前付きセットのレシピだけを使う。** 教師が定義できないケースと、LibriSpeech test-clean・CHiME3 et05 を含む評価用セットは拒否する。ケースの識別はレシピハッシュで、採番 ID ではない。本番 `resource.duckdb` は評価セットの本番ファイルなので、学習からは名前で拒否する。
+19. **7 モデルの学習タスクは `src/training/se/` に分け、共通 Trainer に損失を書かない。** MP-SENet は公式ステップとの数値比較まで行った。TF-GridNet の学習損失は ESPnet の `mr_l1_tfd` である。SEMamba++ の参照学習ソースにはライセンスが無いので、Discriminator は公開されている損失の形で独立に書いた。UniPASE と StuPASE の DeWavLM 段階は WavLM-Large が無いので実行しない。StuPASE の CFM 学習は `forward` の流速 MSE で、推論の ODE サンプルとは別である。DeepFilterNet3 の学習 ini はこのツリーに無い。

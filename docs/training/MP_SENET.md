@@ -50,12 +50,12 @@
 - VoiceBank-DEMAND 全件での学習と、論文のスコア比較。
 - 公式 Discriminator checkpoint の読み込み検証。
 - 複数ノード。
-- 公式学習ステップとの数値比較（L3）。
+- 公式学習ステップとの数値比較は [VERIFICATION.md](VERIFICATION.md) の L3 節。長時間の学習曲線は未実施。
 - ASR の学習、ASR 特徴の損失。
 
 ## 学習データ
 
-`data.database` はレシピスキーマの DuckDB である。`data/db/resource.duckdb` は評価セットの本番ファイルなので、名前でも拒否する。`train_set` と `validation_set` は別名にする。
+`data.database` はレシピスキーマの DuckDB である。`data/db/resource.duckdb` は評価セットの本番ファイルなので、名前でも拒否する。`configs/training/mp_senet.yaml` は `data/db/training.duckdb` の `libri_demand_smoke_train` と `libri_demand_smoke_valid` を指す。これは LibriSpeech train-clean-100 と dev-clean に DEMAND を混ぜた 2 秒のスモークで、VoiceBank-DEMAND ではない。`train_set` と `validation_set` は別名にする。
 
 教師が `dry_clean` または `reverberant_clean` のケースだけを使う。`none` はエラーにする。`dry_clean` を残響教師の代わりには使わない。ケースの識別子はレシピの SHA-256 で、採番 ID は使わない。
 
