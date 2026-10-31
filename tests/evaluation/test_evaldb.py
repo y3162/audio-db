@@ -389,6 +389,60 @@ class RealDatabaseInitTests(unittest.TestCase):
         right = _mix_sample(again[0])
         self.assertTrue(torch.equal(left.noisy, right.noisy))
         self.assertAlmostEqual(left.snr_db_achieved, 0.0, places=2)
+        full = list(db.load_dataset("libri_testclean_full_smoke"))
+        self.assertEqual(len(full), 8)
+        self.assertEqual([item.utterance_id for item in full], sorted(item.utterance_id for item in full))
+        self.assertNotIn("mix", full[0].metadata)
+        self.assertTrue(full[0].transcript)
+        self.assertIsNone(full[0].noisy_path)
+        self.assertTrue(Path(full[0].clean_path).is_file())
+        self._assert_named_set_inference(database)
+
+
+    def _assert_named_set_inference(self, database: Path) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            demand = experiment_config(directory, run_id="demand")
+            demand.dataset.source = "duckdb"
+            demand.dataset.path = str(database)
+            demand.dataset.corpora_root = str(ROOT / "data/corpora")
+            demand.dataset.set_name = "libri_demand_snr0"
+            demand.experiment.limit = 1
+            demand.mixing.enabled = False
+            demand.metrics.pesq = False
+            demand.metrics.stoi = False
+            demand.runtime.device = "cpu"
+            cropped = execute(demand, enhancer_factory=lambda model, device: _CopyEnhancer())
+            record = cropped["records"][0]
+            self.assertEqual(record["status"], "ok")
+            self.assertIsNotNone(record["hypotheses"]["enhanced"]["text"])
+            self.assertTrue(record["reference_audio"]["truncated"])
+            self.assertEqual(record["wer"]["status"], "na")
+            self.assertEqual(record["wer"]["reason"], "partial_audio")
+            self.assertEqual(record["mix"]["protocol"], "rms_v1")
+
+            whole = experiment_config(directory, run_id="whole")
+            whole.dataset.source = "duckdb"
+            whole.dataset.path = str(database)
+            whole.dataset.corpora_root = str(ROOT / "data/corpora")
+            whole.dataset.set_name = "libri_testclean_full_smoke"
+            whole.experiment.limit = 1
+            whole.mixing.enabled = False
+            whole.metrics.pesq = False
+            whole.metrics.stoi = False
+            whole.runtime.device = "cpu"
+            scored = execute(whole, enhancer_factory=lambda model, device: _CopyEnhancer())
+            full_record = scored["records"][0]
+            self.assertEqual(full_record["status"], "ok")
+            self.assertFalse(full_record["reference_audio"]["truncated"])
+            self.assertIsNone(full_record["reference_audio"]["max_seconds"])
+            self.assertEqual(full_record["wer"]["status"], "ok")
+            self.assertGreater(full_record["wer"]["values"]["enhanced"]["normalized"]["N"], 0)
+            self.assertEqual(full_record["reference_audio"]["used_frames"], full_record["reference_audio"]["source_frames"])
+
+
+class _CopyEnhancer:
+    def enhance(self, waveform, sample_rate):
+        return waveform.clone()
 
 
 def _connect(database: Path):

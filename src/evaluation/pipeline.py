@@ -17,7 +17,7 @@ from typing import Any
 
 import torch
 
-from src.evaluation.audio.io import AudioNotFound, as_mono, load_waveform, save_waveform
+from src.evaluation.audio.io import AudioNotFound, as_mono_span, load_waveform_span, save_waveform
 from src.evaluation.audio.mixing import MixResult, mix_snr
 from src.evaluation.config import ExperimentConfig, validate_registered_models
 from src.evaluation.config import config_hash as hash_config
@@ -359,6 +359,7 @@ def _one_utterance(
         enhanced.waveform,
     )
     metric_begin = _perf()
+    reference_audio = prepared.get("reference_audio") or {}
     metrics = score_utterance(
         config.metrics,
         clean=prepared["clean_wave"],
@@ -366,6 +367,7 @@ def _one_utterance(
         sample_rate=prepared["sample_rate"],
         reference=sample.transcript,
         hypotheses=hypotheses or {},
+        reference_truncated=reference_audio.get("truncated"),
     )
     metric_seconds = _perf() - metric_begin
     saved = _save_enhanced(config, run_dir, slot_id, enhanced.waveform, prepared["sample_rate"])
@@ -427,6 +429,8 @@ def _prepare(config: ExperimentConfig, sample: AudioSample, noise_item: AudioSam
             clean = _load_any(sample.clean_waveform, sample.sample_rate, sample.clean_path, clean_limit)
             if clean is None:
                 return _mark(payload, started, "skipped", "clean_required")
+            clean_wave, clean_rate, clean_span = clean
+            payload["reference_audio"] = clean_span
             if recipe is not None:
                 noise_loaded = _load_any(
                     sample.noise_waveform, sample.sample_rate, sample.noise_path, noise_limit
@@ -434,14 +438,13 @@ def _prepare(config: ExperimentConfig, sample: AudioSample, noise_item: AudioSam
                 noise_path = sample.noise_path
                 if noise_loaded is None:
                     return _mark(payload, started, "skipped", "noise_required")
-                noise_tensor, noise_rate = noise_loaded
+                noise_tensor, noise_rate, _noise_span = noise_loaded
             else:
                 noise_loaded, noise_path = _load_noise(sample, noise_item, noise_limit)
                 if noise_loaded is None:
                     return _mark(payload, started, "skipped", "noise_required")
-                noise_tensor, noise_rate = noise_loaded
+                noise_tensor, noise_rate, _noise_span = noise_loaded
             paths["noise"] = noise_path
-            clean_wave, clean_rate = clean
             if recipe is not None:
                 mix_seed = int(recipe["seed"])
                 protocol = str(recipe.get("protocol") or config.mixing.protocol)
@@ -491,11 +494,12 @@ def _prepare(config: ExperimentConfig, sample: AudioSample, noise_item: AudioSam
             loaded = _load_primary(sample, config.dataset.max_seconds)
             if loaded is None:
                 return _mark(payload, started, "skipped", "no_audio")
-            kind, wave, rate, clean = loaded
+            kind, wave, rate, clean, span = loaded
             payload["paths"]["input_kind"] = kind
             payload["input_wave"] = wave
             payload["clean_wave"] = clean
             payload["sample_rate"] = rate
+            payload["reference_audio"] = span
         _check_wave(payload["input_wave"], "input")
         if payload["clean_wave"] is not None:
             _check_wave(payload["clean_wave"], "clean")
@@ -519,16 +523,16 @@ def _assign_enhance_seed(config, sample, model, snr, prepared) -> None:
 
 def _load_primary(sample: AudioSample, max_seconds):
     if sample.noisy_waveform is not None or sample.noisy_path:
-        wave, rate = _require_load(sample.noisy_waveform, sample.sample_rate, sample.noisy_path, max_seconds)
+        wave, rate, span = _require_load(sample.noisy_waveform, sample.sample_rate, sample.noisy_path, max_seconds)
         clean = _load_any(sample.clean_waveform, sample.sample_rate, sample.clean_path, max_seconds)
         clean_wave = None if clean is None else _match_rate(clean[0], clean[1], rate)
-        return "noisy", wave, rate, clean_wave
+        return "noisy", wave, rate, clean_wave, span
     if sample.clean_waveform is not None or sample.clean_path:
-        wave, rate = _require_load(sample.clean_waveform, sample.sample_rate, sample.clean_path, max_seconds)
-        return "clean", wave, rate, wave
+        wave, rate, span = _require_load(sample.clean_waveform, sample.sample_rate, sample.clean_path, max_seconds)
+        return "clean", wave, rate, wave, span
     if sample.audio_path:
-        wave, rate = load_waveform(sample.audio_path, max_seconds)
-        return "audio", wave, rate, None
+        wave, rate, span = load_waveform_span(sample.audio_path, max_seconds)
+        return "audio", wave, rate, None, span
     return None
 
 
@@ -553,10 +557,10 @@ def _require_load(waveform, sample_rate, path, max_seconds):
     if waveform is not None:
         if sample_rate is None:
             raise ValueError("in-memory audio is missing sample_rate")
-        return as_mono(waveform, int(sample_rate), max_seconds)
+        return as_mono_span(waveform, int(sample_rate), max_seconds)
     if not path:
         raise ValueError("audio path is missing")
-    return load_waveform(path, max_seconds)
+    return load_waveform_span(path, max_seconds)
 
 
 def _match_rate(waveform: torch.Tensor, source_rate: int, target_rate: int) -> torch.Tensor:
@@ -665,6 +669,7 @@ def _finish_record(
         "sample_rate": prepared["sample_rate"],
         "snr_db": prepared["snr_db"],
         "max_seconds": config.dataset.max_seconds,
+        "reference_audio": prepared.get("reference_audio"),
         "mix": prepared["mix"],
         "seeds": {
             "experiment": config.experiment.seed,

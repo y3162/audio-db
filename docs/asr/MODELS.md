@@ -91,4 +91,4 @@ asr:
 
 ## 環境
 
-NeMo は Python 3.13 の `.venvs/lab` には入れません。ASR 用は `.venvs/asr`（Python 3.10）です。再構築は [ASR 環境](../envs/ASR.md) にあります。
+NeMo は Python 3.13 の `.venvs/lab` には入れません。ASR 用は `.venvs/asr`（Python 3.12.13）です。再構築は [ASR 環境](../envs/ASR.md) にあります。

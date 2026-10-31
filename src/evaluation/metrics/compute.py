@@ -21,9 +21,10 @@ def score_utterance(
     sample_rate: int,
     reference: str | None,
     hypotheses: dict[str, dict[str, Any]],
+    reference_truncated: bool | None = False,
 ) -> dict[str, Any]:
     return {
-        "wer": _wer(metrics, reference, hypotheses),
+        "wer": _wer(metrics, reference, hypotheses, reference_truncated),
         "pesq": _reference_metric("pesq", metrics.pesq, clean, estimates, sample_rate, score_pesq),
         "stoi": _reference_metric(
             "stoi",
@@ -55,16 +56,20 @@ def not_computed(reason: str = "not_computed") -> dict[str, Any]:
     }
 
 
-def _wer(metrics: MetricsConfig, reference: str | None, hypotheses: dict[str, dict[str, Any]]) -> dict[str, Any]:
+def _wer(
+    metrics: MetricsConfig,
+    reference: str | None,
+    hypotheses: dict[str, dict[str, Any]],
+    reference_truncated: bool | None,
+) -> dict[str, Any]:
     if not metrics.wer:
         return {"status": "disabled", "normalization": metrics.normalization, "values": {}}
-    if reference is None:
-        return {
-            "status": "na",
-            "reason": "no_reference_transcript",
-            "normalization": metrics.normalization,
-            "values": {},
-        }
+    if reference is None or not str(reference).strip():
+        return _na_wer(metrics, {}, "no_reference_transcript")
+    if reference_truncated is None:
+        return _na_wer(metrics, hypotheses, "unknown_audio_span")
+    if reference_truncated:
+        return _na_wer(metrics, hypotheses, "partial_audio")
     values = {}
     for condition, hypothesis in hypotheses.items():
         if hypothesis.get("text") is None:
@@ -75,6 +80,15 @@ def _wer(metrics: MetricsConfig, reference: str | None, hypotheses: dict[str, di
             continue
         values[condition] = score_pair(reference, hypothesis["text"], metrics.normalization)
     return {"status": "ok", "normalization": metrics.normalization, "values": values}
+
+
+def _na_wer(metrics: MetricsConfig, hypotheses: dict[str, dict[str, Any]], reason: str) -> dict[str, Any]:
+    return {
+        "status": "na",
+        "reason": reason,
+        "normalization": metrics.normalization,
+        "values": {condition: {"status": "na", "reason": reason} for condition in hypotheses},
+    }
 
 
 def _reference_metric(name, enabled, clean, estimates, sample_rate, function) -> dict[str, Any]:

@@ -46,6 +46,61 @@ class MetricTests(unittest.TestCase):
         self.assertEqual(scored["wer"]["status"], "na")
         self.assertEqual(scored["wer"]["reason"], "no_reference_transcript")
 
+    def test_wer_requires_the_full_utterance_and_a_transcript(self):
+        metrics = MetricsConfig(wer=True)
+        hypotheses = {"enhanced": {"text": "hello"}, "noisy": {"text": "hello"}}
+        full = score_utterance(
+            metrics,
+            clean=None,
+            estimates={"enhanced": self.estimate},
+            sample_rate=16000,
+            reference="hello",
+            hypotheses=hypotheses,
+            reference_truncated=False,
+        )
+        self.assertEqual(full["wer"]["status"], "ok")
+        self.assertEqual(full["wer"]["values"]["enhanced"]["normalized"]["N"], 1)
+        self.assertEqual(full["wer"]["values"]["enhanced"]["normalized"]["wer"], 0.0)
+
+        partial = score_utterance(
+            metrics,
+            clean=None,
+            estimates={"enhanced": self.estimate},
+            sample_rate=16000,
+            reference="hello world",
+            hypotheses=hypotheses,
+            reference_truncated=True,
+        )
+        self.assertEqual(partial["wer"]["status"], "na")
+        self.assertEqual(partial["wer"]["reason"], "partial_audio")
+        self.assertNotIn("normalized", partial["wer"]["values"]["enhanced"])
+        self.assertIsNone(partial["wer"]["values"]["enhanced"].get("wer"))
+
+        missing = score_utterance(
+            metrics,
+            clean=None,
+            estimates={"enhanced": self.estimate},
+            sample_rate=16000,
+            reference="   ",
+            hypotheses=hypotheses,
+            reference_truncated=False,
+        )
+        self.assertEqual(missing["wer"]["status"], "na")
+        self.assertEqual(missing["wer"]["reason"], "no_reference_transcript")
+        self.assertEqual(missing["wer"]["values"], {})
+
+        unknown = score_utterance(
+            metrics,
+            clean=None,
+            estimates={"enhanced": self.estimate},
+            sample_rate=16000,
+            reference="hello",
+            hypotheses=hypotheses,
+            reference_truncated=None,
+        )
+        self.assertEqual(unknown["wer"]["status"], "na")
+        self.assertEqual(unknown["wer"]["reason"], "unknown_audio_span")
+
     def test_si_sdr_matches_the_definition(self):
         reference = torch.tensor([1.0, 0.0, -1.0, 0.0])
         estimate = torch.tensor([1.0, 0.5, -1.0, 0.0])

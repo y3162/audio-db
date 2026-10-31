@@ -202,6 +202,18 @@ class Chime3AnnotationTests(unittest.TestCase):
 
 
 class VoiceBankFileListTests(unittest.TestCase):
+    def test_init_list_is_not_stored_under_official_code(self):
+        root = Path(__file__).resolve().parents[2]
+        text = (root / "configs/db/init.yaml").read_text(encoding="utf-8")
+        self.assertNotIn("src/se/official", text)
+        listing = root / "configs/db/lists/voicebank_demand_test.txt"
+        rows = [line for line in listing.read_text(encoding="utf-8").splitlines() if line.strip()]
+        self.assertGreaterEqual(len(rows), 800)
+        self.assertTrue(rows[0].startswith("p232_"))
+        notice = (root / "configs/db/lists/VOICEBANK_DEMAND_NOTICE.md").read_text(encoding="utf-8")
+        self.assertIn("MIT", notice)
+        self.assertIn("Yexin Lu", notice)
+
     def test_pairs_ids_and_refuses_partial_audio(self):
         with self._temporary() as directory:
             root = Path(directory)

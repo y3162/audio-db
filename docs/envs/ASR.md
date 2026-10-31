@@ -5,7 +5,7 @@ NeMo は `.venvs/lab`（Python 3.13）と依存関係が合わないため、ASR
 | | |
 |---|---|
 | 場所 | `.venvs/asr` |
-| Python | 3.12（uv の CPython 3.12） |
+| Python | 3.12.13（uv の CPython 3.12） |
 | 用途 | Parakeet（NeMo）、Whisper、Transformers CTC |
 
 Whisper と Transformers もこの環境に入っています。評価の DuckDB と PESQ / STOI も、SE と ASR を同じプロセスでつなぐために入れます。

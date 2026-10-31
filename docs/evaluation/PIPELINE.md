@@ -86,7 +86,7 @@ make db-init
 
 このコマンドは `make db-ingest` を呼びません。2 回実行しても case は増えません。同じ ID で内容が違う再登録はエラーです。Manifest や音声が無い任意項目は、何をスキップしたかを表示します。`required: true` の入力に不備があると、コマンドは失敗します。
 
-現在の任意項目は、例示用の `examples/manifests/example.jsonl`、LibriSpeech test-clean の 2 発話を DEMAND と 0 dB で混ぜる `libri_demand_snr0`、CHiME3 の公式 JSON から作る評価セット、MP-SENet の VoiceBank-DEMAND テストリストです。音声が無い項目はスキップします。VoiceBank-DEMAND の wav はこのチェックアウトには無く、リストだけがあります。
+現在の任意項目は、例示用の `examples/manifests/example.jsonl`、LibriSpeech test-clean の 2 発話を DEMAND と 0 dB で混ぜる `libri_demand_snr0`、同じ test-clean から path 順に 8 発話を全長のまま取る `libri_testclean_full_smoke`、CHiME3 の公式 JSON から作る評価セット、MP-SENet の VoiceBank-DEMAND テストリストです。音声が無い項目はスキップします。VoiceBank-DEMAND の発話 ID は `configs/db/lists/voicebank_demand_test.txt` にあり、公式コードの配置には依存しません。wav はこのチェックアウトには無く、無いときは登録をスキップします。
 
 CHiME3 は `data/annotations/*.json` の `prompt` を正解テキストにします。評価セットはチャンネルを分けます。
 
@@ -251,6 +251,8 @@ WER = (S + D + I) / N
 ```
 
 `N` は参照の語数です。発話 WER の平均は出しません。`N = 0` の発話は分母に入れず、値は null です。0 にはしません。
+
+認識に使った音声が元の発話より短い接頭辞で、その区間に対応する部分テキストが無いとき、WER は `na`、理由は `partial_audio` です。`max_seconds` があるだけでは切り出し済みにしません。元の長さがその秒数以下なら全文として計算します。長さが取れないときは `unknown_audio_span` で `na` にします。正解テキストが無いときも `na`（`no_reference_transcript`）です。これらの発話は micro 集計の `N` に入れません。
 
 正規化は `wer-norm-v1` です。NFKC、小文字化、Unicode の句読点を空白に置換、空白の圧縮、です。生の空白区切りも同時に保存します。正規化バージョンを変えると設定ハッシュが変わり、以前の結果は再利用しません。
 

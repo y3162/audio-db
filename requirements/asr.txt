@@ -1,4 +1,4 @@
-# Direct dependencies for .venvs/asr (Python 3.12).
+# Direct dependencies for .venvs/asr (Python 3.12.13).
 # Install torch first, from the CUDA 12.4 wheel index, so NeMo does not replace it:
 #   uv pip install --python .venvs/asr/bin/python --only-binary :all: \
 #     torch==2.6.0 torchaudio==2.6.0 \

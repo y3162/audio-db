@@ -49,6 +49,24 @@ class WordErrorTests(unittest.TestCase):
         self.assertNotAlmostEqual(group["wer_normalized"], macro)
         self.assertEqual(summary["wer_aggregation"], "micro")
 
+    def test_na_utterances_stay_out_of_the_denominator(self):
+        scored = _record("full", substitutions=0, length=2)
+        refused = _record("partial", substitutions=9, length=40)
+        refused["wer"] = {
+            "status": "na",
+            "reason": "partial_audio",
+            "values": {"enhanced": {"status": "na", "reason": "partial_audio"}},
+        }
+        summary = build_summary([scored, refused])
+        group = summary["groups"][0]
+        self.assertEqual(group["utterances"], 2)
+        self.assertEqual(group["edits_normalized"]["N"], 2)
+        self.assertEqual(group["edits_normalized"]["S"], 0)
+        self.assertEqual(group["wer_normalized"], 0.0)
+        only_na = build_summary([refused])
+        self.assertIsNone(only_na["groups"][0]["wer_normalized"])
+        self.assertNotEqual(only_na["groups"][0]["wer_normalized"], 0)
+
     def test_corpus_helper_skips_empty_references(self):
         total = empty_counts()
         add_counts(total, {"S": 0, "D": 0, "I": 1, "N": 0})

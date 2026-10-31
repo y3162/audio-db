@@ -6,8 +6,10 @@ from pathlib import Path
 import torch
 import torchaudio
 
+from src.evaluation.audio.io import audio_span
 from src.evaluation.datasets.load import DatasetBundle
 from src.evaluation.datasets.synthetic import make_synthetic_samples
+from src.evaluation.sample import AudioSample
 from src.evaluation.errors import ConfigError
 from src.evaluation.identity import checkpoint_fingerprint
 from src.evaluation.pipeline import execute
@@ -301,6 +303,95 @@ class PipelineTests(unittest.TestCase):
             result = execute(config, enhancer_factory=factory)
             self.assertEqual(calls["n"], 2)
             self.assertEqual(result["summary"]["num_ok"], 4)
+
+    def test_wer_uses_source_length_not_the_presence_of_max_seconds(self):
+        with self._temporary_dir() as directory:
+            root = Path(directory)
+            short = root / "short.wav"
+            long = root / "long.wav"
+            torchaudio.save(str(short), torch.zeros(1, 1600), 16000)
+            torchaudio.save(str(long), torch.zeros(1, 16000), 16000)
+            samples = [
+                AudioSample(
+                    utterance_id="short",
+                    dataset="toy",
+                    split="test",
+                    sample_rate=16000,
+                    transcript="sample 0",
+                    noisy_path=str(short),
+                ),
+                AudioSample(
+                    utterance_id="long",
+                    dataset="toy",
+                    split="test",
+                    sample_rate=16000,
+                    transcript="one two three four",
+                    noisy_path=str(long),
+                ),
+                AudioSample(
+                    utterance_id="blank",
+                    dataset="toy",
+                    split="test",
+                    sample_rate=16000,
+                    transcript=None,
+                    noisy_path=str(short),
+                ),
+            ]
+            config = experiment_config(directory, run_id="span")
+            config.experiment.limit = None
+            config.mixing.enabled = False
+            config.dataset.max_seconds = 0.5
+            config.metrics.pesq = False
+            config.metrics.stoi = False
+            result = execute(
+                config,
+                enhancer_factory=lambda model, device: CountingEnhancer(),
+                bundle=DatasetBundle(samples=samples),
+            )
+            by_id = {record["utterance_id"]: record for record in result["records"]}
+            self.assertEqual(by_id["short"]["status"], "ok")
+            self.assertFalse(by_id["short"]["reference_audio"]["truncated"])
+            self.assertEqual(by_id["short"]["wer"]["status"], "ok")
+            self.assertEqual(by_id["short"]["wer"]["values"]["noisy"]["normalized"]["N"], 2)
+            self.assertTrue(by_id["long"]["reference_audio"]["truncated"])
+            self.assertEqual(by_id["long"]["wer"]["status"], "na")
+            self.assertEqual(by_id["long"]["wer"]["reason"], "partial_audio")
+            self.assertIsNotNone(by_id["long"]["hypotheses"]["noisy"]["text"])
+            self.assertEqual(by_id["blank"]["wer"]["status"], "na")
+            self.assertEqual(by_id["blank"]["wer"]["reason"], "no_reference_transcript")
+            groups = {group["condition"]: group for group in result["summary"]["groups"]}
+            self.assertEqual(groups["noisy"]["edits_normalized"]["N"], 2)
+            self.assertEqual(groups["noisy"]["wer_normalized"], 0.0)
+            self.assertEqual(groups["noisy"]["edits_normalized"]["S"], 0)
+
+            full = experiment_config(directory, run_id="full-file")
+            full.experiment.limit = 1
+            full.mixing.enabled = False
+            full.dataset.max_seconds = None
+            full.metrics.pesq = False
+            full.metrics.stoi = False
+            samples[1].transcript = "sample 0"
+            scored = execute(
+                full,
+                enhancer_factory=lambda model, device: CountingEnhancer(),
+                bundle=DatasetBundle(samples=[samples[1]]),
+            )
+            record = scored["records"][0]
+            self.assertFalse(record["reference_audio"]["truncated"])
+            self.assertEqual(record["wer"]["status"], "ok")
+            self.assertEqual(record["wer"]["values"]["enhanced"]["normalized"]["wer"], 0.0)
+            self.assertEqual(record["reference_audio"]["source_frames"], 16000)
+            self.assertEqual(record["reference_audio"]["used_frames"], 16000)
+
+    def test_audio_span_compares_source_length_with_the_limit(self):
+        short = audio_span(1600, 1600, 16000, 0.5)
+        long = audio_span(16000, 8000, 16000, 0.5)
+        unlimited = audio_span(16000, 16000, 16000, None)
+        unknown = audio_span(None, 8000, 16000, 0.5)
+        self.assertFalse(short["truncated"])
+        self.assertTrue(long["truncated"])
+        self.assertFalse(unlimited["truncated"])
+        self.assertIsNone(unknown["truncated"])
 
     def _rng_run(self, directory, run_id, samples):
         config = self._bare(directory, run_id)
