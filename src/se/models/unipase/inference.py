@@ -42,6 +42,10 @@ def _paths(checkpoint):
     return checkpoint_paths(checkpoint, _PARTS)
 
 
+# Official README sends inputs longer than 20 s through inference_long.py.
+_LONG_SECONDS = 20
+
+
 class UniPASEEnhancer(Enhancer):
     def __init__(self, model, device):
         self.model, self.device = model, device
@@ -53,9 +57,46 @@ class UniPASEEnhancer(Enhancer):
             return waveform.clone()
         scale = audio.abs().max()
         with torch.inference_mode():
-            enhanced = self.model(audio.unsqueeze(0), sr_in=sample_rate, sr_out=sample_rate, enable_plc=True)
-        enhanced = enhanced.squeeze(0)
-        enhanced = enhanced / enhanced.abs().max().clamp_min(1e-8) * scale
+            if audio.numel() > _LONG_SECONDS * sample_rate:
+                enhanced = _infer_long(self.model, audio, sample_rate)
+            else:
+                enhanced = self.model(audio.unsqueeze(0), sr_in=sample_rate, sr_out=sample_rate, enable_plc=True)
+                enhanced = enhanced.squeeze(0)
+        # inference.py / inference_long.py: y / (max(|y|) + 1e-8) * input_peak
+        enhanced = enhanced / (enhanced.abs().max() + 1e-8) * scale
         if enhanced.numel() < audio.numel():
             enhanced = torch.nn.functional.pad(enhanced, (0, audio.numel() - enhanced.numel()))
         return enhanced[:audio.numel()].to(device=original_device, dtype=original_dtype)
+
+
+def _infer_long(model, audio, sample_rate):
+    """8 s windows, 4 s hop, then the hard overlap trim from inference_long.py."""
+    segment = sample_rate * 8
+    hop = sample_rate * 4
+    patches = []
+    start = 0
+    end_tmp = 0
+    total = audio.numel()
+    while start < total:
+        end = start + segment
+        if end > total:
+            if end - total < 2 * sample_rate:
+                patches.append(audio[start:])
+            else:
+                patches[-1] = torch.cat((patches[-1], audio[end_tmp:total]))
+            break
+        patches.append(audio[start:end])
+        end_tmp = end
+        start += hop
+    enhanced = []
+    for patch in patches:
+        enhanced.append(model(patch.unsqueeze(0), sr_in=sample_rate, sr_out=sample_rate, enable_plc=True).squeeze(0))
+    if len(enhanced) == 1:
+        return enhanced[0]
+    keep = sample_rate * 6
+    edge = sample_rate * 2
+    pieces = [enhanced[0][:keep]]
+    for patch in enhanced[1:-1]:
+        pieces.append(patch[edge:keep])
+    pieces.append(enhanced[-1][edge:])
+    return torch.cat(pieces, dim=0)

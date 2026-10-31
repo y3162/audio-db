@@ -1,8 +1,8 @@
 # audio-db
 
-## 音声強調（実装途中）
+## 音声強調
 
-`available_enhancers()` は MP-SENet、TF-GridNet、DeepFilterNet3、MossFormerGAN、SEMamba++、UniPASE、StuPASE を返します。単一ファイルのモデルはチェックポイントパスを渡し、UniPASE と StuPASE は部品名からパスへの辞書を渡します。公式CLI全体との一致は未完了です。
+`available_enhancers()` は MP-SENet、TF-GridNet、DeepFilterNet3、MossFormerGAN、SEMamba++、UniPASE、StuPASE を返します。単一ファイルのモデルはチェックポイントパスを渡し、UniPASE と StuPASE は部品名からパスへの辞書を渡します。公式波形との対応と、CLI のファイル出力など波形以外で未確認の範囲は `docs/se/VALIDATION.md` にあります。
 
 ```python
 from src.se import available_enhancers, build_model, load_enhancer

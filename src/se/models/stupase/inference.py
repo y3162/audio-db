@@ -36,7 +36,8 @@ class StuPASEEnhancer(Enhancer):
         with torch.inference_mode():
             enhanced = self.model(audio.unsqueeze(0), sr=16000, steps=8, cfg_strength=0.5, sway_sampling_coef=-1.0)
         enhanced = enhanced.squeeze(0)
-        enhanced = enhanced / enhanced.abs().max().clamp_min(1e-8) * scale
+        # Official inference.py rescales with max(|y|) + 1e-8, not a clamped denominator.
+        enhanced = enhanced / (enhanced.abs().max() + 1e-8) * scale
         if sample_rate != 16000:
             enhanced = AF.resample(enhanced, 16000, sample_rate)
         if enhanced.numel() < length:

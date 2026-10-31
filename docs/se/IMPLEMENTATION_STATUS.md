@@ -2,21 +2,21 @@
 
 判定は、公式チェックポイントを載せた公式処理と独立実装の最終波形を同じ入力で比べた結果に基づく。短音声の有限値だけでは PASS にしない。
 
-ホストは turing。独立実装の通常テストは `.venvs/lab`（Python 3.13.9、PyTorch 2.6.0+cu124）。公式パッケージの比較は `.venvs/ref`（Python 3.10.12、同じ PyTorch 2.6.0+cu124、NumPy 1.26.4）。GPU は空きの GPU 1（Quadro RTX 5000、`CUDA_VISIBLE_DEVICES=1`）。GPU 0 は他ユーザーが使用中。
+ホストは turing。通常テストは `.venvs/lab`（Python 3.13.9、PyTorch 2.6.0+cu124）。公式パッケージ比較は `.venvs/ref`（Python 3.10.12、同じ PyTorch）。SEMamba++ の CUDA 比較だけ `.venvs/semamba`（Python 3.10.20、PyTorch 2.6.0+cu124、ソースビルドした `causal-conv1d==1.7.0` と `mamba-ssm==2.3.2.post1`、sm_75）。GPU 0 は他ユーザーが使用中。比較は空きの GPU 1・2・3（Quadro RTX 5000）。
 
-| モデル | 公式ネットワーク | 公式波形 | 長時間 | official非依存 | 判定 |
-|---|---|---|---|---|---|
-| UniPASE | 16 kHz と 48 kHz PostNet を含む `forward` が最大絶対誤差 0 | 同左（ピーク合わせ前） | 0.5 秒と、48 kHz 指定の 16000 samples。20 秒と `inference_long` の 8 秒分割は未実施 | 確認 | PARTIAL |
-| TF-GridNet urgent24 | separator と公式 STFT・分散正規化 | 8/16 kHz の 1 秒と 20 秒で 0 | 20 秒で 0 | 確認 | PASS |
-| TF-GridNet ms-snsd | 公式 `TFGridNet.forward` | 16 kHz の 1 秒と 20 秒で 0 | 20 秒で 0 | 確認 | PASS |
-| SEMamba++ | 公式モジュールは strict で過不足 0。参照スキャンの mixer は 0 | 1 秒波形 2.38e-8。CUDA 融合カーネルは未実施 | 1 秒のみ | 確認 | PARTIAL |
-| MP-SENet VB | 公式 `mag_pha_stft` | CPU 1・5・20 秒で 0。GPU 同士は 3.73e-9 | 20 秒で 0 | 確認 | PASS |
-| MP-SENet DNS | 同左 | CPU 1・5・20 秒で 0。GPU 同士は 2.33e-10 | 20 秒で 0 | 確認 | PASS |
-| MossFormerGAN | `n_fft=400` の公式 decode | 1 秒と 11 秒で 0 | 11 秒（10 秒窓の境界）で 0。20 秒は未計測 | 確認 | PASS |
-| DeepFilterNet3 | `libdf` の `enhance` | 1 秒 4.10e-8、20 秒 6.52e-8 | 20 秒で 6.52e-8 | 確認 | PASS |
-| StuPASE | rotary 修正後の `forward` が 0 | 16 kHz・0.5 秒、seed 5 で 0 | 0.5 秒。20 秒は未実施 | 確認 | PARTIAL |
+| モデル | 公式波形の最大絶対誤差 | 最大検証長 | official非依存 | 判定 |
+|---|---|---|---|---|
+| UniPASE | 0（16/48 kHz、ピーク合わせ後、PostNet 入出力、`inference_long`） | 20 秒の全文と 24 秒の長時間経路 | 確認 | PASS |
+| TF-GridNet urgent24 | 0 | 20 秒 | 確認 | PASS |
+| TF-GridNet ms-snsd | 0 | 20 秒 | 確認 | PASS |
+| SEMamba++ | CUDA 融合カーネルとの波形差は 1 秒 3.97e-5、20 秒 1.80e-5 | 20 秒 | 確認 | PASS |
+| MP-SENet VB | CPU で 0、GPU 同士 3.73e-9 | 20 秒 | 確認 | PASS |
+| MP-SENet DNS | CPU で 0、GPU 同士 2.33e-10 | 20 秒 | 確認 | PASS |
+| MossFormerGAN | CPU 20 秒で 0。GPU は 15/20/25 秒で最大 2.33e-6 | 25 秒 | 確認 | PASS |
+| DeepFilterNet3 | 48 kHz・20 秒で 6.52e-8。16 kHz API 往復は 3.86e-6 | 20 秒 | 確認 | PASS |
+| StuPASE | 0（1 秒は seed 5/7/11。5・20 秒と ODE 軌跡は seed 5） | 20 秒 | 確認 | PASS |
 
-UniPASE、SEMamba++、StuPASE の長時間比較が残っているため、全体は GO ではない。
+全体の L2 は GO。根拠と未検証範囲は `docs/se/VALIDATION.md`。
 
 ## 修正
 
@@ -37,11 +37,15 @@ cd /net/spring/work/seki/exp/audio-db
 
 公式比較は `tests/se/reference/run_*.py` を明示実行する。`.venvs/ref` が要るスクリプトは lab では走らない。SKIP を PASS とは数えない。
 
-## 未完了
+## 今回足したこと
 
-- UniPASE、StuPASE、SEMamba++ の 20 秒。MossFormerGAN の 20 秒（11 秒の窓境界は 0）。
-- UniPASE `inference_long` の 8 秒硬切り出しと、エンハンサのピーク式（`clamp_min(1e-8)` と公式の `max+1e-8`）。
-- SEMamba++ の `mamba_ssm` CUDA 融合カーネル。`causal-conv1d==1.5.0.post8` はビルド隔離で torch が見えず失敗。参照漸化式との波形差は 2.38e-8。
+- UniPASE の `enhance` は、20 秒以下では公式 `inference.py` と同じ全文 `forward`、20 秒を超えると公式 `inference_long.py` の 8 秒窓・4 秒 hop・重なり中央の切り捨てのあと、`max(|y|)+1e-8` で入力ピークへ戻す。
+- StuPASE のピーク戻しも同じ `max+1e-8`。サンプリング乱数は呼び出し前の `torch.manual_seed` に従う。公式 CLI にも seed 引数はない。
+- SEMamba++ の独立実装は PyTorch 漸化式のまま。公式 CUDA 融合カーネルとの差は `VALIDATION.md`。ライブラリは `mamba_ssm` を import しない。
+
+## 未検証のまま残したもの
+
 - TF-GridNet の ESPnet 推論コマンド自体は起動していない。比較は公式 separator と、ESPnet `Stft` が呼ぶ `torch.stft` 条件。
-- MP-SENet の CPU/GPU 差は公式同士でも出る（VB 最大 4.16e-3、DNS 最大 1.29e-4）。同じ装置では公式と独立が 1e-9 以下。
-- DeepFilterNet3 の 48 kHz 以外は torchaudio リサンプルであり、`libdf` の sinc とは比較していない。
+- MP-SENet の公式 CLI のファイル入出力と PCM 16 書き出し。波形推論とは別。CPU/GPU 差は公式同士でも出る（VB 最大 4.16e-3、DNS 最大 1.29e-4）。
+- DeepFilterNet3 の 16 kHz 入力は torchaudio のリサンプル。`libdf` の sinc ではない。往復後の差は 3.86e-6。
+- SEMamba++ を融合カーネルへ差し替える最適化はしていない。20 秒の RTF は公式 0.039、独立実装 0.33。Peak VRAM は公式 1.3 GiB、独立実装 6.5 GiB。

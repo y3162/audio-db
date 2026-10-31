@@ -95,3 +95,48 @@ SEMamba++ の位相の最大絶対誤差は 6.02e-4 だが、波形は 2.38e-8�
 再現は `tests/se/reference/run_lab.py`（lab）、`run_ref.py`、`run_semamba.py`、`run_df.py`（ref）。20 秒は MP-SENet、TF-GridNet、DeepFilterNet3 で計測済み。MossFormerGAN の 20 秒は未計測で、11 秒の窓境界は 0。UniPASE と StuPASE の 20 秒は未実施。
 
 `.venvs/lab/bin/python -m unittest discover -s tests/se -v` は 21 tests OK（既存 19 に rotary の 2 件）。
+
+## 最終検証（2026-10-31）
+
+作業開始 HEAD は `6ea86f3`（`[WIP]7モデルの動作を確認`）。ホスト turing。GPU 0 は他ユーザーが使用中のため、比較は GPU 1・2・3（Quadro RTX 5000、ドライバ 535.274.02）。通常テストは `.venvs/lab`。UniPASE、StuPASE、MossFormerGAN、DeepFilterNet3 の公式比較は `.venvs/ref`。SEMamba++ の CUDA 比較は `.venvs/semamba`。
+
+公開 wheel `mamba_ssm-2.3.2.post1+cu12torch2.6cxx11abiFALSE` は `std::__cxx11::basic_string` を参照し、この PyTorch（CXX11 ABI false）では `selective_scan_cuda` がロードできなかった。`.venvs/cuda-nvcc`（conda-forge `cuda-nvcc=12.9`）で sm_75 だけをソースビルドした。ライブラリ本体はこの環境を import しない。
+
+再現:
+
+```bash
+CUDA_VISIBLE_DEVICES=1 .venvs/ref/bin/python tests/se/reference/run_long.py unipase --seconds 20 --sr 48000 --seed 4 --device cuda
+CUDA_VISIBLE_DEVICES=1 .venvs/ref/bin/python tests/se/reference/run_long.py unipase-long --seconds 24 --sr 16000 --seed 4 --device cuda
+CUDA_VISIBLE_DEVICES=2 .venvs/ref/bin/python tests/se/reference/run_long.py stupase --seconds 20 --seed 5 --device cuda
+CUDA_VISIBLE_DEVICES=3 .venvs/ref/bin/python tests/se/reference/run_long.py mossformer --seconds 20 --seed 3 --device cuda
+CUDA_VISIBLE_DEVICES="" .venvs/ref/bin/python tests/se/reference/run_long.py mossformer --seconds 20 --seed 3 --device cpu
+CUDA_VISIBLE_DEVICES="" .venvs/ref/bin/python tests/se/reference/run_df_api.py
+CUDA_VISIBLE_DEVICES=1 .venvs/semamba/bin/python tests/se/reference/run_semamba_cuda.py 1 5 20
+```
+
+入力は `torch.Generator.manual_seed` の正規乱数に 0.05 を掛けたもの。UniPASE と MossFormerGAN の seed は 4 と 3。StuPASE は呼び出し直前の `torch.manual_seed`。デバイスは各行の CUDA、dtype は float32。許容の見方は、決定的な処理は最大絶対誤差 0、CUDA カーネルと PyTorch 漸化式の差は測定値をそのまま記録する。
+
+| 比較 | 条件 | 最大絶対誤差 |
+|---|---|---:|
+| UniPASE `forward` | GPU、16 kHz、1・5・20 秒、seed 4。ピーク合わせ後と API も同じ | 0 |
+| UniPASE `forward` と PostNet 入出力 | GPU、48 kHz、1・5・20 秒、seed 4 | 0 |
+| UniPASE `inference_long` | GPU、16 kHz と 48 kHz、24 秒、seed 4。API も同じ | 0 |
+| StuPASE `forward` | GPU、16 kHz、1 秒は seed 5・7・11。5 秒と 20 秒は seed 5 | 0 |
+| StuPASE ODE 軌跡と API | GPU、16 kHz、1・5・20 秒、seed 5。API は `enhance` の直前に seed を再設定 | 0 |
+| StuPASE CFM / Vocoder | `strict=False` の missing と unexpected | 0 |
+| MossFormerGAN decode | CPU、16 kHz、20 秒、seed 3 | 0 |
+| MossFormerGAN decode | GPU、16 kHz、15・20・25 秒、seed 3 | 1.40e-6 / 2.09e-6 / 2.33e-6 |
+| DeepFilterNet3 16 kHz API | CPU。torchaudio で 48 kHz にして `libdf` `enhance` し、同じ torchaudio で 16 kHz へ戻す | 3.86e-6 |
+| SEMamba++ 単一 Mamba | GPU。融合カーネルと CUDA scan は 0。融合カーネルと PyTorch 漸化式は 3.28e-7 | 3.28e-7 |
+| SEMamba++ 波形 | GPU、16 kHz、1・5・20 秒、seed 9。公式は `mamba_inner_fn`。missing=unexpected=0 | 3.97e-5 / 1.56e-5 / 1.80e-5 |
+| SEMamba++ 位相 | 同上。差の最大は約 π で、振幅の小さいビンの折り返し | 6.28 |
+
+SEMamba++ の 20 秒は公式 0.79 秒（RTF 0.039、peak VRAM 1.3 GiB）、独立実装 6.57 秒（RTF 0.33、peak VRAM 6.5 GiB）。融合カーネルへの置き換えはしていない。
+
+UniPASE の 20 秒全文は公式 `inference.py`、24 秒は `inference_long.py`。両方とも独立実装と一致した。エンハンサは 20 秒ちょうどまで全文、それを超えると長時間経路に入る。
+
+共通 API の形状、dtype、8/16/48 kHz の長さ、無音、NaN 拒否、可変長バッチ、チェックポイントのシンボリックリンク、DeepFilterNet3 の 16 kHz が torchaudio 往復と 1e-6 未満で一致することは `tests/se/test_api_contract.py`。UniPASE の窓が入力を欠かさず覆うことは、恒等モデルで 21・24・30 秒を確認した。
+
+`.venvs/lab/bin/python -m unittest discover -s tests/se -v` は 28 tests OK（従来 21 に、共通 API 契約 6 と UniPASE 窓の恒等テスト 1 を加えた）。公式比較スクリプトは lab では走らない。SKIP は PASS に数えない。
+
+L2 は GO。残る未検証は、TF-GridNet の ESPnet CLI、MP-SENet の PCM 16 と公式 CLI、DeepFilterNet3 の sinc リサンプラ、SEMamba++ の速度最適化。いずれも今回の波形不一致ではない。
