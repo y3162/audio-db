@@ -1,0 +1,45 @@
+# Synthetic smoke run. The mock enhancer is not a speech enhancement model.
+experiment:
+  name: se-smoke
+  seed: 0
+  limit: 2
+
+dataset:
+  source: synthetic
+  count: 2
+  sample_rate: 16000
+  seconds: 1.0
+  seed: 0
+
+mixing:
+  enabled: true
+  protocol: rms_v1
+  snr_db: [0, 5]
+  prevent_clip: true
+  hard_clip: false
+
+models:
+  - name: mock
+
+asr:
+  enabled: true
+  name: mock
+  default_text: alpha beta
+  conditions: [noisy, enhanced]
+
+metrics:
+  wer: true
+  normalization: wer-norm-v1
+  pesq: true
+  stoi: true
+  estoi: false
+  si_sdr: false
+
+output:
+  root: data/results/se-evaluation
+  save_audio: false
+  resume: false
+
+runtime:
+  device: cpu
+  allow_busy_gpu: false

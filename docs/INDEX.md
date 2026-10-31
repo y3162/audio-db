@@ -25,3 +25,9 @@ DBの仕様書
 ### [CORPORA.md](db/CORPORA.md)
 
 `corpora` スキーマについて
+
+---
+
+### [PIPELINE.md](evaluation/PIPELINE.md)
+
+音声強調の評価パイプライン

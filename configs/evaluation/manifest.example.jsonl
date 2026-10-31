@@ -1,0 +1,1 @@
+{"utterance_id": "example-1", "dataset": "example", "split": "test", "clean_path": "clean/example.wav", "noise_path": "noise/example.wav", "transcript": "this is an example", "speaker_id": "spk1", "snr_db": 0}

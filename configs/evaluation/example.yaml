@@ -1,0 +1,52 @@
+# Template for a real checkpoint and the corpus database.
+# rms_v1 is not the VoiceBank-DEMAND or URGENT mixture procedure.
+# max_seconds reads a prefix so a smoke run does not decode a full DEMAND file.
+# Remove max_seconds and raise limit only when a full condition is intended.
+experiment:
+  name: se-example
+  seed: 0
+  limit: 2
+
+dataset:
+  source: duckdb
+  path: data/db/resource.duckdb
+  corpora_root: data/corpora
+  role: clean
+  filters:
+    corpus: LibriSpeech
+    subset: test-clean
+  limit: 2
+  noise_filters:
+    corpus: DEMAND
+  noise_limit: 1
+  pair: hash
+  max_seconds: 2.0
+
+mixing:
+  enabled: true
+  protocol: rms_v1
+  snr_db: [0]
+  prevent_clip: true
+  hard_clip: false
+
+models:
+  - name: mp_senet
+    variant: vb
+    checkpoint: data/checkpoints/mp-senet/g_best_vb
+
+asr:
+  enabled: false
+
+metrics:
+  wer: false
+  pesq: true
+  stoi: true
+
+output:
+  root: data/results/se-evaluation
+  save_audio: false
+  resume: false
+
+runtime:
+  device: cpu
+  allow_busy_gpu: false

@@ -1,0 +1,7 @@
+# Extra packages for the evaluation pipeline, installed into .venvs/lab.
+# numpy is already pinned by the lab environment; do not upgrade it.
+#   uv pip install --python .venvs/lab/bin/python "numpy==2.5.4" -r requirements/evaluation.txt
+pyyaml==6.0.3
+scipy==1.18.1
+pystoi==0.4.1
+pesq==0.0.4

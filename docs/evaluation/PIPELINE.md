@@ -1,0 +1,256 @@
+# 評価パイプライン
+
+データセット、音声強調（SE）、音声認識（ASR）、評価指標を組み合わせて実験するための実行基盤です。SE の推論本体は `src.se.load_enhancer()` のままです。このパッケージはモデルを学習しません。コーパスの取り込みも、`corpora.audio_files` の再作成もしません。
+
+全コーパスの推論や論文用の WER 比較は、この基盤の対象外です。合成音声と Mock でパイプラインが通ることと、チェックポイントがあるときの短い実モデル実行を分けて扱います。
+
+## ディレクトリ
+
+```text
+src/evaluation/
+├── cli.py                 # python -m src.evaluation.cli
+├── config.py              # 設定の検証
+├── pipeline.py            # 段階の接続
+├── datasets/              # manifest / DuckDB / synthetic
+├── audio/                 # 読み込みと rms_v1 混合
+├── models/                # SE は src.se を呼ぶ。ASR は差し替え口
+├── metrics/               # WER / PESQ / STOI / ESTOI / SI-SDR
+└── results/               # JSONL・CSV・再開用のレコード
+
+configs/evaluation/
+├── smoke.yaml             # 合成音声 + mock
+├── example.yaml           # DuckDB + MP-SENet の型
+└── manifest.example.jsonl
+
+tests/evaluation/
+```
+
+`src/data/` と `src/se/` の処理は複製していません。波形のデコードは torchaudio、データベースの列定義は `src.data.models.audio_file` を使います。
+
+## 処理の段階
+
+各段階は単独でも呼べます。
+
+1. 入力の選択（manifest、DuckDB、または合成音声）
+2. 波形の読み込み
+3. 必要なときだけ雑音混合
+4. SE
+5. ASR（無効ならここを飛ばす）
+6. 指標（正解テキストが無ければ WER を記録しない。clean が無ければ PESQ / STOI を記録しない）
+7. 結果の保存と集計
+
+ASR が未導入でも SE までは実行できます。指標ライブラリが無い場合も、その指標だけ `unavailable` になり、ほかの指標は続きます。
+
+## データ入力
+
+共通の単位は発話です。発話 ID、データセット名、split、音声パス、サンプリングレート、書き起こし、clean / noisy / noise のパス、SNR、話者 ID、任意のメタデータを持てます。3 つとも揃っている必要はありません。
+
+| 状況 | 設定 |
+|---|---|
+| clean と noise から noisy を作る | `mixing.enabled: true` |
+| 既存の noisy をそのまま使う | `mixing.enabled: false` かつ `noisy_path`、または DuckDB の `role: noisy` |
+| clean をそのまま強調する | `mixing.enabled: false` かつ clean だけがある |
+
+### Manifest
+
+JSONL（空行は無視）または JSON 配列です。データベースが無くても使えます。相対パスは manifest のディレクトリ、または `dataset.root` から解決します。
+
+```json
+{"utterance_id": "u1", "dataset": "toy", "split": "test", "clean_path": "clean.wav", "noise_path": "noise.wav", "transcript": "hello", "speaker_id": "s1"}
+```
+
+既知のキー以外は `metadata` に残します。音声ファイルが無い発話は、その発話だけ `skipped` / `audio_not_found` になります。manifest ファイル自体が無い場合は実行前にエラーです。
+
+### DuckDB
+
+`corpora.audio_files` を読み取り専用で開きます。`duckdb.connect(path, read_only=True)` だけを使い、ingest は呼びません。データベースファイルが無いときはエラーになり、ファイルは作りません。
+
+パスは `dataset.corpora_root`（既定 `data/corpora`）からの相対パスです。絞り込みは列名への等価比較だけです。`corpus`、`subset`、`speaker_id` など、`audio_files` の列を指定できます。並びは `path` です。
+
+```yaml
+dataset:
+  source: duckdb
+  path: data/db/resource.duckdb
+  corpora_root: data/corpora
+  role: clean
+  filters:
+    corpus: LibriSpeech
+    subset: test-clean
+  limit: 2
+  noise_filters:
+    corpus: DEMAND
+  noise_limit: 1
+  pair: hash
+  max_seconds: 2.0
+```
+
+`pair: hash` は発話 ID から雑音を選ぶので、発話の処理順を変えても組は変わりません。`pair: cycle` は並び順に巡回します。混合するときは `role: clean` と `noise_filters` が必要です。
+
+`max_seconds` は各ファイルの先頭だけを読みます。DEMAND は 1 チャネルあたり 300 秒あるため、動作確認ではこれを指定します。省略するとファイル全体をデコードしてから切り出します。これはベンチマーク手順ではなく、長さの上限です。
+
+### 合成音声
+
+`dataset.source: synthetic` はメモリ上の振幅変調ノイズを作ります。コーパスが無くても smoke 設定が動きます。
+
+### データが無いとき
+
+- manifest も DuckDB も無い: 実行はエラー。合成設定には影響しません。
+- クエリが 0 件: エラー。
+- 行はあるが音声ファイルが無い: その発話は `skipped`。
+
+## 雑音混合（rms_v1）
+
+VoiceBank-DEMAND とも URGENT とも同じ手順ではありません。活性音声レベル（ITU-T P.56）も使いません。
+
+定義は、リサンプリングと長さ合わせのあと、成分の平均二乗電力の比です。
+
+```text
+SNR_dB = 10 * log10(mean(clean^2) / mean(scaled_noise^2))
+```
+
+- 雑音が短ければ繰り返してから、seed で開始位置を決めて切り出します。
+- 雑音が長ければ、同じ方法で開始位置を決めます。seed は SHA-256 から作り、Python の `hash()` は使いません。
+- 無音を含む区間も平均に入れます。VAD では切りません。
+- clean 全体の電力が `1e-12` 未満なら混合せず、発話は `clean_has_zero_energy` で skip します。
+- 雑音の電力が 0 ならエラーです。SNR が有限でない値もエラーです。
+- `prevent_clip: true` は、ピークが 0.99 を超えるとき clean と雑音へ同じゲインを掛けます。SNR は変わりません。
+- `hard_clip: true` は混合後に [-1, 1] へ切ります。記録する達成 SNR は、このクリップの前の値です。
+
+SNR のリストは設定で変えられます。`-10, -5, 0, 5` は例であり、固定値ではありません。
+
+## SE
+
+```yaml
+models:
+  - name: mp_senet
+    variant: vb
+    checkpoint: data/checkpoints/mp-senet/g_best_vb
+  - name: unipase
+    checkpoints:
+      dewavlm: /path/DeWavLM-Omni.pt
+      adapter: /path/Adapter.pt
+      vocoder: /path/Vocoder.pt
+      postnet: /path/PostNet.pt
+```
+
+`name` と `variant` は `src.se` の registry で検証します。チェックポイントが無いモデルに、別の重みは割り当てません。複数 variant があるモデルは variant を必須にします。
+
+モデルは発話ごとにロードし直しません。発話の一部だけが未完了のとき、そのモデルを 1 回だけロードします。複数モデルは 1 つずつ処理し、終わったら参照を捨てます。
+
+UniPASE や StuPASE のように乱数を使うモデルのため、強調の直前に発話ごとの seed で `torch.manual_seed` と `random.seed` を設定します。seed は実験 seed、発話 ID、モデル名、variant、SNR の SHA-256 です。処理順を変えても同じ発話の seed は同じです。
+
+出力は 1 次元で、入力と同じ長さで、有限でなければなりません。長さが変わった場合、その発話は `error` になり、PESQ や STOI を 0 としては記録しません。
+
+`name: mock` は入力をコピーする試験用です。強調モデルの性能ではありません。
+
+## ASR
+
+```python
+result = recognizer.transcribe(waveform, sample_rate=16000)
+```
+
+設定できる項目は、モデル名、チェックポイント、デバイス、入力サンプリングレート、デコード、言語、`params`、書き起こし対象（`noisy` / `enhanced` / `clean`）です。
+
+今動くのは `asr.name: mock` だけです。`parakeet`（Parakeet TDT 0.6B v2）、`whisper`（Whisper Large-v3）、`wav2vec2`（Wav2Vec 2.0）は名前だけ予約してあり、有効にすると未導入エラーになります。追加するときは `src/evaluation/models/asr.py` の `load_recognizer()` に、`transcribe(waveform, sample_rate)` を持つクラスを登録します。学習や微調整はしません。
+
+WER を有効にするには ASR も有効である必要があります。Clean / noisy / enhanced は同じ認識器と同じテキスト正規化で比較します。
+
+## 指標
+
+WER は発話ごとの編集回数を足してから割ります。
+
+```text
+WER = (S + D + I) / N
+```
+
+`N` は参照の語数です。発話 WER の平均は出しません。`N = 0` の発話は分母に入れず、値は null です。0 にはしません。
+
+正規化は `wer-norm-v1` です。NFKC、小文字化、Unicode の句読点を空白に置換、空白の圧縮、です。生の空白区切りも同時に保存します。正規化バージョンを変えると設定ハッシュが変わり、以前の結果は再利用しません。
+
+PESQ は 16 kHz なら wideband、8 kHz なら narrowband です。それ以外のサンプリングレートは 16 kHz へ変換してから wideband を計算し、変換したことを記録します。STOI も 16 kHz 以外は 16 kHz へ変換します。長さが違う参照と推定は短い方に揃え、削ったサンプル数を記録します。時間ずれの推定はしません。
+
+clean が無いとき、PESQ / STOI / SI-SDR は `na` / `no_clean_reference` で、値は null です。`pesq` または `pystoi` が未インストールのときは `unavailable` とインストール方法を記録し、WER などは続けます。
+
+ESTOI は `metrics.estoi: true`、SI-SDR は `metrics.si_sdr: true` です。既定はオフです。DNSMOS と CER は未実装です。
+
+## 設定と CLI
+
+未知のキー、チェックポイントの欠落、有限でない SNR、WER だけ有効、は実行前にエラーになります。
+
+```bash
+python -m src.evaluation.cli --config configs/evaluation/smoke.yaml --dry-run
+python -m src.evaluation.cli --config configs/evaluation/smoke.yaml --limit 2 --device cpu --seed 0
+python -m src.evaluation.cli --config configs/evaluation/example.yaml --run-id libri-2s --device cpu
+python -m src.evaluation.cli --config configs/evaluation/example.yaml --run-id libri-2s --resume
+python -m src.evaluation.cli --summarize data/results/se-evaluation/libri-2s
+```
+
+`--limit`、`--device`、`--seed`、`--output`、`--run-id`、`--models` は設定ファイルを上書きします。`--limit` は実行件数の上限で、設定ハッシュには含まれません。再開時に件数だけ増やせます。データセットの絞り込みや seed を変えるとハッシュが変わり、同じ `run_id` では再開できません。
+
+Dry-run はモデルをロードしません。対象発話、モデル、チェックポイントの有無、SNR、出力先、予定件数を表示します。準備ができていなければ終了コード 2 です。
+
+CUDA を指定した実行は `nvidia-smi` を見て、使用メモリが 1024 MiB 以上の GPU を拒否します。空いている GPU だけを指定してください。`runtime.allow_busy_gpu: true` は、その GPU が自分のジョブだと分かっているときだけ使います。試験の多くは CPU で足ります。
+
+## 結果
+
+```text
+data/results/se-evaluation/<run_id>/
+├── config.json
+├── run.json           # run id、git commit、設定ハッシュ、環境
+├── results.jsonl      # その実行で採用した発話結果
+├── summary.json
+├── summary.csv
+├── records/<id>.json  # 発話ごとの原子的書き込み
+└── audio/<id>.wav     # save_audio: true のとき強調波形だけ
+```
+
+Run ID を省略すると、実験名、UTC 時刻、設定ハッシュから作ります。同じディレクトリが既にある状態で `--resume` を付けないとエラーです。
+
+各レコードには、run ID、git commit、設定ハッシュ、データセット、発話 ID、パス、SNR、seed、モデル名、variant、チェックポイント SHA-256、ASR 設定、認識結果、正解、WER の編集数、PESQ / STOI、処理時間、エラーまたは skip 理由、Python / torch / デバイスが入ります。チェックポイントの SHA-256 はサイズと mtime が変わるまで再計算しません。
+
+`results.jsonl` が再集計の入力です。WER は micro 集計、PESQ / STOI / SI-SDR は有限な発話スコアの平均です。欠けたスコアは平均に 0 として入れません。
+
+### 再開
+
+成功したレコードだけを再利用します。再利用の条件は、設定ハッシュ、torch の版、発話、モデル、variant、チェックポイント内容、SNR、サンプリングレート、入力波形、clean 参照、強調 seed が一致することです。失敗と skip はやり直します。音声やチェックポイントの内容が変わると、同じ枠を上書きして計算し直します。
+
+レコードは一時ファイルへ書いてから `os.replace` します。JSONL と summary も同様です。
+
+`output.save_audio` の既定は false です。true のときは強調波形だけを 32-bit float WAV で保存します。noisy と clean は保存しません。
+
+## テスト
+
+```bash
+cd /net/spring/work/seki/exp/audio-db
+.venvs/lab/bin/python -m unittest discover -s tests/evaluation -v
+```
+
+合成音声、Mock SE、Mock ASR で、混合、SNR、WER の micro 集計、指標の skip、保存、再開、設定変更によるキャッシュ無効化、dry-run を確認します。GPU も巨大チェックポイントも要りません。
+
+`tests/evaluation/test_real_smoke.py` は、MP-SENet の `g_best_vb` と DuckDB と音声ファイルがあるときだけ、LibriSpeech test-clean の 1 発話を先頭 2 秒、DEMAND の先頭 2 秒、SNR 0 dB、CPU で実行します。これは接続の確認であり、論文用のスコアではありません。Mock の成功とも別です。チェックポイントが無い環境では skip します。
+
+既存の SE 試験は今までどおりです。
+
+```bash
+.venvs/lab/bin/python -m unittest discover -s tests/se -v
+```
+
+## 依存関係
+
+実行環境は `.venvs/lab` です。評価のために追加したものは `requirements/evaluation.txt` です。
+
+| パッケージ | 用途 |
+|---|---|
+| PyYAML | 設定ファイル |
+| pesq | PESQ。無いときはその指標だけ unavailable |
+| pystoi / scipy | STOI と ESTOI。無いときはその指標だけ unavailable |
+
+torch、torchaudio、duckdb、numpy は既存の lab 環境のものを使います。numpy は 2.5.4 のままにします。
+
+```bash
+uv pip install --python .venvs/lab/bin/python "numpy==2.5.4" -r requirements/evaluation.txt
+```
+
+## まだやらないこと
+
+全コーパスの推論、7 モデルの一括ベンチマーク、論文用 WER、ASR の導入と学習、SE の再学習、結果テーブルの DuckDB への書き込み、公式混合プロトコルへの置き換えは、この基盤ができてから別の作業です。結果ファイルは、あとから DuckDB へ登録できる JSON のままにしています。

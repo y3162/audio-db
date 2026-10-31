@@ -25,6 +25,23 @@ model_ms = build_model('tf_gridnet', variant='ms-snsd')
 
 可変長バッチは `enhancer.enhance_batch(padded_waveforms, 16000, lengths)` で処理できます。
 
+## 評価パイプライン
+
+データセット、SE、ASR、指標は差し替えられます。実コーパスや実チェックポイントが無いときは、合成音声と `mock` で一連の処理を確認できます。`mock` は音声強調モデルではありません。設計と SNR の定義は [評価パイプライン](docs/evaluation/PIPELINE.md) にあります。`rms_v1` は VoiceBank-DEMAND や URGENT の混合手順ではありません。
+
+```bash
+.venvs/lab/bin/python -m src.evaluation.cli \
+  --config configs/evaluation/smoke.yaml \
+  --dry-run
+
+.venvs/lab/bin/python -m src.evaluation.cli \
+  --config configs/evaluation/smoke.yaml \
+  --limit 2 \
+  --device cpu
+```
+
+実チェックポイントを使う例は `configs/evaluation/example.yaml` です。結果は `data/results/se-evaluation/<run_id>/` に保存されます。中断した実験は同じ `run_id` で `--resume` します。
+
 ```python
 enc = load_enhancer('unipase', {
     'dewavlm': '/path/to/DeWavLM-Omni.pt',

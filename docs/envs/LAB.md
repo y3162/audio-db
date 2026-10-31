@@ -67,3 +67,10 @@ export CUDA_VISIBLE_DEVICES=<空きGPU>
 | numba / llvmlite / numpy | 0.68.1 / 0.50.0 / 2.5.4 |
 | duckdb | 2.0.0 |
 | ptxas | 12.2.140 |
+| pyyaml / scipy / pystoi / pesq | 6.0.3 / 1.18.1 / 0.4.1 / 0.0.4 |
+
+評価パイプラインの追加パッケージは、既存の numpy を上げずに入れる。
+
+```bash
+uv pip install --python .venvs/lab/bin/python "numpy==2.5.4" -r requirements/evaluation.txt
+```
