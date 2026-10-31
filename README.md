@@ -25,6 +25,41 @@ model_ms = build_model('tf_gridnet', variant='ms-snsd')
 
 可変長バッチは `enhancer.enhance_batch(padded_waveforms, 16000, lengths)` で処理できます。
 
+## 評価データ
+
+評価の入力は DuckDB の名前付きセットです。Manifest は登録するときだけ読み、評価の実行時には使いません。`make db-init` は `eval` スキーマを作り、`configs/db/init.yaml` の対象を登録します。`corpora.audio_files` は削除も再作成もしません。
+
+```bash
+make db-init
+```
+
+```python
+from src.evaluation.datasets import EvaluationDB
+
+db = EvaluationDB("data/db/resource.duckdb")
+dataset = db.load_dataset("libri_demand_snr0")
+for sample in dataset:
+    ...
+```
+
+コーパスからセットを作るときも Manifest は要りません。
+
+```python
+db.create_set_from_corpus(
+    "libri_demand_snr0",
+    role="synthetic",
+    filters={"corpus": "LibriSpeech", "subset": "test-clean"},
+    limit=2,
+    noise_filters={"corpus": "DEMAND"},
+    noise_limit=1,
+    snr_db=0,
+    seed=0,
+    max_seconds=2.0,
+)
+```
+
+同じ case と条件からは、同じ `rms_v1` の混合が再生成されます。詳細は [評価パイプライン](docs/evaluation/PIPELINE.md) と [DB の準備](docs/db/SETUP.md) です。
+
 ## 評価パイプライン
 
 データセット、SE、ASR、指標は差し替えられます。実コーパスや実チェックポイントが無いときは、合成音声と `mock` で一連の処理を確認できます。`mock` は音声強調モデルではありません。設計と SNR の定義は [評価パイプライン](docs/evaluation/PIPELINE.md) にあります。`rms_v1` は VoiceBank-DEMAND や URGENT の混合手順ではありません。

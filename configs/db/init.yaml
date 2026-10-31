@@ -1,0 +1,30 @@
+# Explicit inputs for `make db-init`.
+# Optional entries are skipped, with a message, when the files or rows are absent.
+# Required entries fail the command instead of being ignored.
+database: data/db/resource.duckdb
+corpora_root: data/corpora
+
+manifests:
+  - path: examples/manifests/example.jsonl
+    set: example
+    required: false
+    description: Example manifest. Skipped when its audio files are not present.
+
+corpus_sets:
+  - name: libri_demand_snr0
+    required: false
+    description: Two LibriSpeech test-clean utterances mixed with DEMAND at 0 dB.
+    role: synthetic
+    filters:
+      corpus: LibriSpeech
+      subset: test-clean
+    limit: 2
+    noise_filters:
+      corpus: DEMAND
+    noise_limit: 1
+    snr_db: 0
+    seed: 0
+    protocol: rms_v1
+    max_seconds: 2.0
+    prevent_clip: true
+    hard_clip: false

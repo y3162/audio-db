@@ -74,6 +74,7 @@ def mix_snr(
     protocol: str = PROTOCOL_RMS_V1,
     prevent_clip: bool = False,
     hard_clip: bool = False,
+    noise_start: int | None = None,
 ) -> MixResult:
     if protocol != PROTOCOL_RMS_V1:
         raise ValueError(f"unknown mixing protocol: {protocol}")
@@ -90,7 +91,7 @@ def mix_snr(
         noise_wave = AF.resample(noise_wave, noise_sample_rate, sample_rate)
         if noise_wave.numel() == 0:
             raise ValueError("noise is empty after resampling")
-    aligned, start = align_noise(noise_wave, clean_wave.numel(), seed)
+    aligned, start = align_noise(noise_wave, clean_wave.numel(), seed, start=noise_start)
     clean_power = signal_power(clean_wave)
     noise_power = signal_power(aligned)
     if clean_power < POWER_EPS:
@@ -146,19 +147,46 @@ def mix_snr(
     )
 
 
-def align_noise(noise: torch.Tensor, length: int, seed: int) -> tuple[torch.Tensor, int]:
-    """Tile when noise is short, then crop from a seeded start."""
+def crop_start(noise_length: int, target_length: int, seed: int) -> int:
+    """Seeded crop into noise after the same tiling rule as ``align_noise``."""
+    if target_length <= 0:
+        raise ValueError("target length must be positive")
+    if noise_length <= 0:
+        raise ValueError("noise length must be positive")
+    tiled = noise_length
+    if tiled < target_length:
+        repeats = (target_length + tiled - 1) // tiled
+        tiled *= repeats
+    max_start = tiled - target_length
+    if max_start == 0:
+        return 0
+    generator = np.random.Generator(np.random.PCG64(int(seed) & 0xFFFFFFFF))
+    return int(generator.integers(0, max_start + 1))
+
+
+def align_noise(
+    noise: torch.Tensor,
+    length: int,
+    seed: int,
+    *,
+    start: int | None = None,
+) -> tuple[torch.Tensor, int]:
+    """Tile when noise is short, then crop from a seeded or stored start."""
     if length <= 0:
         raise ValueError("target length must be positive")
-    if noise.numel() < length:
-        repeats = (length + noise.numel() - 1) // noise.numel()
+    original = int(noise.numel())
+    if original <= 0:
+        raise ValueError("noise is empty")
+    if start is None:
+        start = crop_start(original, length, seed)
+    elif isinstance(start, bool) or not isinstance(start, int):
+        raise ValueError("noise_start must be an integer")
+    if original < length:
+        repeats = (length + original - 1) // original
         noise = noise.repeat(repeats)
     max_start = int(noise.numel() - length)
-    if max_start == 0:
-        start = 0
-    else:
-        generator = np.random.Generator(np.random.PCG64(int(seed) & 0xFFFFFFFF))
-        start = int(generator.integers(0, max_start + 1))
+    if start < 0 or start > max_start:
+        raise ValueError(f"noise_start {start} is outside 0..{max_start}")
     return noise[start : start + length].contiguous(), start
 
 

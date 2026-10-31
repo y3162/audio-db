@@ -1,4 +1,8 @@
-"""JSONL or JSON-array manifests."""
+"""Parse JSONL or JSON-array manifests for DuckDB import.
+
+Evaluation does not read these files. Register them with EvaluationDB.import_manifest
+or ``make db-init``, then load the named set.
+"""
 
 from __future__ import annotations
 

@@ -26,19 +26,34 @@ class ConfigTests(unittest.TestCase):
         self.assertEqual(config.models[0].name, "mock")
         self.assertEqual(config.mixing.snr_db, [0.0, 5.0])
 
-    def test_example_accepts_checkpoint_and_manifest_alias(self):
+    def test_example_accepts_a_named_evaluation_set(self):
+        # Evaluation no longer reads manifests. Import them, then select dataset.set.
         config = load_config(ROOT / "configs/evaluation/example.yaml")
         self.assertEqual(config.models[0].name, "mp_senet")
         self.assertEqual(config.models[0].variant, "vb")
         self.assertTrue(config.models[0].checkpoint.endswith("g_best_vb"))
-        manifest = config_from_dict(
+        self.assertEqual(config.dataset.set_name, "libri_demand_snr0")
+        self.assertFalse(config.mixing.enabled)
+        named = config_from_dict(
             {
                 "experiment": {"name": "m"},
-                "dataset": {"source": "manifest", "manifest": "samples.jsonl"},
+                "dataset": {
+                    "source": "duckdb",
+                    "path": "data/db/resource.duckdb",
+                    "set": "pilot_100",
+                },
                 "models": [{"name": "mock"}],
             }
         )
-        self.assertEqual(manifest.dataset.path, "samples.jsonl")
+        self.assertEqual(named.dataset.set_name, "pilot_100")
+        with self.assertRaises(ConfigError):
+            config_from_dict(
+                {
+                    "experiment": {"name": "m"},
+                    "dataset": {"source": "manifest", "path": "samples.jsonl"},
+                    "models": [{"name": "mock"}],
+                }
+            )
 
     def test_rejects_unknown_fields_missing_weights_and_bad_snr(self):
         with self.assertRaises(ConfigError):

@@ -11,17 +11,18 @@ src/evaluation/
 ├── cli.py                 # python -m src.evaluation.cli
 ├── config.py              # 設定の検証
 ├── pipeline.py            # 段階の接続
-├── datasets/              # manifest / DuckDB / synthetic
+├── datasets/              # DuckDB の評価セット / synthetic
 ├── audio/                 # 読み込みと rms_v1 混合
 ├── models/                # SE は src.se を呼ぶ。ASR は差し替え口
 ├── metrics/               # WER / PESQ / STOI / ESTOI / SI-SDR
 └── results/               # JSONL・CSV・再開用のレコード
 
+configs/db/init.yaml         # make db-init が登録する Manifest と評価セット
 configs/evaluation/
 ├── smoke.yaml             # 合成音声 + mock
-├── example.yaml           # DuckDB + MP-SENet の型
-└── manifest.example.jsonl
+└── example.yaml           # 名前付き評価セット + MP-SENet
 
+examples/manifests/          # DuckDB へ登録する Manifest の例
 tests/evaluation/
 ```
 
@@ -31,7 +32,7 @@ tests/evaluation/
 
 各段階は単独でも呼べます。
 
-1. 入力の選択（manifest、DuckDB、または合成音声）
+1. 入力の選択（DuckDB の評価セット、または合成音声）
 2. 波形の読み込み
 3. 必要なときだけ雑音混合
 4. SE
@@ -43,59 +44,119 @@ ASR が未導入でも SE までは実行できます。指標ライブラリが
 
 ## データ入力
 
-共通の単位は発話です。発話 ID、データセット名、split、音声パス、サンプリングレート、書き起こし、clean / noisy / noise のパス、SNR、話者 ID、任意のメタデータを持てます。3 つとも揃っている必要はありません。
+評価時の入力は、DuckDB に登録した名前付きセットか、メモリ上の合成音声です。Manifest を評価の `dataset.source` には使えません。
 
-| 状況 | 設定 |
+共通の単位は発話です。発話 ID、データセット名、split、音声パス、サンプリングレート、書き起こし、clean / noisy / noise のパス、SNR、話者 ID、任意のメタデータを持てます。波形は、その発話を処理するときだけ読みます。
+
+| 種類 | 内容 |
 |---|---|
-| clean と noise から noisy を作る | `mixing.enabled: true` |
-| 既存の noisy をそのまま使う | `mixing.enabled: false` かつ `noisy_path`、または DuckDB の `role: noisy` |
-| clean をそのまま強調する | `mixing.enabled: false` かつ clean だけがある |
-
-### Manifest
-
-JSONL（空行は無視）または JSON 配列です。データベースが無くても使えます。相対パスは manifest のディレクトリ、または `dataset.root` から解決します。
-
-```json
-{"utterance_id": "u1", "dataset": "toy", "split": "test", "clean_path": "clean.wav", "noise_path": "noise.wav", "transcript": "hello", "speaker_id": "s1"}
-```
-
-既知のキー以外は `metadata` に残します。音声ファイルが無い発話は、その発話だけ `skipped` / `audio_not_found` になります。manifest ファイル自体が無い場合は実行前にエラーです。
-
-### DuckDB
-
-`corpora.audio_files` を読み取り専用で開きます。`duckdb.connect(path, read_only=True)` だけを使い、ingest は呼びません。データベースファイルが無いときはエラーになり、ファイルは作りません。
-
-パスは `dataset.corpora_root`（既定 `data/corpora`）からの相対パスです。絞り込みは列名への等価比較だけです。`corpus`、`subset`、`speaker_id` など、`audio_files` の列を指定できます。並びは `path` です。
+| clean | クリーン音声 |
+| noisy | 既存の雑音付き音声 |
+| paired | clean と noisy の対応 |
+| synthetic | clean と noise から `rms_v1` で作る音声 |
 
 ```yaml
 dataset:
   source: duckdb
   path: data/db/resource.duckdb
   corpora_root: data/corpora
-  role: clean
-  filters:
-    corpus: LibriSpeech
-    subset: test-clean
-  limit: 2
-  noise_filters:
-    corpus: DEMAND
-  noise_limit: 1
-  pair: hash
-  max_seconds: 2.0
+  set: libri_demand_snr0
 ```
 
-`pair: hash` は発話 ID から雑音を選ぶので、発話の処理順を変えても組は変わりません。`pair: cycle` は並び順に巡回します。混合するときは `role: clean` と `noise_filters` が必要です。
+```python
+from src.evaluation.datasets import EvaluationDB
 
-`max_seconds` は各ファイルの先頭だけを読みます。DEMAND は 1 チャネルあたり 300 秒あるため、動作確認ではこれを指定します。省略するとファイル全体をデコードしてから切り出します。これはベンチマーク手順ではなく、長さの上限です。
+db = EvaluationDB("data/db/resource.duckdb")
+dataset = db.load_dataset("libri_demand_snr0")
+```
+
+セットの順序は登録時のままです。同じセットを使う限り、SE モデルが違っても入力は同じです。
+
+### DB 初期化
+
+```bash
+make db-init
+```
+
+1. `eval.cases`、`eval.sets`、`eval.set_items` を作る。
+2. `configs/db/init.yaml` の Manifest をインポートする。
+3. 同じファイルに書いたコーパス選択で評価セットを作る。
+4. 件数を表示し、`corpora.audio_files` が変わっていないことを確認する。
+
+このコマンドは `make db-ingest` を呼びません。2 回実行しても case は増えません。同じ ID で内容が違う再登録はエラーです。Manifest や音声が無い任意項目は、何をスキップしたかを表示します。`required: true` の入力に不備があると、コマンドは失敗します。
+
+現在の任意項目は、例示用の `examples/manifests/example.jsonl` と、LibriSpeech test-clean の 2 発話を DEMAND と 0 dB で混ぜる `libri_demand_snr0` です。コーパスが無い環境では後者をスキップし、スキーマだけ作ります。
+
+### Manifest のインポート
+
+JSONL（空行は無視）または JSON 配列です。相対パスは Manifest のあるディレクトリ、または `root` から解決します。登録後は Manifest ファイルが無くてもセットを読めます。音声ファイルは必要です。
+
+```json
+{"utterance_id": "u1", "dataset": "toy", "split": "test", "clean_path": "clean.wav", "noise_path": "noise.wav", "transcript": "hello", "speaker_id": "s1", "snr_db": 0}
+```
+
+`clean_path` と `noise_path` と `snr_db` がある行は synthetic です。`clean_path` と `noisy_path` は paired、`noisy_path` だけは noisy、clean または `audio_path` だけは clean です。既知のキー以外は metadata に残します。`corpora.audio_files` に同じ音声があるときは、Manifest に無い書き起こしと話者をそこから補います。音声そのものを `corpora.audio_files` へは追加しません。
+
+パスはデータベースファイルからの相対パスで保存します。プロジェクトと `data/corpora` の外にあるファイルは登録できません。
+
+```python
+db.import_manifest("examples/manifests/example.jsonl", "example")
+```
+
+### コーパスからの評価セット
+
+Manifest を経由せず、`corpora.audio_files` を選んでセットにできます。並びは `path` です。
+
+```python
+db.create_set_from_corpus(
+    "libri_clean",
+    role="clean",
+    filters={"corpus": "LibriSpeech", "subset": "test-clean"},
+    limit=2,
+)
+```
+
+SQL を渡す場合は、`corpora.audio_files` を読む単一の SELECT に限られます。
+
+```python
+db.create_set_from_corpus(
+    "libri_clean",
+    role="clean",
+    query="SELECT * FROM corpora.audio_files WHERE corpus = ? AND subset = ? ORDER BY path",
+    params=["LibriSpeech", "test-clean"],
+    limit=2,
+)
+```
+
+`role: synthetic` は clean ごとに雑音を 1 つ割り当て、SNR、seed、`rms_v1`、clean の先頭秒数、雑音の切り出し位置を case に保存します。雑音の対応はセットの seed と path から決まるので、実験の seed では変わりません。サンプリング周波数が違うときは切り出し位置を保存せず、同じ seed で再計算します。
+
+```python
+db.create_set_from_corpus(
+    "libri_demand_snr0",
+    role="synthetic",
+    filters={"corpus": "LibriSpeech", "subset": "test-clean"},
+    limit=2,
+    noise_filters={"corpus": "DEMAND"},
+    noise_limit=1,
+    snr_db=0,
+    seed=0,
+    max_seconds=2.0,
+    prevent_clip=True,
+)
+```
+
+`dataset.set` を使う設定では `mixing.enabled` を false にします。混合条件は case 側にあります。
+
+名前付きセットを使わない DuckDB 読み取りも残しています。`filters` と `noise_filters` で `corpora.audio_files` を読み取り専用のまま選び、`mixing.enabled: true` のときにその場で混ぜます。比較実験は名前付きセットを使ってください。`pair: hash` は発話 ID から雑音を選び、`pair: cycle` は並び順に巡回します。
 
 ### 合成音声
 
-`dataset.source: synthetic` はメモリ上の振幅変調ノイズを作ります。コーパスが無くても smoke 設定が動きます。
+`dataset.source: synthetic` はメモリ上の振幅変調ノイズを作ります。コーパスが無くても `configs/evaluation/smoke.yaml` が動きます。
 
 ### データが無いとき
 
-- manifest も DuckDB も無い: 実行はエラー。合成設定には影響しません。
-- クエリが 0 件: エラー。
+- 評価セットも DuckDB も無い: 実行はエラー。合成設定には影響しません。
+- セットが未登録、またはクエリが 0 件: エラー。
 - 行はあるが音声ファイルが無い: その発話は `skipped`。
 
 ## 雑音混合（rms_v1）
@@ -178,6 +239,7 @@ ESTOI は `metrics.estoi: true`、SI-SDR は `metrics.si_sdr: true` です。既
 未知のキー、チェックポイントの欠落、有限でない SNR、WER だけ有効、は実行前にエラーになります。
 
 ```bash
+make db-init
 python -m src.evaluation.cli --config configs/evaluation/smoke.yaml --dry-run
 python -m src.evaluation.cli --config configs/evaluation/smoke.yaml --limit 2 --device cpu --seed 0
 python -m src.evaluation.cli --config configs/evaluation/example.yaml --run-id libri-2s --device cpu

@@ -419,35 +419,67 @@ def _prepare(config: ExperimentConfig, sample: AudioSample, noise_item: AudioSam
         "seconds": 0.0,
     }
     try:
-        if config.mixing.enabled:
-            clean = _load_any(sample.clean_waveform, sample.sample_rate, sample.clean_path, config.dataset.max_seconds)
+        recipe = _mix_recipe(sample)
+        if recipe is not None or config.mixing.enabled:
+            clean_limit = config.dataset.max_seconds
+            noise_limit = config.dataset.max_seconds
+            if recipe is not None:
+                clean_limit = recipe.get("max_seconds")
+                noise_limit = None
+            clean = _load_any(sample.clean_waveform, sample.sample_rate, sample.clean_path, clean_limit)
             if clean is None:
                 return _mark(payload, started, "skipped", "clean_required")
-            noise_wave, noise_path = _load_noise(sample, noise_item, config.dataset.max_seconds)
+            if recipe is not None:
+                noise_loaded = _load_any(
+                    sample.noise_waveform, sample.sample_rate, sample.noise_path, noise_limit
+                )
+                noise_path = sample.noise_path
+                if noise_loaded is None:
+                    return _mark(payload, started, "skipped", "noise_required")
+                noise_tensor, noise_rate = noise_loaded
+            else:
+                noise_loaded, noise_path = _load_noise(sample, noise_item, noise_limit)
+                if noise_loaded is None:
+                    return _mark(payload, started, "skipped", "noise_required")
+                noise_tensor, noise_rate = noise_loaded
             paths["noise"] = noise_path
-            if noise_wave is None:
-                return _mark(payload, started, "skipped", "noise_required")
             clean_wave, clean_rate = clean
-            noise_tensor, noise_rate = noise_wave
-            mix_seed = derive_seed(
-                config.experiment.seed,
-                "mix",
-                sample.utterance_id,
-                canonical_snr(snr),
-                noise_path or "memory",
-            )
+            if recipe is not None:
+                mix_seed = int(recipe["seed"])
+                protocol = str(recipe.get("protocol") or config.mixing.protocol)
+                prevent_clip = bool(recipe.get("prevent_clip", False))
+                hard_clip = bool(recipe.get("hard_clip", False))
+                noise_start = recipe.get("noise_start")
+                snr_value = float(sample.snr_db)
+            else:
+                mix_seed = derive_seed(
+                    config.experiment.seed,
+                    "mix",
+                    sample.utterance_id,
+                    canonical_snr(snr),
+                    noise_path or "memory",
+                )
+                protocol = config.mixing.protocol
+                prevent_clip = config.mixing.prevent_clip
+                hard_clip = config.mixing.hard_clip
+                noise_start = None
+                snr_value = float(snr)
             mixed = mix_snr(
                 clean_wave,
                 noise_tensor,
                 clean_rate,
                 noise_rate,
-                float(snr),
+                snr_value,
                 mix_seed,
-                protocol=config.mixing.protocol,
-                prevent_clip=config.mixing.prevent_clip,
-                hard_clip=config.mixing.hard_clip,
+                protocol=protocol,
+                prevent_clip=prevent_clip,
+                hard_clip=hard_clip,
+                noise_start=None if noise_start is None else int(noise_start),
             )
+            payload["snr_db"] = canonical_snr(snr_value)
             payload["mix"] = _mix_payload(mixed)
+            if recipe is not None and recipe.get("max_seconds") is not None:
+                payload["mix"]["clean_max_seconds"] = float(recipe["max_seconds"])
             payload["mix_seed"] = mix_seed
             if mixed.clean_silent:
                 payload["input_wave"] = mixed.noisy
@@ -751,7 +783,17 @@ def _build_plan(config, digest, samples, bundle, dataset_error) -> dict[str, Any
         )
         if not status["ready"]:
             problems.append(f"checkpoint for {model.name} is missing or was not provided")
-    snrs = list(config.mixing.snr_db) if config.mixing.enabled else [None]
+    if samples:
+        sequences = [_snrs(config, sample) for sample in samples]
+        first = sequences[0]
+        if all(item == first for item in sequences):
+            snrs = first
+        else:
+            snrs = sorted({value for item in sequences for value in item if value is not None})
+        planned_records = sum(len(item) for item in sequences) * len(config.models)
+    else:
+        snrs = list(config.mixing.snr_db) if config.mixing.enabled else [None]
+        planned_records = 0
     output = config.output.root
     if config.output.run_id:
         output = str(Path(config.output.root) / config.output.run_id)
@@ -767,7 +809,7 @@ def _build_plan(config, digest, samples, bundle, dataset_error) -> dict[str, Any
         "missing_paths": missing_count,
         "models": models,
         "snrs": snrs,
-        "planned_records": len(samples) * len(config.models) * len(snrs),
+        "planned_records": planned_records,
         "asr": recognizer_settings(config.asr),
         "metrics": {
             "wer": config.metrics.wer,
@@ -812,7 +854,20 @@ def _paired_noise(config, bundle, sample, index):
     return bundle.noise_pool[offset]
 
 
+def _mix_recipe(sample: AudioSample) -> dict[str, Any] | None:
+    """Stored mixture for a synthetic case. Experiment seed does not change it."""
+    recipe = sample.metadata.get("mix")
+    if not isinstance(recipe, dict):
+        return None
+    seed = recipe.get("seed")
+    if isinstance(seed, bool) or not isinstance(seed, int) or sample.snr_db is None:
+        return None
+    return recipe
+
+
 def _snrs(config: ExperimentConfig, sample: AudioSample) -> list[float | None]:
+    if _mix_recipe(sample) is not None:
+        return [sample.snr_db]
     if config.mixing.enabled:
         return list(config.mixing.snr_db)
     return [sample.snr_db]

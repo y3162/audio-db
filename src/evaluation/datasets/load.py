@@ -6,7 +6,6 @@ from dataclasses import dataclass, field
 
 from src.evaluation.config import DatasetConfig
 from src.evaluation.datasets.duckdb import load_duckdb
-from src.evaluation.datasets.manifest import load_manifest
 from src.evaluation.datasets.synthetic import make_synthetic_samples
 from src.evaluation.errors import DatasetError
 from src.evaluation.sample import AudioSample
@@ -29,13 +28,15 @@ def load_dataset(config: DatasetConfig, experiment_seed: int) -> DatasetBundle:
                 seed,
             )
         )
-    if config.source == "manifest":
-        if not config.path:
-            raise DatasetError("manifest path is required")
-        return DatasetBundle(samples=load_manifest(config.path, config.root))
     if config.source == "duckdb":
         if not config.path:
             raise DatasetError("DuckDB path is required")
+        if config.set_name:
+            from src.evaluation.datasets.evaldb import EvaluationDB
+
+            database = EvaluationDB(config.path, corpora_root=config.corpora_root or "data/corpora")
+            dataset = database.load_dataset(config.set_name)
+            return DatasetBundle(samples=list(dataset))
         corpora_root = config.corpora_root or "data/corpora"
         samples = load_duckdb(
             config.path,

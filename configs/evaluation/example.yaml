@@ -1,7 +1,6 @@
-# Template for a real checkpoint and the corpus database.
+# Named set from `make db-init` (LibriSpeech test-clean + DEMAND, SNR 0 dB).
 # rms_v1 is not the VoiceBank-DEMAND or URGENT mixture procedure.
-# max_seconds reads a prefix so a smoke run does not decode a full DEMAND file.
-# Remove max_seconds and raise limit only when a full condition is intended.
+# The case stores the clean prefix, noise crop, and seed. Leave mixing disabled.
 experiment:
   name: se-example
   seed: 0
@@ -11,23 +10,10 @@ dataset:
   source: duckdb
   path: data/db/resource.duckdb
   corpora_root: data/corpora
-  role: clean
-  filters:
-    corpus: LibriSpeech
-    subset: test-clean
-  limit: 2
-  noise_filters:
-    corpus: DEMAND
-  noise_limit: 1
-  pair: hash
-  max_seconds: 2.0
+  set: libri_demand_snr0
 
 mixing:
-  enabled: true
-  protocol: rms_v1
-  snr_db: [0]
-  prevent_clip: true
-  hard_clip: false
+  enabled: false
 
 models:
   - name: mp_senet

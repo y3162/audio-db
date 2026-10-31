@@ -21,7 +21,7 @@ PLANNED_ASR = {
     "whisper": "Whisper Large-v3",
     "wav2vec2": "Wav2Vec 2.0",
 }
-DATASET_SOURCES = ("manifest", "duckdb", "synthetic")
+DATASET_SOURCES = ("duckdb", "synthetic")
 DATASET_ROLES = ("clean", "noisy", "noise")
 PAIR_MODES = ("hash", "cycle")
 
@@ -37,6 +37,7 @@ class ExperimentSection:
 class DatasetConfig:
     source: str
     path: str | None = None
+    set_name: str | None = None
     root: str | None = None
     corpora_root: str | None = None
     role: str = "clean"
@@ -188,7 +189,12 @@ def config_from_dict(raw: dict[str, Any]) -> ExperimentConfig:
     runtime = _parse_runtime(_mapping(raw.get("runtime", {}), "runtime"))
     if metrics.wer and not asr.enabled:
         raise ConfigError("metrics.wer requires asr.enabled")
-    if mixing.enabled and dataset.source == "duckdb":
+    if dataset.set_name and mixing.enabled:
+        raise ConfigError(
+            "mixing.enabled must be false when dataset.set is used. "
+            "Mixture conditions are stored on the evaluation cases."
+        )
+    if mixing.enabled and dataset.source == "duckdb" and not dataset.set_name:
         if dataset.role != "clean":
             raise ConfigError("duckdb mixing requires dataset.role=clean")
         if not dataset.noise_filters:
@@ -297,6 +303,7 @@ def _parse_dataset(raw: dict[str, Any]) -> DatasetConfig:
         {
             "source",
             "path",
+            "set",
             "manifest",
             "root",
             "corpora_root",
@@ -316,15 +323,18 @@ def _parse_dataset(raw: dict[str, Any]) -> DatasetConfig:
     )
     _require(raw, ("source",), "dataset")
     source = _str(raw["source"], "dataset.source")
+    if source == "manifest" or "manifest" in raw:
+        raise ConfigError(
+            "dataset.source=manifest has been removed. "
+            "Import the manifest with make db-init and set dataset.set."
+        )
     if source not in DATASET_SOURCES:
         raise ConfigError(
             f"dataset.source must be one of: {', '.join(DATASET_SOURCES)}"
         )
-    if "path" in raw and "manifest" in raw:
-        raise ConfigError("dataset accepts path or manifest, not both")
-    path = raw.get("path", raw.get("manifest"))
-    if source in {"manifest", "duckdb"} and not path:
-        raise ConfigError(f"dataset.path is required when source is {source}")
+    path = raw.get("path")
+    if source == "duckdb" and not path:
+        raise ConfigError("dataset.path is required when source is duckdb")
     if path is not None:
         path = _str(path, "dataset.path")
     role = _str(raw.get("role", "clean"), "dataset.role")
@@ -336,9 +346,15 @@ def _parse_dataset(raw: dict[str, Any]) -> DatasetConfig:
     filters = _filters(raw.get("filters", {}), "dataset.filters")
     noise_filters = raw.get("noise_filters")
     parsed_noise = None if noise_filters is None else _filters(noise_filters, "dataset.noise_filters")
+    set_name = None if raw.get("set") is None else _str(raw["set"], "dataset.set")
+    if set_name and source != "duckdb":
+        raise ConfigError("dataset.set requires dataset.source=duckdb")
+    if set_name and (filters or parsed_noise):
+        raise ConfigError("dataset.set cannot be combined with filters or noise_filters")
     return DatasetConfig(
         source=source,
         path=path,
+        set_name=set_name,
         root=None if raw.get("root") is None else _str(raw["root"], "dataset.root"),
         corpora_root=(
             None if raw.get("corpora_root") is None else _str(raw["corpora_root"], "dataset.corpora_root")

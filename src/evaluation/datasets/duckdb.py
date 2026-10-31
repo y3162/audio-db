@@ -25,8 +25,8 @@ def load_duckdb(
     database = Path(path)
     if not database.is_file():
         raise DatasetError(
-            f"DuckDB not found: {database}. Use dataset.source=manifest, or create the "
-            "database separately. This pipeline does not run corpus ingest."
+            f"DuckDB not found: {database}. Create it with make db-init, or select an "
+            "existing database. This pipeline does not run corpus ingest."
         )
     rows = _query(database, filters or {}, limit)
     if not rows:
@@ -35,16 +35,13 @@ def load_duckdb(
     return [_row_to_sample(row, root, role) for row in rows]
 
 
-def _query(database: Path, filters: dict[str, Any], limit: int | None) -> list[dict[str, Any]]:
-    try:
-        import duckdb
-    except ImportError as exc:
-        raise DatasetError("duckdb is not installed in this environment") from exc
+def fetch_audio_files(connection, filters: dict[str, Any] | None, limit: int | None) -> list[dict[str, Any]]:
+    """Read corpora.audio_files through an open connection. Rows are ordered by path."""
     columns = ", ".join(AUDIO_FILE_COLUMNS)
     clauses: list[str] = []
     params: list[Any] = []
     for key in AUDIO_FILE_COLUMNS:
-        if key not in filters or filters[key] is None:
+        if not filters or key not in filters or filters[key] is None:
             continue
         clauses.append(f"{key} = ?")
         params.append(filters[key])
@@ -56,16 +53,24 @@ def _query(database: Path, filters: dict[str, Any], limit: int | None) -> list[d
         sql += " LIMIT ?"
         params.append(int(limit))
     try:
+        cursor = connection.execute(sql, params)
+    except Exception as exc:
+        raise DatasetError(f"DuckDB query failed: {exc}") from exc
+    names = [item[0] for item in cursor.description]
+    return [dict(zip(names, row, strict=True)) for row in cursor.fetchall()]
+
+
+def _query(database: Path, filters: dict[str, Any], limit: int | None) -> list[dict[str, Any]]:
+    try:
+        import duckdb
+    except ImportError as exc:
+        raise DatasetError("duckdb is not installed in this environment") from exc
+    try:
         connection = duckdb.connect(str(database), read_only=True)
     except duckdb.Error as exc:
         raise DatasetError(f"failed to open DuckDB read-only: {exc}") from exc
     try:
-        try:
-            cursor = connection.execute(sql, params)
-        except duckdb.Error as exc:
-            raise DatasetError(f"DuckDB query failed: {exc}") from exc
-        names = [item[0] for item in cursor.description]
-        return [dict(zip(names, row, strict=True)) for row in cursor.fetchall()]
+        return fetch_audio_files(connection, filters, limit)
     finally:
         connection.close()
 
