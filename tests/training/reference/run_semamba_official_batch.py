@@ -34,6 +34,7 @@ from tests.training.reference.train_semamba_200 import (
     _official,
 )
 from src.training.core.rng import capture_rng, seed_training_stream
+from src.training.core.distributed import unwrap
 from src.training.data.dataset import load_recipe_dataset
 from src.training.data.sampler import epoch_indices
 from tests.training.supply import tensor_sha256
@@ -317,10 +318,13 @@ def _update(side: str, bundle: dict, batches: list[dict], accumulation: int, *, 
                 preview = _official_parts(bundle["generator"], clean, noisy, bundle["cfg"])
             cached.append((clean, noisy, None))
             parts = preview
-        disc = _official_losses(parts, clean, bundle["cqt"], bundle["mrd"], bundle["mel"], bundle["cfg"])
+        # Preserve the generator graph for its later update; the discriminator
+        # update must not backpropagate through the generated waveform.
+        disc_parts = {**parts, "audio": parts["audio"].detach()}
+        disc = _official_losses(disc_parts, clean, bundle["cqt"], bundle["mrd"], bundle["mel"], bundle["cfg"])
         (disc["discriminator"] / accumulation).backward()
         disc_total += float(disc["discriminator"].detach())
-    disc_grads = _clone(bundle["cqt"], bundle["mrd"]) if capture else None
+    disc_grads = _clone(unwrap(bundle["cqt"]), unwrap(bundle["mrd"])) if capture else None
     bundle["optim_d"].step()
     frozen = [parameter for module in (bundle["cqt"], bundle["mrd"]) for parameter in module.parameters()]
     for parameter in frozen:
@@ -332,7 +336,7 @@ def _update(side: str, bundle: dict, batches: list[dict], accumulation: int, *, 
         for clean, noisy, parts in cached:
             if parts is None:
                 parts = _official_parts(bundle["generator"], clean, noisy, bundle["cfg"])
-            generated = _official_losses(parts, clean, bundle["cqt"], bundle["mrd"], bundle["mel"], bundle["cfg"])
+            generated = _official_losses(parts, clean, unwrap(bundle["cqt"]), unwrap(bundle["mrd"]), bundle["mel"], bundle["cfg"])
             (generated["generator"] / accumulation).backward()
             for name in COMPONENTS:
                 totals[name] += float(generated[name].detach())
@@ -340,7 +344,7 @@ def _update(side: str, bundle: dict, batches: list[dict], accumulation: int, *, 
     finally:
         for parameter in frozen:
             parameter.requires_grad_(True)
-    gen_grads = _clone(bundle["generator"]) if capture else None
+    gen_grads = _clone(unwrap(bundle["generator"])) if capture else None
     gen_norm = _norm(bundle["generator"])
     bundle["optim_g"].step()
     count = len(batches)

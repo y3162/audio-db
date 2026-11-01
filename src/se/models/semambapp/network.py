@@ -11,13 +11,31 @@ def _padding(kernel, dilation=1):
     return int((kernel * dilation - dilation) / 2)
 
 
+_FUSED_RMS = None
+
+
+def _fused_rms_norm():
+    global _FUSED_RMS
+    if _FUSED_RMS is None:
+        try:
+            from mamba_ssm.ops.triton.layer_norm import rms_norm_fn
+        except ImportError as exc:
+            raise RuntimeError('fused selective scan requires mamba-ssm with CUDA extensions') from exc
+        _FUSED_RMS = rms_norm_fn
+    return _FUSED_RMS
+
+
 class RMSNorm(nn.Module):
     def __init__(self, size, eps=1e-5):
         super().__init__()
         self.weight = nn.Parameter(torch.ones(size))
         self.eps = eps
 
-    def forward(self, x):
+    def forward(self, x, fused=False):
+        # The fused training path uses the same Triton RMSNorm as the external
+        # Mamba block. The reference path stays in PyTorch and does not import it.
+        if fused and x.is_cuda:
+            return _fused_rms_norm()(x, self.weight, None, eps=self.eps)
         scale = torch.rsqrt(x.float().pow(2).mean(-1, keepdim=True) + self.eps)
         return (x.float() * scale).type_as(x) * self.weight
 
@@ -37,10 +55,13 @@ class ChannelLayerNorm(nn.Module):
 
 
 class SelectiveSSM(nn.Module):
-    """Mamba mixer using the reference selective scan, not the CUDA kernel."""
+    """Independent Mamba mixer with selectable scan implementation."""
 
-    def __init__(self, d_model, d_state=16, d_conv=4, expand=2):
+    def __init__(self, d_model, d_state=16, d_conv=4, expand=2, scan_backend='reference'):
         super().__init__()
+        if scan_backend not in ('reference', 'fused'):
+            raise ValueError(f'unknown selective scan backend: {scan_backend!r}')
+        self.scan_backend = scan_backend
         inner = int(expand * d_model)
         self.d_state = d_state
         self.dt_rank = math.ceil(d_model / 16)
@@ -56,11 +77,16 @@ class SelectiveSSM(nn.Module):
         self.out_proj = nn.Linear(inner, d_model, bias=False)
 
     def forward(self, hidden):
+        # Official training calls mamba_inner_fn, which fuses the causal
+        # convolution, softplus, selective scan, SiLU gate, and output
+        # projection. Applying softplus outside selective_scan_fn changes the
+        # backward and drifts away from that update.
+        if self.scan_backend == 'fused' and hidden.is_cuda:
+            return _fused_mixer(self, hidden)
         batch, length, _ = hidden.shape
         x, z = self.in_proj(hidden).chunk(2, dim=-1)
         x = x.transpose(1, 2)
-        # Left pad only. The fused causal conv uses the current sample as the
-        # last kernel tap. Symmetric Conv1d padding does not.
+        # Left pad only. A symmetric Conv1d pad uses future samples.
         kernel = int(self.conv1d.kernel_size[0])
         x = F.conv1d(F.pad(x, (kernel - 1, 0)), self.conv1d.weight, self.conv1d.bias, groups=self.conv1d.groups)
         x = F.silu(x).transpose(1, 2)
@@ -87,6 +113,34 @@ class SelectiveSSM(nn.Module):
         return self.out_proj(mixed.transpose(1, 2).type_as(hidden))
 
 
+def _fused_mixer(module, hidden):
+    batch, length, channels = hidden.shape
+    hidden = hidden.contiguous()
+    projected = module.in_proj.weight @ hidden.reshape(batch * length, channels).transpose(0, 1)
+    xz = projected.reshape(projected.shape[0], batch, length).permute(1, 0, 2).contiguous()
+    if module.in_proj.bias is not None:
+        xz = xz + module.in_proj.bias.to(dtype=xz.dtype).view(1, -1, 1)
+    try:
+        from mamba_ssm.ops.selective_scan_interface import mamba_inner_fn
+    except ImportError as exc:
+        raise RuntimeError('fused selective scan requires mamba-ssm with CUDA extensions') from exc
+    return mamba_inner_fn(
+        xz,
+        module.conv1d.weight,
+        module.conv1d.bias,
+        module.x_proj.weight,
+        module.dt_proj.weight,
+        module.out_proj.weight,
+        module.out_proj.bias,
+        -torch.exp(module.A_log.float()),
+        None,
+        None,
+        module.D.float(),
+        delta_bias=module.dt_proj.bias.float(),
+        delta_softplus=True,
+    )
+
+
 def _selective_scan(u, delta, a_matrix, b_mat, c_mat, skip):
     batch, dim, length = u.shape
     nstate = a_matrix.shape[1]
@@ -101,21 +155,23 @@ def _selective_scan(u, delta, a_matrix, b_mat, c_mat, skip):
 
 
 class MambaResidual(nn.Module):
-    def __init__(self, d_model, d_state, d_conv, expand, eps):
+    def __init__(self, d_model, d_state, d_conv, expand, eps, scan_backend='reference'):
         super().__init__()
-        self.mixer = SelectiveSSM(d_model, d_state, d_conv, expand)
+        self.mixer = SelectiveSSM(d_model, d_state, d_conv, expand, scan_backend)
         self.norm = RMSNorm(d_model, eps)
 
     def forward(self, hidden, residual):
         residual = hidden if residual is None else hidden + residual
-        return self.mixer(self.norm(residual)), residual
+        fused = self.mixer.scan_backend == 'fused' and hidden.is_cuda
+        normalized = residual.to(dtype=self.norm.weight.dtype) if fused else residual
+        return self.mixer(self.norm(normalized, fused=fused)), residual
 
 
 class BidirectionalMamba(nn.Module):
-    def __init__(self, channels, d_state, d_conv, expand, eps):
+    def __init__(self, channels, d_state, d_conv, expand, eps, scan_backend='reference'):
         super().__init__()
-        self.forward_blocks = nn.ModuleList([MambaResidual(channels, d_state, d_conv, expand, eps)])
-        self.backward_blocks = nn.ModuleList([MambaResidual(channels, d_state, d_conv, expand, eps)])
+        self.forward_blocks = nn.ModuleList([MambaResidual(channels, d_state, d_conv, expand, eps, scan_backend)])
+        self.backward_blocks = nn.ModuleList([MambaResidual(channels, d_state, d_conv, expand, eps, scan_backend)])
 
     def forward(self, x):
         forward, residual = x, None
@@ -245,7 +301,7 @@ class Bottleneck(nn.Module):
             nn.Sequential(nn.Conv2d(features[1], features[2], (3, 4), stride=(1, 2), padding=pad),
                           nn.InstanceNorm2d(features[2], affine=True), nn.PReLU(features[2])),
         ])
-        spec = (cfg['d_state'], cfg['d_conv'], cfg['expand'], cfg['norm_epsilon'])
+        spec = (cfg['d_state'], cfg['d_conv'], cfg['expand'], cfg['norm_epsilon'], cfg.get('scan_backend', 'reference'))
         self.time_mambas = nn.ModuleList([BidirectionalMamba(features[i], *spec) for i in range(3)])
         self.freq_ffns = nn.ModuleList([FrequencyGLP(bins, features[i], 2) for i, bins in enumerate((100, 50, 25))])
         self.freq_layernorm = nn.ModuleList([nn.LayerNorm(features[i]) for i in range(3)])

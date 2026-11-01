@@ -14,7 +14,7 @@
 
 ## SEMamba++
 
-参照 commit `cd369c89a8106072c077b468417b765b227afd74`。ソースツリーにライセンスファイルはなく、重みカードは GPL-2.0 表示。ソースはコピーしていない。`src/se/models/semambapp/` は公開設定（hidden 48、4 bottleneck、圧縮 0.3）とチェックポイントのモジュール名に合わせた再実装で、Mamba の選択的スキャンは Apache-2.0 の Mamba 漸化式を PyTorch だけで計算する。`semambapp.pth` の `generator` を `strict=True` で読む。実チェックポイントでは missing も unexpected も 0。`mamba_ssm` は未使用。公式 CUDA 融合カーネル（`mamba-ssm==2.3.2.post1`、`causal-conv1d==1.7.0`）との波形差は 20 秒で 1.80e-5。単一 mixer では融合カーネルと PyTorch 漸化式の差は 3.28e-7。
+参照 commit `cd369c89a8106072c077b468417b765b227afd74`。ソースツリーにライセンスファイルはなく、重みカードは GPL-2.0 表示。ソースはコピーしていない。`src/se/models/semambapp/` は公開設定（hidden 48、4 bottleneck、圧縮 0.3）とチェックポイントのモジュール名に合わせた再実装で、Mamba の選択的スキャンは Apache-2.0 の Mamba 漸化式を PyTorch だけで計算する。`semambapp.pth` の `generator` を `strict=True` で読む。実チェックポイントでは missing も unexpected も 0。既定の scan は `mamba_ssm` を使わない。`scan_backend: fused` 指定時は CUDA 上で外部 `mamba-ssm` の `mamba_inner_fn` と Triton RMSNorm を使い、CPU では従来の PyTorch scan に戻る。公式 CUDA 融合カーネル（`mamba-ssm==2.3.2.post1`、`causal-conv1d==1.7.0`）との波形差は 20 秒で 1.80e-5。単一 mixer では融合カーネルと PyTorch 漸化式の差は 3.28e-7。
 
 ## UniPASE
 

@@ -20,3 +20,5 @@
 | StuPASE | L1 | Vocoder の係数は 15 / 1 / 1、CFM は `forward` の流速 MSE で ODE の `sample` は呼ばない。更新順は Generator のあと Discriminator。mel の帯と窓は公開リスト。周期は `(2, 3, 5, 7, 11)`、STFT 解像度は `(512, 1024, 2048)`。畳み込み幅は HiFi-GAN より狭い。DeWavLM は縮小 WavLM の層 MSE だけ実行した。WavLM-Large.pt、DeWavLM.pt、Vocoder_L24.pt は無く、公式教師では学習していない。テキスト条件はゼロ。公式幅の Vocos と CFM の学習 step は未実行 |
 
 起動は `python -m src.training.se.cli --config configs/training/<model>.yaml`。チェックポイントは `checkpoint_dir` で、`data/checkpoints/` には書けない。
+
+SEMamba++ の CUDA 学習は `model.architecture.scan_backend: fused` で明示選択できる。既定は `reference`、CPU は指定にかかわらず reference である。fused は対応 GPU 用に構築した外部 `mamba-ssm` の `mamba_inner_fn` と Triton RMSNorm を使い、checkpoint のキーは変わらない。3 秒・2 GPU の実測は [VERIFICATION.md](VERIFICATION.md) を参照する。20 step の勾配スナップショットは公式の再実行でも反転するので、それを長時間学習後の品質一致の証拠にしない。

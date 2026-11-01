@@ -14,7 +14,8 @@ WIN = 400
 COMPRESS = 0.3
 
 _DEFAULTS = dict(hid_feature=48, num_tfmamba=4, d_state=16, d_conv=4, expand=2,
-                 norm_epsilon=1e-5, input_channel=2, output_channel=1, n_fft=N_FFT)
+                 norm_epsilon=1e-5, input_channel=2, output_channel=1, n_fft=N_FFT,
+                 scan_backend='reference')
 
 
 def build(config, variant=None):

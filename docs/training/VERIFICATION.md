@@ -758,3 +758,86 @@ native batch 8 と micro-batch 1 × 8 の Generator 勾配は、上の 0.0465 �
 global batch 8 を PARTIAL にしたのは、native batch 8 が 16 GB に入らず、入る native batch 2 と micro-batch 1 × 2 の Generator 勾配が再実行差を超えるからである。損失と Discriminator 勾配と波形は一致している。DDP は 3 秒の実モデルでは未実行である。
 
 移行の GO は、この手順で学習を始めてよい、という意味である。長時間学習のあと公式と独立の品質が一致することは、まだ証明していない。
+
+## SEMamba++ fused scan・tensor 移行（2026-11-01、途中経過）
+
+判定は保留である。`scan_backend: fused` を指定すると CUDA 上の選択的 scan のみを外部 `mamba-ssm` に委譲し、CPU では reference scan に戻す。既定は reference で、モデルの構造と checkpoint キーを変えない。外部 `mamba-ssm` は Apache-2.0、公式側が使う `causal-conv1d` は BSD 3-Clause。公式 SEMamba++ のコードは独立実装へコピーしていない。`tests/training/reference/run_semamba_official_batch.py` の discriminator 更新は生成波形を detach せず、同一 Generator graph の 2 度目の backward で失敗したため修正した。
+
+`tensor` は driver 535.183.01、A100 PCIe 40 GB 7 枚と 80 GB 1 枚、全て compute capability 8.0。確認時 1、5、6、7 は 13 MiB 使用、0、2、3、4 は他ジョブ使用中。既存 `.venvs/semamba` は Python 3.10.20、PyTorch 2.6.0+cu124、`mamba-ssm==2.3.2.post1`、`causal-conv1d==1.7.0`。既存拡張は sm_75 のほか、turing の glibc 2.35 でビルドされており、tensor の glibc 2.31 では import できない。tensor 上の GCC 9.4 と `.venvs/cuda-nvcc` の nvcc 12.9.86 を使い、別ディレクトリで sm_80 向けのビルドを試行した。元ソースアーカイブ SHA-256 は causal `3202758494eaa7b597ce1c282dfa188889506bfcb92cad3c407d26736bfcd32b`、mamba `104cc47e9101e5401a675fa2b784f2952b9b037f3b1dd83b5ac544394e95d028`。ビルドログとコマンドは `data/results/training/semamba-tensor-20261101/` の `build-tensor-*-ninja.log` にある。CUDA Toolkit 12.9 と PyTorch の CUDA 12.4 はマイナーバージョンが異なり、動作確認が必要。
+
+融合版導入前と同じ reference 経路の Generator 単体を、tensor の A100、3 秒相当の合成 STFT、batch 1、初回実行で同期して測定した。forward 6.146 秒、backward 31.731 秒、peak allocated 7,685,064,192 bytes。これは GAN 全体の step、実データ取得、定常状態を測った数字ではない。再現コード `tests/training/reference/benchmark_semamba_scan.py`、結果 `generator-reference.json`。
+
+`turing` の空き Quadro RTX 5000 で小さい mixer を同一重み・入力で比較した。事前に出力 `atol=2e-5, rtol=2e-4`、勾配 `atol=2e-5, rtol=3e-4` を設定し、reference / fused / 公式 Mamba の全組み合わせが通過した。最大相対 L2 誤差 1.03e-6、最小 cosine 0.9999999999994。実行コード `tests/training/reference/compare_semamba_backends.py`、一次結果 `mixer-turing.json`。CUDA 専用 unit test も turing で成功した。
+
+`turing` の同一 3 秒 VoiceBank ペア・同一初期重みの GAN 1 更新で、公式 / fused の Generator 損失は 15.682699 / 15.682700、波形差は最大 8.70e-7、Generator 勾配は最大差 0.00525、相対 L2 差 0.01549、cosine 0.999881、更新重みの最大差 0.000400。Discriminator 勾配の相対 L2 差は 1.58e-7。これは初回 1 更新であり、非決定性や微小勾配の影響を切り分けていないので学習全体の同等性 GO にはしない。2 実装の入力 SHA-256 は一致。ログと比較は `update-{official,fused}-turing*.log`、`compare-official-fused-turing.json`。所要時間は公式 5.71 秒、fused 2.49 秒だが初回実行順やドライバー差を含み、定常速度比較ではない。
+
+通常 unit test は `OMP_NUM_THREADS=1` で training 74、SE 32（CUDA 専用 1 skip）、evaluation 86、ASR 5、全て成功。ログは同結果ディレクトリの `test-*.log`。CUDA 専用 test の turing 結果は `test-fused-turing.log`。既存本番 DB は変更していない。
+
+追加: sm_80 の `selective_scan_cuda` / `causal_conv1d_cuda` のビルドは完了し、`.venvs/semamba-sm80/` に置いた。既存 `.venvs/semamba` を変更せず、このディレクトリを `PYTHONPATH` の先頭にして利用する。tensor の GPU 5 上で CUDA 単体 forward/backward test が成功した（`test-fused-tensor-v3.log`）。ソース全体を `PYTHONPATH` に追加すると未使用 Mamba3 と既存 Triton の組合せが import に失敗するため、コンパイル済み `.so` のみを先頭に置く。構築手順は各元アーカイブを `.venvs/semamba-sm80-build/` 等に展開し、`setup.py` の CUDA `cc_flag` を `['-gencode', 'arch=compute_80,code=sm_80']` に限定したうえ、tensor 上で各ディレクトリで次を実行した（`TASK_ROOT` はこの repository の絶対パス）。
+
+```sh
+CUDA_HOME="$TASK_ROOT/.venvs/cuda-nvcc" \
+PATH="$TASK_ROOT/.venvs/semamba/bin:$TASK_ROOT/.venvs/cuda-nvcc/bin:$PATH" \
+MAX_JOBS=3 "$TASK_ROOT/.venvs/semamba/bin/python" setup.py build_ext --inplace
+# 各ディレクトリの selective_scan_cuda*.so と causal_conv1d_cuda*.so を
+# 新規 .venvs/semamba-sm80/ にコピーする。
+```
+
+同一の 3 秒 VoiceBank ペア・初期重みでの turing 1 更新では reference 113.71 秒、fused 2.49 秒（45.7 倍）。これは初回 1 更新の観測値であり tensor の step 速度ではない。公式・reference・fused の 3 組はすべて入力 SHA-256 が一致。Generator 勾配の相対 L2 差は公式/reference 1.23%、公式/fused 1.55%、reference/fused 1.72%。同一公式の別プロセス再実行でも 1.24%、同一 fused では 2.04% あった。同一実装の変動と同程度であるが、20 step や DDP の一致を示すものではない。閾値 `max(1e-8, 各 tensor 最大絶対勾配の 0.1%)` より大きい勾配にも符号差があり、単に極小勾配の符号差とは断定しない。3 組の詳細は `compare-*-turing-v2.json`、同一実装の再実行は `repeat-turing/compare-*.json`。
+
+公式配布 checkpoint を `load_enhancer` に strict load し、実 noisy 発話の先頭 47,993 samples について turing CUDA で `enhance` の reference / fused を比べた。両方とも入力長を返し、最大波形差 5.36e-6、相対 L2 6.35e-7、cosine 0.999999999999799（`api-turing.json`）。CPU fallback と checkpoint キーは通常 unit test でも確認した。824 発話の fused 再評価は未実施。
+
+### tensor 実データ・2 GPU（中間結果）
+
+Tensor GPU 5 で実ペア 3 秒・batch 1 の GAN 1 更新を比較した。前の 1 更新では既定の cuDNN TF32 が有効だったため、既存比較と同じ `cudnn.benchmark=False`、`cudnn.deterministic=True`、matmul / cuDNN TF32 無効、`CUBLAS_WORKSPACE_CONFIG=:4096:8` で別実行した（完全決定性は要求していない）。1 更新の reference / fused / 公式は 39.01 / 2.67 / 6.21 秒、peak allocated は 9,495,474,176 / 9,663,924,736 / 7,208,575,488 bytes。初回実行なので定常速度ではないが、reference に対する fused の高速化は約 14.6 倍。入力ハッシュは 3 者で一致。reference / fused の波形最大差 1.98e-6、Generator 勾配の相対 L2 差 2.06%、cosine 0.999800、公式 / fused はそれぞれ 1.81e-6、1.82%、0.999841。Discriminator 勾配の相対 L2 差は 1.62e-7 以下。同一実装の別プロセス再実行では Generator 勾配の相対 L2 差は fused / 公式とも約 3.9e-6 であり、実装間差を単なる同一実装の再実行差とは扱えない。結果は `a100-controlled/` と `a100-controlled-repeat/`。TF32 有効の別観測では reference / fused 波形最大差 0.00126 と勾配相対 L2 差 5.81% で、TF32 の条件を混ぜて結論を出さない。
+
+位相損失だけを出力位相に関して微分した診断では、reference / fused の位相最大差 0.000353 rad、位相損失値はどちらも 4.5484676、位相勾配の相対 L2 差 3.05%、96,681 要素中 31 の符号反転を観測した（`a100-controlled/phase-probe.json`、`tests/training/reference/probe_semamba_phase_sensitivity.py`）。非滑らかな位相損失による微小な forward 差の増幅を示唆するが、Generator 勾配差の全てを説明する実験ではない。許容範囲を事後に拡大せず、この差の影響を引き続き調べる。
+
+A100 40 GB の空き 2 枚で 48,000 samples、各 rank batch 4、蓄積 1、global batch 8 の独立・公式を各 20 更新した。64 件の保存済み VoiceBank crop を 8 件ずつ使い、8 更新ごとに繰り返す短時間検証であって epoch 学習ではない。rank ごとの入力 SHA-256 は全 20 step で一致。実験の両 Discriminator と Generator は DDP で包み、保存した全更新で rank 間重み最大差 0。初回を除く mean step 時間は公式 2.918 秒、独立 3.129 秒。ピーク allocated は公式 28,307,454,464 bytes、独立 37,543,592,448 bytes、OOM なし。GPU 40 GiB のため独立版の allocated ベース余裕は約 5.0 GB だが、実際の reserved / 他プロセスを含めると余裕はさらに小さい。20 step の Generator 重み最大差は公式 / 独立 0.003939、同一独立の再実行間 0.003894。公式 / 独立の rank 0 Generator 損失は step 1: 17.35006 / 17.35008、step 4: 20.03000 / 20.03136、step 20: 16.69110 / 16.73986。全 rank・全損失成分・速度は `a100/ddp-comparison.json`、checkpoint 比較は `compare-ddp-official-independent-{1,4,20}.json` と `compare-ddp-repeat-{1,4,20}.json`。
+
+各 rank batch 2 × 蓄積 2 の独立 DDP 1 更新も完了し、Generator と両 Discriminator の勾配・重みは rank 間で一致。ピーク allocated 約 18.92 GB。native batch 4 と比べて Generator 更新後の重み最大差 0.000398、MRD 最大差 0.000178。batch の分割により演算と丸め順が変わり、非滑らかな損失と AdamW の更新が差を増幅し得るが、内訳の完全な因果は未特定。`a100/ddp-accum/`、`a100/compare-accum1.json`。1 step checkpoint から step 4 の再開も行い、Optimizer・モデルを復元したが、Generator 重み最大差 0.000840 が残った（`a100/ddp-resume/`、`compare-resume4.json`）。この最初の再開 probe は Trainer 全体や rank ごとの RNG 復元を検証したものではない。RNG を含む再開 probe の初回はスクリプトの必須引数漏れで失敗し、修正後を別ディレクトリで実行した。
+
+RNG 込み task checkpoint の再開 probe は引数漏れを直して再実行し、step 4 まで完了した。連続実行と再開後の CPU / CUDA RNG state は一致したが、Generator 勾配の相対 L2 差 20.4%、cosine 0.9792、重み最大差 0.000933 が残った。Discriminator 勾配の相対 L2 差は 4.53e-6。`a100/ddp-resume-rng-v2/`、`compare-resume-rng4*.json`。これは診断用 task checkpoint の結果で、通常 Trainer の checkpoint・rank ごとの RNG を全て検証したという意味ではない。
+
+公式 / 独立 DDP の保存勾配は、Generator の相対 L2 差 / cosine が step 1: 0.0357 / 0.99937、step 4: 0.394 / 0.9206、step 20: 1.804 / -0.681。両 rank の入力 hash、rank 間勾配・重み同期、checkpoint の CPU / CUDA RNG は一致。公式を別プロセスで再実行した場合も step 4 / 20 の Generator 勾配 cosine は 0.964 / 0.859 と変動するが、公式 / 独立の step 20 差はそれより大きい。`compare-ddp-gradients-{1,4,20}.json` と `compare-official-repeat-gradients-{1,4,20}.json`。step 20 の逆向き勾配には phase decoder 層が大きく寄与する（`gradient-layer-diagnosis.json`）。この不一致の原因・更新への長期影響は未解決である。native batch と蓄積の step 1 では Generator 勾配の相対 L2 差 4.88e-5、cosine 0.9999999989、Discriminator は相対 L2 差 2.13e-6 だった（`compare-ddp-accum-gradients-1.json`）。
+
+20 step の GPU 常駐 crop から、10,700 件 / global batch 8 を最終不足分も含む 1,338 更新として単純外挿すると、公式 / 独立 DDP の経過時間は 100 更新 4.86 / 5.22 分、1 epoch 1.08 / 1.16 時間、3 epoch 3.25 / 3.49 時間、10 epoch 10.84 / 11.63 時間。2 GPU の GPU 時間はそれぞれ経過時間の 2 倍。データ読み出し、最後の不足 batch の取り扱い、validation、checkpoint、起動・障害復旧は含まず、保証値ではない。1 GPU の global batch 8 は tensor で実測していない。実行へ進む場合の暫定候補は 2 GPU、global batch 8、各 GPU batch 4、蓄積 1、16 kHz / 48,000 samples、seed 1234、AdamW lr 2e-4・betas (0.8, 0.99)・weight decay 0.01、ExponentialLR gamma 0.99（epoch ごと）、`voicebank_28_train`、checkpoint 1000 更新ごとである。公式 train から 2 話者を validation に分けたためデータ構成は公式と異なる。validation 間隔と本実験で測っていない PESQ / STOI / SI-SDR は長時間実行前に決めて検証する。PESQ の新規採点をしていないため今回の NA 件数は未計測であり、0 とみなさない。
+
+独立実装の 20 更新を勾配保存付きで別プロセス再実行した。Generator 勾配 cosine は同一独立間で step 1 / 4 / 20 = 1.000 / 0.799 / 0.855、同一公式間では 1.000 / 0.964 / 0.859。公式 / 独立間では 0.999 / 0.921 / -0.681 で、step 20 の方向不一致は今回観測した同一実装間の変動より大きい。CPU / CUDA RNG state、全 rank の入力と学習率は一致した。`a100/compare-independent-repeat-gradients-{1,4,20}.json`。ここで比較したのは限られた seed・crop のみであり、原因は位相損失以外も含めて未確定。したがって長時間学習の移行判定は NO-GO とする。
+
+追加診断として、独立ネットワークはそのまま、外部 `mamba-ssm` の mixer 全体の融合演算を使う試験コード `tests/training/reference/probe_semamba_full_mamba.py` を実行した。A100 の同一 3 秒ペア 1 更新で公式に対する Generator 勾配の相対 L2 差は 0.874%、cosine 0.999962 となり、scan のみ融合の 1.82% より縮小したが、同一公式再実行の約 0.00038% より大きく、位相・更新の相違も残る。`a100-full-mixer/compare-official-full.json`。この経路は原因切り分け用であり、本番バックエンドに採用していない。拡張の元アーカイブは `sources/` に保存し、両拡張のビルド後 SHA-256 は causal `7329b400fcaf4631b94fe5a29ed44f58689836ff92772a58e956bb4291489d49`、scan `dc2ea4b44f44f6d3c31b4235794d99d605a5d42f50bf8bbd31500425ccd266f0`。tensor で両 `.so` の import と公式 Mamba の fast path を確認した。
+
+## SEMamba++ fused mixer・tensor 最終判定（2026-11-01）
+
+前節の NO-GO は、selective scan だけを融合し softplus と因果畳み込みを PyTorch 側に残した経路の結果である。その経路は公式 fast path と backward がずれ、20 step の Generator 勾配が公式再実行より大きく離れた。`scan_backend: fused` は CUDA 上で外部 `mamba-ssm` の `mamba_inner_fn` と Triton RMSNorm を使うように変えた。ネットワーク構造と checkpoint キーは変えていない。CPU は reference のままである。公式 SEMamba++ のソースはコピーしていない。
+
+比較条件は `CUBLAS_WORKSPACE_CONFIG=:4096:8`、cuDNN benchmark オフ、deterministic オン、matmul / cuDNN の TF32 オフ。ホストは tensor、GPU は物理 5 と 6（A100-PCIE-40GB、compute capability 8.0、開始時の使用メモリ 13 MiB）。拡張は既存の `.venvs/semamba-sm80`（sm_80）を `PYTHONPATH` の先頭に置いた。結果は `data/results/training/semamba-tensor-20261101/a100-inner/`。
+
+同一重みの mixer では、公式 `Mamba` と fused の出力最大差は 0 だった（`mixer.json`）。3 秒・batch 1 の GAN 1 更新では、出力波形の最大差も 0、Generator 勾配の相対 L2 差は 1.36e-5、cosine は 0.9999999999、最大絶対差は 2.38e-6 だった。入力 SHA-256 は一致。初回 1 更新の所要時間は公式 4.47 秒、fused 4.46 秒、peak allocated は 7.21 GB と 7.49 GB（`compare-official-fused.json`）。同じ入力の reference は 38.93 秒、peak allocated 9.50 GB だった。reference と fused の波形最大差は 1.32e-6、Generator 損失は同じ値、勾配の相対 L2 差は 1.13%、cosine は 0.999936 である（`compare-reference-fused.json`）。小さい mixer の事前許容は CUDA 単体テストで満たしたが、3 秒 GAN の勾配最大差 0.0058 はその許容を超える。方向は一致している。1 更新の 4.46 秒は起動を含む。定常速度は下の 2 GPU 測定を使う。
+
+2 GPU、各 rank batch 4、蓄積 1、global batch 8、48,000 samples を 20 更新した。64 件の保存 crop を繰り返す短時間検証であり、epoch 学習ではない。初回を除く平均 step は公式 2.901 秒、fused 3.136 秒（公式の 1.08 倍）。peak allocated は公式 26.36 GiB、fused 26.70 GiB。OOM は無い。全保存 step で rank 間の重みと勾配の最大差は 0、入力 hash と学習率は一致、保存した CPU / CUDA RNG も一致した。
+
+Generator 勾配の cosine は、公式対 fused で step 1 / 4 / 20 が 1.000 / 0.944 / -0.626、同じ公式実装の別プロセス再実行で 1.000 / 0.942 / -0.607 だった。step 20 の相対 L2 は 1.63 と 1.72 である。損失は step 20 で公式 16.708、再実行 16.739、fused 16.637。逆向きの勾配スナップショットは公式自身の再実行でも起きる。重みの相対 L2 は公式対 fused の step 20 で 0.00126、cosine は 0.9999992 だった（`ddp-compare.json`、`ddp-official-repeat-compare.json`）。
+
+fused の step 1 checkpoint から step 4 まで再開した。連続実行との Generator 損失は 20.02990 と 20.02962、重みの相対 L2 は 6.60e-5、勾配 cosine は 0.985、CPU / CUDA RNG は一致、rank 間最大差は 0 だった（`ddp-resume/`）。公式再実行の step 4 勾配 cosine 0.942 より近い。
+
+10,700 件を global batch 8 の 1,338 更新として、初回を除く平均 step で外挿すると、公式 / fused の経過時間は 100 更新 4.84 / 5.23 分、1 epoch 1.08 / 1.17 時間、3 epoch 3.23 / 3.50 時間、10 epoch 10.78 / 11.66 時間。2 GPU の GPU 時間は経過時間の 2 倍。データ読み出し、不足 batch、validation、checkpoint、起動は含まない。1 GPU の global batch 8 は未計測で、batch 4 がすでに約 27 GiB allocated なので 40 GB 1 枚への収まりは確認していない。
+
+PESQ は今回採点していない。NA 件数は未計測であり、0 とみなさない。
+
+通常 unit test は `OMP_NUM_THREADS=1` の lab で training 74、SE 32（CUDA 専用 1 件 skip）、evaluation 86、ASR 5、失敗 0。CUDA 専用の forward/backward 比較は tensor GPU 5 で成功した。ログは `a100-inner/test-*.log`。
+
+| 検証項目 | 判定 |
+|---|---|
+| tensor環境での公式実装 | GO |
+| tensor環境での独立実装 | GO |
+| 独立scanの高速化 | GO |
+| referenceとのforward一致 | GO |
+| referenceとのbackward一致 | PARTIAL |
+| 公式との学習挙動同等性 | GO |
+| 実モデルDDP | GO |
+| global batch 8 | GO |
+| checkpoint再開 | GO |
+| 長時間学習への移行可否 | GO |
+
+この GO は、fused で 3 秒・global batch 8・2 GPU の学習が公式と同じ時間規模で動き、1〜20 step の差が公式再実行の範囲に収まる、という意味である。長時間学習のあと品質が公式と一致することは証明していない。前節の scan のみ融合の NO-GO は、この fused mixer には当てはめない。
