@@ -370,3 +370,44 @@ export CUDA_VISIBLE_DEVICES=<free> CUBLAS_WORKSPACE_CONFIG=:4096:8
 ```
 
 波形と checkpoint は `data/results/training/semamba-quality-20261101/phase-a/` と `phase-b/`。`scores.json` が指標の一次記録である。commit と push はしていない。
+
+## SEMamba++ 再現性と品質の追加調査（2026-11-01）
+
+今回の判定は **NO-GO**。前節の 20 更新の PARTIAL 判定は変更しない。今回の比較では条件ごとに評価区間が異なり、PESQ の長さ依存も未解決で、品質指標を同等性判定の根拠として信頼できない。強調性能を獲得したモデルの品質同等性も確認していない。
+
+`seed_model_init` の `torch.manual_seed` は CPU だけでなく CUDA の seed も変更していた。CPU の `default_generator` のみを seed するよう修正し、CPU 学習時にも CUDA を seed しないようにした。CPU 状態の復元と CUDA seed 呼び出しをテストした。これは融合カーネルの勾配差を解消する修正ではない。品質許容判定は空の発話リストを失敗とする。
+
+`turing` の Quadro RTX 5000、PyTorch 2.6.0+cu124、`CUBLAS_WORKSPACE_CONFIG=:4096:8`、cuDNN deterministic、benchmark と TF32 オフで、同じ入力と重みを使い融合 Mamba を反復した。forward は一致したが backward は一致せず、入力勾配の最大差は `2.85e-13`、パラメータ勾配の最大差は `2.92e-11` だった。独立した演算の検査では、`causal_conv1d` の重み・バイアス勾配と `selective_scan` の A/B/C/D 勾配に差が再現した。`torch.use_deterministic_algorithms(True)` では causal convolution の今回の試験は一致したが、selective scan の差は残った（A 勾配最大 `1.91e-6`）。これらの値は指定入力の測定値であり、全形状や学習全体に対する上限ではない。CUDA RNG の差がなくても backward に差が生じることを示すが、学習後の差をこれだけで定量説明したわけではない。
+
+前回 phase-a の step 10 波形を再採点した。最初の発話の clean / noisy は 93,680 サンプル、公式は 93,600、独立は 93,680。公式 iSTFT は `length` を指定しないため、hop 100 の倍数に切り下げた 93,600 を返す。独立の全文 PESQ 4.407 は同じ clean と独立波形を共通 prefix 93,600 サンプルにすると 1.070、SI-SDR は約 -38.8 dB のまま。全文 PESQ は共通ゲイン 1、0.1、0.01 でほぼ不変で、末尾 20 サンプルを削っても 4.407、80 サンプル削ると 1.070 だった。原因を PESQ 内部の特定処理まで同定できていない。clean/noisy はエネルギー正規化後にピークが 1 を超えるが、クリップはしていない。比較側の既存スコアは各条件で個別に短い方へ切るため、公式と独立が同じ区間とは限らない。共通 prefix と、公式末尾をゼロで埋めた全文の両方を記録し、この相違を隠さない。末尾ゼロ埋めを公式出力仕様の修正とはみなさない。
+
+データ候補として、既存の resource DB は読み取り専用で使い、`data/staging/semamba-medium-20261101/` にレシピとセットを保存し、別 DB `data/db/semamba-medium-20261101.duckdb` に登録した。LibriSpeech train-clean-100 の 64 話者 64 ケース、dev-clean の別 8 話者 8 ケース、各 2 秒、SNR 0/5/10/15 dB。学習の DEMAND 4 シーンと検証 2 シーンは別で、最終テストは使用していない。各セット先頭の再生成一致を確認した。これは公式 VoiceBank-DEMAND ではなく、品質を獲得するのに十分な量であることも未確認である。公式 VoiceBank+DEMAND の train/test wav ディレクトリは存在するが、そのレシピ登録と学習は未実施。
+
+再現用コードは `tests/training/reference/probe_semamba_kernel.py`、`probe_semamba_components.py`、`audit_semamba_waves.py`、`compare_semamba_checkpoints.py`、`prepare_semamba_medium.py`。結果は `data/results/training/semamba-repro-20261101/`。ステージングと DB の生成スクリプトは既存出力があれば上書きを拒否する。既存結果と本番 DB は変更していない。
+
+追加の短時間再実行 `run1` は以前と同じ 8 個の 0.5 秒学習区間を循環し、同じ 4 発話を検証した。判定点 20 更新の平均は noisy / 公式 / 独立の順に PESQ 1.674 / 1.052 / 1.056、STOI 0.942 / 0.597 / 0.592、SI-SDR +7.51 / -25.71 / -26.37 dB。公式と独立の平均絶対差は 0.0095 / 0.0054 / 0.661 dB、波形 cosine は 0.894。SI-SDR は 1 発話で 1.381 dB 差となり、発話ごとの許容 1.0 dB を超えた。前述のアラインメント問題があるため、この指標は品質同等性の証拠としない。0→20 更新で平均 SI-SDR は公式 -39.48→-25.71 dB、独立 -39.48→-26.37 dB と増えたが noisy を下回る。run1 は品質学習ではない。
+
+run1 の step 10 から 1 更新する既存のプローブでは、連続 step 11 との差は Generator 最大 `8.06e-5`（公式）、`5.84e-5`（独立）。実験時間は 277.1 秒（検証を含む）、最大 GPU 割当量は `run1/train_summary.json` に記録した。テストは training 61 件、SE 28 件、evaluation 81 件、ASR 5 件が成功。training は最初サンドボックスのローカル通信制限で 2 エラーとなり、権限付き環境で再実行して成功した。テストの skip と、fixture が意図的に報告する未登録データの skip は別である。
+
+同じ物理 GPU 1 の別プロセスで 20 更新した `run1` / `run2` は、更新前 checkpoint の Generator、CQT、MRD、Optimizer、Scheduler、RNG が一致した。更新前検証波形は独立側で一致、公式側では最大 `4.60e-6` の差が出た。1 更新後の Generator 最大差は公式 `4.00e-4`、独立 `3.12e-4`、20 更新後は公式 `4.73e-3`、独立 `3.46e-3`。20 更新時の CQT / MRD 最大差は公式 `3.88e-4` / `1.77e-4`、独立 `4.74e-4` / `1.55e-4`。Optimizer の state にも差がある一方、Scheduler と Python / NumPy / CPU / CUDA RNG state は一致した。両モデルを同一プロセスに併置する既存比較の 2 実行であり、4 系統それぞれを単独プロセスにした試験ではない。run1 の開始後に CPU 用 seed の修正を行ったが、どちらも学習前に同じ training seed を明示し、step 0 の状態は一致していた。forward の最初の差を演算単位まで同定していない。
+
+run2 の step 10 から全モデルと Optimizer / Scheduler / RNG を復元し、同じ入力順で 20 まで再開した。連続実行との差は Generator 公式 `7.79e-4`、独立 `6.23e-4`、CQT 公式 `2.22e-5`、独立 `7.35e-6`、MRD 公式 `2.50e-6`、独立 `3.91e-6`。Optimizer state は一致せず、Scheduler と RNG は一致した。再開に 64.5 秒。再開後の検証波形は保存していない。詳細は `rerun-*.json`、`resume-0020-*.json` と `resumed/`。
+
+run2 の step 20 の 4 発話平均は noisy / 公式 / 独立で PESQ 1.674 / 1.056 / 1.043、STOI 0.942 / 0.588 / 0.597、SI-SDR +7.51 / -27.10 / -26.03 dB。平均絶対差はそれぞれ 0.0137、0.0102、1.068 dB、波形 cosine 0.898。SI-SDR は 2 発話で 1 dB 超、別の 2 発話は長さ不一致。各波形のサンプル数をスコアに保存し、長さ不一致は許容差判定を失敗とするよう変更した。数値を参考記録として残し、過去結果を上書きしない。
+
+再現実行の例（出力先は未使用の新規ディレクトリを指定する）:
+
+```bash
+# 空き GPU を確認したうえで、融合 CUDA カーネルの単体調査
+CUDA_VISIBLE_DEVICES=<free> CUBLAS_WORKSPACE_CONFIG=:4096:8 OMP_NUM_THREADS=1 \
+  .venvs/semamba/bin/python tests/training/reference/probe_semamba_components.py
+# run2 から step 10 → 20。出力先は存在しないこと
+CUDA_VISIBLE_DEVICES=<same-gpu> CUBLAS_WORKSPACE_CONFIG=:4096:8 OMP_NUM_THREADS=1 MKL_NUM_THREADS=1 \
+  .venvs/semamba/bin/python tests/training/reference/resume_semamba_pair.py \
+  data/results/training/semamba-repro-20261101/run2 <new-output-directory>
+.venvs/lab/bin/python tests/training/reference/compare_semamba_checkpoints.py \
+  data/results/training/semamba-repro-20261101/run2/checkpoints/step_0020_official.pt \
+  <new-output-directory>/checkpoints/step_0020_official.pt <new-comparison.json>
+```
+
+未実施は、4 系統の単独プロセス比較、step ごとの勾配保存と最初の差の演算特定、中規模候補を使う数百更新以上の学習、最終テスト、信頼できる PESQ と厳密に同じ長さ・時刻の比較である。`selective_scan` の観測差を学習差の唯一の原因と決めつけず、これらを実施してから再判定する。

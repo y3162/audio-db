@@ -174,6 +174,12 @@ def score_conditions(
         "official_minus_independent": delta,
         "improvement_over_noisy": improvement,
         "wave": waveform_gap(official, independent),
+        "alignment": {
+            "samples": {name: int(signal.numel()) for name, signal in {
+                "clean": clean, "noisy": noisy, "official": official, "independent": independent
+            }.items()},
+            "same_length": len({int(signal.numel()) for signal in (clean, noisy, official, independent)}) == 1,
+        },
     }
 
 
@@ -224,9 +230,13 @@ def tolerance_result(utterances: list[dict[str, Any]]) -> dict[str, Any]:
     is reported separately and is not a substitute for the per-utterance check.
     """
     failures: list[str] = []
+    if not utterances:
+        failures.append("no_utterances")
     limits = {"pesq": "pesq_abs", "stoi": "stoi_abs", "si_sdr": "si_sdr_abs_db"}
     for item in utterances:
         case_id = str(item.get("case_id", "?"))
+        if item.get("alignment", {}).get("same_length") is False:
+            failures.append(f"{case_id}:alignment:length_mismatch")
         for key, limit_name in limits.items():
             diff = item["official_minus_independent"][key]
             value = _metric_value(diff)

@@ -66,7 +66,7 @@ def seed_model_init(seed: int) -> Iterator[None]:
     torch_state = torch.random.get_rng_state()
     random.seed(seed)
     np.random.seed(seed % (2**32))
-    torch.manual_seed(seed)
+    torch.random.default_generator.manual_seed(seed)
     try:
         yield
     finally:
@@ -85,7 +85,7 @@ def seed_training_stream(seed: int, *, cuda: bool) -> None:
     stream = mix_seed("dropout", seed)
     random.seed(stream)
     np.random.seed(stream % (2**32))
-    torch.manual_seed(stream)
+    torch.random.default_generator.manual_seed(stream)
     if cuda:
         if not torch.cuda.is_available():
             raise TrainingError("CUDA seeding was requested but CUDA is not available")

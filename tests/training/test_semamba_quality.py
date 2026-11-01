@@ -68,6 +68,7 @@ class QualityComparisonTest(unittest.TestCase):
         self.assertNotEqual(summary["metrics"]["pesq"]["abs_official_minus_independent"]["value"], 0.0)
 
     def test_tolerance_uses_every_utterance(self) -> None:
+        self.assertFalse(tolerance_result([])["passed"])
         inside = [_finite_utterance("a", 0.05, 0.01, 0.4), _finite_utterance("b", -0.02, 0.0, -0.2)]
         self.assertTrue(tolerance_result(inside)["passed"])
         self.assertEqual(TOLERANCES["pesq_abs"], 0.10)
@@ -79,6 +80,9 @@ class QualityComparisonTest(unittest.TestCase):
         self.assertTrue(any(item.startswith("b:pesq:") for item in result["failures"]))
         missing = [_finite_utterance("a", None, 0.0, 0.0)]
         self.assertFalse(tolerance_result(missing)["passed"])
+        unequal = _finite_utterance("short", 0.0, 0.0, 0.0)
+        unequal["alignment"] = {"same_length": False}
+        self.assertIn("short:alignment:length_mismatch", tolerance_result([unequal])["failures"])
 
     def test_identical_signal_is_not_scored_as_zero_si_sdr(self) -> None:
         signal = torch.randn(1600)
