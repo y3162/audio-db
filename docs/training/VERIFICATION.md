@@ -411,3 +411,73 @@ CUDA_VISIBLE_DEVICES=<same-gpu> CUBLAS_WORKSPACE_CONFIG=:4096:8 OMP_NUM_THREADS=
 ```
 
 未実施は、4 系統の単独プロセス比較、step ごとの勾配保存と最初の差の演算特定、中規模候補を使う数百更新以上の学習、最終テスト、信頼できる PESQ と厳密に同じ長さ・時刻の比較である。`selective_scan` の観測差を学習差の唯一の原因と決めつけず、これらを実施してから再判定する。
+
+## SEMamba++ 学習済み重みの診断（2026-11-01、途中）
+
+**総合 PARTIAL。推論品質 GO、学習品質 GO とも未判定。** 次の診断は既存の拡張レシピを再生した4発話で、登録済み名前付き評価セットそのものではなく、最終テストの代替ではない。本番 DB は変更していない。公式テストとの重複も未証明である。
+
+公式ソース `src/se/official/semambapp` commit `cd369c89a8106072c077b468417b765b227afd74`、公式 README の [配布重み](https://huggingface.co/yongjoonlee/semambapp/resolve/main/semambapp.pth) に対応するローカル `data/checkpoints/semambapp/semambapp.pth` SHA-256 `ccb9d1c49146e915c427e5724fec36825196f6b7a8fe23414c26a5224b39af72`。両 Generator に `strict=True` で読み、欠落・余剰はともに 0。幅 48、4 block、state 16、conv 4、expand 2、eval mode。配布元のファイルとローカルのバイト一致は今回照合していない。公式 README は 2026 年 8 月の再学習重みと記載するが、同梱 train/validation JSON は空で、VoiceBank test 発話や話者の非重複を確認できない。
+
+入力は既存の LibriSpeech/DEMAND 検証レシピ由来の 16 kHz 浮動小数点波形で、今回リサンプリングなし。公式 `infer.py` と同様に noisy peak + 1e-9 で割り、出力に peak を掛ける。Hann、center reflect、FFT 400、hop 100、圧縮 0.3。公式 iSTFT は `length` 未指定、独立は入力長指定。フレーム数は `1 + floor(N/100)`、公式出力長は `100 * floor(N/100)`、開始位置はいずれも入力先頭である。差 80 は `N % 100 == 80` のときで、末尾に由来する。診断の採点は全条件で共通 prefix を使用し、差を隠す padding はしない。これを正式な評価契約の承認や発話全体の評価とはみなさない。
+
+| case ID 先頭 | 入力 / frame / 公式 / 独立 | 波形 cosine（float64） | 最大絶対差 | noisy / 公式 / 独立 SI-SDR dB |
+|---|---|---:|---:|---|
+| 6a9b80200b27 | 93680 / 937 / 93600 / 93680 | 0.999999984 | 0.002296 | 0.044 / 10.027 / 10.027 |
+| 7be04d42ba9e | 160000 / 1601 / 160000 / 160000 | 1.000000000 | 0.000594 | 4.992 / 18.740 / 18.740 |
+| bf30dca8ea46 | 160000 / 1601 / 160000 / 160000 | 0.999999953 | 0.004282 | 10.003 / -6.610 / -6.611 |
+| 464cf1d482e8 | 72480 / 725 / 72400 / 72480 | 0.999999734 | 0.011689 | 15.015 / -20.364 / -20.365 |
+
+4件の公式 PESQ は 1.773、2.790、1.711、2.009、STOI は 0.8893、0.9859、0.9189、0.8615。公式と独立の同指標差は詳細 JSON を参照。PESQ 異常の根本原因が未解明なので、これらを品質同等性の証拠にはしない。少なくとも後半2件の SI-SDR は noisy より悪化しており、公式モデルがこの診断で常に改善するとはいえない。
+
+既存 step 10 の異常例を再測定した。clean / 独立波形はいずれも float32、93680 samples、NaN/Inf なし。clean peak 4.418、enhanced peak 0.814、先頭100ms RMS は 0.0105 / 0.0420、末尾100ms RMS は 0.0136 / 0.0487。16 kHz、`pesq==0.0.4` の `pesq(16000, ref, est, 'wb')`、wrapper は float32 経由 float64、外部 resampling なし。93620 samples で PESQ 1.07015、93640 では 4.40658、93680 では 4.40710、SI-SDR は全て約 -38.84 dB。共通ゲインを変えても異常は残る（既存 `pesq-sensitivity.json`）。PESQ 内部の padding / alignment のどの処理が原因か、別実装との照合を含め未特定。基本的な同一波形・スケールの回帰テストが通ることはこの異常の解決を意味しない。
+
+再実行例（出力先は必ず新規）:
+
+```bash
+CUDA_VISIBLE_DEVICES=<空きGPU> CUBLAS_WORKSPACE_CONFIG=:4096:8 .venvs/semamba/bin/python tests/training/reference/probe_semamba_pretrained.py <新規出力先>
+.venvs/lab/bin/python tests/training/reference/audit_semamba_waves.py <新規出力先>/waves.pt <新規出力先>/audit.json
+```
+
+実行環境は turing Quadro RTX 5000 sm_75、driver 535.274.02、Python 3.10.20 / torch 2.6.0+cu124 / mamba-ssm 2.3.2.post1 / causal-conv1d 1.7.0、採点は lab Python 3.13、pesq 0.0.4、pystoi 0.4.1、numpy 2.5.4、scipy 1.18.1。結果は `data/results/training/semamba-audit-20261101/`。公式融合 selective_scan backward の非決定性等は前節の既存測定を参照。今回の4独立プロセス、resume 10→20、十分な品質獲得学習は未実施。以前の2系統併置結果では代替できない。以前の 0.5 秒・2系統併置で 20 step 275 秒、最大 8366 MiB、学習済み checkpoint は1系統あたり約87 MiB。公式3秒バッチ8や長時間学習にその数字を外挿して容量・所要時間を保証できず、別途実測と予算の確認が必要である。
+
+回帰テストは `.venvs/lab/bin/python -m unittest discover -s tests/{training,se,evaluation,asr} -v` を各ディレクトリで実行し、順に 61 / 28 / 82 / 5 件、失敗 0、skip 0。個別のログは上記結果ディレクトリにある。今回の判定は、波形長・時間対応 PARTIAL、指標信頼性 PARTIAL、重み互換性 GO、推論波形同等性 PARTIAL、推論品質同等性 PARTIAL、同一実装の学習再実行性 PARTIAL、checkpoint 再開再現性 NO-GO（前節の併置実験で不一致、独立プロセスで未再確認）、学習による品質獲得 NOT TESTED。正式な比較には、独立した一時 DB と永続 staging に VoiceBank のペアを登録し、重複を証明できるデータ出典を確保し、評価区間・失敗時の扱い・発話ごとの許容差と集計を実行前に固定する必要がある。
+
+## SEMamba++ 追加検証（2026-11-01、進行中）
+
+PESQ の問題例を 93,600〜93,680 サンプルの全長で再採点した。93,631 では 1.070、93,632 では 4.407 となり、逆順の呼び出しでも一致した。両波形を 93,600、93,620、93,640 で切り、その後 93,680 までゼロで埋めるといずれも約 4.407〜4.408。`pesq==0.0.4` の wrapper は共通ピークで正規化して float32 に変換し、ネイティブコードは長さを Downsample 単位で整数除算して VAD を計算する。境界はその窓に一致するが、窓計算とスコア跳躍の因果関係は未確定である。異常スコアを品質判定に使わない。結果は `data/results/training/semamba-boundary-20261101/boundary.json`、再現コマンドは `.venvs/lab/bin/python tests/training/reference/probe_pesq_boundary.py <新規JSON>`。
+
+無音や非有限値の入力、STOI の発話不足時のライブラリ警告と固定返却値、SI-SDR のゼロ推定・直交推定を数値として集計しないよう修正した。弱雑音・強雑音・時間ずれ・長さ違い・短時間・無音・非有限値の回帰試験を追加した。実音声での PESQ の異常解決を意味しない。
+
+公式 VoiceBank-DEMAND test 全824件は clean/noisy の名前・サンプル数・サンプリング周波数・チャネル数を照合し、`data/staging/semamba-voicebank-test-20261101-v2/` と別 DB `data/db/semamba-voicebank-test-20261101-v2.duckdb` に名前付きセット `voicebank_demand_official_test` として登録した。2話者 p232 / p257、波形全体、レシピにファイルの SHA-256 を保存。元データへの新しいシンボリックリンクは `data/corpora/VoiceBank-DEMAND`。公式重みの学習データとの非重複は未証明。初回は kind 制約で登録失敗し、元の staging と DB を保持した。推論用 Python 3.10 では DuckDB 2.0 を使用できないため、DuckDB 1.4.3 を追加して同 staging から `data/db/semamba-voicebank-test-20261101-compat.duckdb` を再構築した。最初の推論は新形式 DB を読めず失敗し、互換 DB で再実行中。これらの結果だけで品質 GO とはしない。
+
+回帰テストは `.venvs/lab/bin/python -m unittest discover -s tests/<suite> -v`、`OMP_NUM_THREADS=1` で training 61、se 28、evaluation 84、asr 5 件、すべて成功。ログは `data/results/training/semamba-boundary-20261101/test-logs/`。
+
+同じ PESQ 境界検査を別プロセスで再実行し、全 81 長・正逆順・ゼロ padding の結果が完全に一致した（`boundary-process2.json`）。公式単独プロセス 2 系統（同一物理 GPU 0、同じ初期 checkpoint と seed、0.5 秒区間、20 更新）では初期のモデル・optimizer・scheduler・RNG が一致。初回 forward は一致したが、保存した Generator 勾配の最大差は 1.09e-6、1 更新後 Generator 最大差 2.94e-4、20 更新後 4.48e-3。step 10 から別プロセスで再開した公式 20 更新後の Generator 最大差は 9.67e-4、scheduler と RNG は一致した。これだけでは checkpoint の全復元状態の完全性や非決定的カーネルとの因果関係は証明できない。一次結果は `data/results/training/semamba-single-20261101/`、診断の入口は `tests/training/reference/train_semamba_single.py`。独立実装側も実行中。推論の最初の46発話を保存後に処理を中断し、残りを区分して 3 GPU で再実行中であり、全件の採点は未完了。
+
+PESQ のネイティブ実装を変更せず、`gdb` で `pesq_psychoacoustic_model` の関数入口の `ERROR_INFO` を観測した。93,631 サンプルでは分割数 8、93,632 では 11 となり、後者の `Utt_Delay` には約 -60,000 samples（16 kHz で約 -3.75 秒）の値がある。入力は同じ時点からの prefix であり、この極端な遅延は波形自体の時間ずれを反映しない。問題は心理音響計算より前の発話区分・遅延推定に現れる。個別のコード行が不連続の唯一の原因か、他の音声で安全かは未証明。生の観測は `data/results/training/semamba-boundary-20261101/gdb-entry-93631b.log` と `gdb-entry-93632b.log`。
+
+独立実装の単独 A/B も初期モデル・optimizer・scheduler・RNG が一致した。初回 forward は一致し Generator 勾配差最大 1.27e-6、初回更新後 Generator 差 3.70e-4、20 更新後 3.33e-3。公式と独立の初回 forward 最大差は 5.89e-7。保存した Discriminator 勾配は Generator backward 後の値であり、Discriminator backward の単独比較と混同しない。両独立実装の再開比較は実行中。
+
+公式配布 URL の HTTP 応答の `x-linked-etag` は `ccb9d1c49146e915c427e5724fec36825196f6b7a8fe23414c26a5224b39af72`、ローカル checkpoint の SHA-256 と一致する（`curl -sI https://huggingface.co/yongjoonlee/semambapp/resolve/main/semambapp.pth`）。公式 README は修正版を同じ設定で再学習したと記載するが、今回取得できた情報では学習発話一覧を示していないため、test との非重複は依然として未証明。
+
+名前付き `voicebank_demand_official_test` の 824 発話について、同じ配布重みを両実装に strict load し、16 kHz、公式 peak 正規化の推論波形を個別保存した。46 件の先行処理の後、残りは同じ設定で 3 GPU に分割した。採点は clean/noisy/両出力の全てに共通する先頭区間で行い、元の長さを別に記録した。807/824 件は公式 iSTFT と独立 API の出力長が違う。float64 で求めた共通区間の cosine 最小 0.999998763、最大絶対差 0.001393。STOI の公式・独立差の最大 0.000208（許容 0.02 超 0 件）、SI-SDR 最大 0.0321 dB（許容 1 dB 超 0 件）。PESQ 差の最大は 0.00365 以下だが、上述のアラインメント異常があるため合否には使わない。noisy / 公式 / 独立の平均 STOI は 0.9211 / 0.9492 / 0.9492、平均 SI-SDR は 8.449 / 16.457 / 16.456 dB。公式重みはこの test セットで平均改善している。checkpoint と test の訓練時非重複は未証明であり、共通 prefix の結果を全文一致や独立 held-out にすり替えない。全発話の指標と分布は `data/results/training/semamba-boundary-20261101/voicebank-scores.json`、float64 波形比較は `voicebank-wave64.json`。`voicebank-scores.json` の既存 float32 cosine 集計は丸めにより 1 を僅かに超えるため、cosine は float64 の記録を使う。
+
+VoiceBank 28 話者公式 train のペア 11,572 件から p286 / p287 の 872 件を validation、残り 10,700 件を train として `data/staging/semamba-voicebank-train-20261101/` と `data/db/semamba-voicebank-train-20261101.duckdb` に保存・登録した。公式 test p232 / p257 は train / validation と話者が重ならない。作成は `.venvs/lab/bin/python tests/training/reference/prepare_voicebank_train.py`、test は `prepare_voicebank_test.py`。生成処理は既存の出力を上書きしない。
+
+実 Trainer の 64/8 ケース・4 更新パイロットは損失が有限で checkpoint と validation L1 を保存した。validation の PESQ / STOI は現状未計算。CUDA checkpoint を `map_location=cuda` で開くと CPU RNG state も GPU に移り、`torch.random.set_rng_state` が拒否して再開できない不具合を再現した。`restore_rng` は CPU / CUDA の RNG state を CPU byte tensor に戻してから復元するよう修正した。修正後 step 2 → 4 を別ディレクトリで再開でき、データ位置・バッチ計画・RNG は一致したが、task の optimizer state に最大差 0.000696 が残る。保存時の CUDA RNG は公式・独立とも変化しなかった。詳細は `data/results/training/semamba-pilot-20261101-v2/`、`semamba-pilot-resume-20261101/`（修正前失敗）、`semamba-pilot-resume-20261101-v2/`。実 Trainer の再開成功とビット一致を区別する。
+
+追加した回帰試験を含め、修正後の training 62 件と evaluation 84 件が成功。SE 28 件と ASR 5 件は同じ実行で成功。テストログは `data/results/training/semamba-boundary-20261101/test-logs/`。
+
+PESQ の因果確認として、問題の 93,632 samples に限り、ネイティブ実装の心理音響モデル入口で `Utt_Delay` の各値をデバッガから 0 に変えて続行したところ、4.40668 から 1.03765 に変わった。これは推定遅延が高スコアに直接関与することを示す介入実験であり、変更後の数字を正式な PESQ として使用しない。ログは `gdb-zero-93632.log`。問題の例では PESQ を品質判定から除く。
+
+追加した SEMamba の STFT/iSTFT 長さ回帰では 401〜680 samples の hop 境界を検証した。center reflect、FFT / window 400、hop 100 で STFT は `1 + floor(N/100)` frame、公式と同じ length 未指定の iSTFT は `100 * floor(N/100)`、独立 API の再合成は `N` samples を返す。identity spectrum で入力と再合成の時間対応も確認した。SE の再実行は 29 件成功。
+
+VoiceBank 実ペアの 4 更新パイロットは `data/results/training/semamba-voicebank-pilot-20261101/` に config、ログ、checkpoint を保存し、有限な損失で終了した。これは品質獲得を証明しない。この checkpoint から 100 更新までの継続と、固定した validation 8 件（各検証話者の登録順先頭 4 件、診断用）の複数 checkpoint 評価を実行中。評価用 subset は全 validation や test の代わりではない。
+
+公式・独立を別プロセス、同じ物理 GPU 2 で、同一初期 checkpoint、VoiceBank train の同一 seed / 順列 / 0.5 秒 crop を使って各 4 更新した。初期の Generator / CQT / MRD、optimizer、scheduler、全 RNG は一致し、4 件の `case_id` 順も一致。公式 / 独立の Generator 損失は step 1 で 19.015274 / 19.015274、step 4 で 17.987616 / 17.990313。step 4 の Generator 最大差は 0.001016。結果は `data/results/training/semamba-voicebank-paired-{official,independent}-20261101/` と `data/results/training/semamba-boundary-20261101/voicebank-train-*.json`。これは実データでの短時間パイプライン診断であり、品質獲得の証拠ではない。互換 DB は `data/staging/semamba-voicebank-train-20261101/` を DuckDB 1.4.3 で再構築した。
+
+長時間実行の規模を、実 VoiceBank ペア・公式幅・0.5 秒・batch 1 の上記 4 更新で実測した。checkpoint 書き込みを含み公式 9.57 秒、独立 25.96 秒。10,700 更新への単純外挿は順に約 7.1 / 19.3 GPU 時間（合計約 26.4 GPU 時間）で、full validation、test、起動・異なる長さ、再実行、収束に必要な追加 epoch を含まない。各学習済み checkpoint は約 87 MiB。`tests/training/reference/train_semamba_voicebank.py` は両実装を別プロセスで同じ named train set と順列・crop に適用し、1000 更新ごとに保存する。4 更新の実動作を確認したが、長時間試験の完了や収束は確認していない。
+
+VoiceBank の 100 更新と固定 validation 8 件の全予定点が終了。step 4 / 20 / 40 / 60 / 80 / 100 の平均 SI-SDR は -41.30 / -22.60 / -14.53 / -8.04 / -7.13 / -5.75 dB、平均 STOI は 0.614 / 0.722 / 0.730 / 0.709 / 0.719 / 0.669。noisy の平均は SI-SDR 6.30 dB、STOI 0.799。PESQ は異常のため参考値のみ。SI-SDR の上昇傾向はあるが、100 更新後も noisy を下回り、品質を獲得したとは判定しない。データ順や音声は `data/results/training/semamba-voicebank-100-validation-20261101/`、学習曲線・checkpoint は `data/results/training/semamba-voicebank-100-20261101/`。実行は同ディレクトリの `config.yaml` と `tests/training/reference/validate_voicebank_pilot.py` に記録した条件である。
+
+VoiceBank 学習用の公式・独立 checkpoint をそれぞれ step 4 から別プロセスで step 6 に再開できた。再開直後のモデル・optimizer・scheduler・RNG は保存 checkpoint と完全一致した（`voicebank-{official,independent}-restore.json`）。継続実行の step 6 との比較はしておらず、長時間の厳密再現を保証しない。

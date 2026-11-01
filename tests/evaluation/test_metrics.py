@@ -28,6 +28,18 @@ class MetricTests(unittest.TestCase):
         identical = score_stoi(self.reference, self.reference, 16000)
         self.assertAlmostEqual(identical["value"], 1.0, places=5)
 
+    def test_identity_and_scaled_noise_metric_sanity(self):
+        # A shared gain must not affect SI-SDR; independent noise must lower it.
+        identical = score_pesq(self.reference, self.reference, 16000)
+        self.assertEqual(identical["status"], "ok")
+        self.assertGreater(identical["value"], 4.4)
+        self.assertAlmostEqual(score_stoi(self.reference, self.reference, 16000)["value"], 1.0, places=5)
+        base = score_si_sdr(self.reference, self.estimate)["value"]
+        scaled = score_si_sdr(self.reference * 0.1, self.estimate * 0.1)["value"]
+        self.assertGreater(base, 15.0)
+        self.assertAlmostEqual(base, scaled, places=4)
+        self.assertEqual(score_si_sdr(self.reference, self.reference)["reason"], "numerically_infinite")
+
     def test_missing_reference_is_not_zero(self):
         metrics = MetricsConfig(wer=True, pesq=True, stoi=True, si_sdr=True)
         scored = score_utterance(
@@ -110,3 +122,34 @@ class MetricTests(unittest.TestCase):
         perfect = score_si_sdr(reference, reference * 2)
         self.assertIsNone(perfect["value"])
         self.assertEqual(perfect["reason"], "numerically_infinite")
+
+    def test_invalid_and_short_audio_are_not_scores(self):
+        silence = torch.zeros_like(self.reference)
+        for score in (lambda a, b: score_pesq(a, b, 16000),
+                      lambda a, b: score_stoi(a, b, 16000), score_si_sdr):
+            self.assertIsNone(score(self.reference, silence)["value"])
+            bad = self.reference.clone()
+            bad[0] = float("nan")
+            self.assertNotEqual(score(self.reference, bad)["status"], "ok")
+        self.assertIsNone(score_stoi(self.reference[:2000], self.estimate[:2000], 16000)["value"])
+        self.assertIsNone(score_pesq(self.reference[:100], self.estimate[:100], 16000)["value"])
+        low_energy = self.reference * 1e-9
+        self.assertEqual(score_si_sdr(low_energy, low_energy)["reason"], "reference_has_zero_energy")
+        for result in (score_pesq(low_energy, low_energy, 16000), score_stoi(low_energy, low_energy, 16000)):
+            self.assertIn(result['status'], ('ok', 'na', 'error'))
+            if result['status'] != 'ok':
+                self.assertIsNone(result['value'])
+        orthogonal = score_si_sdr(torch.tensor([1., -1., 1., -1.]), torch.tensor([1., 1., -1., -1.]))
+        self.assertEqual(orthogonal["reason"], "negative_infinite")
+
+    def test_noise_delay_and_length(self):
+        generator = torch.Generator().manual_seed(9)
+        noise = torch.randn(self.reference.shape, generator=generator)
+        weak = self.reference + noise * .01
+        strong = self.reference + noise * .5
+        for score in (lambda x: score_pesq(self.reference, x, 16000),
+                      lambda x: score_stoi(self.reference, x, 16000),
+                      lambda x: score_si_sdr(self.reference, x)):
+            self.assertGreater(score(weak)["value"], score(strong)["value"])
+            self.assertLess(score(torch.roll(self.reference, 1000))["value"], score(weak)["value"])
+            self.assertEqual(score(weak[:-100])["trimmed_samples"], 100)

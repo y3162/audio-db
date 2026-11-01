@@ -7,6 +7,8 @@ and does not stop other metrics.
 from __future__ import annotations
 
 from typing import Any
+import math
+import warnings
 
 import torch
 import torchaudio.functional as AF
@@ -37,14 +39,22 @@ def score_stoi(
 
     try:
         reference, estimate, used_rate, resampled, trimmed = _prepare(reference, estimate, sample_rate)
-        value = float(
-            stoi_fn(
+        if not torch.isfinite(reference).all() or not torch.isfinite(estimate).all():
+            raise ValueError("non-finite audio")
+        if not torch.any(reference != 0) or not torch.any(estimate != 0):
+            return {"status": "na", "reason": "zero_energy_audio", "value": None, "extended": extended}
+        with warnings.catch_warnings(record=True) as caught:
+            warnings.simplefilter("always", RuntimeWarning)
+            value = float(stoi_fn(
                 reference.numpy().astype("float64"),
                 estimate.numpy().astype("float64"),
                 used_rate,
                 extended=extended,
-            )
-        )
+            ))
+        if any("Not enough STFT frames" in str(w.message) for w in caught):
+            return {"status": "na", "reason": "insufficient_active_speech", "value": None, "extended": extended}
+        if caught:
+            raise ValueError(f"STOI warning: {caught[0].message}")
     except Exception as exc:
         return {
             "status": "error",
@@ -52,7 +62,7 @@ def score_stoi(
             "value": None,
             "extended": extended,
         }
-    if value != value:  # NaN
+    if not math.isfinite(value):
         return {
             "status": "error",
             "reason": "STOI returned NaN",

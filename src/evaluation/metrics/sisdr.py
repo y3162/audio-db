@@ -17,6 +17,8 @@ def score_si_sdr(reference: torch.Tensor, estimate: torch.Tensor) -> dict[str, A
     trimmed = abs(int(reference.numel() - estimate.numel()))
     reference = reference[:length]
     estimate = estimate[:length]
+    if not torch.isfinite(reference).all() or not torch.isfinite(estimate).all():
+        return {"status": "error", "reason": "non_finite_audio", "value": None, "trimmed_samples": trimmed}
     reference = reference - reference.mean()
     estimate = estimate - estimate.mean()
     reference_energy = torch.dot(reference, reference)
@@ -31,6 +33,10 @@ def score_si_sdr(reference: torch.Tensor, estimate: torch.Tensor) -> dict[str, A
     noise = estimate - projection
     noise_energy = torch.dot(noise, noise)
     projection_energy = torch.dot(projection, projection)
+    if float(estimate.square().sum()) == 0.0:
+        return {"status": "na", "reason": "estimate_has_zero_energy", "value": None, "trimmed_samples": trimmed}
+    if float(projection_energy) == 0.0:
+        return {"status": "na", "reason": "negative_infinite", "value": None, "trimmed_samples": trimmed}
     if float(noise_energy) < 1e-12 * float(projection_energy.clamp_min(1e-12)):
         return {
             "status": "ok",

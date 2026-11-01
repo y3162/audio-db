@@ -5,7 +5,7 @@ from unittest.mock import patch
 
 import torch
 
-from src.training.core.rng import seed_model_init, seed_training_stream
+from src.training.core.rng import capture_rng, restore_rng, seed_model_init, seed_training_stream
 
 
 class RandomStreamTest(unittest.TestCase):
@@ -31,3 +31,23 @@ class RandomStreamTest(unittest.TestCase):
         ) as seed_cuda:
             seed_training_stream(123, cuda=True)
         seed_cuda.assert_called_once()
+
+    def test_restore_moves_checkpoint_rng_tensors_to_cpu(self):
+        class MappedState:
+            def __init__(self, value):
+                self.value = value
+                self.called = False
+
+            def cpu(self):
+                self.called = True
+                return self.value
+
+        state = capture_rng(cuda=False)
+        state['torch'] = MappedState(state['torch'])
+        state['cuda'] = [MappedState(torch.tensor([1], dtype=torch.uint8))]
+        with patch.object(torch.cuda, 'set_rng_state_all') as restore_cuda:
+            restore_rng(state, cuda=True)
+        self.assertTrue(state['torch'].called)
+        self.assertTrue(state['cuda'][0].called)
+        restore_cuda.assert_called_once()
+        self.assertEqual(restore_cuda.call_args.args[0][0].device.type, 'cpu')

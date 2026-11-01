@@ -106,9 +106,11 @@ def capture_rng(*, cuda: bool) -> dict:
 def restore_rng(state: dict, *, cuda: bool) -> None:
     random.setstate(state["python"])
     np.random.set_state(state["numpy"])
-    torch.random.set_rng_state(state["torch"])
+    # A checkpoint loaded with map_location=cuda moves even the CPU RNG byte
+    # tensor to CUDA; both RNG setters require CPU byte tensors.
+    torch.random.set_rng_state(state["torch"].cpu())
     if cuda:
         saved = state.get("cuda")
         if saved is None:
             raise TrainingError("checkpoint has no CUDA generator state")
-        torch.cuda.set_rng_state_all(saved)
+        torch.cuda.set_rng_state_all([item.cpu() for item in saved])

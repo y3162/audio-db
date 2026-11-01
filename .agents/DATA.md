@@ -61,6 +61,7 @@ DuckDB は `data/db/resource.duckdb`（`src/data/constants.py`）。
 - WER は編集回数を足してから割る micro 集計で、`N = 0` の発話は分母に入れない。PESQ / STOI / SI-SDR は有限なスコアの平均だけ。
 - 部分音声: `max_seconds` などで発話の先頭だけを処理したとき、全文テキストと比べた WER は無効で、`na`（`partial_audio`）にする。元の長さが `max_seconds` 以下なら全文として計算する。長さが取れなければ `unknown_audio_span`。部分に対応するテキストを作る処理は無い。
 - clean 参照が無い評価セットでは、PESQ / STOI / SI-SDR は `na`（`no_clean_reference`）。
+- PESQ / STOI はゼロ波形を `na`、非有限入力をエラーとする。STOI のライブラリが発話不足の警告と返す固定値 `1e-5` はスコアにせず `na` とする。SI-SDR の無音推定と、参照に直交する推定は有限値にしない。
 - WER の正規化（`wer-norm-v1`）などを変えると設定ハッシュが変わり、以前の結果は再利用されない。`--resume` が使えるのは、同じ `run_id` で設定ハッシュが同じときだけ。
 
 ## コーパスごとの注意

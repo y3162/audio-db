@@ -7,6 +7,7 @@ and does not stop other metrics.
 from __future__ import annotations
 
 from typing import Any
+import math
 
 import torch
 import torchaudio.functional as AF
@@ -31,6 +32,10 @@ def score_pesq(reference: torch.Tensor, estimate: torch.Tensor, sample_rate: int
 
     try:
         reference, estimate, used_rate, resampled, trimmed = _prepare(reference, estimate, sample_rate)
+        if not torch.isfinite(reference).all() or not torch.isfinite(estimate).all():
+            raise ValueError("non-finite audio")
+        if not torch.any(reference != 0) or not torch.any(estimate != 0):
+            return {"status": "na", "reason": "zero_energy_audio", "value": None}
         mode = "wb" if used_rate == 16000 else "nb"
         value = float(
             pesq_fn(
@@ -40,6 +45,8 @@ def score_pesq(reference: torch.Tensor, estimate: torch.Tensor, sample_rate: int
                 mode,
             )
         )
+        if not math.isfinite(value):
+            raise ValueError("PESQ returned a non-finite value")
     except Exception as exc:
         return {
             "status": "error",

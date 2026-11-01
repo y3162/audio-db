@@ -23,6 +23,8 @@
 
 ## テスト
 
+- CUDA checkpoint を GPU へ読み込んだ場合、CPU と CUDA の RNG 状態も GPU tensor になり得る。`restore_rng` は復元前に各状態を CPU に移す。CUDA 再開が動くことと、非決定的演算を含む学習がビット一致することは別に検証する。
+
 ```bash
 .venvs/lab/bin/python -m unittest discover -s tests/se -v          # SE
 .venvs/lab/bin/python -m unittest discover -s tests/asr -v         # ASR。重みをダウンロードしない
