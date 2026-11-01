@@ -230,15 +230,24 @@ class SEMambaTask:
         with torch.no_grad():
             parts = self._generate(clean, noisy, unwrap(self.generator))
             value = float(F.l1_loss(clean, parts["audio"]).detach())
+        from src.evaluation.metrics.sisdr import score_si_sdr
+        from src.evaluation.metrics.stoi import score_stoi
+        from src.evaluation.metrics.pesq import score_pesq
+
+        reference, estimate = clean[0], parts["audio"][0]
         metric = _metric(value)
         return {
+            "lengths": {"input": int(noisy[0].numel()), "output": int(estimate.numel()),
+                        "reference": int(reference.numel())},
+            "sample_rate": self.sample_rate,
+            "si_sdr": score_si_sdr(reference, estimate),
             "losses": {
                 "generator": metric,
                 "time": metric,
                 "discriminator": _metric(status="na", reason="validation reports the waveform L1, not the GAN"),
             },
-            "pesq": {"status": "na", "value": None, "reason": "not computed", "count": 0},
-            "stoi": {"status": "na", "value": None, "reason": "not computed", "count": 0},
+            "pesq": score_pesq(reference, estimate, self.sample_rate),
+            "stoi": score_stoi(reference, estimate, self.sample_rate),
         }
 
     def _generator_backward(

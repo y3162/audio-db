@@ -181,6 +181,13 @@ class SEMambaTests(unittest.TestCase):
             data = paired_dataset(root / "wav", 1, frames=2048, segment_size=2048, seed=config["seed"])
             metrics = _updated(task, data)
             self.assertIn("discriminator", metrics)
+            report = task.validation_report(data.collate([0]))
+            self.assertEqual(report["sample_rate"], 16000)
+            self.assertEqual(report["lengths"]["reference"], 2048)
+            self.assertEqual(report["lengths"]["output"], 2048)
+            self.assertEqual(report["si_sdr"]["status"], "ok")
+            self.assertIn(report["stoi"]["status"], {"ok", "na", "unavailable", "error"})
+            self.assertIn(report["pesq"]["status"], {"ok", "na", "unavailable", "error"})
             path = root / "generator.pt"
             torch.save(task.export_for_inference(), path)
             enhancer = load_enhancer("semambapp", path, device="cpu", config=architecture)

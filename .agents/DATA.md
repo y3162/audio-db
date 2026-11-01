@@ -72,7 +72,7 @@ DuckDB は `data/db/resource.duckdb`（`src/data/constants.py`）。
   - real と元 WSJ 音声は、時間整合したペアではない。`simu` は雑音付きの公式シミュレーションで、元 WSJ 波形とはペアにしていない。`tr05_org` は clean の元素材で、実録音の参照ではない。
 - VoiceBank-DEMAND: 実体は `VoiceBank+DEMAND` で、リンク名は `VoiceBank-DEMAND`。clean/noisy は `clean_testset_wav` と `noisy_testset_wav`（および 28/56 話者の trainset）。`configs/db/lists/voicebank_demand_test.txt` は公式 test 824 件。28 話者 train のうち p286 と p287（872 件）を validation、残り 10,700 件を train とする。test 話者とは重ならない。transcript は同梱 txt があるときだけ索引する。SNR はファイルから推定しない。
 - 標準リンクと索引対象は `src/data/corpora_catalog.py` の 12 コーパスだけである。索引は元の sample rate・フレーム数・チャンネルを保存し、学習用のリサンプリングや切り出しはしない。transcript が公式ファイルにあるコーパス（LibriSpeech、LibriTTS、VCTK、VoiceBank-DEMAND、CHiME3 の評価セット）は、学習で使うかどうかに関係なく原文を保存する。雑音と RIR に transcript は無い。
-- `make db-bootstrap` は空の別ファイルを作る。出力先が既にあるときは `--rebuild` が無いと拒否する。本番 `resource.duckdb` への切り替えは `--replace` だけで、検証とバックアップのあと `os.replace` で行う。
+- `make db-bootstrap` は空の別ファイルを作る。出力先が既にあるときは `--rebuild` と明示的な `--backup` が無いと拒否し、別ファイルで再構築する。本番 `resource.duckdb` への切り替えは `--replace` だけで、検証とバックアップのあと `os.replace` で行う。
 - 現行の本番再構築元は `data/staging/resource-current`。`data/staging/` 直下、`data/staging/resource-full`、`data/staging/voicebank`、`data/staging/training` は過去の再構築元であり、現行の本番には使わない。VoiceBank 学習セットの現行再構築元は `data/staging/voicebank-current`。
 - 学習セット `voicebank_28_train` / `voicebank_28_valid` は `data/db/voicebank.duckdb`（再構築元 `data/staging/voicebank/`）。`data/db/training.duckdb` の LibriSpeech+DEMAND スモークとは別ファイルである。
 

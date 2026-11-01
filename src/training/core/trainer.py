@@ -249,10 +249,17 @@ class Trainer:
         try:
             if self.process.rank == 0:
                 self.task.eval_mode()
-                reports = [
-                    self.task.validation_report(validation.collate([index]))
-                    for index in range(len(validation))
-                ]
+                reports = []
+                for index in range(len(validation)):
+                    batch = validation.collate([index])
+                    report = self.task.validation_report(batch)
+                    reports.append(report)
+                    if "si_sdr" in report:
+                        append_record(self._log_path(), {
+                            "type": "validation_case", "global_step": self.global_step,
+                            "set": validation.name, "case_id": batch["case_id"][0],
+                            **report,
+                        })
                 summary = _aggregate_validation(reports)
                 best_path = self._consider_best(epoch, summary)
                 summary["best_checkpoint"] = best_path
@@ -265,6 +272,7 @@ class Trainer:
                         "losses": summary["losses"],
                         "pesq": summary["pesq"],
                         "stoi": summary["stoi"],
+                        "si_sdr": summary.get("si_sdr"),
                         "best_checkpoint": best_path,
                         "seed": self.seed,
                     },
@@ -322,6 +330,8 @@ class Trainer:
     def _consider_best(self, epoch: int, summary: dict[str, Any]) -> str | None:
         """Save the generator when validation PESQ improves after the official start epoch."""
         if epoch < self.best_checkpoint_start_epoch:
+            return None
+        if self.config.get("model", {}).get("name") == "semambapp":
             return None
         pesq = summary["pesq"]
         if pesq["status"] != "ok" or pesq["value"] is None:
@@ -410,11 +420,14 @@ def _aggregate_validation(reports: list[dict[str, Any]]) -> dict[str, Any]:
             if name not in names:
                 names.append(name)
     losses = {name: _combine_metric([report["losses"][name] for report in reports if name in report["losses"]]) for name in names}
-    return {
+    result = {
         "losses": losses,
         "pesq": _combine_metric([report["pesq"] for report in reports]),
         "stoi": _combine_metric([report["stoi"] for report in reports]),
     }
+    if reports and all("si_sdr" in report for report in reports):
+        result["si_sdr"] = _combine_metric([report["si_sdr"] for report in reports])
+    return result
 
 
 def _combine_metric(items: list[dict[str, Any]]) -> dict[str, Any]:

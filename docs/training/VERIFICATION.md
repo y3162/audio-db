@@ -841,3 +841,14 @@ PESQ は今回採点していない。NA 件数は未計測であり、0 とみ�
 | 長時間学習への移行可否 | GO |
 
 この GO は、fused で 3 秒・global batch 8・2 GPU の学習が公式と同じ時間規模で動き、1〜20 step の差が公式再実行の範囲に収まる、という意味である。長時間学習のあと品質が公式と一致することは証明していない。前節の scan のみ融合の NO-GO は、この fused mixer には当てはめない。
+
+
+## SEMamba++ validation の実装途中
+
+独立タスクの validation は既存の SI-SDR、STOI、PESQ 評価関数を呼び、波形長と発話単位の結果を記録する。PESQ の境界診断を含む失敗はそのまま記録する。SEMamba++ では PESQ による best 保存を無効化している。SI-SDR による best 選択、完全な学習 checkpoint、再開と公式実装を含む同条件の実音声検証は未完成で、長時間学習の開始条件を満たしていない。
+
+### 長時間比較の暫定見積もり（実行不可）
+
+既存の A100 40 GiB ×2、各 rank batch 4、16 kHz・48,000 samples の 20 更新実測では、公式 2.901 秒、独立 fused 3.136 秒/更新、peak allocated 26.36 / 26.70 GiB だった。現在の Trainer は端数を落とすので 10,700 件・global batch 8 では 1 epoch 1,337 更新、学習部分だけの単純外挿は約 1.08 / 1.16 時間である。既報の 1,338 更新は端数を含めた外挿で、現在の Trainer の処理とは異なる。データ供給、872 件の validation、保存、起動、復旧を含まず、実行時間の見積もりとしては不足している。保存時間・容量、CPU RAM、実データでの validation 時間と GPU reserved memory の測定も必要。
+
+候補は両実装で同じ初期値、順序、crop、global batch 8、AdamW 2e-4・betas (0.8, 0.99)・weight decay 0.01、epoch ごとの ExponentialLR 0.99。比較前に、同じ端数処理、validation の固定集合と間隔、checkpoint 間隔、SI-SDR の best 選択、公式側の Trainer 接続と再開を検証する。検証セットの全 872 件で指標が安定し、noisy より改善することと、事前に固定する許容差での両者の品質同等性を別々に判定する。許容差と停止規則は未決定。test 824 件はモデル選択後に固定条件で評価し、その後に固定 ASR の WER を調べる。上記の未完成項目があるため、長時間学習用コマンドや時間予算を実行可能なものとして提示しない。
