@@ -1,5 +1,7 @@
 # MP-SENet の学習
 
+コーパス索引と名前付きセットは元の sample rate のままである。学習 Dataset は、設定の sample rate と違うときだけロード時に変換し、そのあと切り出す。`case_id` はレシピのままで、変換では変わらない。
+
 学習の入口は `python -m src.training.se.cli --config <yaml>` である。Generator は `src.se` の `build_model("mp_senet")` を使う。損失、Metric Discriminator、更新順序は `src/training/se/` にあり、`enhance()` は呼ばない。`src/se/official/` は実行時に import しない。
 
 参照した公式コードは commit `89932cfe90d1dacb8e170e4a331d762462c21792`（`src/se/official/mp-senet/` の `train.py`、`dataset.py`、`models/discriminator.py`、`models/model.py` の `phase_losses`、`config.json`）である。

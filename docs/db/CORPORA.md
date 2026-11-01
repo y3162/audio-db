@@ -1,6 +1,6 @@
 # コーパス
 
-索引の列は [tables/AUDIO_FILES.md](tables/AUDIO_FILES.md)。標準のリンクと登録方針は `src/data/corpora_catalog.py`。
+索引の列は [tables/AUDIO_FILES.md](tables/AUDIO_FILES.md)。標準のリンクと登録方針は `src/data/corpora_catalog.py` の 12 コーパスである。索引は学習に使うかどうかでファイルを落とさない。sample rate はファイルの値のまま保存する。公式 transcript がある音声は原文を保存し、WER 正規化は評価時の別処理である。
 
 親ディレクトリは `python -m src.data.link_corpora --dataset-root <dir>` で指定する。未指定時は環境変数 `AUDIO_DB_DATASET_ROOT`、それも無いときは `/net/spring/work/seki/database`。
 

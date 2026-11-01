@@ -40,7 +40,13 @@ make db-init
 
 ## ステージング
 
-`data/staging/` が DuckDB の再構築元です。登録が終わっても消しません。Git 管理外なので、DB と一緒にバックアップします。
+コーパス索引は元の sample rate を保存する。モデルが別の sample rate を使うときは、学習 Dataset のロード時に変換する。レシピの `case_id` は変えない。
+
+`make db-bootstrap` は空の別ファイルへ 12 コーパスを索引し、`configs/db/init.yaml` の評価セットを登録する。出力先が既にあるときは `--rebuild` が必要である。本番ファイルへの反映は `--replace` で、新しい DB の検証、開いているプロセスの確認、バックアップ、同一ファイルシステム上の `os.replace` の順で行う。
+
+現行の本番再構築元は `data/staging/resource-current` である。`data/staging/` 直下や `resource-full` は過去の再構築元であり、現行の本番には使わない。
+
+`data/staging/` 以下は DuckDB の再構築元です。登録が終わっても消しません。Git 管理外なので、DB と一緒にバックアップします。
 
 ```text
 data/staging/

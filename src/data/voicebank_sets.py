@@ -55,18 +55,21 @@ def build(corpora_root: Path, staging: Path, database: Path) -> dict[str, int]:
                 "output": {"sample_rate": clean_info[0], "reference": "dry_clean"},
             }
         )
+        text_path = root / "trainset_28spk_txt" / f"{Path(name).stem}.txt"
+        transcript = text_path.read_text(encoding="utf-8", errors="replace").strip() if text_path.is_file() else None
         metadata = {
             "corpus": "VoiceBank-DEMAND",
             "original_filename": name,
             "pairing": "matching filename",
             "validation_speakers": sorted(VALID_SPEAKERS),
+            "transcript_source": text_path.name if transcript else "missing official text",
         }
         body = {
             "kind": "paired",
             "dataset": "VoiceBank-DEMAND",
             "split": role,
             "sample_rate": clean_info[0],
-            "transcript": None,
+            "transcript": transcript or None,
             "speaker_id": speaker,
             "recipe": recipe,
             "metadata": metadata,

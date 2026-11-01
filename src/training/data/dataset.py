@@ -134,10 +134,9 @@ class RecipeDataset:
                 f"case {example.case_id} rendered {rendered.reference_name}, "
                 f"not {example.reference_name}"
             )
-        if rendered.sample_rate != self.sample_rate:
+        if rendered.sample_rate < 1 or self.sample_rate < 1:
             raise TrainingError(
-                f"case {example.case_id} sample rate is {rendered.sample_rate}, "
-                f"not {self.sample_rate}"
+                f"case {example.case_id} has sample rate {rendered.sample_rate} -> {self.sample_rate}"
             )
         noisy = _mono(rendered.observed)
         clean = _mono(rendered.reference)
@@ -145,6 +144,13 @@ class RecipeDataset:
             raise TrainingError(
                 f"case {example.case_id} teacher length {tuple(clean.shape)} "
                 f"does not match the input {tuple(noisy.shape)}"
+            )
+        noisy = _match_rate(noisy, rendered.sample_rate, self.sample_rate, example.case_id)
+        clean = _match_rate(clean, rendered.sample_rate, self.sample_rate, example.case_id)
+        if noisy.shape != clean.shape:
+            raise TrainingError(
+                f"case {example.case_id} resampled lengths differ: "
+                f"{tuple(noisy.shape)} vs {tuple(clean.shape)}"
             )
         noisy, clean = _normalize(noisy, clean)
         if self.training:
@@ -247,6 +253,25 @@ def _set_rejection(
     if "chime3" in blob and "et05" in blob:
         return "CHiME3 et05 cannot be used for training or validation"
     return None
+
+
+def _match_rate(wave: torch.Tensor, source_rate: int, target_rate: int, case_id: str) -> torch.Tensor:
+    """Resample at load time. The recipe and case_id stay at the file rate."""
+    if source_rate == target_rate:
+        return wave
+    if source_rate < 1 or target_rate < 1:
+        raise TrainingError(f"case {case_id} cannot resample {source_rate} -> {target_rate}")
+    import torchaudio
+
+    converted = torchaudio.functional.resample(wave, source_rate, target_rate)
+    expected = int(round(wave.numel() * target_rate / source_rate))
+    if abs(int(converted.numel()) - expected) > max(1, target_rate // 100):
+        raise TrainingError(
+            f"case {case_id} resampled length {converted.numel()} is far from {expected}"
+        )
+    if converted.numel() < 1 or not torch.isfinite(converted).all():
+        raise TrainingError(f"case {case_id} resample produced an empty or non-finite waveform")
+    return converted
 
 
 def _mono(waveform: torch.Tensor) -> torch.Tensor:

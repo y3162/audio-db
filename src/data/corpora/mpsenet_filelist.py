@@ -42,6 +42,7 @@ def load_mpsenet_filelist(
         if clean_rate != noisy_rate:
             raise ValueError(f"{utterance_id} clean and noisy sample rates differ")
         speaker = utterance_id.split("_", 1)[0]
+        transcript, transcript_note = _paired_transcript(clean_root, utterance_id)
         samples.append(
             AudioSample(
                 utterance_id=f"voicebank:{split}:{utterance_id}",
@@ -49,6 +50,7 @@ def load_mpsenet_filelist(
                 split=split,
                 sample_rate=clean_rate,
                 speaker_id=speaker,
+                transcript=transcript,
                 clean_path=clean.as_posix(),
                 noisy_path=noisy.as_posix(),
                 metadata={
@@ -56,6 +58,7 @@ def load_mpsenet_filelist(
                     "file_list": file_path.as_posix(),
                     "listed_path": listed,
                     "utterance": utterance_id,
+                    "transcript_note": transcript_note,
                 },
             )
         )
@@ -65,6 +68,24 @@ def load_mpsenet_filelist(
             f"for example {missing[0]}. No rows were registered."
         )
     return samples
+
+
+def _paired_transcript(clean_root: Path, utterance_id: str) -> tuple[str | None, str]:
+    """Read the official text file. The MP-SENet list itself has no transcript."""
+    folder = {
+        "clean_testset_wav": "testset_txt",
+        "clean_trainset_28spk_wav": "trainset_28spk_txt",
+        "clean_trainset_56spk_wav": "trainset_56spk_txt",
+    }.get(clean_root.name)
+    if folder is None:
+        return None, f"no text directory mapped from {clean_root.name}"
+    text_path = clean_root.parent / folder / f"{utterance_id}.txt"
+    if not text_path.is_file():
+        return None, f"missing {text_path.name}"
+    text = text_path.read_text(encoding="utf-8", errors="replace").strip()
+    if not text:
+        return None, "empty text file"
+    return text, "official text file"
 
 
 def _rows(path: Path) -> list[tuple[str, str | None]]:
