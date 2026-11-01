@@ -79,8 +79,8 @@ annotation_sets:
     set: voicebank_demand_test
     required: false
     path: configs/db/lists/voicebank_demand_test.txt
-    clean_dir: data/corpora/VoiceBank-DEMAND/wavs_clean
-    noisy_dir: data/corpora/VoiceBank-DEMAND/wavs_noisy
+    clean_dir: data/corpora/VoiceBank-DEMAND/clean_testset_wav
+    noisy_dir: data/corpora/VoiceBank-DEMAND/noisy_testset_wav
     split: test
     description: >
       MP-SENet VoiceBank-DEMAND test ids. The list is MIT-licensed.

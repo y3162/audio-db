@@ -70,7 +70,9 @@ DuckDB は `data/db/resource.duckdb`（`src/data/constants.py`）。
 - CHiME3: 正解テキストは `corpora.audio_files` ではなく、公式注釈 `data/corpora/CHiME3/data/annotations/*.json` の `prompt` から評価セットに入る。
   - CH0 は近接マイクで、雑音環境の収録。clean 参照ではない。レシピの `output.reference` は `none` で、metadata の `clean_reference: false` も残る。CH1–CH6 はタブレット。
   - real と元 WSJ 音声は、時間整合したペアではない。`simu` は雑音付きの公式シミュレーションで、元 WSJ 波形とはペアにしていない。`tr05_org` は clean の元素材で、実録音の参照ではない。
-- VoiceBank-DEMAND: ID リスト（`configs/db/lists/`、MIT の表記を同梱）だけをリポジトリに置く。wav が `data/corpora/VoiceBank-DEMAND/` に揃うまで登録されない。transcript と SNR は無い。
+- VoiceBank-DEMAND: 実体は `VoiceBank+DEMAND` で、リンク名は `VoiceBank-DEMAND`。clean/noisy は `clean_testset_wav` と `noisy_testset_wav`（および 28/56 話者の trainset）。`configs/db/lists/voicebank_demand_test.txt` は公式 test 824 件。28 話者 train のうち p286 と p287（872 件）を validation、残り 10,700 件を train とする。test 話者とは重ならない。transcript は同梱 txt があるときだけ索引する。SNR はファイルから推定しない。
+- 標準リンクと索引対象は `src/data/corpora_catalog.py` の 12 コーパスだけである。`make db-bootstrap` は空の DB を作り、本番 `resource.duckdb` は `--replace` のときだけ退避して置き換える。
+- 学習セット `voicebank_28_train` / `voicebank_28_valid` は `data/db/voicebank.duckdb`（再構築元 `data/staging/voicebank/`）。`data/db/training.duckdb` の LibriSpeech+DEMAND スモークとは別ファイルである。
 
 ## `data/` の扱い
 

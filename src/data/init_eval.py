@@ -51,9 +51,9 @@ _CORPUS_KEYS = {
 }
 
 
-def initialize(config_path: str | Path = DEFAULT_CONFIG) -> str:
+def initialize(config_path: str | Path = DEFAULT_CONFIG, database: str | Path | None = None) -> str:
     raw = _load(Path(config_path))
-    database = Path(raw["database"])
+    database = Path(raw["database"] if database is None else database)
     corpora_root = raw.get("corpora_root", "data/corpora")
     from src.evaluation.datasets.evaldb import EvaluationDB
 

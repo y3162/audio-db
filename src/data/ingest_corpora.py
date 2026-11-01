@@ -6,6 +6,7 @@ import duckdb
 
 from src.data.constants import DUCKDB_MAIN_PATH
 from src.data.corpora import AUDIO_FILE_ROW_ITERATORS
+from src.data.corpora.generic import flush_failures
 from src.data.db.bulk_insert import copy_insert_batched
 from src.data.db.schema import create_corpora_schema
 from src.data.models.audio_file import AudioFileRow
@@ -27,8 +28,11 @@ def _insert_progress_reporter() -> tuple[Callable[[int], None], Callable[[], Non
 
 
 def main() -> None:
+    database = DUCKDB_MAIN_PATH
+    if len(sys.argv) > 1:
+        database = sys.argv[1]
     corpora = sorted(AUDIO_FILE_ROW_ITERATORS)
-    con = duckdb.connect(DUCKDB_MAIN_PATH)
+    con = duckdb.connect(database)
     create_corpora_schema(con, recreate=True)
     total = 0
     for corpus in corpora:
@@ -42,7 +46,8 @@ def main() -> None:
         total += inserted
         print(f"  inserted {inserted:,} rows in {elapsed:.1f}s", flush=True)
     con.close()
-    print(f"Done. {total:,} rows total.", flush=True)
+    failed = flush_failures()
+    print(f"Done. {total:,} rows total. unreadable {failed}.", flush=True)
 
 
 if __name__ == "__main__":
