@@ -40,14 +40,15 @@ def multi_resolution_l1(
     scale = torch.sum(predicted * reference, dim=-1, keepdim=True) / (
         torch.sum(predicted.square(), dim=-1, keepdim=True) + eps
     )
-    aligned = predicted * scale
-    time_loss = (aligned - reference).abs().sum(dim=-1)
+    # ESPnet computes a separate product per loss branch. Reusing one product
+    # changes float32 backward accumulation and can change Adam updates for
+    # near-zero gradients even when the loss and forward values are identical.
+    time_loss = (predicted * scale - reference).abs().sum(dim=-1)
     spectral = torch.zeros_like(time_loss)
     for window in windows:
         hop = window // 2
-        spectral = spectral + _rect_magnitude_l1(reference, aligned, window, hop)
-    spectral = spectral / len(windows)
-    per_item = time_loss * time_domain_weight + (1.0 - time_domain_weight) * spectral
+        spectral = spectral + _rect_magnitude_l1(reference, predicted * scale, window, hop)
+    per_item = time_loss * time_domain_weight + (1.0 - time_domain_weight) * spectral / len(windows)
     return per_item.mean()
 
 

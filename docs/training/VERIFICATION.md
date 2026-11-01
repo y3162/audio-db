@@ -850,3 +850,52 @@ PESQ は今回採点していない。NA 件数は未計測であり、0 とみ�
 既存の A100 40 GiB ×2、各 rank batch 4、16 kHz・48,000 samples の 20 更新実測では、公式 2.901 秒、独立 fused 3.136 秒/更新、peak allocated 26.36 / 26.70 GiB だった。現在の Trainer は端数を落とすので 10,700 件・global batch 8 では 1 epoch 1,337 更新、学習部分だけの単純外挿は約 1.08 / 1.16 時間である。既報の 1,338 更新は端数を含めた外挿で、現在の Trainer の処理とは異なる。データ供給、872 件の validation、保存、起動、復旧を含まず、実行時間の見積もりとしては不足している。保存時間・容量、CPU RAM、実データでの validation 時間と GPU reserved memory の測定も必要。
 
 候補は両実装で同じ初期値、順序、crop、global batch 8、AdamW 2e-4・betas (0.8, 0.99)・weight decay 0.01、epoch ごとの ExponentialLR 0.99。比較前に、同じ端数処理、validation の固定集合と間隔、checkpoint 間隔、SI-SDR の best 選択、公式側の Trainer 接続と再開を検証する。検証セットの全 872 件で指標が安定し、noisy より改善することと、事前に固定する許容差での両者の品質同等性を別々に判定する。許容差と停止規則は未決定。test 824 件はモデル選択後に固定条件で評価し、その後に固定 ASR の WER を調べる。上記の未完成項目があるため、長時間学習用コマンドや時間予算を実行可能なものとして提示しない。
+
+## 5 モデル再検証の着手記録（2026-11-01、未完了）
+
+`dev` の `7d434c6169c2dee67d28201d73dd8b26bc5fe0a3` で開始した。開始時の作業ツリーはクリーン。共有 GPU 4 枚は全て別プロセスが使用率 100% で使用していたため、今回の GPU 比較は行っていない。既存の公式比較スクリプトには既存結果ディレクトリへ固定出力するものがあり、そのまま実行していない。過去の比較値は今回の結果ではない。
+
+TF-GridNet ms-snsd について、既存比較の事前許容（forward / loss 1e-5、勾配 1e-4 および大きい勾配の cosine 0.999）を使い、補助診断として CPU 上の同一プロセスで公式と独立の 1 更新を比較した。seed 3 の 2,048 サンプル合成波形、batch 1 であり、実音声や別プロセス 4 系統の比較ではない。公式重みを独立実装に strict load した。Forward 最大差 0、損失差 0、勾配の要素最大差 0.001953125、層単位の最小 cosine -0.17649、更新後の重み最大差 0.00012050。勾配差は事前許容を超え、原因と最初に差の生じる演算は未特定。層単位 cosine の最小値を全体の cosine と解釈しない。記録は `data/results/training/five-model-audit-20261101-WV8BjA/tf-gridnet-cpu.json`。次のコマンドは新規ファイルを指定して再実行する（既存ファイルは上書きしない）。
+
+```bash
+OMP_NUM_THREADS=1 MKL_NUM_THREADS=1 OPENBLAS_NUM_THREADS=1 .venvs/lab/bin/python tests/training/reference/probe_tf_gridnet_cpu.py data/results/training/NEW_DIRECTORY/tf-gridnet-cpu.json
+```
+
+この補助診断だけではモデルの GO 判定はできない。5 モデルの公式 A/B・独立 A/B、実入力の一致、GPU 上の 1 step・短時間学習、checkpoint 再開は今回未検証。MossFormerGAN の現行 Discriminator は公開版と構造が異なり、公式 GAN 学習の再現は未達である。
+
+今回の lab 環境回帰テストは data 12/12、training 76/76、evaluation 86/86、SE 27/28（CUDA extension 専用 1 skip）、ASR 5/5 が成功した。training の最初のサンドボックス内実行はローカルソケットの `PermissionError` により 8 エラーとなり、制限外で再実行して成功した。これらは上記 4 系統の公式比較の代わりではない。
+
+### TF-GridNet CPU backward 追加診断
+
+同一 seed・入力・初期重みで上記の試験を再実施した。保存先は `data/results/training/tf-gridnet-gradient-20261101-KguXGL/`（合成音声、同一プロセスの補助診断）。修正前の全勾配 norm は公式 74192.1856、独立 74192.1771、相対 L2 差 2.36e-7、cosine 0.999999999999976、符号不一致 1696 要素。最大差 0.001953125 は `blocks.0.attn_conv_Q_3.0.weight[0,0,0,0]`（公式 7643.586914、独立 7643.584961）。最小 cosine -0.17649 は `blocks.0.attn_conv_K_2.2.beta`、norm は公式 5.63e-5、独立 3.64e-5。公式勾配絶対値 1e-4 以上の要素では符号不一致はなかった。
+
+同一の公式損失を両モデルに適用するとモデル勾配差は 0。一方、同一の出力波形に両損失を適用すると波形勾配に最大 1.53e-5 の差があった。操作を段階的に比較すると、損失の `estimate * scale` を時間損失と全 STFT 損失で一つの計算ノードとして共有することが差を生んだ。公式は各分岐で乗算を別々に計算するため、backward の浮動小数点加算順が異なる。公式と同じ分岐に修正するとこの条件の波形、損失、全パラメータ勾配と Adam 更新後重みの最大差は 0。事前許容を変更していない。CPU の単一入力の結果であり、GPU や別プロセスでの一般的な一致を意味しない。`probe_tf_gridnet_cpu.py` の `--legacy` は修正前の計算グラフを再現する。
+
+## MossFormerGAN Discriminator と GAN 1 step（2026-11-01）
+
+参照は ClearerVoice-Studio commit `6b3774dc79c46ae8bed2a4fa5f706f0ac8c75c61` の `train/speech_enhancement/models/mossformer_gan/`、`losses/loss.py`、`solver.py`、`train.py`。独立側の実行時は参照ツリーを import しない。Apache-2.0 の公開コードに含まれる AdaptCNN / PoolAttFF の出典 NISQA は MIT、Conformer の出典 lucidrains/conformer も MIT。著作権・ライセンスと改変箇所は `src/training/se/mossformer_discriminator/NOTICE.md` と同ディレクトリの LICENSE に記載した。
+
+| 公式の実行経路 | 学習側の対応 |
+|---|---|
+| 圧縮済み clean / 生成 magnitude `[B,1,F,T]` を 15 frame、hop 4 で切り、2 channel に連結 | `segment_specs`、`Discriminator.forward` |
+| 6 convolution・BatchNorm・adaptive max pool・Dropout2d、384 次元 | `AdaptCNN` |
+| 384 次元、4 head、kernel 31 の Conformer 2 層、相対位置埋め込み | `ConformerBlock` ×2 |
+| feed-forward attention pooling、`sigmoid(slope * x)`、出力 (0,1) | `PoolAttFF`、`LearnableSigmoid` |
+| G 用 fake、D 用 fake、D 用 real の順に forward。G backward → G clip → D backward → D clip → G/D step | `MossFormerGANTask.train_update`（clip は各 microbatch） |
+| AdamW の既定 betas (0.9, 0.999)、weight decay 0.01、G 5e-4、D 1e-3 | サンプル設定。betas と学習率は設定可能 |
+
+公開の `ndf` / `in_channel` は実際の層幅に使われない。Discriminator のパラメータは 8,121,331 個、state dict は 117 キーで、公式から strict load でき、shape と値は一致した。入力は波形ではなく、STFT・圧縮後の magnitude pair である。入力 STFT は Hamming periodic=False・center=True・圧縮 0.3。公式の時間損失は clean 実部と生成虚部を組み合わせ、center=False の iSTFT を使う。
+
+CPU float32・単一スレッド、seed 77、合成入力で比較した。単体 Discriminator は batch 1、201 bin、25 frame、training mode、同じ RNG と初期 state。CNN、Conformer、pool、sigmoid の各出力は最大差 0。敵対損失 `(score - 1)^2` の全パラメータ勾配の norm は両者 17.0850190、入力勾配 norm 1.1830269、生成側入力勾配 norm 1.0604418。いずれも最大絶対差・相対 L2 差 0、cosine は丸めて 1。AdamW 1 更新後も最大絶対差・相対 L2 差 0。
+
+学習タスク比較は公式幅 Generator と Discriminator、batch 1・8,000 samples の同じ合成 clean/noisy、accumulation 1。Generator は両側で同じ独立モデルと初期 state を使い、片側は公式の前処理と公式損失関数、もう片側は実際の `MossFormerGANTask.train_update` を呼んだ。公式 `batch_pesq` は CUDA を固定するため、公式 `pesq_loss` と同じ正規化を CPU 上で呼ぶアダプタに差し替えた。PESQ 自体は両側で実計算した。G/D 損失、Generator の 2 出力、両モデルの clip 後勾配、AdamW 更新後の両モデルの重みはすべて最大絶対差・相対 L2 差 0。G/D 勾配 norm はそれぞれ 6.1821041 / 4.2400952、重み cosine はそれぞれ 0.999999999999949 / 0.999999999999898。これは単一プロセス・単一入力・1 更新の結果であり、GPU、別プロセス、公式設定の accumulation 2、実音声、長時間学習の一致を意味しない。
+
+修正前は時間波形再合成で `angle` を二度呼んでいた。公式のように位相を共有すると、同じ出力でも backward の加算順が変わる。2,000 samples の診断では修正前の Generator 勾配最大差 2.05e-7、更新後の重み最大差 7.65e-4 だったが、共有後は両方 0。独立した再合成勾配テストも追加した。
+
+再実行には上記 commit の公式ツリーが必要。比較用環境には公式 import の `einops`、`joblib`、`librosa`、`pesq` が必要で、今回 `.venvs/lab` に不足分を導入した。比較スクリプトは結果を標準出力に出し、既存の実験結果を上書きしない。
+
+```bash
+OMP_NUM_THREADS=1 MKL_NUM_THREADS=1 OPENBLAS_NUM_THREADS=1 .venvs/lab/bin/python tests/training/reference/compare_mossformer_cpu.py
+```
+
+回帰テストは `.venvs/lab`、上記と同じスレッド設定で training 79/79、SE 27/28（CUDA extension 専用 1 skip）、evaluation 86/86、ASR 5/5。失敗・エラー 0。MossFormerGAN の公式幅 1 更新、有限勾配、Generator の推論用 export/load も training テストに含む。

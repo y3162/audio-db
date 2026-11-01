@@ -7,8 +7,7 @@ The loss is ``0.1 * RI + 0.9 * magnitude + 0.2 * time + 0.05 * GAN``.
 The time-domain reconstruction uses the released pairing of the clean real
 part with the predicted imaginary part.
 
-The discriminator is an independent convolutional scorer. The released model
-adds a Conformer after a NISQA-style CNN; that block is not reproduced.
+The discriminator reproduces the released NISQA CNN and Conformer scorer.
 Targets are the same: real pairs go to 1 and fakes go to wideband PESQ
 normalized by ``(score - 1) / 3.5``. A missing PESQ score aborts the step.
 It is not replaced with zero.
@@ -33,7 +32,7 @@ from src.training.core.distributed import ProcessInfo, unwrap, wrap_module
 from src.training.core.rng import seed_model_init
 from src.training.core.trainer import accumulation_scope
 from src.training.errors import TrainingError
-from src.training.se.discriminators import MagnitudePairDiscriminator
+from src.training.se.mossformer_discriminator import Discriminator
 from src.training.se.losses import metric_targets
 from src.training.se.optim import build_optimizer, build_scheduler, clip_gradients, step_scheduler
 from src.training.se.stft import centered_stft
@@ -60,7 +59,7 @@ class MossFormerGANTask:
         build_config = {key: value for key, value in architecture.items() if key in {"n_fft", "win_len", "hop", "num_channel"}}
         with seed_model_init(config["seed"]):
             self.generator = build_model("mossformergan", build_config or None, variant=model.get("variant") or "se_16k").to(device)
-            self.discriminator = MagnitudePairDiscriminator().to(device)
+            self.discriminator = Discriminator(ndf=16).to(device)
         generator_config = dict(config)
         generator_config["optimizer"] = dict(config["optimizer"])
         generator_config["optimizer"]["weight_decay"] = 0.01
@@ -145,10 +144,10 @@ class MossFormerGANTask:
             is_last = index == len(batches) - 1
             clean = batch["clean"].to(self.device)
             noisy = batch["noisy"].to(self.device)
-            scale = torch.sqrt(noisy.shape[-1] / noisy.square().sum(dim=-1).clamp_min(1e-6)).unsqueeze(-1)
+            scale = torch.sqrt(noisy.shape[-1] / (noisy.square().sum(dim=-1) + 1e-6)).unsqueeze(-1)
             normalized = noisy * scale
-            with accumulation_scope([self.generator], last=is_last):
-                real, imag, pred_mag, label_real, label_imag, label_mag, audio, teacher = self._forward(
+            with accumulation_scope([self.generator, self.discriminator], last=is_last):
+                real, imag, pred_mag, label_real, label_imag, label_mag = self._forward(
                     self.generator, normalized, clean * scale
                 )
                 fake_score = self.discriminator(label_mag, pred_mag)
@@ -156,6 +155,8 @@ class MossFormerGANTask:
                 gan = F.mse_loss(fake_score.flatten(), ones)
                 loss_mag = F.mse_loss(pred_mag, label_mag)
                 loss_ri = F.mse_loss(real, label_real) + F.mse_loss(imag, label_imag)
+                audio = _istft(_uncompress(label_real, imag).squeeze(1), self.n_fft, self.hop, self.win, clean.shape[-1])
+                teacher = clean * scale
                 length = min(audio.shape[-1], teacher.shape[-1])
                 time_loss = (audio[..., :length] - teacher[..., :length]).abs().mean()
                 generator_loss = _RI * loss_ri + _MAG * loss_mag + _TIME * time_loss + _GAN * gan
@@ -166,19 +167,18 @@ class MossFormerGANTask:
                         "PESQ could not be computed for this MossFormerGAN batch. "
                         "The discriminator target is not replaced with zero."
                     )
-                (generator_loss / accumulation).backward()
-            with accumulation_scope([self.discriminator], last=is_last):
-                real_score = self.discriminator(label_mag, label_mag)
                 fake_detached = self.discriminator(label_mag, pred_mag.detach())
+                real_score = self.discriminator(label_mag, label_mag)
                 discriminator_loss = F.mse_loss(real_score.flatten(), ones) + F.mse_loss(
                     fake_detached.flatten(), targets.to(self.device)
                 )
                 _finite(discriminator_loss, "mossformer discriminator")
+                (generator_loss / accumulation).backward()
+                clip_gradients(unwrap(self.generator), self.grad_clip)
                 (discriminator_loss / accumulation).backward()
+                clip_gradients(unwrap(self.discriminator), self.grad_clip)
             gen_total += float(generator_loss.detach())
             disc_total += float(discriminator_loss.detach())
-        clip_gradients(unwrap(self.generator), self.grad_clip)
-        clip_gradients(unwrap(self.discriminator), self.grad_clip)
         self.optim_g.step()
         self.optim_d.step()
         count = len(batches)
@@ -188,10 +188,12 @@ class MossFormerGANTask:
         clean = batch["clean"].to(self.device)
         noisy = batch["noisy"].to(self.device)
         with torch.no_grad():
-            scale = torch.sqrt(noisy.shape[-1] / noisy.square().sum(dim=-1).clamp_min(1e-6)).unsqueeze(-1)
-            _real, _imag, _pred, _lr, _li, _lm, audio, teacher = self._forward(
+            scale = torch.sqrt(noisy.shape[-1] / (noisy.square().sum(dim=-1) + 1e-6)).unsqueeze(-1)
+            _real, _imag, _pred, _lr, _li, _lm = self._forward(
                 unwrap(self.generator), noisy * scale, clean * scale
             )
+            audio = _istft(_uncompress(_lr, _imag).squeeze(1), self.n_fft, self.hop, self.win, clean.shape[-1])
+            teacher = clean * scale
             length = min(audio.shape[-1], teacher.shape[-1])
             value = float((audio[..., :length] - teacher[..., :length]).abs().mean().detach())
         metric = _metric(value)
@@ -206,16 +208,12 @@ class MossFormerGANTask:
         real, imag = module(noisy_spec)
         real = real.permute(0, 1, 3, 2)
         imag = imag.permute(0, 1, 3, 2)
-        pred_mag = torch.sqrt(real.square() + imag.square())
+        pred_mag = torch.sqrt(real ** 2 + imag ** 2)
         label_spec = _compress(_stft(clean, self.n_fft, self.hop, self.win))
-        label_real = label_spec[:, 0:1]
-        label_imag = label_spec[:, 1:2]
-        label_mag = torch.sqrt(label_real.square() + label_imag.square())
-        # Released loss_mossformergan_se_16k reconstructs from the clean real part
-        # and the predicted imaginary part.
-        reconstructed = _uncompress(label_real, imag).squeeze(1)
-        audio = _istft(reconstructed, self.n_fft, self.hop, self.win, clean.shape[-1])
-        return real, imag, pred_mag, label_real, label_imag, label_mag, audio, clean
+        label_real = label_spec[:, 0, :, :].unsqueeze(1)
+        label_imag = label_spec[:, 1, :, :].unsqueeze(1)
+        label_mag = torch.sqrt(label_real ** 2 + label_imag ** 2)
+        return real, imag, pred_mag, label_real, label_imag, label_mag
 
 
 def _stft(waveform: torch.Tensor, n_fft: int, hop: int, win: int) -> torch.Tensor:
@@ -227,7 +225,7 @@ def _stft(waveform: torch.Tensor, n_fft: int, hop: int, win: int) -> torch.Tenso
 
 def _istft(spectrum: torch.Tensor, n_fft: int, hop: int, win: int, length: int) -> torch.Tensor:
     window = torch.hamming_window(win, periodic=False, device=spectrum.device, dtype=spectrum.dtype)
-    return torch.istft(torch.view_as_complex(spectrum), n_fft, hop, win, window=window, center=True, length=length)
+    return torch.istft(torch.view_as_complex(spectrum), n_fft, hop, win, window=window, center=False)
 
 
 def _compress(spectrum: torch.Tensor) -> torch.Tensor:
@@ -239,7 +237,8 @@ def _compress(spectrum: torch.Tensor) -> torch.Tensor:
 def _uncompress(real: torch.Tensor, imag: torch.Tensor) -> torch.Tensor:
     value = torch.complex(real, imag)
     magnitude = value.abs().pow(1.0 / 0.3)
-    return torch.stack((magnitude * torch.cos(value.angle()), magnitude * torch.sin(value.angle())), -1)
+    phase = value.angle()
+    return torch.stack((magnitude * torch.cos(phase), magnitude * torch.sin(phase)), -1)
 
 
 def _finite(loss: torch.Tensor, name: str) -> None:

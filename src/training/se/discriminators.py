@@ -1,8 +1,7 @@
 """Discriminators owned by the training package.
 
-MossFormerGAN uses the magnitude-pair discriminator here. The released
-discriminator also has a Conformer after a NISQA-style CNN; that block is
-not reimplemented here.
+Legacy discriminator components. MossFormerGAN training uses the released
+architecture in ``mossformer_discriminator`` instead.
 """
 
 from __future__ import annotations
