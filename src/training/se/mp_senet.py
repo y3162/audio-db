@@ -17,7 +17,7 @@ from torch.nn.parallel import DistributedDataParallel
 from src.se import build_model
 from src.training.core.distributed import ProcessInfo, unwrap, wrap_module
 from src.training.core.rng import seed_model_init
-from src.training.core.trainer import backward
+from src.training.core.trainer import accumulation_scope
 from src.training.errors import TrainingError
 from src.training.se.discriminator import MetricDiscriminator
 from src.training.se.losses import discriminator_loss, generator_losses, metric_targets
@@ -208,10 +208,11 @@ class MPSENetTask:
         self.optim_g.zero_grad(set_to_none=True)
         total = 0.0
         for index, batch in enumerate(batches):
-            clean, noisy = self._waveforms(batch)
-            parts = self._generate(clean, noisy, generator=self.generator)
-            loss = F.l1_loss(clean, parts["audio"]) / accumulation
-            backward(loss, [self.generator], last=index == len(batches) - 1)
+            with accumulation_scope([self.generator], last=index == len(batches) - 1):
+                clean, noisy = self._waveforms(batch)
+                parts = self._generate(clean, noisy, generator=self.generator)
+                loss = F.l1_loss(clean, parts["audio"]) / accumulation
+                loss.backward()
             total += float(loss.detach()) * accumulation
         self.optim_g.step()
         mean = total / len(batches)
@@ -229,11 +230,12 @@ class MPSENetTask:
                 parts = self._generate(clean, noisy, generator=unwrap(self.generator))
             ones = torch.ones(clean.shape[0], device=self.device)
             _require_discriminator_resolution(parts["clean_mag"].shape[-2], parts["clean_mag"].shape[-1])
-            real = self.discriminator(parts["clean_mag"], parts["clean_mag"])
-            fake = self.discriminator(parts["clean_mag"], parts["mag_hat"])
-            targets = metric_targets(clean, parts["audio"], int(self.spec["sampling_rate"]))
-            loss = discriminator_loss(real, fake, ones, targets) / accumulation
-            backward(loss, [self.discriminator], last=index == len(batches) - 1)
+            with accumulation_scope([self.discriminator], last=index == len(batches) - 1):
+                real = self.discriminator(parts["clean_mag"], parts["clean_mag"])
+                fake = self.discriminator(parts["clean_mag"], parts["mag_hat"])
+                targets = metric_targets(clean, parts["audio"], int(self.spec["sampling_rate"]))
+                loss = discriminator_loss(real, fake, ones, targets) / accumulation
+                loss.backward()
             discriminator_total += float(loss.detach()) * accumulation
         self.optim_d.step()
 
@@ -246,27 +248,28 @@ class MPSENetTask:
         }
         try:
             for index, batch in enumerate(batches):
-                clean, noisy = self._waveforms(batch)
-                parts = self._generate(clean, noisy, generator=self.generator)
-                ones = torch.ones(clean.shape[0], device=self.device)
-                # The unwrapped discriminator avoids a second DDP all-reduce.
-                # Its parameters are frozen, so the metric gradient reaches the generator only.
-                metric = raw_discriminator(parts["clean_mag"], parts["mag_hat"])
-                losses = generator_losses(
-                    parts["clean_mag"],
-                    parts["mag"],
-                    parts["clean_phase"],
-                    parts["phase"],
-                    parts["clean_complex"],
-                    parts["complex"],
-                    parts["recomputed_complex"],
-                    clean,
-                    parts["audio"],
-                    metric,
-                    ones,
-                )
-                loss = losses["total"] / accumulation
-                backward(loss, [self.generator], last=index == len(batches) - 1)
+                with accumulation_scope([self.generator], last=index == len(batches) - 1):
+                    clean, noisy = self._waveforms(batch)
+                    parts = self._generate(clean, noisy, generator=self.generator)
+                    ones = torch.ones(clean.shape[0], device=self.device)
+                    # The unwrapped discriminator avoids a second DDP all-reduce.
+                    # Its parameters are frozen, so the metric gradient reaches the generator only.
+                    metric = raw_discriminator(parts["clean_mag"], parts["mag_hat"])
+                    losses = generator_losses(
+                        parts["clean_mag"],
+                        parts["mag"],
+                        parts["clean_phase"],
+                        parts["phase"],
+                        parts["clean_complex"],
+                        parts["complex"],
+                        parts["recomputed_complex"],
+                        clean,
+                        parts["audio"],
+                        metric,
+                        ones,
+                    )
+                    loss = losses["total"] / accumulation
+                    loss.backward()
                 for name, value in losses.items():
                     component_totals[name] += float(value.detach())
         finally:

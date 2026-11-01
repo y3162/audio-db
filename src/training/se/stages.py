@@ -35,7 +35,7 @@ from torch.nn.parallel import DistributedDataParallel
 
 from src.training.core.distributed import ProcessInfo, unwrap, wrap_module
 from src.training.core.rng import seed_model_init
-from src.training.core.trainer import backward
+from src.training.core.trainer import accumulation_scope
 from src.training.errors import TrainingError
 from src.training.se.discriminators import FeatureScaleDiscriminator, WaveformGANDiscriminator
 from src.training.se.optim import build_optimizer, build_scheduler, clip_gradients, step_scheduler
@@ -242,7 +242,8 @@ class StagedTask:
         captured: list[tuple[torch.Tensor, torch.Tensor]] = []
         for index, batch in enumerate(batches):
             clean = batch["clean"].to(self.device)
-            estimate = self._vocoder_forward(self.generator, clean)
+            with accumulation_scope([self.generator, self.discriminator], last=index == len(batches) - 1):
+                estimate = self._vocoder_forward(self.generator, clean)
             length = min(clean.shape[-1], estimate.shape[-1])
             reference = clean[..., :length]
             predicted = estimate[..., :length]
@@ -253,7 +254,7 @@ class StagedTask:
             mel = log_mel_l1(reference, predicted, self.sample_rate, n_mels=_MEL_BANDS, windows=_MEL_WINDOWS)
             loss = mel * self._mel_weight + adversarial * self._adv_weight + matching * self._feat_weight
             _finite(loss, "vocoder generator")
-            backward(loss / accumulation, [self.generator, self.discriminator], last=index == len(batches) - 1)
+            (loss / accumulation).backward()
             gen_total += float(loss.detach())
             captured.append((reference.detach(), predicted.detach()))
         clip_gradients(unwrap(self.generator), self.grad_clip)
@@ -262,11 +263,14 @@ class StagedTask:
         self.optim_d.zero_grad(set_to_none=True)
         disc_total = 0.0
         for index, (reference, predicted) in enumerate(captured):
-            real_scores, _ = unwrap(self.discriminator)(reference)
-            fake_scores, _ = unwrap(self.discriminator)(predicted)
-            loss = sum(least_squares_discriminator(real, fake) for real, fake in zip(real_scores, fake_scores, strict=True))
-            _finite(loss, "vocoder discriminator")
-            backward(loss / accumulation, [self.discriminator], last=index == len(captured) - 1)
+            with accumulation_scope([self.discriminator], last=index == len(captured) - 1):
+                real_scores, _ = self.discriminator(reference)
+                fake_scores, _ = self.discriminator(predicted)
+                loss = sum(
+                    least_squares_discriminator(real, fake) for real, fake in zip(real_scores, fake_scores, strict=True)
+                )
+                _finite(loss, "vocoder discriminator")
+                (loss / accumulation).backward()
             disc_total += float(loss.detach())
         clip_gradients(unwrap(self.discriminator), self.grad_clip)
         self.optim_d.step()
@@ -277,11 +281,12 @@ class StagedTask:
         self.optim_g.zero_grad(set_to_none=True)
         total = 0.0
         for index, batch in enumerate(batches):
-            clean = batch["clean"].to(self.device)
-            noisy = batch["noisy"].to(self.device)
-            loss = self._distill_loss(clean, noisy)
-            _finite(loss, "dewavlm")
-            backward(loss / accumulation, [self.generator], last=index == len(batches) - 1)
+            with accumulation_scope([self.generator], last=index == len(batches) - 1):
+                clean = batch["clean"].to(self.device)
+                noisy = batch["noisy"].to(self.device)
+                loss = self._distill_loss(clean, noisy)
+                _finite(loss, "dewavlm")
+                (loss / accumulation).backward()
             total += float(loss.detach())
         clip_gradients(unwrap(self.generator), self.grad_clip)
         self.optim_g.step()
@@ -291,7 +296,7 @@ class StagedTask:
     def _distill_loss(self, clean: torch.Tensor, noisy: torch.Tensor) -> torch.Tensor:
         if not self._frozen:
             raise TrainingError("DeWavLM training has no frozen teacher")
-        student = unwrap(self.generator)(noisy)
+        student = self.generator(noisy)
         with torch.no_grad():
             teacher = self._frozen[0](clean)
         return F.mse_loss(student, teacher)
@@ -303,9 +308,10 @@ class StagedTask:
         for index, batch in enumerate(batches):
             clean = batch["clean"].to(self.device)
             noisy = batch["noisy"].to(self.device)
-            loss, target, output = self._adapter_loss(clean, noisy)
-            _finite(loss, "adapter")
-            backward(loss / accumulation, [self.generator, self.discriminator], last=index == len(batches) - 1)
+            with accumulation_scope([self.generator, self.discriminator], last=index == len(batches) - 1):
+                loss, target, output = self._adapter_loss(clean, noisy)
+                _finite(loss, "adapter")
+                (loss / accumulation).backward()
             gen_total += float(loss.detach())
             captured.append((target.detach(), output.detach()))
         clip_gradients(unwrap(self.generator), self.grad_clip)
@@ -313,10 +319,13 @@ class StagedTask:
         self.optim_d.zero_grad(set_to_none=True)
         disc_total = 0.0
         for index, (target, output) in enumerate(captured):
-            real_scores, fake_scores, _, _ = unwrap(self.discriminator)(target, output)
-            loss = sum(least_squares_discriminator(real, fake) for real, fake in zip(real_scores, fake_scores, strict=True))
-            _finite(loss, "adapter discriminator")
-            backward(loss / accumulation, [self.discriminator], last=index == len(captured) - 1)
+            with accumulation_scope([self.discriminator], last=index == len(captured) - 1):
+                real_scores, fake_scores, _, _ = self.discriminator(target, output)
+                loss = sum(
+                    least_squares_discriminator(real, fake) for real, fake in zip(real_scores, fake_scores, strict=True)
+                )
+                _finite(loss, "adapter discriminator")
+                (loss / accumulation).backward()
             disc_total += float(loss.detach())
         clip_gradients(unwrap(self.discriminator), self.grad_clip)
         self.optim_d.step()
@@ -327,7 +336,7 @@ class StagedTask:
         if not self._frozen:
             raise TrainingError("adapter training has no feature map")
         embed_a, embed_p, target = self._frozen[0](clean, noisy)
-        output = unwrap(self.generator)(embed_a, embed_p)
+        output = self.generator(embed_a, embed_p)
         real_scores, fake_scores, real_features, fake_features = unwrap(self.discriminator)(target, output)
         reconstruction = F.mse_loss(output, target)
         adversarial = sum(least_squares_generator(score) for score in fake_scores)
@@ -339,11 +348,12 @@ class StagedTask:
         self.optim_g.zero_grad(set_to_none=True)
         total = 0.0
         for index, batch in enumerate(batches):
-            clean = batch["clean"].to(self.device)
-            noisy = batch["noisy"].to(self.device)
-            loss = self._cfm_loss(clean, noisy)
-            _finite(loss, "flow matching")
-            backward(loss / accumulation, [self.generator], last=index == len(batches) - 1)
+            with accumulation_scope([self.generator], last=index == len(batches) - 1):
+                clean = batch["clean"].to(self.device)
+                noisy = batch["noisy"].to(self.device)
+                loss = self._cfm_loss(clean, noisy)
+                _finite(loss, "flow matching")
+                (loss / accumulation).backward()
             total += float(loss.detach())
         clip_gradients(unwrap(self.generator), self.grad_clip)
         self.optim_g.step()
@@ -358,7 +368,7 @@ class StagedTask:
         # condition is zeros and the loss is still the masked velocity MSE.
         frames = max(clean.shape[-1] // 8, 2)
         text = clean.new_zeros(clean.shape[0], frames, text_dim)
-        loss, _cond, _pred = module(clean, noisy, text)
+        loss, _cond, _pred = self.generator(clean, noisy, text)
         if loss.ndim != 0:
             loss = loss.mean()
         del mel_bins

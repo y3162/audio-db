@@ -65,11 +65,13 @@ class AccumulationTests(unittest.TestCase):
         reference = build_model()
         F.mse_loss(reference(features), target).backward()
         expected = torch.cat([parameter.grad.reshape(-1) for parameter in reference.parameters()])
-        for mode in ("sync", "accum"):
+        expected_flags = {"sync": [1], "accum": [0, 1], "split": [0, 1], "delay": [1], "manual": [0, 0]}
+        for mode, flags in expected_flags.items():
             with self.subTest(mode=mode):
                 gradients = _run_workers(mode)
                 self.assertEqual(len(gradients), 2)
-                for gradient in gradients:
+                for gradient, seen in gradients:
+                    self.assertEqual(seen, flags)
                     self.assertTrue(torch.allclose(gradient, expected, rtol=1e-5, atol=1e-6))
 
 
@@ -98,7 +100,7 @@ def _run_scheduler(root: Path, *, micro_limit: int) -> tuple[int, float, int]:
     return trainer.global_step, task.learning_rates()["generator"], int(task.sched_g.last_epoch)
 
 
-def _run_workers(mode: str) -> list[torch.Tensor]:
+def _run_workers(mode: str) -> list[tuple[torch.Tensor, list[int]]]:
     port = _free_port()
     with tempfile.TemporaryDirectory() as directory:
         root = Path(directory)
@@ -125,7 +127,8 @@ def _run_workers(mode: str) -> list[torch.Tensor]:
         self_codes = codes
         if any(code != 0 for code in self_codes):
             raise AssertionError(f"ddp workers failed: {self_codes}")
-        return [torch.load(path, weights_only=True) for path in destinations]
+        loaded = [torch.load(path, weights_only=True) for path in destinations]
+        return [(item["gradient"], item["flags"].tolist()) for item in loaded]
 
 
 def _free_port() -> int:

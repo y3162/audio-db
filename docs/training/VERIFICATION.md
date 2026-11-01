@@ -481,3 +481,148 @@ VoiceBank 実ペアの 4 更新パイロットは `data/results/training/semamba
 VoiceBank の 100 更新と固定 validation 8 件の全予定点が終了。step 4 / 20 / 40 / 60 / 80 / 100 の平均 SI-SDR は -41.30 / -22.60 / -14.53 / -8.04 / -7.13 / -5.75 dB、平均 STOI は 0.614 / 0.722 / 0.730 / 0.709 / 0.719 / 0.669。noisy の平均は SI-SDR 6.30 dB、STOI 0.799。PESQ は異常のため参考値のみ。SI-SDR の上昇傾向はあるが、100 更新後も noisy を下回り、品質を獲得したとは判定しない。データ順や音声は `data/results/training/semamba-voicebank-100-validation-20261101/`、学習曲線・checkpoint は `data/results/training/semamba-voicebank-100-20261101/`。実行は同ディレクトリの `config.yaml` と `tests/training/reference/validate_voicebank_pilot.py` に記録した条件である。
 
 VoiceBank 学習用の公式・独立 checkpoint をそれぞれ step 4 から別プロセスで step 6 に再開できた。再開直後のモデル・optimizer・scheduler・RNG は保存 checkpoint と完全一致した（`voicebank-{official,independent}-restore.json`）。継続実行の step 6 との比較はしておらず、長時間の厳密再現を保証しない。
+
+## Dataset、Mock Trainer、SEMamba++ 200 step（2026-11-01）
+
+ホスト `turing`。学習比較は物理 GPU 0（Quadro RTX 5000、使用メモリ 15 MiB、sm_75）。融合カーネルの cubin は sm_75 だけなので、この GPU を恒久の指定にはしない。lab は Python 3.13、semamba は Python 3.10。どちらも PyTorch 2.6.0+cu124。`CUBLAS_WORKSPACE_CONFIG=:4096:8`。`torch.use_deterministic_algorithms(True)` は融合 selective scan の backward が実行できないため、200 step には使っていない。cudnn の benchmark は切ってある。
+
+本番 `data/db/resource.duckdb` は開いていない。学習セットは既存の `data/db/semamba-voicebank-train-20261101-compat.duckdb`（train 10,700、validation 872）。test は使っていない。
+
+### 修正
+
+1. DDP は forward のときに all-reduce を予約する。`no_sync` を `loss.backward()` だけに掛けると、非最終 micro-batch でも同期する。`accumulation_scope` は forward を包む。等サイズの micro-batch では、毎 micro-batch の平均でも最後の 1 回の平均でも global batch の勾配は一致する。不要な同期を外した。gloo の 2 プロセスで、同期フラグは full batch が `[1]`、蓄積が `[0, 1]`、コンテキストを出た直後の backward が `[1]`、遅延 backward の手動平均が `[0, 0]` で、勾配はいずれも `rtol=1e-5`, `atol=1e-6` で全バッチと一致した。
+2. SEMamba++ の Generator は micro-batch ごとに 1 回だけ forward し、Discriminator はその detach、Generator 損失は同じ波形を使う。公式 `train.py` と同じ順序である。DDP かつ蓄積が 2 以上のときは Reducer の hook を使わず、Generator backward のあとで勾配を平均する。`enhance()` と checkpoint のキーは変えていない。
+
+### Phase A
+
+実 `RecipeDataset`、`epoch_indices`、`Trainer`。モデルは載せていない。CPU。
+
+VoiceBank の結果は `data/results/training/semamba-supply-20261101/supply.json`。
+
+| 確認 | 結果 |
+|---|---|
+| train / validation 件数 | 10,700 / 872 |
+| seed 1234 を 2 回。バッチ列、crop、clean/noisy の SHA-256 が一致。seed 1235 で先頭バッチの case 順が変わる | PASS |
+| 切り出しが CPU / NumPy / Python のグローバル乱数を消費しない | PASS。`rng_draws=0` |
+| clean と noisy が同じ crop で、レシピハッシュが `case_id` と一致 | PASS。16 行すべて |
+| epoch 0、global batch 8。使用 10,696、末尾 4 件だけ欠落、使用内の重複 0 | PASS |
+| 1 GPU micro 8、1 GPU micro 2 × 蓄積 4 のサンプル順が一致。2 GPU micro 2 × 蓄積 2 は集合が一致し順序は違う | PASS。先頭 5 optimizer step |
+| global 8 を world 3 で割る構成 | 拒否 |
+| 2 step で保存し、別プロセスで再開したサンプル列が連続実行と一致 | PASS。単体テスト |
+
+### Phase B
+
+実 `Trainer` に `Linear(4, 4)` の Generator と `Linear(4, 1)` の Discriminator を渡した。損失は MSE。CPU の決定的実行では再開がビット一致。
+
+| 確認 | 結果 |
+|---|---|
+| 更新順が Discriminator、Generator。相手の重みは変わらない。Discriminator backward が Generator 勾配を書かない | PASS |
+| micro 4 と micro 2 × 蓄積 2 の 1 step。重み、Optimizer、Scheduler が `rtol=1e-5`, `atol=1e-6` | PASS |
+| 2 プロセス gloo が、micro 2 と micro 1 × 蓄積 2 のどちらも単一プロセスの 1 step と上記許容で一致 | PASS |
+| 8 サンプル、global batch 4、4 step。Scheduler は 2 epoch 分。学習率 `0.001 * 0.5**2` | PASS |
+| 連続 20 step と、10 step 保存から別プロセスで 20 step。Generator、Discriminator、Optimizer、Scheduler、epoch、cursor、CPU RNG が一致 | PASS |
+| 同じ再開を CUDA、`deterministic`、`CUBLAS_WORKSPACE_CONFIG=:4096:8` で実行。重み、Optimizer、CPU RNG、CUDA RNG の最大差 0 | PASS。`data/results/training/mock-cuda-resume-20261101/report.json` |
+
+### Phase C
+
+4 プロセスを物理 GPU 0 で順に実行した。公式 A 14:34–14:40、公式 B 14:40–14:46、独立 A 14:46–15:07、独立 B 15:07–15:29（各 200 step）。初期重みは `data/results/training/semamba-repro-20261101/run2/checkpoints/step_0000_official.pt`。Optimizer は新しい AdamW（lr `2e-4`、betas `(0.8, 0.99)`、weight decay `0.01`）。ExponentialLR の gamma は `0.99` で、10,700 step に満たないため 200 step では進まない。学習率は終始 `2e-4`。勾配クリップはしない。
+
+公式 `config.yaml` の batch 8、segment 48,000 は、この 16 GB GPU で Generator の計算グラフを 8 本保持する実行にしていない。比較は batch 1、segment 8,000（0.5 秒）。損失に入る項は実行される公式ループと同じで、時間 L1 と metric 係数はコメントアウトのまま合計に入っていない。
+
+入力は 4 系統で 200 step すべて同じ `case_id` と clean/noisy SHA-256。損失はすべて有限。
+
+step 1 の追跡:
+
+| 項目 | 公式 A と公式 B | 公式 A と独立 A |
+|---|---:|---:|
+| 学習バッチの波形、最大絶対誤差 | 0 | 7.08e-7 |
+| Generator 損失 | 0（どちらも 19.015274047851562） | 0 |
+| Discriminator 損失 | 0 | 4.77e-7 |
+| 振幅、位相 | 0 | 0 |
+| 敵対、特徴、mel、整合 | 0 | 4.8e-7、9.5e-7、2.4e-7、6.0e-8 |
+| Generator 勾配、最大絶対誤差 | 1.44e-6 | 1.52e-4 |
+| `|grad|` 最大が 1e-5 を超えるテンソルの最小 cosine | 0.99999940 | 0.99999946 |
+| それより小さいテンソルの最小 cosine | -0.038 | -1.0（bias、`|grad|` 最大 1.8e-8） |
+| Generator 重み | 3.01e-4 | 4.00e-4 |
+| CQT 重み | 0 | 2.04e-8 |
+
+最初に 1e-4 を超える Generator 損失差は step 4 の 0.00272。同じ step の公式再実行差は 8.2e-5。差は forward ではなく、1.5e-4 の勾配差が AdamW を通ったあとに広がる。大きな勾配の方向は cosine 0.999999 で揃っている。
+
+200 step の Generator 損失差の最大と、step 200 の重みの最大絶対誤差:
+
+| 比較 | 損失差の最大（step） | step 200 の損失差 | step 200 の重み |
+|---|---:|---:|---:|
+| 公式 A / 公式 B | 0.354（196） | 0.122 | 0.0203 |
+| 独立 A / 独立 B | 0.401（91） | 0.0097 | 0.0205 |
+| 公式 A / 独立 A | 0.376（49） | 0.067 | 0.0197 |
+| 公式 B / 独立 B | 0.383（97） | 0.065 | 0.0188 |
+
+実装間の損失差と重み差は、公式どうしの再実行差と同じ規模に収まる。独立実装だけが発散してはいない。
+
+固定 validation は `voicebank_28_valid` の登録順先頭 8 件。checkpoint 選択には使っていない。全 872 件ではない。PESQ は前回の遅延推定の不連続があるため判定に使っていない。平均 SI-SDR（dB）と STOI:
+
+| step | noisy SI-SDR | 公式 A | 独立 A | 公式 A STOI | 独立 A STOI |
+|---:|---:|---:|---:|---:|---:|
+| 0 | 6.53 | -42.20 | -42.20 | 0.449 | 0.449 |
+| 1 | 6.53 | -43.86 | -43.88 | 0.539 | 0.539 |
+| 20 | 6.53 | -31.73 | -28.30 | 0.629 | 0.631 |
+| 50 | 6.53 | -19.31 | -17.17 | 0.663 | 0.650 |
+| 100 | 6.53 | -14.80 | -12.55 | 0.706 | 0.699 |
+| 200 | 6.53 | -12.68 | -10.85 | 0.695 | 0.708 |
+
+step 200 の出力波形 cosine の最小は、公式再実行 0.838、独立再実行 0.887、公式 A と独立 A 0.838（float64）。SI-SDR は 8 件の平均で約 30 dB 上がるが、noisy の 6.53 dB より低い。200 step では強調品質を獲得していない。これは失敗条件にしていない。
+
+### 回帰テスト
+
+`.venvs/lab/bin/python -m unittest discover -s tests/<suite> -v`
+
+| スイート | 結果 |
+|---|---|
+| training | 73 件、失敗 0 |
+| se | 29 件、失敗 0 |
+| evaluation | 84 件、失敗 0 |
+| asr | 5 件、失敗 0 |
+
+ログは `data/results/training/semamba-200step-20261101/test-logs/`。
+
+### 再実行
+
+```bash
+.venvs/lab/bin/python tests/training/reference/audit_voicebank_supply.py \
+    data/results/training/semamba-supply-20261101
+CUDA_VISIBLE_DEVICES=0 CUBLAS_WORKSPACE_CONFIG=:4096:8 \
+    .venvs/lab/bin/python tests/training/reference/mock_cuda_resume.py \
+    data/results/training/mock-cuda-resume-20261101
+CUDA_VISIBLE_DEVICES=<空きGPU> CUBLAS_WORKSPACE_CONFIG=:4096:8 \
+    .venvs/semamba/bin/python tests/training/reference/train_semamba_200.py \
+    official|independent <新規ディレクトリ> 200
+.venvs/lab/bin/python tests/training/reference/compare_semamba_200.py \
+    data/results/training/semamba-200step-20261101
+```
+
+既存の出力ディレクトリは上書きしない。
+
+### 判定
+
+| 項目 | 判定 |
+|---|---|
+| Dataset / DataLoaderの正確性 | GO |
+| seedによるデータ再現性 | GO |
+| global batch・勾配蓄積 | GO |
+| DDPの正確性 | GO |
+| 更新順・Optimizer・Scheduler | GO |
+| Mockによるcheckpoint再開 | GO |
+| SEMamba++の200step再実行性 | PARTIAL |
+| SEMamba++の公式・独立学習挙動 | GO |
+| 長時間学習への移行可否 | GO |
+
+再実行性を PARTIAL にしたのは、step 1 の Generator 損失は公式どうしも実装間も一致するが、200 step の重みは公式どうしでも最大 0.020 違うからである。差の大きさは融合カーネルの再実行と独立実装の再実行で同じで、独立実装だけが大きくずれてはいない。
+
+長時間学習への GO は、この学習ステップとデータ供給を続けてよい、という意味である。200 step の SI-SDR が noisy を超えたことでも、公式の batch 8・3 秒セグメントをこの GPU で実行したことでもない。
+
+### 残る課題
+
+- 公式の batch 8、segment 48,000 は未実行。メモリが足りるかは別途確認する。
+- 200 step では強調品質は得られていない。1 epoch は 10,700 step で、今回の実測（公式約 6 分、独立約 21 分 / 200 step、validation 8 件を含む）をそのまま 1 epoch に伸ばすと、validation を増やさない場合でも公式約 5 時間、独立約 19 時間のオーダーになる。
+- DDP 上の SEMamba++ 蓄積は線形モデルと手動平均の単体テストまでで、実モデルの複数 GPU は回していない。
+- PESQ は遅延推定の不連続が残るため、学習判定に戻していない。

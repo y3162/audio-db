@@ -16,7 +16,7 @@ from torch.nn.parallel import DistributedDataParallel
 from src.se import build_model
 from src.training.core.distributed import ProcessInfo, unwrap, wrap_module
 from src.training.core.rng import seed_model_init
-from src.training.core.trainer import backward
+from src.training.core.trainer import accumulation_scope
 from src.training.errors import TrainingError
 
 _NAMES = {"tf_gridnet"}
@@ -96,15 +96,16 @@ class WaveformTask:
         self.optim_g.zero_grad(set_to_none=True)
         total = 0.0
         for index, batch in enumerate(batches):
-            clean = batch["clean"].to(self.device)
-            noisy = batch["noisy"].to(self.device)
-            estimate = _predict(self.config["model"], self.generator, noisy)
-            if estimate.shape != clean.shape:
-                raise TrainingError(
-                    f"estimate shape {tuple(estimate.shape)} does not match the teacher {tuple(clean.shape)}"
-                )
-            loss = F.l1_loss(clean, estimate) / accumulation
-            backward(loss, [self.generator], last=index == len(batches) - 1)
+            with accumulation_scope([self.generator], last=index == len(batches) - 1):
+                clean = batch["clean"].to(self.device)
+                noisy = batch["noisy"].to(self.device)
+                estimate = _predict(self.config["model"], self.generator, noisy)
+                if estimate.shape != clean.shape:
+                    raise TrainingError(
+                        f"estimate shape {tuple(estimate.shape)} does not match the teacher {tuple(clean.shape)}"
+                    )
+                loss = F.l1_loss(clean, estimate) / accumulation
+                loss.backward()
             total += float(loss.detach()) * accumulation
         self.optim_g.step()
         return {"time": total / len(batches), "generator": total / len(batches)}

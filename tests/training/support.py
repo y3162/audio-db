@@ -63,11 +63,21 @@ def write_wav(path: Path, waveform: torch.Tensor, rate: int = 16000) -> None:
     torchaudio.save(str(path), waveform.reshape(1, -1), rate)
 
 
-def recorded_example(root: Path, name: str, *, frames: int, clean_hz: float, noisy_hz: float) -> TrainExample:
+def recorded_example(
+    root: Path,
+    name: str,
+    *,
+    frames: int,
+    clean_hz: float,
+    noisy_hz: float,
+    rewrite: bool = True,
+) -> TrainExample:
     clean = root / f"{name}-clean.wav"
     noisy = root / f"{name}-noisy.wav"
-    write_wav(clean, tone(frames, clean_hz))
-    write_wav(noisy, tone(frames, noisy_hz))
+    if rewrite or not clean.is_file():
+        write_wav(clean, tone(frames, clean_hz))
+    if rewrite or not noisy.is_file():
+        write_wav(noisy, tone(frames, noisy_hz))
     recipe = canonical_recipe(
         {
             "recipe_version": 1,
@@ -92,9 +102,17 @@ def paired_dataset(
     training: bool = True,
     role: str = "train",
     name: str = "toy_train",
+    rewrite: bool = True,
 ) -> RecipeDataset:
     examples = [
-        recorded_example(root, f"item{index}", frames=frames, clean_hz=180 + 15 * index, noisy_hz=90 + 11 * index)
+        recorded_example(
+            root,
+            f"item{index}",
+            frames=frames,
+            clean_hz=180 + 15 * index,
+            noisy_hz=90 + 11 * index,
+            rewrite=rewrite,
+        )
         for index in range(count)
     ]
     return RecipeDataset(

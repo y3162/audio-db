@@ -31,7 +31,7 @@ from torch.nn.parallel import DistributedDataParallel
 from src.se import build_model
 from src.training.core.distributed import ProcessInfo, unwrap, wrap_module
 from src.training.core.rng import seed_model_init
-from src.training.core.trainer import backward
+from src.training.core.trainer import accumulation_scope
 from src.training.errors import TrainingError
 from src.training.se.discriminators import MagnitudePairDiscriminator
 from src.training.se.losses import metric_targets
@@ -142,37 +142,39 @@ class MossFormerGANTask:
         gen_total = 0.0
         disc_total = 0.0
         for index, batch in enumerate(batches):
+            is_last = index == len(batches) - 1
             clean = batch["clean"].to(self.device)
             noisy = batch["noisy"].to(self.device)
             scale = torch.sqrt(noisy.shape[-1] / noisy.square().sum(dim=-1).clamp_min(1e-6)).unsqueeze(-1)
             normalized = noisy * scale
-            real, imag, pred_mag, label_real, label_imag, label_mag, audio, teacher = self._forward(
-                self.generator, normalized, clean * scale
-            )
-            fake_score = self.discriminator(label_mag, pred_mag)
-            ones = torch.ones(clean.shape[0], device=self.device)
-            gan = F.mse_loss(fake_score.flatten(), ones)
-            loss_mag = F.mse_loss(pred_mag, label_mag)
-            loss_ri = F.mse_loss(real, label_real) + F.mse_loss(imag, label_imag)
-            length = min(audio.shape[-1], teacher.shape[-1])
-            time_loss = (audio[..., :length] - teacher[..., :length]).abs().mean()
-            generator_loss = _RI * loss_ri + _MAG * loss_mag + _TIME * time_loss + _GAN * gan
-            _finite(generator_loss, "mossformer generator")
-            targets = metric_targets(teacher[..., :length], audio[..., :length], self.sample_rate)
-            if targets is None:
-                raise TrainingError(
-                    "PESQ could not be computed for this MossFormerGAN batch. "
-                    "The discriminator target is not replaced with zero."
+            with accumulation_scope([self.generator], last=is_last):
+                real, imag, pred_mag, label_real, label_imag, label_mag, audio, teacher = self._forward(
+                    self.generator, normalized, clean * scale
                 )
-            is_last = index == len(batches) - 1
-            backward(generator_loss / accumulation, [self.generator], last=is_last)
-            real_score = self.discriminator(label_mag, label_mag)
-            fake_detached = self.discriminator(label_mag, pred_mag.detach())
-            discriminator_loss = F.mse_loss(real_score.flatten(), ones) + F.mse_loss(
-                fake_detached.flatten(), targets.to(self.device)
-            )
-            _finite(discriminator_loss, "mossformer discriminator")
-            backward(discriminator_loss / accumulation, [self.discriminator], last=is_last)
+                fake_score = self.discriminator(label_mag, pred_mag)
+                ones = torch.ones(clean.shape[0], device=self.device)
+                gan = F.mse_loss(fake_score.flatten(), ones)
+                loss_mag = F.mse_loss(pred_mag, label_mag)
+                loss_ri = F.mse_loss(real, label_real) + F.mse_loss(imag, label_imag)
+                length = min(audio.shape[-1], teacher.shape[-1])
+                time_loss = (audio[..., :length] - teacher[..., :length]).abs().mean()
+                generator_loss = _RI * loss_ri + _MAG * loss_mag + _TIME * time_loss + _GAN * gan
+                _finite(generator_loss, "mossformer generator")
+                targets = metric_targets(teacher[..., :length], audio[..., :length], self.sample_rate)
+                if targets is None:
+                    raise TrainingError(
+                        "PESQ could not be computed for this MossFormerGAN batch. "
+                        "The discriminator target is not replaced with zero."
+                    )
+                (generator_loss / accumulation).backward()
+            with accumulation_scope([self.discriminator], last=is_last):
+                real_score = self.discriminator(label_mag, label_mag)
+                fake_detached = self.discriminator(label_mag, pred_mag.detach())
+                discriminator_loss = F.mse_loss(real_score.flatten(), ones) + F.mse_loss(
+                    fake_detached.flatten(), targets.to(self.device)
+                )
+                _finite(discriminator_loss, "mossformer discriminator")
+                (discriminator_loss / accumulation).backward()
             gen_total += float(generator_loss.detach())
             disc_total += float(discriminator_loss.detach())
         clip_gradients(unwrap(self.generator), self.grad_clip)

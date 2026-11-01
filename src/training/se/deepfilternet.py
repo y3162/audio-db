@@ -40,7 +40,7 @@ from src.se import build_model
 from src.se.models.deepfilternet3.dsp import DFStream
 from src.training.core.distributed import ProcessInfo, unwrap, wrap_module
 from src.training.core.rng import seed_model_init
-from src.training.core.trainer import backward
+from src.training.core.trainer import accumulation_scope
 from src.training.errors import TrainingError
 from src.se.models.deepfilternet3.dsp import vorbis_window
 from src.training.se.optim import build_optimizer, build_scheduler, clip_gradients, step_scheduler
@@ -185,11 +185,12 @@ class DeepFilterNetTask:
         self.optim_g.zero_grad(set_to_none=True)
         total = 0.0
         for index, batch in enumerate(batches):
-            clean = batch["clean"].to(self.device)
-            noisy = batch["noisy"].to(self.device)
-            loss = self._loss(self.generator, clean, noisy)
-            _finite(loss, "deepfilternet")
-            backward(loss / accumulation, [self.generator], last=index == len(batches) - 1)
+            with accumulation_scope([self.generator], last=index == len(batches) - 1):
+                clean = batch["clean"].to(self.device)
+                noisy = batch["noisy"].to(self.device)
+                loss = self._loss(self.generator, clean, noisy)
+                _finite(loss, "deepfilternet")
+                (loss / accumulation).backward()
             total += float(loss.detach())
         clip_gradients(unwrap(self.generator), self.grad_clip)
         self.optim_g.step()

@@ -17,13 +17,14 @@ from __future__ import annotations
 from typing import Any
 
 import torch
+import torch.distributed as dist
 import torch.nn.functional as F
 from torch.nn.parallel import DistributedDataParallel
 
 from src.se import build_model
 from src.training.core.distributed import ProcessInfo, unwrap, wrap_module
 from src.training.core.rng import seed_model_init
-from src.training.core.trainer import backward
+from src.training.core.trainer import accumulation_scope
 from src.training.errors import TrainingError
 from src.training.se.semamba_disc import MultiResolutionDiscriminator, MultiScaleSubbandCQTDiscriminator
 from src.training.se.optim import build_optimizer, build_scheduler, clip_gradients, step_scheduler
@@ -69,6 +70,9 @@ class SEMambaTask:
         self.optim_d = build_optimizer(discriminator_parameters, config)
         self.sched_g = build_scheduler(self.optim_g, config)
         self.sched_d = build_scheduler(self.optim_d, config)
+        self.capture_update = False
+        self.capture_gradients = False
+        self.last_capture = None
 
     def distribute(self, process: ProcessInfo) -> None:
         self.generator = wrap_module(self.generator, process)
@@ -131,21 +135,41 @@ class SEMambaTask:
         self.train_mode()
         discriminators = [self.discriminator_mrd, self.discriminator_band]
         self.optim_d.zero_grad(set_to_none=True)
+        cached: list[tuple[torch.Tensor, dict[str, torch.Tensor]]] = []
         disc_total = 0.0
+        # The generator graph is kept until after the discriminator step, so more
+        # than one micro-batch cannot use DDP's forward hook. Those forwards stay
+        # unsynchronized and the gradients are averaged once after the backward.
+        manual_generator = isinstance(self.generator, DistributedDataParallel) and len(batches) > 1
         for index, batch in enumerate(batches):
+            last = index == len(batches) - 1
             clean, noisy = _waves(batch, self.device)
-            with torch.no_grad():
-                parts = self._generate(clean, noisy, unwrap(self.generator))
-            real_scores, _ = _scores(unwrap(self.discriminator_mrd), unwrap(self.discriminator_band), clean)
-            fake_scores, _ = _scores(unwrap(self.discriminator_mrd), unwrap(self.discriminator_band), parts["audio"].detach())
-            loss = sum(
-                least_squares_discriminator(real, fake) for real, fake in zip(real_scores, fake_scores, strict=True)
-            )
-            _finite(loss, "semamba discriminator")
-            backward(loss / accumulation, discriminators, last=index == len(batches) - 1)
+            # One generator forward per micro-batch, matching the published loop.
+            # The discriminator sees a detached waveform; the generator loss reuses
+            # the same tensor so a second forward cannot draw a different sample.
+            with accumulation_scope([self.generator], last=last and not manual_generator):
+                parts = self._generate(clean, noisy, self.generator)
+            cached.append((clean, parts))
+            with accumulation_scope(discriminators, last=last):
+                real_scores, _ = _scores(self.discriminator_mrd, self.discriminator_band, clean)
+                fake_scores, _ = _scores(
+                    self.discriminator_mrd,
+                    self.discriminator_band,
+                    parts["audio"].detach(),
+                )
+                loss = sum(
+                    least_squares_discriminator(real, fake) for real, fake in zip(real_scores, fake_scores, strict=True)
+                )
+                _finite(loss, "semamba discriminator")
+                loss.backward()
             disc_total += float(loss.detach())
         clip_gradients(unwrap(self.discriminator_mrd), self.grad_clip)
         clip_gradients(unwrap(self.discriminator_band), self.grad_clip)
+        disc_norm, disc_finite = _grad_norm(unwrap(self.discriminator_mrd), unwrap(self.discriminator_band))
+        if self.capture_update and self.capture_gradients:
+            disc_grads = _clone_grads(unwrap(self.discriminator_mrd), unwrap(self.discriminator_band))
+        else:
+            disc_grads = None
         self.optim_d.step()
 
         frozen = [parameter for module in discriminators for parameter in unwrap(module).parameters()]
@@ -153,10 +177,9 @@ class SEMambaTask:
             parameter.requires_grad_(False)
         self.optim_g.zero_grad(set_to_none=True)
         gen_total = 0.0
+        components = {name: 0.0 for name in ("adversarial", "matching", "mel", "magnitude", "phase", "complex", "consistency")}
         try:
-            for index, batch in enumerate(batches):
-                clean, noisy = _waves(batch, self.device)
-                parts = self._generate(clean, noisy, self.generator)
+            for index, (clean, parts) in enumerate(cached):
                 _, real_features = _scores(unwrap(self.discriminator_mrd), unwrap(self.discriminator_band), clean)
                 fake_scores, fake_features = _scores(
                     unwrap(self.discriminator_mrd), unwrap(self.discriminator_band), parts["audio"]
@@ -184,15 +207,38 @@ class SEMambaTask:
                     + spectral["consistency"] * _CONSISTENCY
                 )
                 _finite(loss, "semamba generator")
-                backward(loss / accumulation, [self.generator], last=index == len(batches) - 1)
+                loss.backward()
                 gen_total += float(loss.detach())
+                components["adversarial"] += float(adversarial.detach())
+                components["matching"] += float(matching.detach())
+                components["mel"] += float(mel.detach())
+                for name in ("magnitude", "phase", "complex", "consistency"):
+                    components[name] += float(spectral[name].detach())
         finally:
             for parameter in frozen:
                 parameter.requires_grad_(True)
+        if manual_generator:
+            _average_ddp_grads(self.generator)
         clip_gradients(unwrap(self.generator), self.grad_clip)
+        gen_norm, gen_finite = _grad_norm(unwrap(self.generator))
+        if self.capture_update:
+            self.last_capture = {
+                "audio": [parts["audio"].detach().to(device="cpu", dtype=torch.float32).clone() for _, parts in cached],
+                "generator_grad": _clone_grads(unwrap(self.generator)) if self.capture_gradients else None,
+                "discriminator_grad": disc_grads,
+                "generator_grad_finite": gen_finite,
+                "discriminator_grad_finite": disc_finite,
+            }
         self.optim_g.step()
         count = len(batches)
-        return {"generator": gen_total / count, "discriminator": disc_total / count}
+        metrics = {
+            "generator": gen_total / count,
+            "discriminator": disc_total / count,
+            "generator_grad_norm": gen_norm,
+            "discriminator_grad_norm": disc_norm,
+        }
+        metrics.update({name: value / count for name, value in components.items()})
+        return metrics
 
     def validation_report(self, batch: dict[str, Any]) -> dict[str, Any]:
         clean, noisy = _waves(batch, self.device)
@@ -241,6 +287,40 @@ class SEMambaTask:
             "recomputed": recomputed,
             "audio": audio,
         }
+
+
+def _average_ddp_grads(module: DistributedDataParallel) -> None:
+    world = dist.get_world_size()
+    for parameter in module.parameters():
+        if parameter.grad is None:
+            continue
+        dist.all_reduce(parameter.grad, op=dist.ReduceOp.SUM)
+        parameter.grad.div_(world)
+
+
+def _grad_norm(*modules: torch.nn.Module) -> tuple[float, bool]:
+    total = 0.0
+    finite = True
+    for module in modules:
+        for parameter in module.parameters():
+            if parameter.grad is None:
+                continue
+            grad = parameter.grad.detach()
+            if not torch.isfinite(grad).all():
+                finite = False
+            total += float(grad.square().sum())
+    return total**0.5, finite
+
+
+def _clone_grads(*modules: torch.nn.Module) -> dict[str, torch.Tensor]:
+    cloned = {}
+    for module in modules:
+        for name, parameter in module.named_parameters():
+            if parameter.grad is None:
+                continue
+            prefix = module.__class__.__name__
+            cloned[f"{prefix}.{name}"] = parameter.grad.detach().to(device="cpu", dtype=torch.float32).clone()
+    return cloned
 
 
 def _scores(mrd, band, waveform):
