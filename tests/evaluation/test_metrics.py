@@ -1,10 +1,12 @@
 """Reference metrics treat a missing clean signal as unavailable, not zero."""
 
+import math
 import unittest
+from pathlib import Path
 
 import torch
 
-from src.evaluation.metrics.pesq import score_pesq
+from src.evaluation.metrics.pesq import previous_downsample_length, score_pesq
 from src.evaluation.metrics.sisdr import score_si_sdr
 from src.evaluation.metrics.stoi import score_stoi
 from src.evaluation.metrics.compute import score_utterance
@@ -153,3 +155,26 @@ class MetricTests(unittest.TestCase):
             self.assertGreater(score(weak)["value"], score(strong)["value"])
             self.assertLess(score(torch.roll(self.reference, 1000))["value"], score(weak)["value"])
             self.assertEqual(score(weak[:-100])["trimmed_samples"], 100)
+
+    def test_pesq_downsample_boundary_keeps_aligned_audio(self):
+        self.assertEqual(previous_downsample_length(93632, 64), 93631)
+        self.assertEqual(previous_downsample_length(93631, 64), 93567)
+        self.assertEqual((93632 + 2 * 75 * 64) // 64 - (93631 + 2 * 75 * 64) // 64, 1)
+        rate = 16000
+        time = torch.arange(rate, dtype=torch.float32) / rate
+        reference = 0.2 * torch.sin(2 * math.pi * 220 * time) + 0.05 * torch.sin(2 * math.pi * 440 * time)
+        estimate = reference + 0.01 * torch.sin(2 * math.pi * 330 * time)
+        scored = score_pesq(reference, estimate, rate)
+        self.assertEqual(scored["status"], "ok")
+        self.assertLess(abs(scored["value"] - scored["boundary_value"]), 0.1)
+
+    def test_pesq_refuses_the_known_split_jump(self):
+        path = Path("data/results/training/semamba-quality-20261101/phase-a/waves/step_0010.pt")
+        if not path.is_file():
+            self.skipTest("saved discontinuity example is not in this checkout")
+        row = torch.load(path, map_location="cpu", weights_only=False)["utterances"][0]
+        scored = score_pesq(row["clean"], row["independent"], 16000)
+        self.assertEqual(scored["status"], "na")
+        self.assertEqual(scored["reason"], "pesq_utterance_split_discontinuity")
+        self.assertIsNone(scored["value"])
+        self.assertGreater(abs(scored["raw_value"] - scored["boundary_value"]), 0.1)

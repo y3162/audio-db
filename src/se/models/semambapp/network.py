@@ -4,6 +4,7 @@ import math
 import torch
 from torch import nn
 import torch.nn.functional as F
+from torch.utils.checkpoint import checkpoint
 
 
 def _padding(kernel, dilation=1):
@@ -67,7 +68,21 @@ class SelectiveSSM(nn.Module):
         delta = F.linear(delta, self.dt_proj.weight)
         delta = F.softplus(delta + self.dt_proj.bias).transpose(1, 2)
         state_a = -torch.exp(self.A_log.float())
-        scan = _selective_scan(x.transpose(1, 2).float(), delta.float(), state_a, b_mat.transpose(1, 2).float(), c_mat.transpose(1, 2).float(), self.D.float())
+        scan_in = (
+            x.transpose(1, 2).float(),
+            delta.float(),
+            state_a,
+            b_mat.transpose(1, 2).float(),
+            c_mat.transpose(1, 2).float(),
+            self.D.float(),
+        )
+        # The reference scan keeps every timestep in the autograd graph. A 3 s
+        # full-width block does not fit in 16 GB that way. Recomputation keeps
+        # the same function and frees the timestep graph after the forward.
+        if torch.is_grad_enabled():
+            scan = checkpoint(_selective_scan, *scan_in, use_reentrant=False)
+        else:
+            scan = _selective_scan(*scan_in)
         mixed = scan * F.silu(z.transpose(1, 2).float())
         return self.out_proj(mixed.transpose(1, 2).type_as(hidden))
 

@@ -8,8 +8,12 @@ out of that sum. Discriminators are the published multi-scale sub-band CQT
 stack and the three-resolution magnitude stack, implemented in
 ``semamba_disc`` without importing the reference tree.
 
-Update order is discriminator, then generator. ExponentialLR steps once per
-finished epoch.
+Update order is discriminator, then generator. One micro-batch reuses the
+generator forward. More than one micro-batch forwards the generator again
+after the discriminator step, because keeping every graph does not fit and
+the generator has no dropout. Each mean loss is divided by the accumulation
+count. ExponentialLR steps once per finished epoch. The reference selective
+scan is recomputed while training so a 3-second full-width step fits in 16 GB.
 """
 
 from __future__ import annotations
@@ -17,7 +21,6 @@ from __future__ import annotations
 from typing import Any
 
 import torch
-import torch.distributed as dist
 import torch.nn.functional as F
 from torch.nn.parallel import DistributedDataParallel
 
@@ -135,33 +138,43 @@ class SEMambaTask:
         self.train_mode()
         discriminators = [self.discriminator_mrd, self.discriminator_band]
         self.optim_d.zero_grad(set_to_none=True)
-        cached: list[tuple[torch.Tensor, dict[str, torch.Tensor]]] = []
+        # One micro-batch keeps its generator graph and reuses that waveform.
+        # Several micro-batches would otherwise retain every graph until the
+        # generator backward. The generator has no dropout, so each later
+        # micro-batch is forwarded again after the discriminator step and the
+        # previous graph is released. A single batch still reuses one forward.
+        reuse_graph = len(batches) == 1
+        cached: list[tuple[torch.Tensor, torch.Tensor, dict[str, torch.Tensor] | None]] = []
         disc_total = 0.0
-        # The generator graph is kept until after the discriminator step, so more
-        # than one micro-batch cannot use DDP's forward hook. Those forwards stay
-        # unsynchronized and the gradients are averaged once after the backward.
-        manual_generator = isinstance(self.generator, DistributedDataParallel) and len(batches) > 1
         for index, batch in enumerate(batches):
             last = index == len(batches) - 1
             clean, noisy = _waves(batch, self.device)
-            # One generator forward per micro-batch, matching the published loop.
-            # The discriminator sees a detached waveform; the generator loss reuses
-            # the same tensor so a second forward cannot draw a different sample.
-            with accumulation_scope([self.generator], last=last and not manual_generator):
-                parts = self._generate(clean, noisy, self.generator)
-            cached.append((clean, parts))
+            if reuse_graph:
+                with accumulation_scope([self.generator], last=True):
+                    parts = self._generate(clean, noisy, self.generator)
+                audio = parts["audio"]
+                cached.append((clean, noisy, parts))
+            else:
+                with torch.no_grad():
+                    preview = self._generate(clean, noisy, unwrap(self.generator))
+                audio = preview["audio"]
+                cached.append((clean, noisy, None))
             with accumulation_scope(discriminators, last=last):
                 real_scores, _ = _scores(self.discriminator_mrd, self.discriminator_band, clean)
                 fake_scores, _ = _scores(
                     self.discriminator_mrd,
                     self.discriminator_band,
-                    parts["audio"].detach(),
+                    audio.detach(),
                 )
                 loss = sum(
                     least_squares_discriminator(real, fake) for real, fake in zip(real_scores, fake_scores, strict=True)
                 )
                 _finite(loss, "semamba discriminator")
-                loss.backward()
+                # Each term is a mean. Dividing by the micro-batch count makes the
+                # summed gradient the mean over the global batch, which is what one
+                # official batch computes. Leaving the mean unscaled would add the
+                # micro-batch gradients and take a larger AdamW step.
+                (loss / accumulation).backward()
             disc_total += float(loss.detach())
         clip_gradients(unwrap(self.discriminator_mrd), self.grad_clip)
         clip_gradients(unwrap(self.discriminator_band), self.grad_clip)
@@ -178,52 +191,24 @@ class SEMambaTask:
         self.optim_g.zero_grad(set_to_none=True)
         gen_total = 0.0
         components = {name: 0.0 for name in ("adversarial", "matching", "mel", "magnitude", "phase", "complex", "consistency")}
+        produced: list[torch.Tensor] = []
         try:
-            for index, (clean, parts) in enumerate(cached):
-                _, real_features = _scores(unwrap(self.discriminator_mrd), unwrap(self.discriminator_band), clean)
-                fake_scores, fake_features = _scores(
-                    unwrap(self.discriminator_mrd), unwrap(self.discriminator_band), parts["audio"]
-                )
-                adversarial = sum(least_squares_generator(score) for score in fake_scores)
-                matching = feature_matching(real_features, fake_features, scale=2.0, reduction="sum")
-                spectral = compressed_complex_losses(
-                    parts["clean_mag"],
-                    parts["mag"],
-                    parts["clean_phase"],
-                    parts["phase"],
-                    parts["clean_complex"],
-                    parts["complex"],
-                    parts["recomputed"],
-                    phase_mode="matrix",
-                )
-                mel = summed_slaney_log_mel(clean, parts["audio"], self.sample_rate)
-                loss = (
-                    adversarial * _ADV
-                    + matching * _FM
-                    + mel * _MEL
-                    + spectral["magnitude"] * _MAG
-                    + spectral["phase"] * _PHASE
-                    + spectral["complex"] * _COMPLEX
-                    + spectral["consistency"] * _CONSISTENCY
-                )
-                _finite(loss, "semamba generator")
-                loss.backward()
-                gen_total += float(loss.detach())
-                components["adversarial"] += float(adversarial.detach())
-                components["matching"] += float(matching.detach())
-                components["mel"] += float(mel.detach())
-                for name in ("magnitude", "phase", "complex", "consistency"):
-                    components[name] += float(spectral[name].detach())
+            for index, (clean, noisy, parts) in enumerate(cached):
+                if parts is None:
+                    with accumulation_scope([self.generator], last=index == len(cached) - 1):
+                        parts = self._generate(clean, noisy, self.generator)
+                        gen_total += self._generator_backward(clean, parts, accumulation, components)
+                else:
+                    gen_total += self._generator_backward(clean, parts, accumulation, components)
+                produced.append(parts["audio"].detach())
         finally:
             for parameter in frozen:
                 parameter.requires_grad_(True)
-        if manual_generator:
-            _average_ddp_grads(self.generator)
         clip_gradients(unwrap(self.generator), self.grad_clip)
         gen_norm, gen_finite = _grad_norm(unwrap(self.generator))
         if self.capture_update:
             self.last_capture = {
-                "audio": [parts["audio"].detach().to(device="cpu", dtype=torch.float32).clone() for _, parts in cached],
+                "audio": [audio.to(device="cpu", dtype=torch.float32).clone() for audio in produced],
                 "generator_grad": _clone_grads(unwrap(self.generator)) if self.capture_gradients else None,
                 "discriminator_grad": disc_grads,
                 "generator_grad_finite": gen_finite,
@@ -256,6 +241,48 @@ class SEMambaTask:
             "stoi": {"status": "na", "value": None, "reason": "not computed", "count": 0},
         }
 
+    def _generator_backward(
+        self,
+        clean: torch.Tensor,
+        parts: dict[str, torch.Tensor],
+        accumulation: int,
+        components: dict[str, float],
+    ) -> float:
+        _, real_features = _scores(unwrap(self.discriminator_mrd), unwrap(self.discriminator_band), clean)
+        fake_scores, fake_features = _scores(
+            unwrap(self.discriminator_mrd), unwrap(self.discriminator_band), parts["audio"]
+        )
+        adversarial = sum(least_squares_generator(score) for score in fake_scores)
+        matching = feature_matching(real_features, fake_features, scale=2.0, reduction="sum")
+        spectral = compressed_complex_losses(
+            parts["clean_mag"],
+            parts["mag"],
+            parts["clean_phase"],
+            parts["phase"],
+            parts["clean_complex"],
+            parts["complex"],
+            parts["recomputed"],
+            phase_mode="matrix",
+        )
+        mel = summed_slaney_log_mel(clean, parts["audio"], self.sample_rate)
+        loss = (
+            adversarial * _ADV
+            + matching * _FM
+            + mel * _MEL
+            + spectral["magnitude"] * _MAG
+            + spectral["phase"] * _PHASE
+            + spectral["complex"] * _COMPLEX
+            + spectral["consistency"] * _CONSISTENCY
+        )
+        _finite(loss, "semamba generator")
+        (loss / accumulation).backward()
+        components["adversarial"] += float(adversarial.detach())
+        components["matching"] += float(matching.detach())
+        components["mel"] += float(mel.detach())
+        for name in ("magnitude", "phase", "complex", "consistency"):
+            components[name] += float(spectral[name].detach())
+        return float(loss.detach())
+
     def _generate(self, clean: torch.Tensor, noisy: torch.Tensor, generator: torch.nn.Module) -> dict[str, torch.Tensor]:
         clean_mag, clean_phase, clean_complex = semamba_mag_phase_stft(
             clean, self.n_fft, self.hop, self.win, self.compress, addeps=False
@@ -287,15 +314,6 @@ class SEMambaTask:
             "recomputed": recomputed,
             "audio": audio,
         }
-
-
-def _average_ddp_grads(module: DistributedDataParallel) -> None:
-    world = dist.get_world_size()
-    for parameter in module.parameters():
-        if parameter.grad is None:
-            continue
-        dist.all_reduce(parameter.grad, op=dist.ReduceOp.SUM)
-        parameter.grad.div_(world)
 
 
 def _grad_norm(*modules: torch.nn.Module) -> tuple[float, bool]:

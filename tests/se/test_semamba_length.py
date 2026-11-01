@@ -22,3 +22,31 @@ class SemambaLengthTest(unittest.TestCase):
                 actual = _enhance_16k(IdentitySpectrum(), x)
                 self.assertEqual(actual.numel(), length)
                 torch.testing.assert_close(actual, x, atol=2e-6, rtol=2e-5)
+
+    def test_checkpointed_scan_matches_the_eager_scan(self):
+        from torch.utils.checkpoint import checkpoint
+
+        from src.se.models.semambapp.network import _selective_scan
+
+        torch.manual_seed(0)
+        arguments = tuple(
+            value.detach().requires_grad_(True)
+            for value in (
+                torch.randn(2, 4, 7),
+                torch.rand(2, 4, 7),
+                -torch.rand(4, 3),
+                torch.randn(2, 3, 7),
+                torch.randn(2, 3, 7),
+                torch.randn(4),
+            )
+        )
+        eager = _selective_scan(*arguments)
+        eager.sum().backward()
+        eager_grads = [value.grad.detach().clone() for value in arguments]
+        for value in arguments:
+            value.grad = None
+        recomputed = checkpoint(_selective_scan, *arguments, use_reentrant=False)
+        recomputed.sum().backward()
+        torch.testing.assert_close(recomputed, eager)
+        for left, value in zip(eager_grads, arguments, strict=True):
+            torch.testing.assert_close(value.grad, left)

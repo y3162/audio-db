@@ -626,3 +626,135 @@ CUDA_VISIBLE_DEVICES=<空きGPU> CUBLAS_WORKSPACE_CONFIG=:4096:8 \
 - 200 step では強調品質は得られていない。1 epoch は 10,700 step で、今回の実測（公式約 6 分、独立約 21 分 / 200 step、validation 8 件を含む）をそのまま 1 epoch に伸ばすと、validation を増やさない場合でも公式約 5 時間、独立約 19 時間のオーダーになる。
 - DDP 上の SEMamba++ 蓄積は線形モデルと手動平均の単体テストまでで、実モデルの複数 GPU は回していない。
 - PESQ は遅延推定の不連続が残るため、学習判定に戻していない。
+
+## 公式条件に近い検証（2026-11-01）
+
+前節の 200 step は batch 1、0.5 秒のままである。ここでは公式 `config.yaml` の batch 8、segment 48,000（3 秒、16 kHz）に寄せた。既存の 200 step 成果物は再実行していない。本番 `resource.duckdb` も変更していない。
+
+ホストは `turing`。GPU は Quadro RTX 5000（16 GB、sm_75）。公式の融合カーネルの cubin は sm_75 だけなので、この GPU を恒久の指定にはしない。`CUBLAS_WORKSPACE_CONFIG=:4096:8`、cuDNN benchmark オフ、TF32 オフ。`torch.use_deterministic_algorithms(True)` は融合 selective scan の backward が実行できないため使っていない。
+
+### 公式設定との差
+
+| 項目 | 公式 `train.py` / `config.yaml` | この比較 |
+|---|---|---|
+| batch | 8。複数 GPU では `batch // n_gpus` を各 GPU が 1 回で処理する。勾配蓄積は無い | 16 GB では native batch 2 まで。global 8 は micro-batch 1 を 8 回蓄積 |
+| segment | 48,000 | 48,000 |
+| データ | オンライン劣化。clean と degraded を別々に peak 正規化し、切り出しは `random` | VoiceBank ペア。noisy のエネルギーで clean と共通正規化し、切り出しは `case_id` と seed |
+| 損失 | 実行される和は敵対、特徴、mel、振幅、位相、複素、整合。時間 L1 はコメントアウト。metric 係数は設定にあるがこの和には入っていない | 同じ和 |
+| Optimizer | AdamW、lr `2e-4`、betas `(0.8, 0.99)`。weight decay は引数に無いので PyTorch 既定の `0.01`。勾配クリップは無い | 同じ |
+| Scheduler | ExponentialLR、gamma `0.99`、エポック終了時に 1 回 | 同じ。今回の step 数では進まない |
+| 更新順 | Discriminator backward と step のあと、同じ Generator 波形で Generator | 蓄積 1 は同じ波形を再利用。蓄積 2 以上はグラフを保持せず、Discriminator step のあと Generator を forward し直す。dropout は実装に無い |
+| 非決定 | `cudnn.benchmark = True`。融合 scan の backward は再実行で一致しない | benchmark はオフ。再実行差は下に記録した |
+
+### 3 秒、batch、蓄積
+
+入力は `voicebank_28_train` の epoch 0、seed 1234 の先頭 64 crop。各 48,000 サンプル。clean と noisy は同じ区間で、どちらも有限。結果は `data/results/training/semamba-phaseA-20261101/`。
+
+| 実行 | 結果 |
+|---|---|
+| 公式 native batch 1 | 成功。ピーク 7.13 GB。Generator 損失 15.682699 |
+| 公式 native batch 2 | 成功。ピーク 14.08 GB |
+| 公式 native batch 4 と 8 | OOM。batch 4 の時点で確保 15.45 GB |
+| 独立、再計算なしの batch 1 | OOM。参照 scan の計算グラフで 15.25 GB |
+| 独立、学習時だけ scan を再計算した batch 1 | 成功。ピーク 9.08 GB。約 115 秒。Generator 損失 15.682700 |
+| 独立 batch 2 | OOM |
+
+3 秒・batch 1 の公式と独立（`step-compare.json`）:
+
+| 項目 | 差 |
+|---|---|
+| Generator 損失 | 9.5e-7（15.682699 と 15.682700） |
+| Discriminator 損失 | 4.8e-7 |
+| 波形の最大絶対誤差 | 1.10e-6 |
+| Discriminator 勾配 | 最大 3.65e-7、cosine 1.000 |
+| Generator 勾配 | 最大 4.71e-3、cosine 0.999890 |
+| 更新後の Generator 重み | 最大 4.00e-4、cosine 1.000 |
+
+公式の native batch 2 を、同じ 2 サンプルの micro-batch 1 × 2 と比べた。損失の差は 2e-6、波形の最大差は 3.3e-6、Discriminator 勾配の最大差は 1.7e-6。Generator 勾配の最大差は 0.0465 で、同じ native batch 2 を 2 回走らせた再実行差 1.58e-5 より大きい。融合 scan の backward が batch 形状に依存する。損失が平均であることと、global batch が同じであることは、この勾配まで等しいことを意味しない。更新後の重みの最大差は 4.0e-4 で、1 step の AdamW がこの勾配差を通した大きさである。
+
+蓄積で損失を割らない実装だったため、micro-batch の平均勾配が足し合わされ、公式の batch 平均より大きい step になっていた。平均損失を蓄積回数で割るように直し、CPU の小さい SEMamba で batch 2 と micro-batch 1 × 2 の勾配が一致する回帰テストを足した。
+
+8 個の計算グラフを同時に持つ公式の蓄積は OOM になった（`short-official/` は step 0 だけ残っている）。Discriminator step のあと Generator を 1 micro-batch ずつ forward し直すと、公式は global batch 8 を 8 step 実行できた。所要 132 秒。損失はすべて有限で、Discriminator 損失は 6.32 から 4.48 へ下がった。step 4 の重みを別プロセスで復元すると最大差 0。そこから 1 step 進めた損失は連続実行の step 5 と表示上一致し、重みの最大差は 1.12e-4 だった。
+
+独立の global batch 8 は 4 step まで終了した。所要 3,723 秒で、1 step あたり約 15 分である。Generator 損失は step 1 から 4 まで 17.814797、20.603335、17.376713、19.063525。同じ 8 サンプルの公式は 17.814772、20.604648、17.381723、19.066991。step 1 の差は 2.4e-5、step 4 の差は 0.0035。4 step とも有限で、Discriminator 損失も公式と同じく 6.32 から 5.97 へ動いた。
+
+3 秒の実モデルを複数 GPU の DDP では回していない。蓄積 2 以上は、遅延 backward の手動 all-reduce ではなく、再 forward を `accumulation_scope` で包む。
+
+### 64 発話の validation
+
+`voicebank_28_valid` 872 件、話者 p286 / p287。test 話者 p232 / p257 は入っていない。train との `case_id` の重なりは 0。雑音は log の 10 種類、SNR は 0 / 5 / 10 / 15 dB で 80 セルある。名前順で最後の `station` と `traffic` を除き、残り 8 雑音 × 4 SNR × 2 話者 = 64。セル内の発話は SHA-256(`1234:話者:雑音:SNR`) で 1 件選んだ。スコアを見て選び直していない。一覧は `data/results/training/semamba-valid64-20261101/selection.json`。
+
+前の 200 step の step 0 / 50 / 100 / 200 を、公式 A/B と独立 A/B に同じ 64 発話で通した。採点は共通区間の SI-SDR、STOI、PESQ、波形 cosine。noisy の平均 SI-SDR は 6.292 dB。
+
+| step | 公式 A SI-SDR | 公式 B | 独立 A | 独立 B | 公式 A STOI | 独立 A STOI |
+|---:|---:|---:|---:|---:|---:|---:|
+| 0 | -40.63 | -40.63 | -40.65 | -40.65 | 0.440 | 0.440 |
+| 50 | -19.87 | -19.45 | -17.82 | -18.42 | 0.656 | 0.643 |
+| 100 | -14.49 | -14.12 | -12.54 | -13.02 | 0.707 | 0.693 |
+| 200 | -12.02 | -10.13 | -10.42 | -10.96 | 0.692 | 0.706 |
+
+4 系統とも SI-SDR は上がるが、200 step でも noisy を下回る。発散や非有限値は無い。公式 A の step 200 を雑音と SNR で分けると、8 雑音は同程度で、SNR が高いほど noisy との差が大きい。セルあたり 2 発話なので、雑音ごとの優劣は付けない。
+
+step 200 の発話別絶対差の平均は、公式 A/B が SI-SDR 1.89 dB、STOI 0.016、波形 cosine 最小 0.779。独立 A/B は 0.54 dB、0.009、0.856。公式 A と独立 A は 1.60 dB、0.015、0.781。実装間の差は、公式の再実行差より大きくない。64 発話・200 step では、実装差と再実行差を分離できる精度には届いていない。step 0 の公式どうし、独立どうしの波形 cosine は 1.000 である。
+
+### PESQ
+
+`pesq==0.0.4` は ITU-T P.862 / P.862.2（2005 年 10 月）の参照 C コードの wrapper である。16 kHz の `Downsample` は 64、`SEARCHBUFFER` は 75 で、読み込み時に両端へ足す 9,600 サンプルは 64 の倍数である。VAD 長は `(N + 9600) // 64` なので、N が 64 の倍数をまたぐと 1 増える。既知の失敗例は 93,631 で 1.070、93,632 で 4.407。前回のデバッガでは後者の発話数が 8 から 11 へ増え、推定遅延に約 -60,000 サンプルがあった。SI-SDR は約 -38.8 dB のままなので、高い PESQ は時間の合った品質を表していない。遅延を 0 に書き換える修正は入れていない。C コードも変更していない。
+
+同じ境界を、時間の合った VoiceBank 16 対（2 話者 × 4 雑音 × 2 SNR、16 kHz へ resample）で測ると、境界とその 1 サンプル前の PESQ 差の最大は 0.0138、中央値は 1.2e-5 だった。0.1 をこの間に置き、全文スコアと直前の VAD bin の差が 0.1 を超えるときは `na`（`pesq_utterance_split_discontinuity`）にする。生の値は `raw_value` に残し、平均には入れない。別の PESQ 実装は追加していない。入っているライブラリが参照実装そのもので、同じ C コードの別 wrapper は独立した照合にならない。
+
+64 発話では、この条件で `na` になったのは 1 checkpoint あたり 0 から 5 件。採用された PESQ の平均は 1.07 前後で、SI-SDR が noisy を下回ることと矛盾しない。4.4 のような不連続値は平均に入っていない。
+
+### 回帰テスト
+
+`.venvs/lab/bin/python -m unittest discover -s tests/<suite> -v`。CUDA は隠した。
+
+| スイート | 結果 |
+|---|---|
+| training | 74 件、失敗 0 |
+| se | 30 件、失敗 0 |
+| evaluation | 86 件、失敗 0 |
+| asr | 5 件、失敗 0 |
+
+ログは `data/results/training/semamba-phaseA-20261101/test-logs/`。前回より増えたのは、蓄積と scan 再計算の一致、PESQ の境界である。
+
+### 再現
+
+```bash
+# 3 秒 crop。出力先が無いこと
+.venvs/semamba/bin/python tests/training/reference/prepare_voicebank_train.py   # 既存セットは上書きしない
+CUDA_VISIBLE_DEVICES=<空き> CUBLAS_WORKSPACE_CONFIG=:4096:8 \
+  .venvs/semamba/bin/python tests/training/reference/run_semamba_official_batch.py \
+  prepare <新規ディレクトリ>
+# 64 発話の選択
+.venvs/lab/bin/python tests/training/reference/select_voicebank_valid64.py <新規.json>
+```
+
+既存の `semamba-phaseA-20261101` と `semamba-valid64-20261101` は上書きしない。
+
+### 長時間学習へ進むときの設定
+
+この GPU での公式に近い実行は、segment 48,000、global batch 8、micro-batch 1、蓄積 8、AdamW lr `2e-4`、betas `(0.8, 0.99)`、weight decay `0.01`、勾配クリップなし、ExponentialLR gamma `0.99`。公式 8 step は 132 秒だった。10,700 発話を global 8 で 1 epoch とすると約 1,338 step で、同じ速度なら約 6 時間である。起動と validation を含まない外挿であり、1 epoch の実測ではない。
+
+独立実装の参照 scan は、3 秒 batch 1 の学習 step が約 115 秒、global 8 の 1 step が約 15 分だった。同じ外挿では 1 epoch が約 2 週間になる。融合カーネルは sm_75 以外ではロードできない。長時間の独立学習を始める前に、この所要時間を予算として確認する。
+
+checkpoint は 50 から 100 optimizer step ごと。検証は固定 64 発話を 100 step ごと。test 824 件は条件調整に使わない。PESQ は上記の `na` 条件のまま使い、SI-SDR と STOI を主にする。200 step の SI-SDR が noisy を超えていないので、この間隔は品質獲得の証明ではなく発散の監視である。
+
+native batch 8 と micro-batch 1 × 8 の Generator 勾配は、上の 0.0465 と再実行差 1.58e-5 の範囲では一致していない。4 GPU が空いていれば、公式と同じく GPU あたり batch 2（1 GPU で 14 GB）が published の分割に近い。この構成は今回は実行していない。
+
+### 判定
+
+| 項目 | 判定 |
+|---|---|
+| 公式の 3 秒セグメント学習 | GO |
+| global batch 8 | PARTIAL |
+| 勾配蓄積・DDP との整合性 | PARTIAL |
+| 公式・独立の学習挙動 | GO |
+| 拡張 validation の妥当性 | GO |
+| PESQ 評価の信頼性 | GO |
+| checkpoint・再現性 | GO |
+| 長時間学習への移行可否 | GO |
+
+global batch 8 を PARTIAL にしたのは、native batch 8 が 16 GB に入らず、入る native batch 2 と micro-batch 1 × 2 の Generator 勾配が再実行差を超えるからである。損失と Discriminator 勾配と波形は一致している。DDP は 3 秒の実モデルでは未実行である。
+
+移行の GO は、この手順で学習を始めてよい、という意味である。長時間学習のあと公式と独立の品質が一致することは、まだ証明していない。

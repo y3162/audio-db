@@ -187,6 +187,54 @@ class SEMambaTests(unittest.TestCase):
             enhanced = enhancer.enhance(torch.randn(2048), 16000)
             self.assertTrue(torch.isfinite(enhanced).all())
 
+    def test_accumulated_microbatches_match_one_batch(self):
+        architecture = {
+            "hid_feature": 8,
+            "num_tfmamba": 1,
+            "d_state": 4,
+            "d_conv": 2,
+            "expand": 2,
+            "n_fft": 400,
+        }
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            config = _base(
+                root,
+                "semambapp",
+                architecture=architecture,
+                stft={"hop": 100, "win": 400, "disc_windows": [256, 512]},
+                segment_size=1600,
+            )
+            full = SEMambaTask(config, torch.device("cpu"))
+            split = SEMambaTask(config, torch.device("cpu"))
+            data = paired_dataset(root / "wav", 2, frames=1600, segment_size=1600, seed=config["seed"])
+            full.capture_update = split.capture_update = True
+            full.capture_gradients = split.capture_gradients = True
+            full_metrics = full.train_update([data.collate([0, 1])], 1)
+            split_metrics = split.train_update([data.collate([0]), data.collate([1])], 2)
+            for name in ("generator", "discriminator", "magnitude", "phase", "complex", "consistency"):
+                self.assertAlmostEqual(full_metrics[name], split_metrics[name], places=4)
+            for kind in ("generator_grad", "discriminator_grad"):
+                left = full.last_capture[kind]
+                right = split.last_capture[kind]
+                self.assertEqual(set(left), set(right))
+                for key in left:
+                    self.assertTrue(torch.allclose(left[key], right[key], rtol=1e-4, atol=1e-5), key)
+            # AdamW's epsilon amplifies gradient elements below about 1e-6, so the
+            # weight check follows the gradient elements that actually match a step.
+            named = dict(full.last_capture["generator_grad"])
+            for name, left in full.generator.named_parameters():
+                key = f"{full.generator.__class__.__name__}.{name}"
+                right = dict(split.generator.named_parameters())[name]
+                grad = named[key]
+                mask = grad.abs() >= 1e-6
+                if int(mask.sum()) == 0:
+                    continue
+                self.assertTrue(
+                    torch.allclose(left.detach().cpu()[mask], right.detach().cpu()[mask], rtol=1e-4, atol=1e-5),
+                    name,
+                )
+
 
 class DeepFilterTests(unittest.TestCase):
     @classmethod
