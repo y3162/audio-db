@@ -1,10 +1,8 @@
 """Discriminators owned by the training package.
 
-SEMamba++ uses ``semamba_disc`` (CQT sub-bands and the published STFT
-resolutions). The stacks in this file are the waveform GAN used by StuPASE and
-UniPASE, plus an earlier convolutional magnitude pair that is not the SEMamba++
-discriminator. MossFormerGAN's released discriminator also has a Conformer
-after a NISQA-style CNN; that block is not reimplemented here.
+MossFormerGAN uses the magnitude-pair discriminator here. The released
+discriminator also has a Conformer after a NISQA-style CNN; that block is
+not reimplemented here.
 """
 
 from __future__ import annotations
@@ -12,7 +10,6 @@ from __future__ import annotations
 import torch
 from torch import nn
 
-from src.training.se.stft import centered_stft
 
 
 class _ScoreStack(nn.Module):
@@ -40,127 +37,12 @@ class _ScoreStack(nn.Module):
         return score.mean(dim=(-2, -1)).squeeze(1), features
 
 
-class MultiResolutionDiscriminator(nn.Module):
-    """Waveform discriminator at several STFT window sizes."""
-
-    def __init__(self, windows: tuple[int, ...] = (256, 512, 1024)) -> None:
-        super().__init__()
-        self.windows = windows
-        self.stacks = nn.ModuleList(_ScoreStack(16) for _ in windows)
-
-    def forward(self, waveform: torch.Tensor) -> tuple[list[torch.Tensor], list[torch.Tensor]]:
-        scores = []
-        features: list[torch.Tensor] = []
-        for window, stack in zip(self.windows, self.stacks, strict=True):
-            hop = window // 4
-            spectrum = centered_stft(
-                waveform,
-                window,
-                hop,
-                torch.hann_window(window, device=waveform.device, dtype=waveform.dtype),
-            )
-            magnitude = spectrum.abs().unsqueeze(1)
-            score, feats = stack(magnitude)
-            scores.append(score)
-            features.extend(feats)
-        return scores, features
 
 
-class SubbandDiscriminator(nn.Module):
-    """Four log-spaced bands of one STFT magnitude, scored separately."""
-
-    def __init__(self, n_fft: int = 400, bands: int = 4) -> None:
-        super().__init__()
-        self.n_fft = n_fft
-        self.bands = bands
-        self.stacks = nn.ModuleList(_ScoreStack(8) for _ in range(bands))
-
-    def forward(self, waveform: torch.Tensor) -> tuple[list[torch.Tensor], list[torch.Tensor]]:
-        hop = self.n_fft // 4
-        spectrum = centered_stft(
-            waveform,
-            self.n_fft,
-            hop,
-            torch.hann_window(self.n_fft, device=waveform.device, dtype=waveform.dtype),
-        ).abs()
-        bins = spectrum.shape[-2]
-        edges = [int(round(index * bins / self.bands)) for index in range(self.bands + 1)]
-        scores = []
-        features: list[torch.Tensor] = []
-        for index, stack in enumerate(self.stacks):
-            band = spectrum[:, edges[index] : max(edges[index + 1], edges[index] + 1)]
-            score, feats = stack(band.unsqueeze(1))
-            scores.append(score)
-            features.extend(feats)
-        return scores, features
 
 
-class WaveformGANDiscriminator(nn.Module):
-    """Multi-period waveform discriminator plus optional STFT resolutions.
-
-    Periods ``(2, 3, 5, 7, 11)`` and resolutions ``(512, 1024, 2048)`` are the
-    lists in the StuPASE and UniPASE vocoder configs. The convolutional width
-    is smaller than the published HiFi-GAN stack.
-    """
-
-    def __init__(
-        self,
-        periods: tuple[int, ...] = (2, 3, 5, 7, 11),
-        channels: int = 16,
-        resolutions: tuple[int, ...] = (512, 1024, 2048),
-    ) -> None:
-        super().__init__()
-        self.periods = periods
-        self.resolutions = resolutions
-        self.heads = nn.ModuleList(_PeriodHead(period, channels) for period in periods)
-        self.resolutions_heads = nn.ModuleList(_ScoreStack(channels) for _ in resolutions)
-
-    def forward(self, waveform: torch.Tensor) -> tuple[list[torch.Tensor], list[torch.Tensor]]:
-        scores = []
-        features: list[torch.Tensor] = []
-        for head in self.heads:
-            score, feats = head(waveform)
-            scores.append(score)
-            features.extend(feats)
-        for window, stack in zip(self.resolutions, self.resolutions_heads, strict=True):
-            hop = max(window // 4, 1)
-            spectrum = centered_stft(
-                waveform,
-                window,
-                hop,
-                torch.hann_window(window, device=waveform.device, dtype=waveform.dtype),
-            )
-            score, feats = stack(spectrum.abs().unsqueeze(1))
-            scores.append(score)
-            features.extend(feats)
-        return scores, features
 
 
-class FeatureScaleDiscriminator(nn.Module):
-    """1D convolutional scores on a feature sequence ``[batch, time, channels]``.
-
-    This is the HiFi-GAN-style stack used for the UniPASE adapter (MIT).
-    ``sub_dims`` is the channel width of each scale. The published adapter
-    config uses six widths up to 1024; a smoke run may pass fewer.
-    """
-
-    def __init__(self, in_dim: int, sub_dims: tuple[int, ...] = (32, 64, 128, 256, 512, 1024)) -> None:
-        super().__init__()
-        self.scales = nn.ModuleList(_FeatureScale(in_dim, width) for width in sub_dims)
-
-    def forward(self, reference: torch.Tensor, estimate: torch.Tensor):
-        real_scores = []
-        fake_scores = []
-        real_features: list[torch.Tensor] = []
-        fake_features: list[torch.Tensor] = []
-        for scale in self.scales:
-            real_score, real_maps = scale(reference)
-            fake_score, fake_maps = scale(estimate)
-            real_scores.append(real_score)
-            fake_scores.append(fake_score)
-            real_features.extend(real_maps)
-            fake_features.extend(fake_maps)
-        return real_scores, fake_scores, real_features, fake_features
 
 
 class _FeatureScale(nn.Module):
@@ -189,34 +71,6 @@ class _FeatureScale(nn.Module):
         return score.flatten(1), features
 
 
-class _PeriodHead(nn.Module):
-    def __init__(self, period: int, channels: int) -> None:
-        super().__init__()
-        self.period = period
-        self.convs = nn.ModuleList(
-            [
-                nn.utils.spectral_norm(nn.Conv2d(1, channels, (5, 1), (3, 1), (2, 0))),
-                nn.utils.spectral_norm(nn.Conv2d(channels, channels * 2, (5, 1), (3, 1), (2, 0))),
-                nn.utils.spectral_norm(nn.Conv2d(channels * 2, channels * 4, (5, 1), (3, 1), (2, 0))),
-            ]
-        )
-        self.score = nn.utils.spectral_norm(nn.Conv2d(channels * 4, 1, (3, 1), (1, 1), (1, 0)))
-        self.act = nn.LeakyReLU(0.2)
-
-    def forward(self, waveform: torch.Tensor) -> tuple[torch.Tensor, list[torch.Tensor]]:
-        time = waveform.shape[-1]
-        remainder = time % self.period
-        if remainder:
-            waveform = torch.nn.functional.pad(waveform, (0, self.period - remainder))
-        frames = waveform.shape[-1] // self.period
-        hidden = waveform.view(waveform.shape[0], 1, frames, self.period)
-        features = []
-        for conv in self.convs:
-            hidden = self.act(conv(hidden))
-            features.append(hidden)
-        score = self.score(hidden)
-        features.append(score)
-        return score.mean(dim=(-2, -1)).squeeze(1), features
 
 
 class MagnitudePairDiscriminator(nn.Module):

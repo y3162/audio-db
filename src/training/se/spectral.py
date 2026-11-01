@@ -62,67 +62,6 @@ def _rect_stft(waveform: torch.Tensor, window: int, hop: int) -> torch.Tensor:
     return centered_stft(waveform, window, hop, rectangular)
 
 
-def log_mel_l1(
-    reference: torch.Tensor,
-    estimate: torch.Tensor,
-    sample_rate: int,
-    *,
-    n_mels: tuple[int, ...] = (40, 80, 160, 320),
-    windows: tuple[int, ...] = (256, 512, 1024, 2048),
-    clamp: float = 1e-5,
-) -> torch.Tensor:
-    """Mean L1 of log10 mel magnitudes. Hop is one quarter of each window."""
-    if len(n_mels) != len(windows):
-        raise ValueError("n_mels and windows must have the same length")
-    total = reference.new_zeros(())
-    for bands, window in zip(n_mels, windows, strict=True):
-        hop = max(window // 4, 1)
-        ref = _log_mel(reference, sample_rate, bands, window, hop, clamp)
-        est = _log_mel(estimate, sample_rate, bands, window, hop, clamp)
-        frames = min(ref.shape[-1], est.shape[-1])
-        total = total + F.l1_loss(ref[..., :frames], est[..., :frames])
-    return total / len(windows)
-
-
-def _log_mel(waveform: torch.Tensor, sample_rate: int, n_mels: int, window: int, hop: int, clamp: float) -> torch.Tensor:
-    padded = waveform
-    if padded.shape[-1] < window:
-        padded = F.pad(padded, (0, window - padded.shape[-1]))
-    spec = centered_stft(
-        padded,
-        window,
-        hop,
-        torch.hann_window(window, device=padded.device, dtype=padded.dtype),
-    ).abs()
-    mel_basis = _mel_basis(sample_rate, window, n_mels, spec.device, spec.dtype)
-    mel = torch.matmul(mel_basis, spec.clamp_min(0))
-    return torch.log10(mel.clamp_min(clamp))
-
-
-def _mel_basis(sample_rate: int, n_fft: int, n_mels: int, device, dtype) -> torch.Tensor:
-    bins = n_fft // 2 + 1
-    low = _hz_to_mel(0.0)
-    high = _hz_to_mel(sample_rate / 2)
-    points = torch.linspace(low, high, n_mels + 2, device=device, dtype=dtype)
-    hz = _mel_to_hz(points)
-    fft_hz = torch.linspace(0, sample_rate / 2, bins, device=device, dtype=dtype)
-    basis = torch.zeros(n_mels, bins, device=device, dtype=dtype)
-    for index in range(n_mels):
-        left, center, right = hz[index], hz[index + 1], hz[index + 2]
-        rising = (fft_hz - left) / (center - left).clamp_min(1e-6)
-        falling = (right - fft_hz) / (right - center).clamp_min(1e-6)
-        basis[index] = torch.clamp(torch.minimum(rising, falling), min=0)
-    return basis
-
-
-def _hz_to_mel(hz: float) -> float:
-    return 2595.0 * math.log10(1.0 + hz / 700.0)
-
-
-def _mel_to_hz(mel: torch.Tensor) -> torch.Tensor:
-    return 700.0 * (torch.pow(10.0, mel / 2595.0) - 1.0)
-
-
 def matrix_phase_losses(reference: torch.Tensor, generated: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
     """SEMamba++ phase terms.
 

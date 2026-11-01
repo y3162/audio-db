@@ -118,14 +118,14 @@ class ConfigTests(unittest.TestCase):
             return MockEnhancer()
 
         model = ModelConfig(
-            name="unipase",
-            checkpoints={"dewavlm": "a.pt", "adapter": "b.pt", "vocoder": "c.pt", "postnet": "d.pt"},
+            name="example",
+            checkpoints={"part": "a.pt", "other": "b.pt"},
             model_config={"width": 1},
         )
         enhancer = load_evaluation_enhancer(model, "cpu", loader=loader)
         self.assertIsInstance(enhancer, MockEnhancer)
-        self.assertEqual(seen["name"], "unipase")
-        self.assertEqual(seen["checkpoint"]["dewavlm"], "a.pt")
+        self.assertEqual(seen["name"], "example")
+        self.assertEqual(seen["checkpoint"]["part"], "a.pt")
         self.assertEqual(seen["config"], {"width": 1})
         self.assertIsNone(seen["variant"])
 

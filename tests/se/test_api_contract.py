@@ -92,18 +92,6 @@ class ApiContractTests(unittest.TestCase):
         _finite_same_shape(self, enhanced, wave)
         self.assertEqual(float((enhanced - enhancer.enhance(wave, 8000)).abs().max()), 0.0)
 
-    def test_unipase_long_windows_tile_the_input(self):
-        from src.se.models.unipase.inference import _infer_long
-
-        class Echo(torch.nn.Module):
-            def forward(self, x, sr_in, sr_out=None, enable_plc=True):
-                return x
-
-        for seconds in (21, 24, 30):
-            audio = torch.arange(seconds * 16000, dtype=torch.float32)
-            out = _infer_long(Echo(), audio, 16000)
-            self.assertTrue(torch.equal(out, audio))
-
     @unittest.skipUnless(SEMAMBA.exists(), 'checkpoint unavailable')
     def test_semamba_48k_input_returns_48k_length(self):
         enhancer = load_enhancer('semambapp', SEMAMBA)

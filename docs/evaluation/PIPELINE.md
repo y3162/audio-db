@@ -199,19 +199,13 @@ models:
   - name: mp_senet
     variant: vb
     checkpoint: data/checkpoints/mp-senet/g_best_vb
-  - name: unipase
-    checkpoints:
-      dewavlm: /path/DeWavLM-Omni.pt
-      adapter: /path/Adapter.pt
-      vocoder: /path/Vocoder.pt
-      postnet: /path/PostNet.pt
 ```
 
 `name` と `variant` は `src.se` の registry で検証します。チェックポイントが無いモデルに、別の重みは割り当てません。複数 variant があるモデルは variant を必須にします。
 
 モデルは発話ごとにロードし直しません。発話の一部だけが未完了のとき、そのモデルを 1 回だけロードします。複数モデルは 1 つずつ処理し、終わったら参照を捨てます。
 
-UniPASE や StuPASE のように乱数を使うモデルのため、強調の直前に発話ごとの seed で `torch.manual_seed` と `random.seed` を設定します。seed は実験 seed、発話 ID、モデル名、variant、SNR の SHA-256 です。処理順を変えても同じ発話の seed は同じです。
+再現性のため、強調の直前に発話ごとの seed で `torch.manual_seed` と `random.seed` を設定します。seed は実験 seed、発話 ID、モデル名、variant、SNR の SHA-256 です。処理順を変えても同じ発話の seed は同じです。
 
 出力は 1 次元で、入力と同じ長さで、有限でなければなりません。長さが変わった場合、その発話は `error` になり、PESQ や STOI を 0 としては記録しません。
 
@@ -344,4 +338,4 @@ uv pip install --python .venvs/lab/bin/python "numpy==2.5.4" -r requirements/eva
 
 ## まだやらないこと
 
-全コーパスの推論、7 モデルの一括ベンチマーク、論文用 WER、ASR の学習、SE の再学習、結果テーブルの DuckDB への書き込み、公式混合プロトコルへの置き換えは、この基盤の対象外です。ASR の推論入口は [ASR](../asr/MODELS.md) にあります。結果ファイルは、あとから DuckDB へ登録できる JSON のままにしています。
+全コーパスの推論、5 モデルの一括ベンチマーク、論文用 WER、ASR の学習、SE の再学習、結果テーブルの DuckDB への書き込み、公式混合プロトコルへの置き換えは、この基盤の対象外です。ASR の推論入口は [ASR](../asr/MODELS.md) にあります。結果ファイルは、あとから DuckDB へ登録できる JSON のままにしています。

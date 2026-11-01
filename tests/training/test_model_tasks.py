@@ -14,7 +14,6 @@ from src.training.errors import TrainingError
 from src.training.se.deepfilternet import DeepFilterNetTask, deepfilter_cosine_schedules
 from src.training.se.mossformergan import MossFormerGANTask
 from src.training.se.semambapp import SEMambaTask
-from src.training.se.stages import StagedTask
 from src.training.se.tf_gridnet import TFGridNetTask
 from tests.training.support import paired_dataset, tiny_config
 
@@ -412,115 +411,6 @@ class MossFormerTests(unittest.TestCase):
             self.assertTrue(torch.isfinite(enhanced).all())
 
 
-class StagedTests(unittest.TestCase):
-    @classmethod
-    def setUpClass(cls):
-        set_determinism(True, cuda=False)
-
-    def test_dewavlm_without_teacher_or_architecture_is_rejected(self):
-        with tempfile.TemporaryDirectory() as directory:
-            root = Path(directory)
-            for name in ("unipase", "stupase"):
-                config = _base(root, name, stage="dewavlm")
-                with self.assertRaises(TrainingError) as caught:
-                    StagedTask(config, torch.device("cpu"))
-                self.assertIn("WavLM-Large", str(caught.exception))
-
-    def test_reduced_dewavlm_cfm_and_vocoder_reload(self):
-        with tempfile.TemporaryDirectory() as directory:
-            root = Path(directory)
-            dewavlm = _base(
-                root,
-                "stupase",
-                stage="dewavlm",
-                architecture={"wavlm": {"output_layer": 1, "encoder_layers": 1, "encoder_embed_dim": 32}},
-                segment_size=640,
-            )
-            task = StagedTask(dewavlm, torch.device("cpu"))
-            again = StagedTask(dewavlm, torch.device("cpu"))
-            self.assertTrue(torch.equal(next(task.generator.parameters()), next(again.generator.parameters())))
-            data = paired_dataset(root / "dw", 1, frames=640, segment_size=640, seed=dewavlm["seed"])
-            metrics = _updated(task, data)
-            self.assertIn("dewavlm", metrics)
-            restored = StagedTask(dewavlm, torch.device("cpu"))
-            restored.load_state_dict(task.state_dict())
-            self.assertTrue(torch.equal(next(restored.generator.parameters()), next(task.generator.parameters())))
-
-    def test_unipase_adapter_vocoder_and_postnet_steps(self):
-        with tempfile.TemporaryDirectory() as directory:
-            root = Path(directory)
-            adapter = _base(
-                root,
-                "unipase",
-                stage="adapter",
-                architecture={"input_channels": 16, "dim": 32, "intermediate_dim": 64, "num_layers": 1, "output_channels": 16, "disc_dims": [8, 16]},
-                segment_size=512,
-            )
-            task = StagedTask(adapter, torch.device("cpu"))
-            data = paired_dataset(root / "ad", 1, frames=512, segment_size=512, seed=adapter["seed"])
-            metrics = _updated(task, data)
-            self.assertIn("discriminator", metrics)
-            restored = StagedTask(adapter, torch.device("cpu"))
-            restored.load_state_dict(task.state_dict())
-            self.assertTrue(torch.equal(next(restored.generator.parameters()), next(task.generator.parameters())))
-
-            vocoder = _base(
-                root,
-                "unipase",
-                stage="vocoder",
-                architecture={"input_channels": 16, "dim": 32, "intermediate_dim": 64, "num_layers": 1, "num_res": 2, "num_attn": 1, "n_fft": 64, "hop_length": 16},
-                segment_size=512,
-            )
-            vocoder_task = StagedTask(vocoder, torch.device("cpu"))
-            vocoder_data = paired_dataset(root / "uv", 1, frames=512, segment_size=512, seed=vocoder["seed"])
-            self.assertIn("discriminator", _updated(vocoder_task, vocoder_data))
-
-            postnet = _base(
-                root,
-                "unipase",
-                stage="postnet",
-                architecture={"n_layers": 1, "lstm_hidden_units": 16, "attn_n_head": 2, "attn_qk_output_channel": 2, "emb_dim": 16, "emb_ks": 4, "emb_hs": 4},
-                segment_size=2048,
-                sampling_rate=16000,
-            )
-            post = StagedTask(postnet, torch.device("cpu"))
-            post_data = paired_dataset(root / "pn", 1, frames=2048, segment_size=2048, seed=postnet["seed"])
-            self.assertIn("discriminator", _updated(post, post_data))
-
-    def test_stupase_vocoder_and_cfm_steps(self):
-        with tempfile.TemporaryDirectory() as directory:
-            root = Path(directory)
-            vocoder = _base(
-                root,
-                "stupase",
-                stage="vocoder",
-                architecture={
-                    "input_channels": 16,
-                    "dim": 32,
-                    "intermediate_dim": 64,
-                    "num_layers": 1,
-                    "num_res": 2,
-                    "num_attn": 1,
-                    "n_fft": 64,
-                    "hop_length": 16,
-                },
-                segment_size=512,
-            )
-            task = StagedTask(vocoder, torch.device("cpu"))
-            data = paired_dataset(root / "voc", 1, frames=512, segment_size=512, seed=vocoder["seed"])
-            metrics = _updated(task, data)
-            self.assertIn("discriminator", metrics)
-            cfm = _base(
-                root,
-                "stupase",
-                stage="cfm",
-                architecture={"dit": {"dim": 32, "depth": 1, "heads": 4, "dim_head": 8, "mel_dim": 16, "text_in_dim": 16, "ff_mult": 2}, "mel": {"n_fft": 64, "hop_length": 16, "win_length": 64, "n_mel_channels": 16, "target_sample_rate": 16000}},
-                segment_size=512,
-            )
-            flow = StagedTask(cfm, torch.device("cpu"))
-            flow_data = paired_dataset(root / "flow", 1, frames=512, segment_size=512, seed=cfm["seed"])
-            flow_metrics = _updated(flow, flow_data)
-            self.assertIn("flow_matching", flow_metrics)
 
 
 if __name__ == "__main__":

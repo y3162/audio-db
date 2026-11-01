@@ -1,4 +1,4 @@
-"""Load and short-audio checks for the five models added after MP-SENet and TF-GridNet."""
+"""Load and short-audio checks for DeepFilterNet3, MossFormerGAN, and SEMamba++."""
 import unittest
 from pathlib import Path
 
@@ -10,17 +10,6 @@ ROOT = Path(__file__).resolve().parents[2]
 DFN = ROOT / 'data/checkpoints/deepfilternet3/DeepFilterNet3'
 MOSS = ROOT / 'data/checkpoints/mossformergan/last_best_checkpoint.pt'
 SEMAMBA = ROOT / 'data/checkpoints/semambapp/semambapp.pth'
-UNIPASE = {
-    'dewavlm': ROOT / 'data/checkpoints/unipase/DeWavLM-Omni.pt',
-    'adapter': ROOT / 'data/checkpoints/unipase/Adapter.pt',
-    'vocoder': ROOT / 'data/checkpoints/unipase/Vocoder_DWO-L1.pt',
-    'postnet': ROOT / 'data/checkpoints/unipase/PostNet.pt',
-}
-STUPASE = {
-    'dewavlm': ROOT / 'data/checkpoints/stupase/DeWavLM-R.pt',
-    'cfm': ROOT / 'data/checkpoints/stupase/CFM.pt',
-    'vocoder': ROOT / 'data/checkpoints/stupase/Vocoder_Mel-16k.pt',
-}
 
 
 def _ok(wave):
@@ -32,9 +21,9 @@ class RemainingModelTests(unittest.TestCase):
     def setUpClass(cls):
         torch.set_num_threads(2)
 
-    def test_registry_lists_seven_families(self):
+    def test_registry_lists_five_families(self):
         names = set(available_enhancers())
-        self.assertTrue({'mp_senet', 'tf_gridnet', 'deepfilternet3', 'mossformergan', 'semambapp', 'unipase', 'stupase'} <= names)
+        self.assertEqual({'mp_senet', 'tf_gridnet', 'deepfilternet3', 'mossformergan', 'semambapp'}, names)
 
     @unittest.skipUnless((DFN / 'checkpoints/model_120.ckpt.best').exists(), 'checkpoint unavailable')
     def test_deepfilternet3(self):
@@ -70,22 +59,3 @@ class RemainingModelTests(unittest.TestCase):
         enhanced = enhancer.enhance(noisy, 16000)
         self.assertTrue(_ok(enhanced) and enhanced.shape == noisy.shape)
         self.assertEqual(float((enhanced - enhancer.enhance(noisy, 16000)).abs().max()), 0.0)
-
-    @unittest.skipUnless(all(path.exists() for path in UNIPASE.values()), 'checkpoint unavailable')
-    def test_unipase_16k(self):
-        enhancer = load_enhancer('unipase', UNIPASE)
-        torch.manual_seed(3)
-        noisy = torch.randn(1600) * 0.02
-        enhanced = enhancer.enhance(noisy, 16000)
-        self.assertTrue(_ok(enhanced) and enhanced.shape == noisy.shape)
-
-    @unittest.skipUnless(all(path.exists() for path in STUPASE.values()), 'checkpoint unavailable')
-    def test_stupase_16k(self):
-        enhancer = load_enhancer('stupase', STUPASE)
-        noisy = torch.randn(1600) * 0.02
-        torch.manual_seed(5)
-        first = enhancer.enhance(noisy, 16000)
-        torch.manual_seed(5)
-        second = enhancer.enhance(noisy, 16000)
-        self.assertTrue(_ok(first) and first.shape == noisy.shape)
-        self.assertEqual(float((first - second).abs().max()), 0.0)

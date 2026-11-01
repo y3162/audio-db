@@ -66,7 +66,7 @@ MP-SENet の学習と公式実装との差
 
 ### [OTHER_MODELS.md](training/OTHER_MODELS.md)
 
-残り 6 モデルの学習レベルと、公式学習との差
+残り 4 モデルの学習レベルと、公式学習との差
 
 ---
 

@@ -2,7 +2,7 @@
 
 ## 音声強調
 
-`available_enhancers()` は MP-SENet、TF-GridNet、DeepFilterNet3、MossFormerGAN、SEMamba++、UniPASE、StuPASE を返します。単一ファイルのモデルはチェックポイントパスを渡し、UniPASE と StuPASE は部品名からパスへの辞書を渡します。公式波形との対応と、CLI のファイル出力など波形以外で未確認の範囲は `docs/se/VALIDATION.md` にあります。
+`available_enhancers()` は MP-SENet、TF-GridNet、DeepFilterNet3、MossFormerGAN、SEMamba++ を返します。チェックポイントパスを渡します。公式波形との対応と、CLI のファイル出力など波形以外で未確認の範囲は `docs/se/VALIDATION.md` にあります。
 
 ```python
 from src.se import available_enhancers, build_model, load_enhancer
@@ -104,17 +104,3 @@ result = asr.transcribe(waveform, sample_rate=16000)
 ```
 
 実チェックポイントを使う例は `configs/evaluation/example.yaml` です。結果は `data/results/se-evaluation/<run_id>/` に保存されます。中断した実験は同じ `run_id` で `--resume` します。
-
-```python
-enc = load_enhancer('unipase', {
-    'dewavlm': '/path/to/DeWavLM-Omni.pt',
-    'adapter': '/path/to/Adapter.pt',
-    'vocoder': '/path/to/Vocoder_DWO-L1.pt',
-    'postnet': '/path/to/PostNet.pt',
-})
-enc = load_enhancer('stupase', {
-    'dewavlm': '/path/to/DeWavLM-R.pt',
-    'cfm': '/path/to/CFM.pt',
-    'vocoder': '/path/to/Vocoder_Mel-16k.pt',
-})
-```

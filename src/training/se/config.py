@@ -52,8 +52,6 @@ _MODEL_NAMES = {
     "semambapp",
     "mossformergan",
     "deepfilternet3",
-    "unipase",
-    "stupase",
 }
 _MODEL = {
     "name",

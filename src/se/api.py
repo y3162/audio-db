@@ -106,11 +106,3 @@ registry.register(ModelSpec('mossformergan', _build_moss, _load_moss, 16000,
 from .models.semambapp.inference import build as _build_semamba, load as _load_semamba
 registry.register(ModelSpec('semambapp', _build_semamba, _load_semamba, 16000,
                             aliases=('semamba++', 'se_mamba_pp'), variants=('semambapp',)))
-
-from .models.unipase.inference import build as _build_unipase, load as _load_unipase
-registry.register(ModelSpec('unipase', _build_unipase, _load_unipase, 16000,
-                            aliases=('uni-pase',), variants=('unipase',)))
-
-from .models.stupase.inference import build as _build_stupase, load as _load_stupase
-registry.register(ModelSpec('stupase', _build_stupase, _load_stupase, 16000,
-                            aliases=('stu-pase',), variants=('stupase',)))
