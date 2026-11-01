@@ -273,14 +273,25 @@ def _weight_report(official, independent) -> dict[str, float | str]:
     return {"max_abs": worst, "worst": worst_name}
 
 
-def one_step(device: torch.device, width: int, layers: int, state: int, conv: int, steps: int) -> dict:
+def one_step(
+    device: torch.device,
+    width: int,
+    layers: int,
+    state: int,
+    conv: int,
+    steps: int,
+    batches: list[tuple[torch.Tensor, torch.Tensor]] | None = None,
+) -> dict:
     cfg, official_g, independent_g, official_cqt, independent_cqt, official_mrd, independent_mrd = _pair(
         device, width, layers, state, conv
     )
     mel = MultiScaleMelSpectrogramLoss(sampling_rate=16000).to(device)
     torch.manual_seed(23)
-    clean = torch.randn(1, 8000, device=device)
-    noisy = clean * 0.6 + 0.05 * torch.randn_like(clean)
+    if batches is None:
+        clean = torch.randn(1, 8000, device=device)
+        noisy = clean * 0.6 + 0.05 * torch.randn_like(clean)
+        batches = [(clean, noisy)] * steps
+    clean, noisy = batches[0]
     with torch.no_grad():
         probe = torch.randn(1, 8000, device=device)
         mel_gap = abs(float(mel(probe.unsqueeze(1), (probe * 0.5).unsqueeze(1)) - summed_slaney_log_mel(probe, probe * 0.5, 16000)))
@@ -295,6 +306,7 @@ def one_step(device: torch.device, width: int, layers: int, state: int, conv: in
     history = []
     first = None
     for index in range(steps):
+        clean, noisy = batches[index]
         for module in (official_g, independent_g, official_cqt, independent_cqt, official_mrd, independent_mrd):
             module.train()
         official_parts = _official_parts(official_g, clean, noisy, cfg)
@@ -366,6 +378,105 @@ def one_step(device: torch.device, width: int, layers: int, state: int, conv: in
     }
 
 
+def _top_grads(official, independent, limit: int = 12) -> list[dict]:
+    ranked = []
+    named = dict(independent.named_parameters())
+    for name, left in official.named_parameters():
+        right = named[name]
+        if left.grad is None or right.grad is None:
+            continue
+        stats = _gap(left.grad, right.grad)
+        scale = float(left.grad.detach().abs().max())
+        ranked.append(
+            {
+                "name": name,
+                "max_abs": stats["max_abs"],
+                "relative": stats["max_abs"] / max(scale, 1e-12),
+                "grad_max": scale,
+                "cosine": stats["cosine"],
+            }
+        )
+    ranked.sort(key=lambda item: item["max_abs"], reverse=True)
+    return ranked[:limit]
+
+
+def _block_outputs(official_g, independent_g, clean, noisy, cfg) -> list[dict]:
+    captured = {"official": [], "independent": []}
+
+    def hook(bucket):
+        def record(_module, _inputs, output):
+            bucket.append(output.detach())
+        return record
+
+    handles = [block.register_forward_hook(hook(captured["official"])) for block in official_g.TSMamba]
+    handles += [block.register_forward_hook(hook(captured["independent"])) for block in independent_g.TSMamba]
+    try:
+        with torch.no_grad():
+            _official_parts(official_g, clean, noisy, cfg)
+            _independent_parts(independent_g, clean, noisy)
+    finally:
+        for handle in handles:
+            handle.remove()
+    return [
+        _gap(left, right)
+        for left, right in zip(captured["official"], captured["independent"], strict=True)
+    ]
+
+
+def diagnose(device: torch.device) -> dict:
+    """Separate spectral, mel, and adversarial gradients at the official width."""
+    cfg, official_g, independent_g, official_cqt, independent_cqt, official_mrd, independent_mrd = _pair(
+        device, 48, 4, 16, 4
+    )
+    mel = MultiScaleMelSpectrogramLoss(sampling_rate=16000).to(device)
+    torch.manual_seed(23)
+    clean = torch.randn(1, 8000, device=device)
+    noisy = clean * 0.6 + 0.05 * torch.randn_like(clean)
+    for module in (official_g, independent_g, official_cqt, independent_cqt, official_mrd, independent_mrd):
+        module.train()
+    blocks = _block_outputs(official_g, independent_g, clean, noisy, cfg)
+    reports = {}
+    objectives = {
+        "spectral": lambda loss: (
+            loss["magnitude"] * 0.9 + loss["phase"] * 0.3 + loss["complex"] * 0.1 + loss["consistency"] * 0.1
+        ),
+        "mel": lambda loss: loss["mel"] * 0.1,
+        "adversarial": lambda loss: loss["adversarial"] + loss["matching"],
+        "full": lambda loss: loss["generator"],
+    }
+    for name, select in objectives.items():
+        for module in (official_g, independent_g):
+            module.zero_grad(set_to_none=True)
+        official_parts = _official_parts(official_g, clean, noisy, cfg)
+        independent_parts = _independent_parts(independent_g, clean, noisy)
+        official_loss = _official_losses(official_parts, clean, official_cqt, official_mrd, mel, cfg)
+        independent_loss = _independent_losses(independent_parts, clean, independent_cqt, independent_mrd)
+        chosen_official = select(official_loss)
+        chosen_independent = select(independent_loss)
+        loss_gap = abs(float(chosen_official.detach()) - float(chosen_independent.detach()))
+        chosen_official.backward()
+        chosen_independent.backward()
+        reports[name] = {
+            "grad": _grad_report(official_g, independent_g),
+            "top": _top_grads(official_g, independent_g),
+            "loss_gap": loss_gap,
+            "wave": _gap(official_parts["audio"], independent_parts["audio"]),
+        }
+    return {
+        "block_outputs": blocks,
+        "forward_wave": reports["full"]["wave"],
+        "ablation": reports,
+        "tolerances": {"grad_atol": GRAD_ATOL, "cosine_min": COSINE_MIN},
+    }
+
+
+def _speech_batches(device: torch.device, steps: int) -> list[tuple[torch.Tensor, torch.Tensor]]:
+    path = ROOT / "data" / "results" / "training" / "official-compare-20261101" / "semamba_waves.pt"
+    saved = torch.load(path, map_location=device, weights_only=True)
+    pairs = list(zip(saved["clean"], saved["noisy"], strict=True))
+    return [pairs[index % len(pairs)] for index in range(steps)]
+
+
 def main() -> None:
     mode = sys.argv[1] if len(sys.argv) > 1 else "narrow"
     device = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
@@ -373,11 +484,20 @@ def main() -> None:
         report = one_step(device, 8, 1, 4, 2, 5)
     elif mode == "official":
         report = one_step(device, 48, 4, 16, 4, 20)
+    elif mode == "diagnose":
+        report = diagnose(device)
+    elif mode == "speech":
+        report = one_step(device, 48, 4, 16, 4, 20, batches=_speech_batches(device, 20))
+        report["audio"] = "libri_demand_smoke_train segments of 8000 samples"
     else:
         raise SystemExit(f"unknown mode {mode}")
     report["device"] = str(device)
     report["tolerances"] = {"loss_atol": LOSS_ATOL, "grad_atol": GRAD_ATOL, "cosine_min": COSINE_MIN}
-    print(json.dumps(report, indent=2))
+    out = ROOT / "data" / "results" / "training" / "official-compare-20261101" / f"semamba_{mode}.json"
+    out.parent.mkdir(parents=True, exist_ok=True)
+    out.write_text(json.dumps(report, indent=2), encoding="utf-8")
+    print(out)
+    print(json.dumps(report if mode == "diagnose" else {"first_gap": report.get("generator_loss_gap", [None])[0], "last_gap": report.get("generator_loss_gap", [None])[-1]}, indent=2))
 
 
 if __name__ == "__main__":

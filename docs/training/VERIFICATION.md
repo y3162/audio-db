@@ -212,3 +212,74 @@ export CUDA_VISIBLE_DEVICES=1,2 CUBLAS_WORKSPACE_CONFIG=:4096:8
 ```
 
 VoiceBank-DEMAND 全件の学習と論文スコアの再現はしていない。commit と push はしていない。
+
+## 公式学習順と 4 モデルの短時間比較（2026-11-01）
+
+独立実装の作業ツリーは `dev` の `1cd910f8d4743f5cd4063e066eae7c13246f4287` に、この節の未 commit 差分を足したものである。許容値は測定前に固定した。forward と損失成分は `atol=1e-5`。パラメータ勾配は `atol=1e-4`、かつ `|grad|` の最大が `1e-5` を超えるテンソルの cosine は `>= 0.999`。測定後にこの値は緩めていない。NaN は 0 にしていない。
+
+音声は `data/db/training.duckdb` の `libri_demand_smoke_train`（8）と `libri_demand_smoke_valid`（4）を、学習と同じレシピ再生と切り出しでテンソル化した `data/results/training/official-compare-20261101/speech_cache.pt` である。`tensor` の torchaudio は FLAC を読めないため、再生は `turing` で行い、比較プロセスは同じテンソルを読む。検証発話は学習に混ぜていない。
+
+`CUBLAS_WORKSPACE_CONFIG=:4096:8`。`tensor` は物理 GPU 0、6、7（いずれも A100 40GB、使用メモリ 13 MiB、プロセス内は `cuda:0`）。PyTorch 2.6.0+cu124。SEMamba++ だけは `turing` の物理 GPU 0（Quadro RTX 5000、sm_75、使用メモリ 15 MiB）。融合カーネルは `mamba-ssm==2.3.2.post1` と `causal-conv1d==1.7.0` で、cubin は sm_75 だけである。A100 ではロードできない。PyTorch の scan を公式カーネルの代替としては使っていない。
+
+### MP-SENet
+
+公式 commit `89932cfe90d1dacb8e170e4a331d762462c21792`。公式幅、AdamW lr `5e-4`、betas `(0.8, 0.99)`、weight decay `0.01`。更新は公式 `train.py` と同じく、Discriminator（実ペアは 1、偽ペアは正規化 PESQ、強調振幅は detach）のあと Generator である。ExponentialLR はこの 20 更新では進めない。比較バッチは 2。公式 `config.json` の batch は 4。
+
+ガウス入力の eval と train で、STFT、振幅、位相、Discriminator、波形、損失の各成分の差は 0 だった。実音声の step 0 は、波形差 0、PESQ 目標差 0、Generator 損失差 0、Discriminator 損失差 0、Generator 勾配の最大絶対誤差 `3.50e-5`、大きな勾配の cosine `0.99999988`。更新後重みの最大絶対誤差は `9.95e-4` で、以前記録した初回 AdamW の epsilon 増幅と同じ形である。
+
+20 step 後の Generator 損失は公式 1.018、独立実装 1.000（差 0.018）。検証発話の波形 cosine は 0.981、PESQ は 1.178 と 1.180、STOI は 0.889 と 0.895。step 19 の大きな勾配の cosine は -0.56 まで落ちる。step 0 の構造差ではなく、epsilon 未満の勾配差が GAN 更新で広がったあとである。本番 `MPSENetTask` の 1 step は、手動の独立実装に対して Discriminator 重みの最大差 `1.79e-7`、Generator は同じ epsilon 増幅で `9.96e-4` だった。
+
+### SEMamba++
+
+公式 commit `cd369c89a8106072c077b468417b765b227afd74`。公式幅、AdamW lr `2e-4`、betas `(0.8, 0.99)`、weight decay `0.01`。融合 Mamba を使った。
+
+ガウス波形、長さ 8000 での切り分け:
+
+| 比較 | 最大絶対誤差 | 備考 |
+|---|---:|---|
+| 4 つの Mamba block 出力 | `8.58e-6` | cosine 1 |
+| 波形 | `6.91e-6` | cosine 1 |
+| スペクトルだけの損失 | 0 | 勾配最大 `7.95e-5`（許容内）、大きな勾配の cosine 1 |
+| mel だけの損失 | 0 | 勾配最大 `1.56e-6` |
+| 敵対と特徴整合 | 0 | 勾配最大 `5.88e-4`。最大要素の `|grad|` は 5.90、相対誤差 `1.0e-4`、その cosine は 1 |
+| 全損失 | 0 | 勾配最大 `4.32e-4`（`dense_encoder.dense_conv_1.0.weight`）。相対誤差 `7.5e-5`、cosine 1 |
+
+事前の `atol=1e-4` は、全損失と敵対項の絶対値では超える。超える要素は勾配そのものが大きい先頭畳み込みで、方向は cosine 1 である。`|grad|` が `1e-8` 前後の bias には cosine が負のものがある。これは公式融合カーネルと逐次 scan の float32 累積で、損失式の取り違えではない。CQT / MRD を外したスペクトル損失は許容内に収まる。
+
+実音声 8000 サンプル、20 step。step 0 の Generator 損失差は `1.91e-6`、波形差 `3.48e-7`、勾配最大 `5.89e-3`、`|grad|>1e-5` の最小 cosine は 0.9981（しきい値 0.999 をわずかに下回る）。最小 cosine -0.47 のテンソルは `|grad|` 最大 `7.7e-9` の bias である。公式 Generator 損失は 14.6 から始まり、step 19 は 15.19、独立実装との差は 0.110。波形 cosine は 0.810、重みの最大差は `4.36e-3`。固定検証発話の PESQ / STOI は測っていない（NOT TESTED）。`.venvs/semamba` に pesq が無く、学習後の波形も保存していない。
+
+### TF-GridNet ms-snsd
+
+ESPnet commit `0d136c5456d403cb2c0a4c13e76e8136e32e9b7a`。`train_enh_tfgridnet.yaml` の ms-snsd。4 層、`n_fft=512`、stride 256、`emb_dim=32`、LSTM 128。Adam lr `1e-3`、betas `(0.9, 0.999)`、eps `1e-8`、weight decay 0。YAML は `grad_clip` を書かないので、ESPnet の既定 5.0 を使った。SI-SNR の重みは 0。ReduceLROnPlateau はこの 20 更新では進めない。比較は batch 1、長さ 16000。公式 chunk は 48000、batch 4。cuDNN は deterministic、TF32 はオフ。`torch.use_deterministic_algorithms` は LSTM の一部カーネルが拒否するため使っていない。
+
+同じ波形に対する `mr_l1_tfd` の差は 0。step 0 から step 2 まで、公式と独立実装の損失差は 0、波形差も 0。step 0 の勾配最大絶対誤差は `5.62e-3`。別の 1 step では最大が `conv.1.bias` の `8.30e-3` で、その `|grad|` は 6812、相対誤差は `1.2e-6`、cosine は 1。cosine が 0.12 まで落ちるのは `|grad|` が `2.3e-5` の `beta` で、`1e-5` の判定線のすぐ上である。本番 `TFGridNetTask` と手動更新の重み差は 0。`load_enhancer` で読み直した波形差も 0。
+
+step 19 の損失は公式 42581、独立実装 41373（差 1208、約 2.8%）。検証波形の cosine は 0.929、PESQ は 1.0347 と 1.0351、STOI は 0.666 と 0.658。同じ公式波形を両方の損失に入れると差は最後まで 0 なので、損失定義は一致したまま、初回の相対誤差 `1e-6` が更新で広がっている。`urgent24` の学習比較はしていない（NOT TESTED）。
+
+### DeepFilterNet3
+
+公式 commit `d375b2d8309e0935d165700c91da9de862a99c31`。`config.ini` の SHA-256 は `415eb925d44990d938fb739f514aa3662c1ec0ea836cff044fa1291b82cb4290`。公式幅 `conv_ch=64`、48 kHz、パラメータ数 2,135,484。16 kHz のスモークは `torchaudio.functional.resample` の既定 sinc（低域通過つき）で 48 kHz にしてから両方へ渡した。切り出しは 8000 サンプル（16 kHz で 0.5 秒、48 kHz で 24000 サンプル）。公式学習は元から 48 kHz である。
+
+`steps_per_epoch=8`、`epochs=120` の出荷 cosine と、タスクの `deepfilter_cosine_schedules` は、最初の 20 値で学習率も weight decay も差 0。step 0 の学習率は `1e-4`、warmup 最終値は `1e-3`、weight decay の初期値は `1e-12`。AdamW は betas `(0.9, 0.999)`、`amsgrad=True`、勾配クリップ 1。
+
+公式 `MultiResSpecLoss` と独立実装の差は 0。local SNR 目標の差は 0。公式 `DfNet` に同じ state dict を `strict=True` で読むと、同じ特徴での forward 最大絶対誤差は 0。`libdf` は入っていないので、公式の解析 STFT と ERB は実行していない（NOT TESTED）。
+
+step 0 の損失差は `7.63e-6`、勾配最大 `3.08e-5`、大きな勾配の cosine `0.99999988`、重み差 `1.75e-4`。step 19 の損失は 18.493 と 18.475。スペクトル式の差は `1.34e-5`、local SNR 差は 0。検証波形の cosine は 0.9988、最大絶対誤差は `9.37e-3`。PESQ は 1.0422 と 1.0425、STOI は 0.198 と 0.200。STOI の絶対値は 0.5 秒を 16 kHz に戻して測ったための低さで、二つのモデルの差ではない。学習後の checkpoint は `load_enhancer` で 8000 サンプルの推論が有限値で完了した。step 19 で `|grad|>1e-5` の最小 cosine が -0.92 になるパラメータは `df_dec.df_gru.gru.weight_hh_l1` で、step 0 では揃っている。
+
+### 再現
+
+```bash
+# turing で波形を作ったあと
+# tensor の空いている GPU
+export CUDA_VISIBLE_DEVICES=<free> CUBLAS_WORKSPACE_CONFIG=:4096:8
+.venvs/lab/bin/python tests/training/reference/compare_mp_senet.py
+.venvs/lab/bin/python tests/training/reference/compare_tf_gridnet.py
+.venvs/lab/bin/python tests/training/reference/compare_deepfilternet.py
+
+# turing。sm_75 の融合カーネル
+export CUDA_VISIBLE_DEVICES=<free> CUBLAS_WORKSPACE_CONFIG=:4096:8
+.venvs/semamba/bin/python tests/training/reference/compare_semamba_step.py diagnose
+.venvs/semamba/bin/python tests/training/reference/compare_semamba_step.py speech
+```
+
+結果 JSON は `data/results/training/official-compare-20261101/`。MossFormerGAN の NISQA Discriminator は実装も比較もしていない。UniPASE、StuPASE、論文スコアの完全再現は対象外である。

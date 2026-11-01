@@ -11,7 +11,7 @@ import torch
 from src.se import build_model, load_enhancer
 from src.training.core.rng import seed_model_init, set_determinism
 from src.training.errors import TrainingError
-from src.training.se.deepfilternet import DeepFilterNetTask
+from src.training.se.deepfilternet import DeepFilterNetTask, deepfilter_cosine_schedules
 from src.training.se.mossformergan import MossFormerGANTask
 from src.training.se.semambapp import SEMambaTask
 from src.training.se.stages import StagedTask
@@ -245,6 +245,57 @@ class DeepFilterTests(unittest.TestCase):
             second = enhancer.enhance(waveform, 16000)
             self.assertTrue(torch.equal(first, second))
             self.assertTrue(torch.isfinite(first).all())
+
+    def test_deepfilter_cosine_matches_the_shipped_first_step(self):
+        config = {
+            "optimizer": {"lr": 1e-3, "weight_decay": 1e-12},
+            "scheduler": {
+                "steps_per_epoch": 8,
+                "epochs": 120,
+                "lr_min": 1e-6,
+                "lr_warmup": 1e-4,
+                "warmup_epochs": 3,
+                "weight_decay_end": 0.01,
+            },
+        }
+        learning_rates, decays = deepfilter_cosine_schedules(config)
+        self.assertEqual(len(learning_rates), 8 * 120)
+        self.assertAlmostEqual(learning_rates[0], 1e-4)
+        self.assertAlmostEqual(learning_rates[3 * 8 - 1], 1e-3)
+        self.assertAlmostEqual(learning_rates[3 * 8], 1e-3)
+        self.assertLess(learning_rates[3 * 8 + 1], learning_rates[3 * 8])
+        self.assertAlmostEqual(decays[0], 1e-12)
+        architecture = {
+            "sr": 16000,
+            "fft_size": 128,
+            "hop_size": 64,
+            "nb_erb": 16,
+            "nb_df": 16,
+            "conv_ch": 16,
+            "emb_hidden_dim": 32,
+            "df_hidden_dim": 32,
+            "enc_lin_groups": 8,
+            "lin_groups": 8,
+            "emb_num_layers": 2,
+            "df_num_layers": 1,
+            "df_order": 5,
+            "conv_lookahead": 0,
+            "df_lookahead": 0,
+        }
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            task_config = _base(root, "deepfilternet3", architecture=architecture, segment_size=1024, grad_clip=1.0)
+            task_config["optimizer"]["weight_decay"] = 1e-12
+            task_config["optimizer"]["amsgrad"] = True
+            task_config["scheduler"] = {"name": "deepfilter_cosine", **config["scheduler"]}
+            task = DeepFilterNetTask(task_config, torch.device("cpu"))
+            data = paired_dataset(root / "wav", 1, frames=1024, segment_size=1024, seed=task_config["seed"])
+            _updated(task, data)
+            self.assertAlmostEqual(task.optim_g.param_groups[0]["lr"], 1e-4)
+            self.assertEqual(task._df_step, 1)
+            restored = DeepFilterNetTask(task_config, torch.device("cpu"))
+            restored.load_state_dict(task.state_dict())
+            self.assertEqual(restored._df_step, 1)
 
     def test_official_width_step_reloads(self):
         with tempfile.TemporaryDirectory() as directory:

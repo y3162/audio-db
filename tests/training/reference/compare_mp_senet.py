@@ -1,18 +1,25 @@
-"""MP-SENet forward, loss, gradient, AdamW, and a short run versus the reference.
+"""MP-SENet forward, GAN update, and a short speech run versus the reference.
 
-Tolerances, chosen from float32 STFT and attention, before reading results:
+Tolerances, fixed before reading the measured errors:
 
 - forward and loss components: atol 1e-5
 - parameter gradients: atol 1e-4, and cosine >= 0.999 when |grad| max > 1e-5
-- AdamW weights: the first-step closed form. Near-zero gradients may move by O(lr)
+- AdamW weights: first-step closed form. Near-zero gradients may move by O(lr)
 
-    CUDA_VISIBLE_DEVICES=5 CUBLAS_WORKSPACE_CONFIG=:4096:8 \\
+The update order is the official ``train.py`` order: discriminator (real target
+1, fake target normalized PESQ, enhanced magnitude detached), then generator.
+The discriminator is not stepped again after the generator backward.
+
+Official ``AdaptiveMaxPool2d`` has no deterministic CUDA backward, so this
+comparison does not enable ``torch.use_deterministic_algorithms``. Launch with
+``CUBLAS_WORKSPACE_CONFIG=:4096:8``.
+
+    CUDA_VISIBLE_DEVICES=<free> CUBLAS_WORKSPACE_CONFIG=:4096:8 \\
         .venvs/lab/bin/python tests/training/reference/compare_mp_senet.py
 """
 
 from __future__ import annotations
 
-import json
 import sys
 import types
 from pathlib import Path
@@ -20,8 +27,22 @@ from pathlib import Path
 import torch
 
 ROOT = Path(__file__).resolve().parents[3]
-OFFICIAL = ROOT / "src" / "se" / "official" / "mp-senet"
 sys.path.insert(0, str(ROOT))
+
+from tests.training.reference.common import (  # noqa: E402
+    environment,
+    gap,
+    grad_report,
+    load_cached,
+    optim_report,
+    reference_scores,
+    rng_restore,
+    rng_snapshot,
+    save_report,
+    weight_report,
+)
+
+OFFICIAL = ROOT / "src" / "se" / "official" / "mp-senet"
 joblib = types.ModuleType("joblib")
 joblib.Parallel = lambda *args, **kwargs: None
 joblib.delayed = lambda fn: fn
@@ -36,20 +57,35 @@ sys.path.insert(0, str(OFFICIAL))
 from dataset import mag_pha_istft as official_istft  # noqa: E402
 from dataset import mag_pha_stft as official_stft  # noqa: E402
 from models.discriminator import MetricDiscriminator as OfficialDiscriminator  # noqa: E402
-from models.model import MPNet, phase_losses  # noqa: E402
+from models.model import MPNet  # noqa: E402
 from src.se import build_model  # noqa: E402
 from src.training.core.rng import seed_model_init  # noqa: E402
 from src.training.se.discriminator import MetricDiscriminator  # noqa: E402
 from src.training.se.losses import discriminator_loss, generator_losses, metric_targets  # noqa: E402
+from src.training.se.mp_senet import MPSENetTask  # noqa: E402
 from src.training.se.stft import mag_pha_istft, mag_pha_stft  # noqa: E402
 
 LOSS_ATOL = 1e-5
 GRAD_ATOL = 1e-4
 LR = 5e-4
+BETAS = (0.8, 0.99)
+WEIGHT_DECAY = 0.01
+LOSS_NAMES = ("total", "magnitude", "phase", "complex", "consistency", "metric", "time")
 
 
-def _gap(reference: torch.Tensor, other: torch.Tensor) -> float:
-    return float((reference.detach().float() - other.detach().float()).abs().max())
+def _hyper():
+    from types import SimpleNamespace
+
+    return SimpleNamespace(
+        dense_channel=64,
+        num_tsconformers=4,
+        n_fft=400,
+        hop_size=100,
+        win_size=400,
+        compress_factor=0.3,
+        beta=2.0,
+        sampling_rate=16000,
+    )
 
 
 def _build(h, device):
@@ -64,36 +100,48 @@ def _build(h, device):
     return generator, discriminator, official_g, official_d
 
 
-def _forward(generator, discriminator, clean, noisy, h, stft, istft, seed: int):
-    torch.manual_seed(seed)
+def _optimizers(generator, discriminator, official_g, official_d):
+    return (
+        torch.optim.AdamW(generator.parameters(), lr=LR, betas=BETAS, weight_decay=WEIGHT_DECAY),
+        torch.optim.AdamW(discriminator.parameters(), lr=LR, betas=BETAS, weight_decay=WEIGHT_DECAY),
+        torch.optim.AdamW(official_g.parameters(), lr=LR, betas=BETAS, weight_decay=WEIGHT_DECAY),
+        torch.optim.AdamW(official_d.parameters(), lr=LR, betas=BETAS, weight_decay=WEIGHT_DECAY),
+    )
+
+
+def _spectra(generator, clean, noisy, h, stft, istft):
     noisy_mag, noisy_phase, _ = stft(noisy, h.n_fft, h.hop_size, h.win_size, h.compress_factor)
     magnitude, phase, complex_spectrum = generator(noisy_mag, noisy_phase)
     audio = istft(magnitude, phase, h.n_fft, h.hop_size, h.win_size, h.compress_factor)
-    length = min(clean.shape[-1], audio.shape[-1])
-    audio = audio[..., :length]
-    clean_l = clean[..., :length]
-    clean_mag, clean_phase, clean_complex = stft(clean_l, h.n_fft, h.hop_size, h.win_size, h.compress_factor)
+    if audio.shape[-1] != clean.shape[-1]:
+        raise RuntimeError(f"iSTFT length {audio.shape[-1]} != waveform {clean.shape[-1]}")
+    clean_mag, clean_phase, clean_complex = stft(clean, h.n_fft, h.hop_size, h.win_size, h.compress_factor)
     hat_mag, _, recomputed = stft(audio, h.n_fft, h.hop_size, h.win_size, h.compress_factor)
-    score = discriminator(clean_mag, hat_mag)
     return {
         "noisy_mag": noisy_mag,
         "magnitude": magnitude,
         "phase": phase,
         "audio": audio,
-        "clean": clean_l,
         "clean_mag": clean_mag,
         "clean_phase": clean_phase,
         "clean_complex": clean_complex,
         "complex": complex_spectrum,
         "recomputed": recomputed,
         "hat_mag": hat_mag,
-        "score": score,
     }
 
 
-def _losses(parts, h):
-    ones = torch.ones(parts["clean"].shape[0], device=parts["clean"].device)
-    losses = generator_losses(
+def _paired_spectra(generator, official_g, clean, noisy, h):
+    snap = rng_snapshot()
+    ours = _spectra(generator, clean, noisy, h, mag_pha_stft, mag_pha_istft)
+    rng_restore(snap)
+    official = _spectra(official_g, clean, noisy, h, official_stft, official_istft)
+    return ours, official
+
+
+def _components(parts, score, ones, clean):
+    # generator_losses takes clean audio. The call above cannot omit it.
+    return generator_losses(
         parts["clean_mag"],
         parts["magnitude"],
         parts["clean_phase"],
@@ -101,145 +149,245 @@ def _losses(parts, h):
         parts["clean_complex"],
         parts["complex"],
         parts["recomputed"],
-        parts["clean"],
+        clean,
         parts["audio"],
-        parts["score"],
+        score,
         ones,
     )
-    targets = metric_targets(parts["clean"].detach(), parts["audio"].detach(), h.sampling_rate)
-    real = parts["score"].new_zeros(parts["score"].shape)  # placeholder replaced below
-    del real
-    return losses, ones, targets
 
 
-def _official_total(parts):
-    phase = sum(phase_losses(parts["clean_phase"], parts["phase"]))
-    return (
-        torch.nn.functional.mse_loss(parts["clean_mag"], parts["magnitude"]) * 0.9
-        + phase * 0.3
-        + torch.nn.functional.mse_loss(parts["clean_complex"], parts["complex"]) * 2 * 0.1
-        + torch.nn.functional.mse_loss(parts["complex"], parts["recomputed"]) * 2 * 0.1
-        + torch.nn.functional.mse_loss(parts["score"].flatten(), torch.ones(parts["clean"].shape[0], device=parts["score"].device)) * 0.05
-        + torch.nn.functional.l1_loss(parts["clean"], parts["audio"]) * 0.2
-    )
-
-
-def _grad_max(left_module, right_module) -> dict:
-    worst = 0.0
-    name = ""
-    cosine_min = 1.0
-    large_cosine = 1.0
-    for (left_name, left), right in zip(left_module.named_parameters(), right_module.parameters(), strict=True):
-        if left.grad is None or right.grad is None:
-            continue
-        gap = float((left.grad - right.grad).abs().max())
-        if gap > worst:
-            worst = gap
-            name = left_name
-        flat_l = left.grad.detach().float().reshape(-1)
-        flat_r = right.grad.detach().float().reshape(-1)
-        if flat_l.numel() > 1:
-            cosine = float(torch.nn.functional.cosine_similarity(flat_l, flat_r, dim=0))
-            cosine_min = min(cosine_min, cosine)
-            if float(flat_l.abs().max()) > 1e-5:
-                large_cosine = min(large_cosine, cosine)
-    return {"max_abs": worst, "worst": name, "cosine_min": cosine_min, "large_cosine_min": large_cosine}
-
-
-def run_case(h, device, steps: int) -> dict:
-    generator, discriminator, official_g, official_d = _build(h, device)
-    torch.manual_seed(11)
-    clean = torch.randn(2, 8000, device=device)
-    noisy = clean * 0.5 + 0.05
-    report = {"parameters": sum(p.numel() for p in generator.parameters())}
-    for mode in ("eval", "train"):
-        for module in (generator, discriminator, official_g, official_d):
-            getattr(module, mode)()
-        ours = _forward(generator, discriminator, clean, noisy, h, mag_pha_stft, mag_pha_istft, 21)
-        official = _forward(official_g, official_d, clean, noisy, h, official_stft, official_istft, 21)
-        report[mode] = {
-            "stft": _gap(official["noisy_mag"], ours["noisy_mag"]),
-            "magnitude": _gap(official["magnitude"], ours["magnitude"]),
-            "phase": _gap(official["phase"], ours["phase"]),
-            "score": _gap(official["score"], ours["score"]),
-            "wave": _gap(official["audio"], ours["audio"]),
-            "loss": abs(float(_official_total(official).detach()) - float(_official_total(ours).detach())),
-        }
-    for module in (generator, discriminator, official_g, official_d):
-        module.train()
-    ours = _forward(generator, discriminator, clean, noisy, h, mag_pha_stft, mag_pha_istft, 21)
-    official = _forward(official_g, official_d, clean, noisy, h, official_stft, official_istft, 21)
-    our_total = _official_total(ours)
-    off_total = _official_total(official)
-    our_total.backward()
-    off_total.backward()
-    report["generator_grad"] = _grad_max(generator, official_g)
-    report["discriminator_grad"] = _grad_max(discriminator, official_d)
-    optim_a = torch.optim.AdamW(generator.parameters(), lr=LR, betas=(0.8, 0.99), weight_decay=0.01)
-    optim_b = torch.optim.AdamW(official_g.parameters(), lr=LR, betas=(0.8, 0.99), weight_decay=0.01)
-    optim_da = torch.optim.AdamW(discriminator.parameters(), lr=LR, betas=(0.8, 0.99), weight_decay=0.01)
-    optim_db = torch.optim.AdamW(official_d.parameters(), lr=LR, betas=(0.8, 0.99), weight_decay=0.01)
-    optim_a.step()
-    optim_b.step()
-    optim_da.step()
-    optim_db.step()
-    report["weight_after_step"] = _gap(
-        torch.cat([p.detach().flatten() for p in official_g.parameters()]),
-        torch.cat([p.detach().flatten() for p in generator.parameters()]),
-    )
-    for module in (generator, discriminator, official_g, official_d):
-        module.eval()
-    ours2 = _forward(generator, discriminator, clean, noisy, h, mag_pha_stft, mag_pha_istft, 0)
-    official2 = _forward(official_g, official_d, clean, noisy, h, official_stft, official_istft, 0)
-    report["next_forward"] = {
-        "magnitude": _gap(official2["magnitude"], ours2["magnitude"]),
-        "phase": _gap(official2["phase"], ours2["phase"]),
-        "wave": _gap(official2["audio"], ours2["audio"]),
-        "loss": abs(float(_official_total(official2).detach()) - float(_official_total(ours2).detach())),
+def _loss_gap(official: dict, ours: dict) -> dict[str, float]:
+    return {
+        name: abs(float(official[name].detach()) - float(ours[name].detach()))
+        for name in LOSS_NAMES
     }
-    history = [report["next_forward"]["loss"]]
-    official_values = [float(_official_total(official2).detach())]
-    for step in range(1, steps):
-        for module in (generator, discriminator, official_g, official_d):
-            module.train()
-        for group in (optim_a, optim_b, optim_da, optim_db):
-            group.zero_grad(set_to_none=True)
-        ours = _forward(generator, discriminator, clean, noisy, h, mag_pha_stft, mag_pha_istft, 30 + step)
-        official = _forward(official_g, official_d, clean, noisy, h, official_stft, official_istft, 30 + step)
-        off_loss = _official_total(official)
-        our_loss = _official_total(ours)
-        our_loss.backward()
-        off_loss.backward()
-        optim_a.step()
-        optim_b.step()
-        optim_da.step()
-        optim_db.step()
-        history.append(abs(float(off_loss.detach()) - float(our_loss.detach())))
-        official_values.append(float(off_loss.detach()))
-    report["loss_gap_per_step"] = history
-    report["official_loss_per_step"] = official_values
-    report["final_weight"] = _gap(
-        torch.cat([p.detach().flatten() for p in official_g.parameters()]),
-        torch.cat([p.detach().flatten() for p in generator.parameters()]),
-    )
+
+
+def _values(losses: dict) -> dict[str, float]:
+    return {name: float(losses[name].detach()) for name in LOSS_NAMES}
+
+
+def gan_step(modules, optimizers, clean, noisy, h) -> dict:
+    """One official-order update. Discriminator gradients are read before the generator backward."""
+    generator, discriminator, official_g, official_d = modules
+    optim_g, optim_d, optim_og, optim_od = optimizers
+    for module in modules:
+        module.train()
+    for optim in optimizers:
+        optim.zero_grad(set_to_none=True)
+    ours, official = _paired_spectra(generator, official_g, clean, noisy, h)
+    ours_real, official_real = _paired_clean_and_fake(discriminator, official_d, ours, official)
+    ones_ours = torch.ones(clean.shape[0], device=clean.device)
+    ones_official = torch.ones(clean.shape[0], device=clean.device)
+    pesq_ours = metric_targets(clean, ours["audio"].detach(), h.sampling_rate)
+    pesq_official = metric_targets(clean, official["audio"].detach(), h.sampling_rate)
+    loss_d_ours = discriminator_loss(ours_real[0], ours_real[1], ones_ours, pesq_ours)
+    loss_d_official = discriminator_loss(official_real[0], official_real[1], ones_official, pesq_official)
+    loss_d_ours.backward()
+    loss_d_official.backward()
+    discriminator_grad = grad_report(official_d, discriminator, atol=GRAD_ATOL)
+    optim_od.step()
+    optim_d.step()
+    discriminator_weight_after_d = weight_report(official_d, discriminator)
+    for optim in (optim_g, optim_og):
+        optim.zero_grad(set_to_none=True)
+    snap = rng_snapshot()
+    ours_metric = discriminator(ours["clean_mag"], ours["hat_mag"])
+    rng_restore(snap)
+    official_metric = official_d(official["clean_mag"], official["hat_mag"])
+    loss_g_ours = _components(ours, ours_metric, ones_ours, clean)
+    loss_g_official = _components(official, official_metric, ones_official, clean)
+    loss_g_ours["total"].backward()
+    loss_g_official["total"].backward()
+    generator_grad = grad_report(official_g, generator, atol=GRAD_ATOL)
+    optim_og.step()
+    optim_g.step()
+    return {
+        "forward": {
+            "stft": gap(official["noisy_mag"], ours["noisy_mag"]),
+            "magnitude": gap(official["magnitude"], ours["magnitude"]),
+            "phase": gap(official["phase"], ours["phase"]),
+            "wave": gap(official["audio"], ours["audio"]),
+            "real_score": gap(official_real[0], ours_real[0]),
+            "fake_score": gap(official_real[1], ours_real[1]),
+            "metric_score": gap(official_metric, ours_metric),
+        },
+        "pesq_target": _pesq_gap(pesq_official, pesq_ours),
+        "discriminator_loss": abs(float(loss_d_official.detach()) - float(loss_d_ours.detach())),
+        "official_discriminator_loss": float(loss_d_official.detach()),
+        "generator_loss_gap": _loss_gap(loss_g_official, loss_g_ours),
+        "official_generator_loss": _values(loss_g_official),
+        "independent_generator_loss": _values(loss_g_ours),
+        "discriminator_grad": discriminator_grad,
+        "generator_grad": generator_grad,
+        "discriminator_weight_after_d": discriminator_weight_after_d,
+        "generator_weight": weight_report(official_g, generator),
+        "discriminator_weight": weight_report(official_d, discriminator),
+        "generator_optim": optim_report(optim_og, optim_g),
+        "discriminator_optim": optim_report(optim_od, optim_d),
+    }
+
+
+def _paired_clean_and_fake(discriminator, official_d, ours, official):
+    snap = rng_snapshot()
+    real_ours = discriminator(ours["clean_mag"], ours["clean_mag"])
+    fake_ours = discriminator(ours["clean_mag"], ours["hat_mag"].detach())
+    rng_restore(snap)
+    real_official = official_d(official["clean_mag"], official["clean_mag"])
+    fake_official = official_d(official["clean_mag"], official["hat_mag"].detach())
+    return (real_ours, fake_ours), (real_official, fake_official)
+
+
+def _pesq_gap(official, ours) -> dict:
+    if official is None and ours is None:
+        return {"status": "na", "reason": "pesq failed on both sides", "max_abs": None}
+    if official is None or ours is None:
+        return {
+            "status": "mismatch",
+            "reason": "pesq failed on one side only",
+            "official_none": official is None,
+            "independent_none": ours is None,
+        }
+    return {"status": "ok", **gap(official, ours.to(official.device))}
+
+
+def _forward_modes(modules, clean, noisy, h) -> dict:
+    generator, discriminator, official_g, official_d = modules
+    report = {}
+    for mode in ("eval", "train"):
+        for module in modules:
+            getattr(module, mode)()
+        snap = rng_snapshot()
+        ours = _spectra(generator, clean, noisy, h, mag_pha_stft, mag_pha_istft)
+        ours_score = discriminator(ours["clean_mag"], ours["hat_mag"])
+        rng_restore(snap)
+        official = _spectra(official_g, clean, noisy, h, official_stft, official_istft)
+        official_score = official_d(official["clean_mag"], official["hat_mag"])
+        ones = torch.ones(clean.shape[0], device=clean.device)
+        ours_loss = _components(ours, ours_score, ones, clean)
+        official_loss = _components(official, official_score, ones, clean)
+        report[mode] = {
+            "stft": gap(official["noisy_mag"], ours["noisy_mag"])["max_abs"],
+            "magnitude": gap(official["magnitude"], ours["magnitude"])["max_abs"],
+            "phase": gap(official["phase"], ours["phase"])["max_abs"],
+            "score": gap(official_score, ours_score)["max_abs"],
+            "wave": gap(official["audio"], ours["audio"])["max_abs"],
+            "loss": _loss_gap(official_loss, ours_loss),
+        }
     return report
+
+
+def _task_matches(modules, clean, noisy, h, device) -> dict:
+    generator, discriminator, _official_g, _official_d = modules
+    config = {
+        "seed": 7,
+        "loss": "official",
+        "optimizer": {"lr": LR, "betas": list(BETAS), "weight_decay": WEIGHT_DECAY},
+        "scheduler": {"gamma": 0.99},
+        "model": vars(h),
+    }
+    task = MPSENetTask(config, device)
+    task.generator.load_state_dict(generator.state_dict(), strict=True)
+    task.discriminator.load_state_dict(discriminator.state_dict(), strict=True)
+    task.optim_g = torch.optim.AdamW(task.generator.parameters(), lr=LR, betas=BETAS, weight_decay=WEIGHT_DECAY)
+    task.optim_d = torch.optim.AdamW(task.discriminator.parameters(), lr=LR, betas=BETAS, weight_decay=WEIGHT_DECAY)
+    held = rng_snapshot()
+    metrics = task.train_update([{"clean": clean, "noisy": noisy}], 1)
+    rng_restore(held)
+    reference_modules = _build(h, device)
+    reference_modules[0].load_state_dict(generator.state_dict(), strict=True)
+    reference_modules[1].load_state_dict(discriminator.state_dict(), strict=True)
+    reference_opt = _optimizers(*reference_modules)
+    manual = gan_step(reference_modules, reference_opt, clean, noisy, h)
+    return {
+        "task_losses": metrics,
+        "weight_versus_manual_independent": weight_report(reference_modules[0], task.generator),
+        "discriminator_weight_versus_manual": weight_report(reference_modules[1], task.discriminator),
+        "manual_generator_loss": manual["official_generator_loss"]["total"],
+    }
+
+
+def _probe(modules, clean, noisy, sample_rate) -> dict:
+    generator, _discriminator, official_g, _official_d = modules
+    for module in modules:
+        module.eval()
+    with torch.no_grad():
+        snap = rng_snapshot()
+        ours = _spectra(generator, clean, noisy, _hyper(), mag_pha_stft, mag_pha_istft)
+        rng_restore(snap)
+        official = _spectra(official_g, clean, noisy, _hyper(), official_stft, official_istft)
+    clean_cpu = clean[0].detach().cpu()
+    return {
+        "wave": gap(official["audio"], ours["audio"]),
+        "official": reference_scores(clean_cpu, official["audio"][0], sample_rate),
+        "independent": reference_scores(clean_cpu, ours["audio"][0], sample_rate),
+    }
 
 
 def main() -> None:
     device = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
-    from types import SimpleNamespace
-
-    official = SimpleNamespace(
-        dense_channel=64,
-        num_tsconformers=4,
-        n_fft=400,
-        hop_size=100,
-        win_size=400,
-        compress_factor=0.3,
-        beta=2.0,
-        sampling_rate=16000,
-    )
-    print(json.dumps({"device": str(device), "official_width": run_case(official, device, 20)}, indent=2))
+    h = _hyper()
+    report = {
+        "environment": environment(device),
+        "official_commit": "89932cfe90d1dacb8e170e4a331d762462c21792",
+        "tolerances": {"loss_atol": LOSS_ATOL, "grad_atol": GRAD_ATOL, "large_cosine_min": 0.999},
+        "optimizer": {"name": "adamw", "lr": LR, "betas": list(BETAS), "weight_decay": WEIGHT_DECAY},
+        "scheduler": "ExponentialLR is per epoch and is not stepped during these 20 optimizer updates",
+        "update_order": "discriminator (PESQ target, detached magnitude) then generator",
+        "batch_size": 2,
+        "segment_size": 32000,
+        "note": "Official config.json uses batch 4. This run uses batch 2 of the smoke set.",
+    }
+    modules = _build(h, device)
+    report["parameters"] = sum(parameter.numel() for parameter in modules[0].parameters())
+    torch.manual_seed(11)
+    synthetic_clean = torch.randn(2, 8000, device=device)
+    synthetic_noisy = synthetic_clean * 0.5 + 0.05
+    report["synthetic_forward"] = _forward_modes(modules, synthetic_clean, synthetic_noisy, h)
+    train = load_cached("mp_train")
+    valid = load_cached("valid")
+    report["train_case_ids"] = train["case_id"]
+    report["valid_case_id"] = valid["case_id"]
+    clean = train["clean"][:2].to(device)
+    noisy = train["noisy"][:2].to(device)
+    modules = _build(h, device)
+    report["task_versus_manual"] = _task_matches(modules, clean, noisy, h, device)
+    modules = _build(h, device)
+    optimizers = _optimizers(*modules)
+    history = []
+    for step in range(20):
+        start = (2 * step) % train["clean"].shape[0]
+        indices = [start, (start + 1) % train["clean"].shape[0]]
+        clean_batch = train["clean"][indices].to(device)
+        noisy_batch = train["noisy"][indices].to(device)
+        case_ids = [train["case_id"][index] for index in indices]
+        record = gan_step(modules, optimizers, clean_batch, noisy_batch, h)
+        record["step"] = step
+        record["case_id"] = case_ids
+        history.append(
+            {
+                "step": step,
+                "case_id": case_ids,
+                "official_generator": record["official_generator_loss"]["total"],
+                "independent_generator": record["independent_generator_loss"]["total"],
+                "generator_gap": record["generator_loss_gap"]["total"],
+                "discriminator_gap": record["discriminator_loss"],
+                "official_discriminator": record["official_discriminator_loss"],
+                "wave_max_abs": record["forward"]["wave"]["max_abs"],
+                "generator_grad_max_abs": record["generator_grad"]["max_abs"],
+                "generator_large_cosine": record["generator_grad"]["large_cosine_min"],
+                "generator_weight_max_abs": record["generator_weight"]["max_abs"],
+                "pesq_target": record["pesq_target"],
+            }
+        )
+        report["last_step"] = record
+        report["history"] = history
+        save_report("mp_senet.json", report)
+        print(f"mp-senet step {step} gen {record['official_generator_loss']['total']:.6f} gap {record['generator_loss_gap']['total']:.6e}", flush=True)
+    report["probe_case_id"] = valid["case_id"]
+    report["probe"] = _probe(modules, valid["clean"].to(device), valid["noisy"].to(device), 16000)
+    path = save_report("mp_senet.json", report)
+    print(path)
 
 
 if __name__ == "__main__":

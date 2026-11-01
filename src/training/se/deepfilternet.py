@@ -19,14 +19,17 @@ Vorbis window and ``torch.istft``. Local SNR is the 20 ms windowed ratio of
 clean and noise energies, in dB, clamped to ``[lsnr_min - 1, lsnr_max + 1]``.
 
 AdamW in that ini is lr 0.001, betas (0.9, 0.999), weight decay 1e-12,
-``amsgrad=True``. The per-step cosine (warmup 3 epochs from 1e-4 to 1e-3,
-then down to 1e-6, weight decay cosine toward 0.01) depends on the number of
-steps in an epoch. This task does not invent that length; the YAML scheduler
-is used as configured.
+``amsgrad=True``. ``scheduler.name: deepfilter_cosine`` applies the shipped
+per-step cosine. The learning rate warms up over ``warmup_epochs`` from
+``lr_warmup`` to ``optimizer.lr``, then cosine-decays to ``lr_min``. Weight
+decay cosine-decays from ``optimizer.weight_decay`` to ``weight_decay_end``
+when the current decay is positive. ``steps_per_epoch`` is explicit because
+the official schedule length is the dataset size divided by the batch.
 """
 
 from __future__ import annotations
 
+import math
 from typing import Any
 
 import torch
@@ -49,6 +52,54 @@ _MR_GAMMA = 0.3
 _MR_FFTS = (256, 512, 1024, 2048)
 _LSNR = 1e-3
 _LSNR_MS = 20
+
+
+def deepfilter_cosine_schedules(config: dict[str, Any]) -> tuple[list[float], list[float]]:
+    """Shipped per-step cosine from ``df.lr.cosine_scheduler``.
+
+    Warmup is ``numpy.linspace(lr_warmup, lr, warmup_epochs * steps_per_epoch)``,
+    including the endpoint. The remaining steps are one cosine cycle from the
+    base learning rate down to ``lr_min``. Weight decay is one cosine from the
+    optimizer value to ``weight_decay_end``, with no warmup. A linspace of one
+    point is the stop value, matching NumPy.
+    """
+    schedule = config["scheduler"]
+    steps = int(schedule["steps_per_epoch"])
+    epochs = int(schedule["epochs"])
+    total = steps * epochs
+    warmup = int(schedule["warmup_epochs"]) * steps
+    if warmup > total:
+        raise TrainingError("deepfilter cosine warmup is longer than the run")
+    base = float(config["optimizer"]["lr"])
+    final = float(schedule["lr_min"])
+    start = float(schedule["lr_warmup"])
+    learning_rates = _linspace(start, base, warmup) + _cosine_cycle(base, final, total - warmup)
+    if len(learning_rates) != total:
+        raise TrainingError("deepfilter cosine learning-rate schedule has the wrong length")
+    decay = _cosine_cycle(
+        float(config["optimizer"]["weight_decay"]),
+        float(schedule["weight_decay_end"]),
+        total,
+    )
+    return learning_rates, decay
+
+
+def _linspace(start: float, stop: float, count: int) -> list[float]:
+    if count <= 0:
+        return []
+    if count == 1:
+        return [stop]
+    step = (stop - start) / (count - 1)
+    return [start + step * index for index in range(count)]
+
+
+def _cosine_cycle(base: float, final: float, count: int) -> list[float]:
+    if count <= 0:
+        return []
+    return [
+        final + 0.5 * (base - final) * (1.0 + math.cos(math.pi * index / count))
+        for index in range(count)
+    ]
 
 
 class DeepFilterNetTask:
@@ -76,7 +127,15 @@ class DeepFilterNetTask:
             device,
         )
         self.optim_g = build_optimizer(self.generator.parameters(), config)
-        self.sched_g = build_scheduler(self.optim_g, config)
+        schedule = config["scheduler"]
+        if schedule["name"] == "deepfilter_cosine":
+            self.sched_g = None
+            self._df_lrs, self._df_wds = deepfilter_cosine_schedules(config)
+        else:
+            self.sched_g = build_scheduler(self.optim_g, config)
+            self._df_lrs = None
+            self._df_wds = None
+        self._df_step = 0
 
     def distribute(self, process: ProcessInfo) -> None:
         self.generator = wrap_module(self.generator, process)
@@ -106,6 +165,7 @@ class DeepFilterNetTask:
             "generator": self.generator_state_dict(),
             "optim_g": self.optim_g.state_dict(),
             "sched_g": None if self.sched_g is None else self.sched_g.state_dict(),
+            "schedule_step": self._df_step,
         }
 
     def load_state_dict(self, state: dict[str, Any]) -> None:
@@ -117,9 +177,11 @@ class DeepFilterNetTask:
         self.optim_g.load_state_dict(state["optim_g"])
         if self.sched_g is not None and state.get("sched_g") is not None:
             self.sched_g.load_state_dict(state["sched_g"])
+        self._df_step = int(state.get("schedule_step") or 0)
 
     def train_update(self, batches: list[dict[str, Any]], accumulation: int) -> dict[str, float]:
         self.train_mode()
+        self._apply_deepfilter_schedule()
         self.optim_g.zero_grad(set_to_none=True)
         total = 0.0
         for index, batch in enumerate(batches):
@@ -131,8 +193,25 @@ class DeepFilterNetTask:
             total += float(loss.detach())
         clip_gradients(unwrap(self.generator), self.grad_clip)
         self.optim_g.step()
+        if self._df_lrs is not None:
+            self._df_step += 1
         mean = total / len(batches)
         return {"generator": mean, "deepfilter": mean}
+
+    def _apply_deepfilter_schedule(self) -> None:
+        if self._df_lrs is None or self._df_wds is None:
+            return
+        if self._df_step < 0 or self._df_step >= len(self._df_lrs):
+            raise TrainingError(
+                f"deepfilter cosine step {self._df_step} is outside the schedule of {len(self._df_lrs)}"
+            )
+        learning_rate = self._df_lrs[self._df_step]
+        decay = self._df_wds[self._df_step]
+        for group in self.optim_g.param_groups:
+            group["lr"] = learning_rate
+            # The official loop overwrites a positive decay with the cosine value.
+            if float(group["weight_decay"]) > 0.0:
+                group["weight_decay"] = decay
 
     def validation_report(self, batch: dict[str, Any]) -> dict[str, Any]:
         clean = batch["clean"].to(self.device)

@@ -31,8 +31,20 @@ _TOP = {
     "data",
     "runtime",
 }
-_OPTIMIZER = {"name", "lr", "betas", "weight_decay"}
-_SCHEDULER = {"name", "gamma", "step_size", "factor", "patience"}
+_OPTIMIZER = {"name", "lr", "betas", "weight_decay", "amsgrad"}
+_SCHEDULER = {
+    "name",
+    "gamma",
+    "step_size",
+    "factor",
+    "patience",
+    "steps_per_epoch",
+    "epochs",
+    "lr_min",
+    "lr_warmup",
+    "warmup_epochs",
+    "weight_decay_end",
+}
 _LOSSES = {"official", "reconstruction", "waveform_l1"}
 _MODEL_NAMES = {
     "mp_senet",
@@ -109,6 +121,7 @@ def _optimizer(raw: Any) -> dict[str, Any]:
         "lr": _float(raw["lr"], "optimizer.lr"),
         "betas": [_float(betas[0], "optimizer.betas[0]"), _float(betas[1], "optimizer.betas[1]")],
         "weight_decay": _float(raw["weight_decay"], "optimizer.weight_decay", minimum=0.0),
+        "amsgrad": bool(raw.get("amsgrad", False)),
     }
 
 
@@ -133,7 +146,19 @@ def _scheduler(raw: Any) -> dict[str, Any]:
         }
     if name == "none":
         return {"name": name}
-    raise TrainingError("scheduler.name must be exponential, steplr, plateau, or none")
+    if name == "deepfilter_cosine":
+        return {
+            "name": name,
+            "steps_per_epoch": _int(raw["steps_per_epoch"], "scheduler.steps_per_epoch"),
+            "epochs": _int(raw["epochs"], "scheduler.epochs"),
+            "lr_min": _float(raw["lr_min"], "scheduler.lr_min", minimum=0.0),
+            "lr_warmup": _float(raw["lr_warmup"], "scheduler.lr_warmup", minimum=0.0),
+            "warmup_epochs": _int(raw["warmup_epochs"], "scheduler.warmup_epochs", minimum=0),
+            "weight_decay_end": _float(raw["weight_decay_end"], "scheduler.weight_decay_end", minimum=0.0),
+        }
+    raise TrainingError(
+        "scheduler.name must be exponential, steplr, plateau, deepfilter_cosine, or none"
+    )
 
 
 def _model(raw: Any, loss: str) -> dict[str, Any]:

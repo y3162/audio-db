@@ -2,8 +2,10 @@
 # builds a GRU with zero layers. The loss is the shipped config.ini
 # (multi-resolution spectral 500/500, local SNR 1e-3). This YAML keeps a
 # smaller network than conv_ch=64. AdamW matches the ini: lr 0.001,
-# betas (0.9, 0.999), weight decay 1e-12, amsgrad. The per-step cosine is
-# not applied. Do not point checkpoint_dir at data/checkpoints.
+# betas (0.9, 0.999), weight decay 1e-12, amsgrad. deepfilter_cosine is the
+# shipped per-step schedule. steps_per_epoch is 8 because this smoke set has
+# 8 training cases and global_batch_size is 1. A larger set needs a matching
+# steps_per_epoch. Do not point checkpoint_dir at data/checkpoints.
 
 seed: 1234
 deterministic: true
@@ -26,7 +28,13 @@ optimizer:
   amsgrad: true
 
 scheduler:
-  name: none
+  name: deepfilter_cosine
+  steps_per_epoch: 8
+  epochs: 120
+  lr_min: 1.0e-6
+  lr_warmup: 1.0e-4
+  warmup_epochs: 3
+  weight_decay_end: 0.01
 
 model:
   name: deepfilternet3
