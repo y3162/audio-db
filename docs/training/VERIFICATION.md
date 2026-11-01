@@ -283,3 +283,90 @@ export CUDA_VISIBLE_DEVICES=<free> CUBLAS_WORKSPACE_CONFIG=:4096:8
 ```
 
 結果 JSON は `data/results/training/official-compare-20261101/`。MossFormerGAN の NISQA Discriminator は実装も比較もしていない。UniPASE、StuPASE、論文スコアの完全再現は対象外である。
+
+## SEMamba++ の短時間学習と品質（2026-11-01）
+
+判定は **PARTIAL**。事前に固定した許容は、発話ごとの絶対差で PESQ `0.10`、STOI `0.02`、SI-SDR `1.0 dB` である。測定後にこの値は変えていない。判定点は更新 20 回後の検証 4 発話である。そこでは PESQ と STOI は帯の内、SI-SDR は 4 発話とも帯の外だった。100 更新では SI-SDR の差は帯の内に戻ったが、これは事前の判定点ではなく、学習済みモデルの最終品質でもない。
+
+比較したのは、同じ初期重みから同じ 8,000 サンプルの学習順で 20 回、および別プロセスで 100 回更新した公式幅である。検証音声は学習に使った 0.5 秒の切り出しではない。`libri_demand_smoke_valid` の 4 発話を、元の clean と雑音から 3〜10 秒に伸ばしたレシピで再生した。長さは 5.855 秒（SNR 0 dB）、10 秒（5 dB）、10 秒（10 dB）、4.53 秒（15 dB）である。レシピ JSON は実験ディレクトリにあり、DuckDB には書いていない。本番 `resource.duckdb` と `official-compare-20261101/` は変更していない。
+
+### 条件
+
+| 項目 | 値 |
+|---|---|
+| 初期化 | seed 1234。構築後に公式の state dict を独立実装へコピーし、`torch.equal` とソートした SHA-256 が一致 |
+| 学習 | 前回の `semamba_waves.pt` の 8 区間を順に循環。AdamW、lr `2e-4`、betas `(0.8, 0.99)`、weight decay `0.01`。勾配クリップはしない |
+| Scheduler | 公式と同じ ExponentialLR、gamma `0.99`。コンストラクタ後の `last_epoch` は 0 で、lr は `2e-4` のまま。20 回でも 100 回でも `step()` は呼ばない |
+| Dropout | モジュール数 0。更新中は両方 `train()`、品質の forward は両方 `eval()` |
+| 入力レベル | レシピ再生のあと、学習と同じエネルギー正規化。クリップしない。再サンプリングしない。16 kHz |
+| カーネル | 公式 Generator の Mamba 24 個は `use_fast_path=True`。`mamba_inner_fn` と `selective_scan_cuda`。`mamba-ssm==2.3.2.post1`、`causal-conv1d==1.7.0` |
+| 指標 | `.venvs/lab` の pesq `0.0.4`（wideband）、pystoi `0.4.1`、リポジトリの SI-SDR。`.venvs/semamba` のダミー `pesq` は損失モジュールの import 用で、値は読んでいない |
+| GPU | `turing`。Phase A は物理 GPU 0、Phase B は物理 GPU 1。どちらも Quadro RTX 5000、開始時の使用メモリは 15 MiB と 10 MiB。ピークは約 8368 MiB。`CUBLAS_WORKSPACE_CONFIG=:4096:8`。TF32 はオフ。融合カーネルを止める `use_deterministic_algorithms` は使っていない |
+
+Generator のパラメータ数は 2,655,521。コピー前の Generator ハッシュは公式と独立実装で違った。CQT と MRD は seed 1234 の時点で一致した。コピー後は 3 つとも一致した。
+
+公式 iSTFT は 5.855 秒と 4.53 秒の 2 発話で独立実装より 80 サンプル短い。指標は重なった区間で計算し、`trimmed_samples` に 80 を残している。長さが一致する 10 秒の 2 発話でも SI-SDR の差は同程度なので、この 80 サンプルが差の原因ではない。
+
+### 更新 20 回（判定点）
+
+Phase A。4 発話の平均。noisy は強調前。
+
+| 指標 | noisy | 公式 | 独立 | 公式−独立の絶対値 |
+|---|---:|---:|---:|---:|
+| PESQ | 1.674 | 1.043 | 1.045 | 0.0026 |
+| STOI | 0.942 | 0.584 | 0.592 | 0.0083 |
+| SI-SDR (dB) | 7.51 | -25.31 | -27.34 | 2.03 |
+| 波形 cosine | | | | 0.906 |
+
+発話ごとの SI-SDR 差は 1.82、1.72、2.11、2.47 dB で、許容 1.0 dB を全部超えた。PESQ の発話ごと差は最大 0.007、STOI は最大 0.009 で、こちらの許容内だった。どちらも noisy より悪い。PESQ は約 0.63 下がり、STOI は約 0.35 下がり、SI-SDR は約 33 dB 下がる。20 更新は強調を獲得していない。
+
+### 100 更新での推移
+
+Phase B は同じ seed の別プロセスで 100 更新した。20 更新時点の学習波形 cosine は Phase A の 0.903 に対して 0.898 で、ビット一致ではない。融合カーネルの非決定性と、再開実験の重み差 `6.3e-5` と同じ種類のずれである。
+
+検証 4 発話の平均絶対差:
+
+| 更新後 | PESQ | STOI | SI-SDR (dB) | 波形 cosine | 公式 SI-SDR | 独立 SI-SDR |
+|---:|---:|---:|---:|---:|---:|---:|
+| 0 | 0.010 | 0.000 | 0.005 | 1.000 | -39.48 | -39.48 |
+| 20 | 0.148 | 0.005 | 1.38 | 0.891 | -25.40 | -26.78 |
+| 50 | 0.003 | 0.008 | 0.73 | 0.883 | -15.09 | -15.82 |
+| 100 | 0.004 | 0.004 | 0.59 | 0.849 | -11.61 | -12.20 |
+
+SI-SDR の実装間差は 20 更新で広がり、50 更新と 100 更新では 1 dB の帯に入った。波形 cosine はその間も 0.89 から 0.85 へ緩やかに下がった。学習セグメントの cosine の最小は 0.860（forward 93）、Generator 損失差の最大は 0.184（forward 78）である。100 更新後も SI-SDR は noisy の +7.5 dB に対して約 -12 dB で、強調としての改善にはなっていない。この 100 更新は収束も最終性能の一致も示さない。
+
+更新 20 回の PESQ 平均差 0.148 は、1 発話の全区間 PESQ 1.538 が押し上げている。同じ波形の 1 秒区間は平均 1.061 だった。Phase A の更新 10 回にも、全区間 PESQ 4.407 に対して 1 秒区間が 1.03〜1.09 の発話がある。SI-SDR は約 -39 dB、clean との cosine は 0.01 なので、この全区間 PESQ は品質の証拠に使っていない。判定点の Phase A 更新 20 回は、全区間と 1 秒区間がどちらも約 1.04 で揃っていた。
+
+### cosine 0.810 との対応
+
+前回の 0.810 は、seed を固定する前の実行で、更新 19 回後の 0.5 秒学習区間の波形 cosine である。その波形は残っていないので、同じペアの PESQ は再計算できない。今回の同じ位置は Phase A で cosine 0.903、PESQ 1.064 と 1.059（差 0.005）、SI-SDR -27.3 dB と -28.6 dB（差 1.28 dB）だった。0.5 秒は品質の正本ではない。同じ重みの 4.5〜10 秒では cosine 0.906、PESQ 差 0.003、SI-SDR 差 2.0 dB である。cosine が 0.9 前後でも PESQ はほとんど動かない。差の本体は、両方に共通する大きな歪みの上の 1〜2.5 dB の SI-SDR である。
+
+### 再開
+
+Phase A の更新 10 回の checkpoint から 1 更新した Generator は、連続実行の更新 11 回と最大絶対誤差 `6.29e-5`（公式）と `5.95e-5`（独立）だった。ビット一致ではない。
+
+### テスト
+
+`.venvs/lab`。失敗 0。
+
+| スイート | 結果 |
+|---|---|
+| `tests/training` | 56 件。品質比較の 8 件を含む |
+| `tests/se` | 28 件 |
+| `tests/evaluation` | 81 件 |
+| `tests/asr` | 5 件 |
+
+### 再現
+
+```bash
+# turing。空いている sm_75 GPU。PESQ はここでは計算しない
+export CUDA_VISIBLE_DEVICES=<free> CUBLAS_WORKSPACE_CONFIG=:4096:8
+.venvs/lab/bin/python tests/training/reference/semamba_quality.py prepare \
+    --out data/results/training/semamba-quality-20261101/phase-a
+.venvs/semamba/bin/python tests/training/reference/compare_semamba_quality.py \
+    --out data/results/training/semamba-quality-20261101/phase-a --steps 20
+.venvs/lab/bin/python tests/training/reference/semamba_quality.py score \
+    --run data/results/training/semamba-quality-20261101/phase-a
+```
+
+波形と checkpoint は `data/results/training/semamba-quality-20261101/phase-a/` と `phase-b/`。`scores.json` が指標の一次記録である。commit と push はしていない。
