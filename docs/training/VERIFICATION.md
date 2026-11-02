@@ -1175,3 +1175,72 @@ MP-SENet は `qrsh` ジョブ `9237090` で VoiceBank の異なる1秒区間・�
 今回の H100 MIG ジョブの会計 `wallclock` 秒: `9236673` 122.952、`9236698` 295.456、`9236723` 87.022、`9236728` 156.948、`9236748` 170.446、`9236783` 9.225、`9236792` 65.757、`9236800` 281.372、`9236852` 104.707、`9236861` 15.011、`9236869` 52.227、`9236900` 109.938、`9236902` 159.994、`9236920` 81.969、`9236927` 79.765、`9236930` 257.938、`9236951` 347.195、`9237070` 23.806、`9237090` 68.038、`9237107` 138.842、`9237160` 337.109、`9237460` 409.981。今回分 `3375.698秒`、前回分 `2329.167秒` を含む累計 `5704.865秒`（95分4.865秒）。同時に使用したのは最大1 MIG。`9236673` は PESQ の発話不足で失敗、他は終了コード 0。最初の6ジョブは短時間開発にもかかわらず誤って `qsub` を使い、ユーザーの指摘後は `qrsh -p -5` に切り替えた。既存の24時間対話ジョブ `115141` はユーザー指定によりこの枠外として扱うが、そこで CPU テストが自動実行した CUDA 専用テスト1件の使用も記録する。
 
 CPU 回帰は data 16 件、training 102 件（skip 3）、SE 28 件（skip 19）、evaluation 86 件（skip 3）、ASR 5 件で、失敗はない。training は scheduler probe 修正後に全件を再実行した。training の skip は未配置の rebuild DB 1 件と CUDA 専用 2 件。SE / evaluation の skip は配布 checkpoint・参照結果の欠落と明示 CUDA テストである。実際のモデルとの比較結果と単体テストを混同しない。
+
+## seed 17 の Backward 分岐と CUDA 経路（2026-11-03）
+
+総合は引き続き **PARTIAL**。最低目標の4項目は、実装差を許容値の変更で吸収せずに切り分けた。長時間学習の品質同等性は対象外のままである。GPU は既存の対話ジョブ `115141`（H100 MIG 3g.47gb）を使い、新しい `qrsh` は出していない。この対話予約そのものは前回と同じく枠外とし、実験プロセスの wall clock だけを加算する。
+
+### SEMamba++
+
+保存済みの seed 17、公式幅、fused、epoch 単位 scheduler、合成 8,000 サンプル（`semamba-epoch-seed-17`）で、optimizer を進めずに Generator 損失の backward を公式2回と独立1回行った。24回の `selective_scan_cuda.fwd` は、入力も出力も公式再実行・公式/独立のどちらも全要素が一致した。公式は `mamba_simple.py` から、独立は `_fused_mixer` から、同じ `mamba_inner_fn` に入る。
+
+最初に一致しなくなるのは scan の出力勾配ではない。波形に接続する損失項の backward である。公式再実行の波形勾配の最大絶対差は、合計 `3.73e-9`、mel `7.45e-9`、feature matching `1.86e-9`、consistency `9.31e-10`、adversarial `1.46e-11`。公式/独立も最大絶対差は同じ値で、相対 L2 は合計 `8.02e-8` と公式再実行 `3.81e-8` の同じ桁である。magnitude / phase / complex は波形に接続しない。この波形勾配の差は、最初の scan backward の入力 `dout`（相対 L2 約 `7.5e-7`）として届く。
+
+同じ seed 17 の活性化で `selective_scan_cuda.bwd` を4回繰り返すと、入力が同一でも dB と dC の相対 L2 は約 `1.6e-7`、最大絶対差は `1e-11` 未満だった。長さ16と batch 1 でも dB/dC の再実行差は残る。dtype は float32 で、カーネルはこの精度である。
+
+849個の同名パラメータ勾配の相対 L2 の中央値は、公式再実行 `7.90e-7`、公式/独立 `7.90e-7`。最大絶対差はどちらも約 `3.05e-6`。公式再実行では `mask_decoder.mask_conv.1.bias` の勾配ノルムが `2.03e-6` で cosine が `-1` になり、1要素の符号が反転した。AdamW の epsilon `1e-8` より小さい勾配の符号差は、初回更新で O(学習率) の重み差になる。step 1 の公式/独立に、公式再実行を超える実装差は出ていない。
+
+seed 17 の20 step cosine（公式 A/独立 A `0.380`、公式 A/B `0.605`）は、この非決定性の蓄積の1本である。同じ条件の step 4 は公式 A/B `0.0567`、公式 A/独立 A `0.0553` で、実装間が自己再実行を上回っていない。seed 29 の20 step も実装間 cosine `0.634` が公式 A/B `0.662` に並ぶ。20 step をこのセッションで追加してはいない。融合カーネルを決定的な参照 scan に替えると公式の学習経路から外れるため、コードは変えていない。
+
+結果は `data/results/training/seed17-backward-20261103/`、`seed17-backward-20261103-named/`、`seed17-backward-20261103-terms/`。
+
+### DeepFilterNet3
+
+同じ VoiceBank 入力（seed 3、48 kHz、4,800 samples、4更新）で経路を分けた。結果は `data/results/training/df-cuda-paths-20261103/`。
+
+| 経路 | step 4 の勾配相対 L2 |
+|---|---|
+| 公式 native A/B | 0.00244 |
+| 独立 native A/B | 0.000725 |
+| 公式 native / 独立 native | 0.00159 と 0.000848 |
+| 公式 native A/B（独立だけ決定的にした実行） | 0.000613 |
+| 独立決定的 A/B | 0 |
+| 公式 native / 独立決定的 | 0.00470 と 0.00529 |
+
+両方を native CUDA（`torch.stft` の反射パディング）にすると、公式/独立は公式自身の再実行差を超えない。独立だけを厳密な決定的 CUDA にすると、明示反射の backward 加算順が公式の `reflection_pad1d` backward と異なり、4 step の相対 L2 は約 `0.005` まで開く。独立決定的どうしは重みまで一致する。
+
+公式モデルに `torch.use_deterministic_algorithms(True)` を掛けた1 step は実行できない。失敗は `reflection_pad1d_backward_out_cuda does not have a deterministic implementation`。CPU の公式・独立20 step 一致は前節のままである。
+
+### MossFormerGAN
+
+実音声1秒・蓄積2の既存4 step（`moss-1s-cont4`）では、step 4 の勾配相対 L2 が公式 A/B `0.00407`、独立 A/B `0.00195`、公式 A/独立 A `0.00281`、公式 B/独立 B `0.00387`。実装間差は公式の再実行差より小さい。絶対値が `1e-8` 未満の勾配要素は、公式再実行でも cosine `0.325` である。
+
+step 1 の最大重み差 `0.000315` は `generator.dense_encoder.conv_1.0.bias` で、勾配は `4.31e-9` と `-4.89e-9`。どちらも AdamW epsilon `1e-8` 未満。同じ初期重みで `torch.optim.AdamW`（lr `5e-4`、betas `(0.9, 0.999)`、weight decay `0.01`）にこの2勾配を別々に与えると更新差は `0.0003148`。同じ勾配を2つの optimizer に与えると更新差は 0。したがって差は optimizer 実装ではなく、epsilon 未満の勾配符号差が初回更新で増幅されたものである。
+
+### MP-SENet
+
+公式幅・VoiceBank 1秒・epoch 単位 scheduler の既存4 step（`mp-voicebank-cont`）では、step 1 の損失差は全ペア 0、勾配相対 L2 は `7.7e-8` から `8.7e-8`、勾配最大差は `6.0e-8` 以下、更新後重みの最大差は `3.4e-4` から `3.7e-4` で、公式再実行と公式/独立が同じである。
+
+2026-10-31 に記録した要素（勾配 `-8.90e-9` と `5.14e-9`、lr `5e-4`、betas `(0.8, 0.99)`、epsilon `1e-8`）を同じ AdamW で再計算すると、更新差は `4.0519e-4` で、当時の実測 `4.0527e-4` との差は `7.5e-8`。閉形式 `lr * grad / (|grad| + eps)` との誤差は 0。同じ勾配を2つの optimizer に与えると更新差は 0。`|grad| < eps` のとき更新はほぼ `lr * sign(grad)` になり、符号差が O(lr) の重み差になる。
+
+公式 `train.py` の損失は関数として分離されていない。probe は公式・独立の両方に独立実装の GAN 損失と PESQ 目標を使う。step 1 の重み差が公式再実行にも同じ大きさで出るので、この増幅は損失関数の取り違えではない。step 4 の勾配相対 L2 は公式 A/B `0.00790` に対し独立 A/B `0.0813`、公式/独立 `0.0409` と `0.0704` で、独立側の再実行の方が大きい。step 1 の説明は完了しているが、4 step 以降の増幅量は公式再実行と同一とはまだ言えない。
+
+計算は `tests/training/reference/diagnose_adamw_epsilon.py`、結果は `data/results/training/adamw-epsilon-20261103/adamw.json`。
+
+### 回帰テスト（2026-11-03、`.venvs/tsubame`）
+
+失敗は無い。ログは `data/results/training/regression-20261103/`。
+
+| スイート | 結果 |
+|---|---|
+| `tests/data` | 16件、失敗 0、skip 0 |
+| `tests/training` | 102件、失敗 0、skip 1（再構築 DB が無い） |
+| `tests/se` | 28件、失敗 0、skip 19（配布 checkpoint・参照結果の欠落、明示 CUDA 拡張テスト） |
+| `tests/evaluation` | 86件、失敗 0、skip 3（PESQ 境界の保存例と MP-SENet checkpoint がこの環境に無い） |
+| `tests/asr` | 5件、失敗 0、skip 0 |
+
+`tests/training` の DeepFilterNet3 CUDA 決定的経路テストは、この MIG 上で実行され成功した。前回 skip だった CUDA 専用テストのうち、この環境で実行できたものが含まれている。スイート時間の大半は CPU なので、下の実験 wall clock には足していない。evaluation のログに出る CHiME3 注釈の skip は、テストが意図的に出す未登録データの記録であり、unittest の skip 3件とは別である。
+
+### このセッションの GPU 時間
+
+実験プロセスの wall clock は `135.428 + 136.045 + 87.600 + 35.526 + 336.158 + 29.475 + 68.309 = 828.541` 秒。失敗した損失項の切り分け `87.600` 秒と、形状を誤った公式決定的 CUDA の試行 `29.475` 秒を含む。前回累計 `5704.865` 秒に加えると `6533.406` 秒（108分53.406秒）。上限300分に対する残りは約191分。同時に使った MIG は1つ。対話ジョブ `115141` の24時間予約自体は加算していない。
