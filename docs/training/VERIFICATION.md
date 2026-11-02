@@ -1113,3 +1113,65 @@ H100 で discriminator と optimizer を除き、公式・独立 generator の�
 最終の paired 順による H100 の4 step は、公式 A/B・独立 A/B・公式 A/独立 A の勾配相対 L2 が `0.116`・`0.150`・`0.233`。20 step では同順の cosine が `0.101`・`0.746`・`0.639`、公式 B/独立 B は `0.338`。loss 差は順に `0.0551`・`0.1861`・`0.1255`・`0.2564`。入力と初期条件は4プロセスで一致し、途中の統計と最終状態のみ保存した。公式自身の再実行差も大きく、公式/独立の差の意味は未確定である。paired 順でも GO ではない。
 
 最終 paired 順の2 step 後再開は4プロセスとも成功し、scheduler と RNG はそれぞれの連続実行と一致した。loss・モデル・optimizer のハッシュは4プロセスとも一致しなかった。
+
+追加監査: この連続実行と再開実行は、別々に開始した二つの実行である。保存済み `official_a` の各 step を照合すると、入力と RNG ハッシュは一致するが、モデルと optimizer のハッシュは再開前の step 1 から既に異なる。step 1 の forward 差は 0、最大勾配差は `1.07e-6`、更新後の最大重み差は `2.98e-4`。step 1〜3 の loss は記録上同じ、step 4 の loss 差は `0.001194000244140625`。したがってこの比較は再開操作自体が差を導入したかどうかを識別できない。同一の step 2 状態から連続側と別プロセス側を分岐させ、再開直後の状態と最初の forward/backward/update を比較する必要がある。
+
+同日 CPU の固定乱数波形を用いた `tests/training/reference/compare_semamba_disc.py` の再実行では、公式と独立の CQT / multi-resolution discriminator の state-dict キーは一致し、train / eval とも score・各 feature map の最大絶対差は 0 だった。これは固定入力の forward 比較であり、GAN backward や CUDA の複数更新の一致を示さない。
+
+H100 MIG 3g.47gb のジョブ `9236723` で固定入力の CUDA 演算を5回反復した（`data/results/training/followup-20261102-voicebank/semamba-ops.py` と `semamba-ops.json`）。今回の形状では causal_conv1d と Triton RMSNorm は forward と全入力勾配が一致。selective_scan は forward と u、delta、A、D の勾配が一致したが、B と C の勾配にそれぞれ最大 `2.98e-7`、`1.49e-7` の再実行差があった。演算単体の非決定性の証拠だが、GAN の複数更新差や公式/独立の差全体の原因を証明しない。
+
+ジョブ `9236748` では4プロセスの連続実行が保存した同一の step 2 checkpoint から、各実装を別プロセスで分岐させた。合成入力、公式幅 fused、scheduler は毎更新。分岐時のモデル・optimizer・RNG・入力は一致し、再開後 step 3 の forward と loss も4系統全てで一致したが、勾配とその後の更新は一致しない。step 3 勾配最大差は `1.61e-6`〜`1.95e-6`、更新後重み最大差は `1.33e-4`〜`1.78e-4`。step 4 forward 最大差は `9.83e-7`〜`3.99e-6`。RNG と入力は一致した。最初に観測された差は同一状態での backward であり、上記 selective_scan の非決定性と整合するが、その演算がこの GAN 全体の差の唯一の原因とは特定していない。結果は `semamba-cont/run/` と `semamba-fork/run/`。
+この連続側の step 4 勾配相対 L2 は公式 A/B `0.288`、独立 A/B `0.0257`、公式 A/独立 A `0.137`、公式 B/独立 B `0.289`。公式/独立の差を単に自己再実行差と同等と認定しない。
+追加 seed 17 / 29 の公式幅 fused・4更新（`qrsh` ジョブ `9236800`）では、それぞれ勾配相対 L2 が公式 A/B `0.0516` / `0.0387`、独立 A/B `0.0566` / `0.0245`、公式 A/独立 A `0.0445` / `0.0381`、公式 B/独立 B `0.0437` / `0.0302`。各 seed の初期状態と入力は同じで、seed 間では異なる。自己再実行差と近い例が増えたが、GAN の差の原因と絶対勾配差は未確定である。
+固定の合成 real/fake 波形・初期重みを使った CQT discriminator 単体の H100 `qrsh` ジョブ `9236852` では、公式 A/B・独立 A/B・公式/独立のスコア、畳み込み後の全 feature map、discriminator loss、入力勾配、パラメータ勾配、AdamW 更新後の重みの最大差は全て 0。同一プロセス内の対照であり、CQT の中間スペクトルそのものや GAN 全体を比較したものではない。スクリプトと結果は `cqt-control.py` / `cqt-control.json`。
+SEMamba の consistency STFT について固定波形と上流勾配を使った `qrsh` ジョブ `9236861` では、公式の native 反射と独立の明示反射の forward は一致、波形勾配の公式/独立相対 L2 差は `3.31e-8`。各経路内の再実行差も約 `3e-8` だった。これは固定入力での局所対照であり、学習全体の同等性を示さない（`semamba-stft.py` / `semamba-stft.json`）。
+
+固定初期状態・合成入力の generator 出力に対する損失成分別勾配（`qrsh` ジョブ `9236869`）では、公式/独立の mel 勾配相対 L2 差 `4.27e-6` が各自己再実行差約 `8e-8` を上回った。独立側の GPU 生成 Hann 窓、独自 Slaney basis、行列積と対数の演算順が公式と異なっていた。学習損失を CPU 生成 Hann、librosa Slaney basis、公式と同じ行列積と対数・加算順に合わせた。CPU の公式損失との回帰テストでは損失と波形勾配が一致。修正後の同条件 `qrsh` ジョブ `9236900` では mel 勾配相対 L2 は公式/独立 `8.38e-8`、公式 A/B `8.17e-8`、独立 A/B `8.56e-8`、mel loss 差 0 となった。Generator 合計損失の出力勾配相対 L2 は `8.34e-7` から `1.31e-7` へ減少した。独立実装は公式コードを import せず、学習時に librosa を用いる。
+
+同じ seed・入力・公式幅 fused・毎更新 scheduler の修正後4プロセス比較（`qrsh` ジョブ `9236902`、`semamba-fixed-cont/run/`）では step 1 の公式/独立パラメータ勾配相対 L2 は修正前 `4.55e-6`、修正後 `4.54e-6` で、mel 項の局所修正は全モデル勾配の差を解消しなかった。step 4 は公式 A/B `0.515`、独立 A/B `0.0627`、公式 A/独立 A `0.491`、公式 B/独立 B `0.300`。CUDA のばらつきが大きく、固定 seed の1回の前後比較だけで差の改善・悪化を判断しない。同じ step 2 checkpoint からの分岐では step 3 の forward・loss・RNG は一致し、モデルと optimizer は再び分岐した。未解明の実装間差が残るので PARTIAL。
+
+さらに multi-resolution discriminator の固定 real/fake 入力・初期重みで generator adversarial 項を切り分けたところ、公式/独立の入力勾配相対 L2 差は `5.77e-7`、自己再実行差は約 `6e-8` だった（`qrsh` ジョブ `9236920`）。独立側の CUDA 上での Hann 窓生成と明示反射を、通常経路では公式の CPU 生成窓と native 反射に合わせ、厳密な決定的 CUDA では明示反射を維持した。修正後の同条件 `qrsh` ジョブ `9236927` は、公式/独立の入力勾配相対 L2 差 `5.30e-8`、公式 A/B `5.36e-8`、独立 A/B `5.05e-8`。スコア、畳み込み feature map、パラメータ勾配の公式/独立差は 0。CPU の公式 spectrogram と入力勾配の回帰テストも成功した。これは固定入力の discriminator 単体対照であり、GAN 全体の一致とは区別する。
+
+両修正後の公式幅 fused・合成入力・毎更新 scheduler の4プロセス再比較（`qrsh` ジョブ `9236930`）では、step 1 の公式/独立パラメータ勾配相対 L2 が修正前 `4.55e-6` から `1.01e-6` へ減り、公式 A/B `9.9e-7`、独立 A/B `1.02e-6` と同程度になった。step 4 は公式 A/B `0.196`、独立 A/B `0.337`、公式 A/独立 A `0.167`、公式 B/独立 B `0.369`。結果は `semamba-final-cont/run/` と `semamba-final-fork/run/`。複数更新のばらつきとその原因は引き続き検討する。
+両修正後の損失成分固定入力対照（`qrsh` ジョブ `9237070`）では generator 出力への合計勾配相対 L2 が公式 A/B `9.11e-8`、独立 A/B `8.75e-8`、公式/独立 `1.19e-7`。adversarial は順に `1.22e-7`、`1.09e-7`、`1.31e-7`、mel は約 `8.4e-8`。この局所対照だけでは複数更新全体の一致を証明しない。
+同一 step 2 checkpoint からの4プロセス分岐では step 3 の forward・loss・RNG が一致する一方でモデルが分岐し、step 4 forward 最大差は `1.01e-6`〜`1.51e-6`。修正後の追加 seed 17 / 29（scheduler は毎更新）の step 4 勾配相対 L2 は公式 A/B `0.0535` / `0.0299`、独立 A/B `0.0398` / `0.0380`、公式 A/独立 A `0.0533` / `0.0144`、公式 B/独立 B `0.0277` / `0.0383`。同じジョブ `9236951` の VoiceBank 実音声・4更新では step 1 が公式 A/B `1.25e-6`、独立 A/B `1.28e-6`、公式 A/独立 A `1.26e-6`、step 4 は順に `0.0640`、`0.0599`、`0.0599`（公式 B/独立 B `0.0613`）。全入力 case・crop は各比較で一致した。3 seed の短い比較と局所的な CUDA 非決定性の観測は、残差の唯一の原因や長時間学習の同等性を証明しない。
+
+上記 SEMamba probe で `--scheduler-step epoch` が無視され、実際には scheduler が毎更新進んでいたことを発見した。probe を修正し、古い設定の checkpoint は新しい損失・scheduler での再開を拒否する。`qrsh` ジョブ `9237160` の再検証では4更新の学習率が全て `2e-4` と確認できた。公式幅・合成入力で step 4 勾配相対 L2 は公式 A/B `0.0501`、独立 A/B `0.0549`、公式 A/独立 A `0.0461`、公式 B/独立 B `0.0537`。これは epoch 終了前の4更新であり、epoch 終了時の scheduler 更新は別途 CPU 回帰テストの範囲である。
+同じ step 2 checkpoint からの分岐では4系統とも step 3 の forward・loss・RNG が一致し、モデルは更新後に分岐した。step 4 forward 最大差は `1.16e-6`〜`1.55e-6`。これは同一状態での backward 以降に差が生じることを示すが、個別の演算への一意な帰属ではない。
+同ジョブの20更新は同一の合成入力・初期状態、公式幅、epoch 終了前の固定学習率で4プロセスを実行し、途中は loss と勾配 norm、最終だけ全勾配と重みを保存した。step 20 の勾配 cosine は公式 A/B `0.479`、独立 A/B `0.676`、公式 A/独立 A `0.773`、公式 B/独立 B `0.592`、相対 L2 は順に `1.205`、`0.799`、`0.676`、`0.824`。同一実装にも大きな分岐があるが、実装間差の原因を完全に説明したとはしない。結果は `semamba20-epoch/`。
+追加 seed 17 / 29 の同条件20更新（`qrsh` ジョブ `9237460`）でも初期状態と入力は4プロセスで一致した。step 20 勾配 cosine は順に、公式 A/B `0.605` / `0.662`、独立 A/B `0.511` / `0.843`、公式 A/独立 A `0.380` / `0.634`、公式 B/独立 B `0.422` / `0.849`。seed 17 では実装間差が自己再実行差を上回るため、ばらつきだけで実装間差を説明できると認定しない。結果は `semamba20-epoch-seed-17/` と `semamba20-epoch-seed-29/`。
+同ジョブの4更新の step 4 勾配相対 L2 は seed 17 / 29 で公式 A/B `0.0567` / `0.0614`、独立 A/B `0.0480` / `0.0640`、公式 A/独立 A `0.0553` / `0.0707`、公式 B/独立 B `0.0471` / `0.0413`。結果は `semamba-epoch-seed-17/` と `semamba-epoch-seed-29/`。
+seed 17 の step 20 を層群別に分けると、公式 A/独立 A の勾配 cosine は Generator `0.378`、CQT discriminator `0.133`、multi-resolution discriminator `0.999`。公式 A/B は順に `0.602`、`0.852`、`0.998`。固定入力・固定重みの CQT 対照は一致しているため、この集計だけで CQT 実装の不具合と断定できない。
+
+DeepFilterNet3 の CPU 20 step を新しい出力先 `data/results/training/df-cpu-20-20261102-followup/` で再実行した。合成入力、共通 DFStream、公式損失と独立損失を使う4プロセスの全比較で loss、forward、勾配、更新後の重みの最大差は全 step で 0、report は valid だった。決定的 CUDA 経路の検証ではない。
+
+TF-GridNet は復旧した VoiceBank の1区間（16 kHz、2048 samples）を使う CPU 4プロセス1更新で、公式同士・独立同士・公式/独立の forward、loss、勾配、更新後重みの最大差が 0 だった。結果は `data/results/training/followup-20261102-voicebank/tf-cpu1/`。比較する公式 separator は STFT スタブを使用しており、ESPnet の前処理全体の一致を証明するものではない。
+
+TSUBAME の VoiceBank 学習 DB を公式 28 話者データから構築した。永続 staging は `data/staging/voicebank-current/`、DB は `data/db/voicebank.duckdb`。train 10,700 件・26 話者、valid 872 件・p286/p287 で、test 話者 p232/p257 および train/valid 話者の重複はない。全 11,572 件で transcript があり、元の 48 kHz と clean/noisy の同名・同形状を保持し、case ID はレシピの SHA-256 と一致した。staging から別 DB を再構築し cases / sets / set_items の全行が一致した。RecipeDataset の1件で 48→16 kHz、同長の clean/noisy と seed 1234・epoch 0 の crop 再現を確認した。全発話の音質検査ではない。
+
+元データへの `data/corpora/VoiceBank-DEMAND` リンクを事前に用意し、出力が存在しないときの構築例は次のとおり。`build` は staging または DB が存在すると拒否する。既存の再構築元を消して再実行しない。
+
+```bash
+.venvs/tsubame/bin/python -c 'from pathlib import Path; from src.data.voicebank_sets import build; print(build(Path("data/corpora"), Path("data/staging/voicebank-current"), Path("data/db/voicebank.duckdb")))'
+```
+
+4プロセス probe の実音声再開では `--prepare-steps 4` のように将来の入力を先に用意できる。例えば `--steps 2 --prepare-steps 4` は、蓄積2の MossFormerGAN なら異なる8件を準備し、2更新で止めてから4更新まで再開できる。
+また `--fork-step 2` は連続実行中の2更新後 checkpoint を別名で保持する。別プロセスをその同一状態から再開するための診断用であり、mock ではモデル・optimizer・scheduler・RNG が連続側と一致した。
+
+MossFormerGAN の実音声 0.5 秒・蓄積2 の4更新ジョブ `9236673` は4プロセスとも3更新後、4更新目の PESQ 目標を作れず停止した。入力の最後の2区間は clean/noisy 間でも PESQ が `NoUtterancesError` を返した。欠損を 0 に置き換えず、未完了の結果を `data/results/training/followup-20261102-voicebank/moss-cont4/` に残した。同じ8発話を1秒で切り出すと clean/noisy PESQ は全件得られたため、その別条件で再試行する。
+
+1秒・異なる8 micro-batch の H100 MIG ジョブ `9236698` は連続4更新と2更新後の再開を完了した。step 4 の勾配相対 L2 は公式 A/B `0.004066`、独立 A/B `0.001948`、公式 A/独立 A `0.002806`、公式 B/独立 B `0.003870`。公式 A/独立 A の勾配最大差は `1.67e-4`、重み最大差は `0.00191`。再開側と連続側は全4プロセスで入力と RNG ハッシュが一致したが、モデル・optimizer は step 1 から別の値であるため、再開操作単独の差はこの実験では識別できない。step 4 loss 差は `1.79e-6`〜`5.42e-6`。結果は `moss-1s-cont4/` と `moss-1s-split4/`。絶対勾配差の発生演算は未特定であり、自己再実行差のみを根拠に GO にしない。
+同一 step 2 checkpoint から分岐した `qrsh` ジョブ `9237107` では4系統とも step 3 の forward・loss・RNG が一致し、モデルと optimizer はその更新後に分岐した。step 4 forward 最大差は `9.54e-7`〜`1.67e-6`、loss 差は最大 `5.96e-8`。入力は VoiceBank 1秒・蓄積2である。結果は `moss-shared-cont/run/` と `moss-shared-fork/run/`。
+別の実音声連続実行 `moss-1s-cont4/` の step 1 で公式 A/独立 A の最大重み差 `0.000315` は `generator.dense_encoder.conv_1.0.bias` の1要素で、対応勾配は `4.31e-9` / `-4.89e-9`。AdamW の epsilon `1e-8` に近い微小勾配の符号差による局所的な更新差だが、step 4 の全勾配差の原因をこれだけで説明しない。
+
+ジョブ `9236728` では DeepFilterNet3 の反射パディング単体を同一の固定入力・上流勾配で4回比較し、native CUDA と明示パディングの forward・入力勾配は全て一致した。この形状の単体結果であり、STFT と損失を通した勾配や決定的 CUDA の複数更新は未検証である。同じジョブの MP-SENet 公式幅・合成入力・epoch 単位 scheduler の4更新では、step 4 の勾配相対 L2 が公式 A/B `0.251`、独立 A/B `0.331`、公式 A/独立 A `0.255`。2更新後の再開も完了したが、連続側とは再開前の step 1 からモデルが違うため、再開操作だけの影響は識別できない。入力と RNG は一致し、step 4 loss 差は `0.000207`〜`0.000588`。結果は `mp-cont4/` と `mp-split4/`。
+
+追加のジョブ `9236783` で固定合成波形に対する DeepFilterNet3 spectral loss を native CUDA と決定的経路で4回ずつ比較した。loss は同じ `1428.7008056640625`、波形勾配の native/決定的の最大差 `2.38e-7`・相対 L2 `5.51e-8`。native の自己再実行最大差は `1.19e-7`、決定的経路の自己再実行差は 0。STFT を通した加算順と native の非決定性を含む比較であり、両者の差を一つの演算だけに帰属させない。
+
+続く `qrsh` ジョブ `9236792` では VoiceBank 48 kHz・4,800 samples の4区間を使い、公式は native CUDA、独立は厳密な決定的 CUDA にして4更新を比較した。両経路は決定性設定が異なる。step 4 勾配相対 L2 は公式 A/B `0.000391`、独立 A/B `0`、公式 A/独立 A `0.00468`、公式 B/独立 B `0.00501`。step 2 の同一 checkpoint から分岐した再開では、独立 A/B とも step 4 までモデル・optimizer・RNG が連続側と完全一致した。公式の native 経路は step 3 からモデル・optimizer が異なり、RNG は一致した。公式/独立の複数更新差は公式の自己再実行差より大きく、原因を一つに特定できていないため PARTIAL を維持する。結果は `df-cont/run/` と `df-fork/run/`。
+
+MP-SENet は `qrsh` ジョブ `9237090` で VoiceBank の異なる1秒区間・公式幅・epoch 単位 scheduler の4更新を比較し、PESQ 目標も全 step で得た。step 4 勾配相対 L2 は公式 A/B `0.00790`、独立 A/B `0.0813`、公式 A/独立 A `0.0409`、公式 B/独立 B `0.0704`。同一 step 2 checkpoint からの別プロセス分岐は step 3 の forward・loss・RNG が一致し、その更新後のモデル・optimizer が分岐した。step 4 forward 最大差は `8.34e-7`〜`1.10e-6`。この probe は公式・独立の Generator と Discriminator を比較するが、両側の GAN 損失と PESQ 目標は共通の独立損失関数を使うため、公式損失コードを別途実行した比較ではない。結果は `mp-voicebank-cont/run/` と `mp-voicebank-fork/run/`。
+
+今回の H100 MIG ジョブの会計 `wallclock` 秒: `9236673` 122.952、`9236698` 295.456、`9236723` 87.022、`9236728` 156.948、`9236748` 170.446、`9236783` 9.225、`9236792` 65.757、`9236800` 281.372、`9236852` 104.707、`9236861` 15.011、`9236869` 52.227、`9236900` 109.938、`9236902` 159.994、`9236920` 81.969、`9236927` 79.765、`9236930` 257.938、`9236951` 347.195、`9237070` 23.806、`9237090` 68.038、`9237107` 138.842、`9237160` 337.109、`9237460` 409.981。今回分 `3375.698秒`、前回分 `2329.167秒` を含む累計 `5704.865秒`（95分4.865秒）。同時に使用したのは最大1 MIG。`9236673` は PESQ の発話不足で失敗、他は終了コード 0。最初の6ジョブは短時間開発にもかかわらず誤って `qsub` を使い、ユーザーの指摘後は `qrsh -p -5` に切り替えた。既存の24時間対話ジョブ `115141` はユーザー指定によりこの枠外として扱うが、そこで CPU テストが自動実行した CUDA 専用テスト1件の使用も記録する。
+
+CPU 回帰は data 16 件、training 102 件（skip 3）、SE 28 件（skip 19）、evaluation 86 件（skip 3）、ASR 5 件で、失敗はない。training は scheduler probe 修正後に全件を再実行した。training の skip は未配置の rebuild DB 1 件と CUDA 専用 2 件。SE / evaluation の skip は配布 checkpoint・参照結果の欠落と明示 CUDA テストである。実際のモデルとの比較結果と単体テストを混同しない。

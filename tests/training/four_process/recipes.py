@@ -32,7 +32,7 @@ def PathName(path):
 
 
 def planned_indices(dataset, cfg):
-    count = int(cfg["steps"]) * (2 if cfg["model"] == "mossformergan" else 1)
+    count = max(int(cfg["steps"]), int(cfg.get("prepare_steps") or 0)) * (2 if cfg["model"] == "mossformergan" else 1)
     order = epoch_indices(len(dataset), int(cfg["seed"]), int(cfg["epoch"]), 1, 0)
     if count > len(order):
         raise RuntimeError(f"requested {count} steps but the dataset only yields {len(order)}")

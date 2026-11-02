@@ -7,8 +7,8 @@ import ``src/se/official``.
 
 from __future__ import annotations
 
-import math
 import warnings
+from functools import lru_cache
 
 import torch
 import torch.nn.functional as F
@@ -194,7 +194,10 @@ def summed_slaney_log_mel(
         ref = _slaney_log_mel(reference, sample_rate, bands, window, hop, clamp)
         est = _slaney_log_mel(estimate, sample_rate, bands, window, hop, clamp)
         frames = min(ref.shape[-1], est.shape[-1])
+        # The reference adds the same L1 term a second time with weight zero.
+        # Keep that graph and operation order for the backward comparison.
         total = total + F.l1_loss(ref[..., :frames], est[..., :frames])
+        total = total + 0.0 * F.l1_loss(ref[..., :frames], est[..., :frames])
     return total
 
 
@@ -206,52 +209,27 @@ def _slaney_log_mel(
     hop: int,
     clamp: float,
 ) -> torch.Tensor:
-    spec = centered_stft(
-        waveform,
-        window,
-        hop,
-        torch.hann_window(window, device=waveform.device, dtype=waveform.dtype),
-    ).abs()
-    basis = _slaney_basis(sample_rate, window, n_mels, spec.device, spec.dtype)
-    mel = torch.matmul(basis, spec.clamp_min(0))
-    return torch.log10(mel.clamp_min(clamp))
+    # The published mel loss builds both the window and the librosa basis on
+    # CPU, then moves them to the signal device. GPU construction and a
+    # mathematically equivalent transposed multiplication change gradients.
+    waveform = F.pad(waveform.unsqueeze(1), (0, 0), mode="reflect")
+    hann = torch.hann_window(window).to(waveform.device)
+    if waveform.is_cuda and torch.are_deterministic_algorithms_enabled():
+        spec = centered_stft(waveform.squeeze(1), window, hop, hann)
+    else:
+        spec = torch.stft(waveform.squeeze(1), window, hop_length=hop,
+                          window=hann, center=True, return_complex=True)
+    spec = spec.abs().unsqueeze(1)
+    basis = _official_slaney_basis(sample_rate, window, n_mels).to(spec.device)
+    mel = (spec.transpose(2, -1) @ basis.T).transpose(-1, 2)
+    return torch.log(mel.clamp(min=clamp).pow(1.0)) / torch.log(torch.tensor(10.0))
 
 
-def _slaney_basis(sample_rate: int, n_fft: int, n_mels: int, device, dtype) -> torch.Tensor:
-    bins = n_fft // 2 + 1
-    fft_hz = torch.linspace(0, sample_rate / 2, bins, device=device, dtype=dtype)
-    mel_min = _hz_to_mel_slaney(fft_hz.new_tensor(0.0))
-    mel_max = _hz_to_mel_slaney(fft_hz.new_tensor(sample_rate / 2))
-    points = torch.linspace(mel_min, mel_max, n_mels + 2, device=device, dtype=dtype)
-    hz = _mel_to_hz_slaney(points)
-    weights = torch.zeros(n_mels, bins, device=device, dtype=dtype)
-    gaps = hz[1:] - hz[:-1]
-    for index in range(n_mels):
-        lower = (fft_hz - hz[index]) / gaps[index].clamp_min(1e-12)
-        upper = (hz[index + 2] - fft_hz) / gaps[index + 1].clamp_min(1e-12)
-        weights[index] = torch.clamp(torch.minimum(lower, upper), min=0)
-    scale = 2.0 / (hz[2:] - hz[:n_mels]).clamp_min(1e-12)
-    return weights * scale.unsqueeze(1)
+@lru_cache(maxsize=32)
+def _official_slaney_basis(sample_rate: int, n_fft: int, n_mels: int) -> torch.Tensor:
+    from librosa.filters import mel
 
-
-def _hz_to_mel_slaney(hz: torch.Tensor) -> torch.Tensor:
-    spacing = 200.0 / 3.0
-    min_log_hz = 1000.0
-    min_log_mel = min_log_hz / spacing
-    logstep = math.log(6.4) / 27.0
-    linear = hz / spacing
-    logarithmic = min_log_mel + torch.log(hz.clamp_min(min_log_hz) / min_log_hz) / logstep
-    return torch.where(hz >= min_log_hz, logarithmic, linear)
-
-
-def _mel_to_hz_slaney(mel: torch.Tensor) -> torch.Tensor:
-    spacing = 200.0 / 3.0
-    min_log_hz = 1000.0
-    min_log_mel = min_log_hz / spacing
-    logstep = math.log(6.4) / 27.0
-    linear = mel * spacing
-    logarithmic = min_log_hz * torch.exp(logstep * (mel - min_log_mel))
-    return torch.where(mel >= min_log_mel, logarithmic, linear)
+    return torch.from_numpy(mel(sr=sample_rate, n_fft=n_fft, n_mels=n_mels, fmin=0, fmax=None))
 
 
 def si_sdr_loss(estimate: torch.Tensor, reference: torch.Tensor, eps: float = 1e-8) -> torch.Tensor:

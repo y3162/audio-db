@@ -21,6 +21,12 @@ VALID_SET = "voicebank_28_valid"
 
 
 def build(corpora_root: Path, staging: Path, database: Path) -> dict[str, int]:
+    # Staging is a persistent reconstruction source, not scratch space.  In
+    # particular, write_staging's Parquet COPY would replace existing files.
+    if staging.exists() or staging.is_symlink():
+        raise FileExistsError(f"refusing to overwrite staging: {staging}")
+    if database.exists() or database.is_symlink():
+        raise FileExistsError(f"refusing to overwrite database: {database}")
     root = corpora_root / "VoiceBank-DEMAND"
     clean = root / "clean_trainset_28spk_wav"
     noisy = root / "noisy_trainset_28spk_wav"

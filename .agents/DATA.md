@@ -77,7 +77,7 @@ DuckDB は `data/db/resource.duckdb`（`src/data/constants.py`）。
 - 現在の bootstrap は staging を先に生成せず DB に直接登録するため、上記の staging 必須制約を満たす本番再構築手順としては未完成である。
 - 現行の本番再構築元は `data/staging/resource-current`。`data/staging/` 直下、`data/staging/resource-full`、`data/staging/voicebank`、`data/staging/training` は過去の再構築元であり、現行の本番には使わない。VoiceBank 学習セットの現行再構築元は `data/staging/voicebank-current`。
 - TSUBAME の初回 `resource.duckdb` は 2026-11-02 にコーパスから新規作成した。今回だけの staging 先行省略を含む条件と検証範囲は `docs/db/TSUBAME_INITIAL.md`。研究室側 DB のコピーや同一性の確認ではない。
-- 学習セット `voicebank_28_train` / `voicebank_28_valid` は `data/db/voicebank.duckdb`（再構築元 `data/staging/voicebank/`）。`data/db/training.duckdb` の LibriSpeech+DEMAND スモークとは別ファイルである。
+- 学習セット `voicebank_28_train` / `voicebank_28_valid` は `data/db/voicebank.duckdb`（現行の再構築元 `data/staging/voicebank-current/`）。`data/db/training.duckdb` の LibriSpeech+DEMAND スモークとは別ファイルである。
 
 ## `data/` の扱い
 

@@ -66,8 +66,8 @@ class SEMambaPP:
     d_conv 4. This probe uses hid_feature 8, 1 block, d_state 4, d_conv 2 so
     four processes can keep the published CQT and multi-resolution
     discriminators. Loss weights and the single generator forward are the
-    published ones. ExponentialLR is stepped every update here; published
-    training steps it once per epoch.
+    published ones. ExponentialLR can be stepped every update for diagnostics
+    or held until the epoch ends, as in published training.
     """
 
     length = 8000
@@ -84,9 +84,14 @@ class SEMambaPP:
         backend = cfg.get("scan_backend") or "reference"
         if backend not in ("reference", "fused"):
             raise ValueError(f"unknown scan backend {backend}")
+        scheduler_step = cfg.get("scheduler_step") or "update"
+        if scheduler_step not in ("update", "epoch"):
+            raise ValueError(f"unknown scheduler step {scheduler_step}")
+        self.step_every_update = scheduler_step == "update"
         self.scan_backend = backend
         self.official_width = bool(cfg.get("official_width"))
         self.probe = {
+            "version": "mel-mrd-scheduler-v1",
             "generator": ("hid_feature 48, num_tfmamba 4, d_state 16, d_conv 4, expand 2"
                           if self.official_width else "hid_feature 8, num_tfmamba 1, d_state 4, d_conv 2, expand 2"),
             "published_generator": "hid_feature 48, num_tfmamba 4, d_state 16, d_conv 4, expand 2",
@@ -95,7 +100,8 @@ class SEMambaPP:
             "scan_backend": backend,
             "length": self.length,
             "sample_rate": self.sample_rate,
-            "scheduler": "ExponentialLR gamma 0.99 stepped every probe update; published training steps once per epoch",
+            "scheduler": ("ExponentialLR gamma 0.99 stepped every probe update" if self.step_every_update
+                          else "ExponentialLR gamma 0.99 held until the epoch ends"),
         }
 
     def _arch(self):

@@ -7,6 +7,7 @@ import os
 from pathlib import Path
 import platform
 import random
+import shutil
 import subprocess
 import sys
 import time
@@ -65,6 +66,8 @@ def identity(cfg):
     result = {key: cfg.get(key) for key in keys}
     if cfg.get("official_width"):
         result["official_width"] = True
+    if cfg.get("independent_deterministic"):
+        result["independent_deterministic"] = True
     return result
 
 def seed_probe(seed, cuda):
@@ -185,6 +188,8 @@ def worker(root, name):
         raise RuntimeError("refusing to resume a MossFormerGAN probe created before accumulation=2")
     if cfg["model"] == "semambapp" and "interleave real/fake" not in cfg.get("probe", {}).get("aggregation", ""):
         raise RuntimeError("refusing to resume a SEMamba++ probe created before paired discriminator ordering")
+    if cfg["model"] == "semambapp" and cfg.get("probe", {}).get("version") != "mel-mrd-scheduler-v1":
+        raise RuntimeError("refusing to resume a SEMamba++ probe created before the mel, MRD and scheduler fixes")
     run = root / name
     torch.set_num_threads(1)
     torch.backends.cuda.matmul.allow_tf32 = False
@@ -194,6 +199,8 @@ def worker(root, name):
     device = torch.device(cfg["device"])
     cuda = device.type == "cuda"
     implementation = name.split("_")[0]
+    if cfg.get("independent_deterministic") and implementation == "independent":
+        torch.use_deterministic_algorithms(True)
     fault = cfg.get("fault") if name == cfg.get("fault_run") else None
     if fault == "exception":
         raise RuntimeError("injected exception")
@@ -294,6 +301,11 @@ def worker(root, name):
             "snapshot_hash": digest(snapshot),
         })
         _write_checkpoint(checkpoint_path, cfg, root, name, modules, optimizers, schedulers, cuda, records, snapshots, position, epoch, initial, fault)
+        if cfg.get("fork_step") == position:
+            fork_path = run / f"fork-step-{position}.pt"
+            if fork_path.exists():
+                raise RuntimeError(f"refusing to overwrite fork checkpoint: {fork_path}")
+            shutil.copyfile(checkpoint_path, fork_path)
     result = _result(name, cfg, implementation, initial, records, snapshots, modules, optimizers, schedulers, cuda, position, epoch)
     if fault != "missing":
         torch.save(result, run / "result.pt")
@@ -621,6 +633,10 @@ def main():
     run.add_argument("directory")
     run.add_argument("--model", choices=sorted(ADAPTERS), default="mock")
     run.add_argument("--steps", type=int, default=1)
+    run.add_argument("--prepare-steps", type=int, default=None,
+                     help="prepare recipe batches through this step for a later resume")
+    run.add_argument("--fork-step", type=int, default=None,
+                     help="retain the checkpoint at this optimizer boundary")
     run.add_argument("--seed", type=int, default=3)
     run.add_argument("--device", default="cpu")
     run.add_argument("--timeout", type=int, default=600)
@@ -635,6 +651,8 @@ def main():
     run.add_argument("--epoch", type=int, default=0)
     run.add_argument("--scheduler-step", choices=("update", "epoch"), default="update")
     run.add_argument("--official-width", action="store_true")
+    run.add_argument("--independent-deterministic", action="store_true",
+                     help="use deterministic algorithms for the independent worker only")
     resumed = sub.add_parser("resume")
     resumed.add_argument("directory")
     resumed.add_argument("--steps", type=int, required=True)
@@ -654,10 +672,14 @@ def main():
         elif args.cmd == "resume":
             result = resume(root, args.steps)
         else:
-            if sorted(args.order) != sorted(RUNS) or args.steps < 1:
+            if (sorted(args.order) != sorted(RUNS) or args.steps < 1
+                    or (args.prepare_steps is not None and args.prepare_steps < args.steps)
+                    or (args.fork_step is not None and not 1 <= args.fork_step < args.steps)):
                 parser.error("invalid order or steps")
             if bool(args.dataset) != bool(args.database):
                 parser.error("dataset and database are set together")
+            if args.independent_deterministic and args.model != "deepfilternet3":
+                parser.error("--independent-deterministic is only supported for deepfilternet3")
             cfg = vars(args)
             cfg["segment_size"] = args.segment_size or ADAPTERS[args.model].length
             result = launch(root, cfg)

@@ -122,6 +122,42 @@ class FourProcessTest(unittest.TestCase):
             self.assertEqual(len(batch['clean_sha256']),64)
             self.assertEqual(len(batch['noisy_sha256']),64)
             self.assertTrue(report['comparisons']['official_a vs official_b'][0]['rng_parts_match'])
+
+    def test_recipe_resume_prepares_distinct_accumulation_batches(self):
+        from tests.training.four_process.recipes import planned_indices
+        cfg = {'steps': 2, 'prepare_steps': 4, 'model': 'mossformergan', 'seed': 3, 'epoch': 0}
+        indices = planned_indices(range(20), cfg)
+        self.assertEqual(len(indices), 8)
+        self.assertEqual(len(set(indices)), 8)
+        cfg['steps'] = 4
+        self.assertEqual(indices, planned_indices(range(20), cfg))
+
+    def test_fork_checkpoint_resumes_from_continuous_state(self):
+        import shutil
+        import torch
+        from tests.training.four_process.compare import digest
+        with tempfile.TemporaryDirectory() as tmp:
+            continuous = Path(tmp) / 'continuous' / 'run'
+            resumed = Path(tmp) / 'resumed' / 'run'
+            p = command(SCRIPT, 'run', continuous, '--steps', '4', '--fork-step', '2')
+            self.assertEqual(p.returncode, 0, p.stderr + p.stdout)
+            (resumed / 'official_a').mkdir(parents=True)
+            for name in ('config.json', 'input.pt'):
+                shutil.copyfile(continuous / name, resumed / name)
+            shutil.copyfile(continuous / 'official_a/fork-step-2.pt', resumed / 'official_a/checkpoint.pt')
+            p = command(SCRIPT, 'worker', resumed, 'official_a')
+            self.assertEqual(p.returncode, 0, p.stderr + p.stdout)
+            a = torch.load(continuous / 'official_a/result.pt', weights_only=False)
+            b = torch.load(resumed / 'official_a/result.pt', weights_only=False)
+            for key in ('modules', 'optimizer', 'scheduler', 'rng_full_hash'):
+                self.assertEqual(digest(a[key]), digest(b[key]), key)
+
+    def test_deterministic_probe_setting_is_part_of_checkpoint_identity(self):
+        from tests.training.four_process.compare import identity
+        self.assertNotEqual(identity({'model': 'deepfilternet3'}),
+                            identity({'model': 'deepfilternet3', 'independent_deterministic': True}))
+        p = command(SCRIPT, 'run', '/unused', '--model', 'mock', '--independent-deterministic')
+        self.assertNotEqual(p.returncode, 0)
     def test_mp_senet_update_order_and_two_optimizers(self):
         from tests.training.four_process.adapters import ADAPTERS
         adapter=ADAPTERS['mp_senet']

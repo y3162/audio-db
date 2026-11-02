@@ -174,13 +174,16 @@ class ResolutionDiscriminator(nn.Module):
     def _magnitude(self, waveform: torch.Tensor) -> torch.Tensor:
         n_fft, hop, window = self.resolution
         pad = (n_fft - hop) // 2
-        framed = _reflect_pad(waveform.squeeze(1), pad)
+        if waveform.is_cuda and torch.are_deterministic_algorithms_enabled():
+            framed = _reflect_pad(waveform.squeeze(1), pad)
+        else:
+            framed = torch.nn.functional.pad(waveform, (pad, pad), mode="reflect").squeeze(1)
         spectrum = torch.stft(
             framed,
             n_fft=n_fft,
             hop_length=hop,
             win_length=window,
-            window=torch.hann_window(window, device=framed.device),
+            window=torch.hann_window(window).to(framed.device),
             center=False,
             return_complex=True,
         )

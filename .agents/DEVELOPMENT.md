@@ -51,6 +51,7 @@
 - 新しいモデルを足すときは、出典 commit とライセンスを `docs/se/MODELS.md` に記録し、公式出力との比較を行う。
 - MossFormerGAN の公式 Generator は `rotary-embedding-torch==0.8.3` を import する。2026-11-02 に `.venvs/lab` へ入れた。SEMamba++ の公式学習ステップは `.venvs/semamba` で実行する。その Triton RMSNorm は CPU tensor を拒否する。`.venvs/semamba` の DuckDB は 1.4.3 で、`voicebank.duckdb` は開けない。VoiceBank の準備は `.venvs/lab` が行い、worker だけ `FOUR_PROCESS_PYTHON` で semamba を指定する。
 - チェックポイントのパスをコードに固定しない。呼び出し側が渡す。
+- SEMamba++ の学習用 mel 損失は公式と同じ Slaney フィルタを `librosa.filters.mel` で CPU 上に作るため、学習環境に librosa が必要。推論 API はこの学習損失を import しない。
 
 ## 検証の区別
 

@@ -31,6 +31,10 @@ class MossProbeAccumulationTest(unittest.TestCase):
         semamba.configure({"official_width": True})
         arch = semamba._arch()
         self.assertEqual(tuple(arch[k] for k in ("hid_feature", "num_tfmamba", "d_state", "d_conv")), (48, 4, 16, 4))
+        semamba.configure({"scheduler_step": "epoch"})
+        self.assertFalse(semamba.step_every_update)
+        semamba.configure({"scheduler_step": "update"})
+        self.assertTrue(semamba.step_every_update)
         self.assertEqual(identity({}), identity({"official_width": False}))
         self.assertNotEqual(identity({}), identity({"official_width": True}))
 
@@ -52,6 +56,16 @@ class MossProbeAccumulationTest(unittest.TestCase):
             root = Path(directory)
             (root / "config.json").write_text(json.dumps({"model": "mossformergan", "probe": {"update": "single batch"}}))
             with self.assertRaisesRegex(RuntimeError, "before accumulation=2"):
+                worker(root, "official_a")
+
+    def test_old_semamba_probe_cannot_resume_with_changed_scheduler_and_losses(self):
+        from tests.training.four_process.compare import worker
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            (root / "config.json").write_text(json.dumps({
+                "model": "semambapp", "probe": {"aggregation": "interleave real/fake"},
+            }))
+            with self.assertRaisesRegex(RuntimeError, "mel, MRD and scheduler fixes"):
                 worker(root, "official_a")
 
     def test_two_microbatches_are_clipped_before_each_update(self):
