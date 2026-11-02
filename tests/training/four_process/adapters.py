@@ -50,10 +50,13 @@ class TFGridNet:
     clip = 5.0
     step_every_update = True
     update_order = ("generator",)
+    def configure(self, cfg):
+        self.step_every_update = cfg.get('scheduler_step') != 'epoch'
     def build(self, implementation, device):
         from tests.training.reference import compare_tf_gridnet as reference
         if implementation == "official":
-            net = reference.reference_v1()(
+            from tests.training.reference.official_tf_loader import official_tf_gridnet
+            net = official_tf_gridnet()(
                 input_dim=0, n_srcs=1, use_builtin_complex=True, **reference.ARCHITECTURE,
             ).to(device)
             criterion = reference._official_loss_class()(
@@ -73,6 +76,9 @@ class TFGridNet:
     def optimizers(self, modules, lr):
         return {"generator": torch.optim.Adam(modules["generator"].parameters(), lr=lr)}
     def schedulers(self, optimizers):
+        if not self.step_every_update:
+            return {"generator": torch.optim.lr_scheduler.ReduceLROnPlateau(
+                optimizers["generator"], factor=0.7, patience=1)}
         return {"generator": torch.optim.lr_scheduler.StepLR(optimizers["generator"], step_size=1, gamma=0.9)}
     def train_step(self, implementation, modules, optimizers, schedulers, clean, noisy, position, fault=None):
         del position
@@ -182,30 +188,44 @@ class MPSENet:
         generator.train()
         discriminator.train()
         optimizers["discriminator"].zero_grad(set_to_none=True)
-        with torch.no_grad():
+        if implementation == "official":
             detached = _mp_spectra(implementation, generator, clean, noisy, h)
+        else:
+            with torch.no_grad():
+                detached = _mp_spectra(implementation, generator, clean, noisy, h)
         ones = torch.ones(clean.shape[0], device=clean.device)
         real = discriminator(detached["clean_mag"], detached["clean_mag"])
-        fake = discriminator(detached["clean_mag"], detached["mag_hat"])
-        targets = metric_targets(clean, detached["audio"], h.sampling_rate)
-        if targets is None:
-            raise RuntimeError("PESQ could not be scored for this MP-SENet probe batch")
-        d_loss = _finite(maybe_nan(discriminator_loss(real, fake, ones, targets), fault), "discriminator")
+        fake = discriminator(detached["clean_mag"], detached["mag_hat"].detach())
+        if implementation == "official":
+            from tests.training.reference.compare_mp_senet import _official_pesq, _official_discriminator_loss
+            targets = _official_pesq(clean, detached["audio"])
+        else:
+            targets = metric_targets(clean, detached["audio"], h.sampling_rate)
+        raw_d_loss = (_official_discriminator_loss(real, fake, ones, targets)
+                      if implementation == "official" else discriminator_loss(real, fake, ones, targets))
+        d_loss = _finite(maybe_nan(raw_d_loss, fault), "discriminator")
         d_loss.backward()
         grads = _grads(discriminator, "discriminator")
         optimizers["discriminator"].step()
-        frozen = [p for p in discriminator.parameters() if p.requires_grad]
+        frozen = ([p for p in discriminator.parameters() if p.requires_grad]
+                  if implementation != "official" else [])
         for parameter in frozen:
             parameter.requires_grad_(False)
         try:
             optimizers["generator"].zero_grad(set_to_none=True)
-            parts = _mp_spectra(implementation, generator, clean, noisy, h)
+            parts = (detached if implementation == "official" else
+                     _mp_spectra(implementation, generator, clean, noisy, h))
             metric = discriminator(parts["clean_mag"], parts["mag_hat"])
-            losses = generator_losses(
-                parts["clean_mag"], parts["mag"], parts["clean_phase"], parts["phase"],
-                parts["clean_complex"], parts["complex"], parts["recomputed_complex"],
-                clean, parts["audio"], metric, ones,
-            )
+            if implementation == "official":
+                from tests.training.reference.compare_mp_senet import _official_components
+                mapped = dict(parts, magnitude=parts["mag"], recomputed=parts["recomputed_complex"])
+                losses = _official_components(mapped, metric, ones, clean)
+            else:
+                losses = generator_losses(
+                    parts["clean_mag"], parts["mag"], parts["clean_phase"], parts["phase"],
+                    parts["clean_complex"], parts["complex"], parts["recomputed_complex"],
+                    clean, parts["audio"], metric, ones,
+                )
             g_loss = _finite(losses["total"], "generator")
             g_loss.backward()
             apply_gradient_fault(modules, fault)
@@ -218,6 +238,11 @@ class MPSENet:
             for name in self.update_order:
                 schedulers[name].step()
         payload = {"generator": g_loss.detach(), "discriminator": d_loss.detach()}
+        payload["discriminator_real"] = torch.nn.functional.mse_loss(ones, real.flatten()).detach()
+        if targets is not None:
+            payload["pesq_target"] = targets.detach().mean()
+            payload["discriminator_fake"] = torch.nn.functional.mse_loss(
+                targets.to(fake.device), fake.flatten()).detach()
         for name, value in losses.items():
             if name != "total":
                 payload[name] = value.detach()
@@ -228,10 +253,6 @@ def _official_mp(h, device):
     import types
     from pathlib import Path
     root = Path(__file__).resolve().parents[3] / "src" / "se" / "official" / "mp-senet"
-    joblib = types.ModuleType("joblib")
-    joblib.Parallel = lambda *args, **kwargs: None
-    joblib.delayed = lambda fn: fn
-    sys.modules.setdefault("joblib", joblib)
     sys.modules.setdefault("librosa", types.ModuleType("librosa"))
     matplotlib = types.ModuleType("matplotlib")
     matplotlib.use = lambda *args, **kwargs: None

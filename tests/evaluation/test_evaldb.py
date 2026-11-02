@@ -150,7 +150,12 @@ class EvaluationDBTests(unittest.TestCase):
             db = EvaluationDB(database, project_root=root, corpora_root=root / "corpora")
             manifest = self._manifest(root, [("u1", "clean")])
             db.import_manifest(manifest, "fixed")
-            changed = self._manifest(root, [("u1", "clean")], transcript="other")
+            # Keep the source WAV byte-identical: rewriting floating-point WAVs
+            # may change their PEAK chunk timestamp and therefore the recipe ID.
+            record = json.loads(manifest.read_text(encoding="utf-8"))
+            record["transcript"] = "other"
+            changed = root / "changed.jsonl"
+            changed.write_text(json.dumps(record) + "\n", encoding="utf-8")
             with self.assertRaises(DatasetError) as caught:
                 db.import_manifest(changed, "fixed")
             self.assertIn("u1", str(caught.exception))

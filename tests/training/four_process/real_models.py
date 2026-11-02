@@ -296,11 +296,22 @@ class DeepFilterNet3:
     update_order = ("generator",)
 
     def configure(self, cfg):
-        del cfg
+        import os
+        mode = os.environ.get('DF_PROBE_OFFICIAL_LIBDF', '0')
+        if mode not in ('0', '1', 'shared'):
+            raise ValueError('unknown DeepFilterNet frontend mode')
+        self.use_libdf = mode in ('1', 'shared')
+        self.shared_libdf = mode == 'shared'
+        expected_frontend = ({'0': 'independent DFStream; libdf analysis is not executed',
+                              '1': 'official libdf vs independent DFStream',
+                              'shared': 'official libdf on both sides'}[mode])
+        recorded = cfg.get('probe', {}).get('frontend')
+        if recorded is not None and recorded != expected_frontend:
+            raise ValueError('DeepFilterNet frontend differs from the recorded probe')
         self.probe = {
             "sample_rate": self.sample_rate,
             "architecture": "shipped config.ini conv_ch 64, fft 960, hop 480",
-            "frontend": "independent DFStream; libdf analysis is not executed",
+            "frontend": expected_frontend,
             "loss": "multi-resolution magnitude 500, complex 500, gamma 0.3, local SNR 1e-3",
             "optimizer": "AdamW lr 0.001, betas (0.9, 0.999), weight decay 1e-12, amsgrad",
             "scheduler": "shipped per-step cosine, steps_per_epoch 8, epochs 120, warmup 3",
@@ -317,6 +328,9 @@ class DeepFilterNet3:
             params.min_nb_freqs, params.norm_tau, device,
         )
         self._params = params
+        if self.use_libdf and (implementation == 'official' or self.shared_libdf):
+            from tests.training.reference.probe_df_libdf import OfficialStream
+            self._stream = OfficialStream(params)
         if implementation == "official":
             generator = _official_df(independent)
             self._official_loss = _official_df_losses(device)

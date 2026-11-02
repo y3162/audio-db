@@ -22,6 +22,7 @@ from __future__ import annotations
 
 import sys
 import types
+import ast
 from pathlib import Path
 
 import torch
@@ -43,10 +44,6 @@ from tests.training.reference.common import (  # noqa: E402
 )
 
 OFFICIAL = ROOT / "src" / "se" / "official" / "mp-senet"
-joblib = types.ModuleType("joblib")
-joblib.Parallel = lambda *args, **kwargs: None
-joblib.delayed = lambda fn: fn
-sys.modules.setdefault("joblib", joblib)
 sys.modules.setdefault("librosa", types.ModuleType("librosa"))
 matplotlib = types.ModuleType("matplotlib")
 matplotlib.use = lambda *args, **kwargs: None
@@ -57,7 +54,9 @@ sys.path.insert(0, str(OFFICIAL))
 from dataset import mag_pha_istft as official_istft  # noqa: E402
 from dataset import mag_pha_stft as official_stft  # noqa: E402
 from models.discriminator import MetricDiscriminator as OfficialDiscriminator  # noqa: E402
-from models.model import MPNet  # noqa: E402
+from models.discriminator import batch_pesq as official_batch_pesq  # noqa: E402
+from models.model import MPNet, phase_losses as official_phase_losses  # noqa: E402
+import torch.nn.functional as F  # noqa: E402
 from src.se import build_model  # noqa: E402
 from src.training.core.rng import seed_model_init  # noqa: E402
 from src.training.se.discriminator import MetricDiscriminator  # noqa: E402
@@ -71,6 +70,57 @@ LR = 5e-4
 BETAS = (0.8, 0.99)
 WEIGHT_DECAY = 0.01
 LOSS_NAMES = ("total", "magnitude", "phase", "complex", "consistency", "metric", "time")
+
+
+def _official_train_statements(first: int, last: int):
+    """Compile the actual loss statements from the checked-out official train.py."""
+    path = OFFICIAL / "train.py"
+    tree = ast.parse(path.read_text(), filename=str(path))
+    statements = [node for node in ast.walk(tree) if isinstance(node, (ast.Assign, ast.If))
+                  and first <= node.lineno <= last and node.end_lineno <= last
+                  and node.lineno != 178]  # metric_g is evaluated by the caller, with matched RNG
+    # Keep only top-level statements in the requested span, not children of an if.
+    statements = [node for node in statements if not any(
+        isinstance(parent, ast.If) and parent.lineno < node.lineno <= parent.end_lineno
+        for parent in statements)]
+    statements.sort(key=lambda node: node.lineno)
+    if not statements or statements[0].lineno != first or statements[-1].end_lineno != last:
+        raise RuntimeError("Official train.py loss statements changed; inspect before comparison")
+    return compile(ast.fix_missing_locations(ast.Module(body=statements, type_ignores=[])), str(path), "exec")
+
+
+_OFFICIAL_D = _official_train_statements(136, 144)
+_OFFICIAL_G = _official_train_statements(167, 181)
+
+
+def _official_pesq(clean, audio):
+    # The reference module is imported from a checkout rather than installed;
+    # joblib subprocesses cannot import its top-level ``models`` package.
+    # Use joblib's thread backend while retaining the official scoring function.
+    from joblib import parallel_backend
+    with parallel_backend("threading"):
+        return official_batch_pesq(list(clean.detach().cpu().numpy()),
+                                   list(audio.detach().cpu().numpy()))
+
+
+def _official_components(parts, metric, ones, clean):
+    values = dict(F=F, phase_losses=official_phase_losses, clean_mag=parts["clean_mag"],
+                  mag_g=parts["magnitude"], clean_pha=parts["clean_phase"], pha_g=parts["phase"],
+                  clean_com=parts["clean_complex"], com_g=parts["complex"],
+                  com_g_hat=parts["recomputed"], clean_audio=clean, audio_g=parts["audio"],
+                  metric_g=metric, one_labels=ones)
+    exec(_OFFICIAL_G, values)
+    return {name: values[key] for name, key in {
+        "total": "loss_gen_all", "magnitude": "loss_mag", "phase": "loss_pha",
+        "complex": "loss_com", "consistency": "loss_stft", "metric": "loss_metric",
+        "time": "loss_time"}.items()}
+
+
+def _official_discriminator_loss(real, fake, ones, target):
+    values = dict(F=F, one_labels=ones, metric_r=real, metric_g=fake,
+                  batch_pesq_score=target, device=real.device)
+    exec(_OFFICIAL_D, values)
+    return values["loss_disc_all"]
 
 
 def _hyper():
@@ -176,13 +226,15 @@ def gan_step(modules, optimizers, clean, noisy, h) -> dict:
     for optim in optimizers:
         optim.zero_grad(set_to_none=True)
     ours, official = _paired_spectra(generator, official_g, clean, noisy, h)
+    ours["audio"].retain_grad()
+    official["audio"].retain_grad()
     ours_real, official_real = _paired_clean_and_fake(discriminator, official_d, ours, official)
     ones_ours = torch.ones(clean.shape[0], device=clean.device)
     ones_official = torch.ones(clean.shape[0], device=clean.device)
     pesq_ours = metric_targets(clean, ours["audio"].detach(), h.sampling_rate)
-    pesq_official = metric_targets(clean, official["audio"].detach(), h.sampling_rate)
+    pesq_official = _official_pesq(clean, official["audio"])
     loss_d_ours = discriminator_loss(ours_real[0], ours_real[1], ones_ours, pesq_ours)
-    loss_d_official = discriminator_loss(official_real[0], official_real[1], ones_official, pesq_official)
+    loss_d_official = _official_discriminator_loss(official_real[0], official_real[1], ones_official, pesq_official)
     loss_d_ours.backward()
     loss_d_official.backward()
     discriminator_grad = grad_report(official_d, discriminator, atol=GRAD_ATOL)
@@ -196,7 +248,7 @@ def gan_step(modules, optimizers, clean, noisy, h) -> dict:
     rng_restore(snap)
     official_metric = official_d(official["clean_mag"], official["hat_mag"])
     loss_g_ours = _components(ours, ours_metric, ones_ours, clean)
-    loss_g_official = _components(official, official_metric, ones_official, clean)
+    loss_g_official = _official_components(official, official_metric, ones_official, clean)
     loss_g_ours["total"].backward()
     loss_g_official["total"].backward()
     generator_grad = grad_report(official_g, generator, atol=GRAD_ATOL)
@@ -216,6 +268,7 @@ def gan_step(modules, optimizers, clean, noisy, h) -> dict:
         "discriminator_loss": abs(float(loss_d_official.detach()) - float(loss_d_ours.detach())),
         "official_discriminator_loss": float(loss_d_official.detach()),
         "generator_loss_gap": _loss_gap(loss_g_official, loss_g_ours),
+        "waveform_gradient": gap(official["audio"].grad, ours["audio"].grad),
         "official_generator_loss": _values(loss_g_official),
         "independent_generator_loss": _values(loss_g_ours),
         "discriminator_grad": discriminator_grad,
@@ -265,7 +318,7 @@ def _forward_modes(modules, clean, noisy, h) -> dict:
         official_score = official_d(official["clean_mag"], official["hat_mag"])
         ones = torch.ones(clean.shape[0], device=clean.device)
         ours_loss = _components(ours, ours_score, ones, clean)
-        official_loss = _components(official, official_score, ones, clean)
+        official_loss = _official_components(official, official_score, ones, clean)
         report[mode] = {
             "stft": gap(official["noisy_mag"], ours["noisy_mag"])["max_abs"],
             "magnitude": gap(official["magnitude"], ours["magnitude"])["max_abs"],
