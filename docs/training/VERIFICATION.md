@@ -984,3 +984,60 @@ OMP_NUM_THREADS=1 MKL_NUM_THREADS=1 OPENBLAS_NUM_THREADS=1 .venvs/lab/bin/python
 CUDA_VISIBLE_DEVICES=FREE_GPU CUBLAS_WORKSPACE_CONFIG=:4096:8 OMP_NUM_THREADS=1 MKL_NUM_THREADS=1 OPENBLAS_NUM_THREADS=1 .venvs/semamba/bin/python tests/training/four_process/compare.py run data/results/training/NEW-SEMAMBA --model semambapp --steps 1 --device cuda:0 --scan-backend fused
 FOUR_PROCESS_PYTHON=.venvs/semamba/bin/python CUDA_VISIBLE_DEVICES=FREE_GPU CUBLAS_WORKSPACE_CONFIG=:4096:8 OMP_NUM_THREADS=1 MKL_NUM_THREADS=1 OPENBLAS_NUM_THREADS=1 .venvs/lab/bin/python tests/training/four_process/compare.py run data/results/training/NEW-SEMAMBA-VB --model semambapp --steps 1 --device cuda:0 --scan-backend fused --dataset voicebank_28_train --database data/db/voicebank.duckdb --sample-rate 16000 --segment-size 8000
 ```
+
+## 最終受入（2026-11-02）
+
+総合は **PARTIAL**。学習処理の公式再現について、5 モデルとも更新順・損失式・optimizer の対応は取れている。長時間学習後の音質同等性は対象外で、未判定である。DeepFilterNet3 の 20 step 勾配、SEMamba++ の公開幅、MossFormerGAN の GPU 複数 step は、1 step の一致だけでは GO にしない。
+
+HEAD は `2af91a3dfc0f95c0c18770bf94890b2faf2c3d77`。この節の計測スクリプトと MP-SENet probe の `--scheduler-step` は作業ツリーにあり、未 commit である。許容値はこれまでの forward / 損失 `atol=1e-5`、勾配 `atol=1e-4` かつ大きい勾配の cosine `>= 0.999` のままである。
+
+| モデル | Forward | Backward | Optimizer | 4プロセス | 再開 | 実データ | 総合 |
+|---|---|---|---|---|---|---|---|
+| MP-SENet | GO | GO（1 step） | GO | GO（縮小幅、epoch scheduler） | GO | GO（1 step） | GO（縮小幅）。公開幅の再測はしていない |
+| SEMamba++ | PARTIAL | PARTIAL | GO | PARTIAL（縮小幅、CUDA） | PARTIAL | GO（縮小幅、1 step） | PARTIAL |
+| TF-GridNet | GO | GO | GO | GO | GO（CPU 2 step） | GO | GO |
+| DeepFilterNet3 | GO（1 step） | PARTIAL（20 step） | GO | GO（同一実装） | GO | GO（1 step） | PARTIAL |
+| MossFormerGAN | GO | PARTIAL（GPU） | GO | GO（CPU） | GO（CPU 4 step） | GO（CPU） | PARTIAL |
+
+### MP-SENet
+
+probe に `--scheduler-step epoch` を足した。このモードは ExponentialLR を step 内で進めない。公開 `train.py` は epoch の終わりにだけ `scheduler_g.step()` と `scheduler_d.step()` を呼ぶ。4 step の学習率は公式・独立とも 5e-4 のまま、scheduler ハッシュも一致した。幅は `dense_channel=16`、TS-Conformer 1 で、公開幅の 64 / 4 ではない。
+
+CPU、`four-process-mpsenet-20261102-epoch/`。公式どうし・独立どうしは 4 step すべて損失・forward・勾配・重みの最大差 0。公式/独立は step 1 の両損失差 0、勾配最大差 3.87e-7、重み最大差 7.24e-4。step 4 の Generator 損失差は 5.48e-6（損失 2.799 に対して）、勾配最大差 0.0133、相対 L2 0.0665、cosine 0.9978、重み最大差 1.71e-3。step 1 の重み差は、以前と同じく AdamW の epsilon 1e-8 が微小勾配を O(lr) まで広げる分である。連続 4 step と、2 step 後に別プロセスで再開した 4 step（`four-process-mpsenet-20261102-epoch-split/`）は、公式・独立のどちらも損失、重み、optimizer、scheduler、RNG が一致した。
+
+VoiceBank は `voicebank_28_train`、16 kHz、segment 8,000。case `03dbca80e082f9b44aa2c7fa693f33d3f6d262c454c6744f3f7416bff963f8da`、crop 14288、長さ 50666。保存先 `four-process-mpsenet-20261102-voicebank-epoch/`。公式どうしは最大差 0。公式/独立は両損失差 0、forward 0、勾配最大差 1.04e-7、相対 L2 5.74e-8、cosine は 1 に丸まる、重み最大差 5.58e-4。
+
+### TF-GridNet
+
+2026-11-02 に tensor の物理 GPU 0（A100-PCIE-40GB、開始時 932 MiB、`CUBLAS_WORKSPACE_CONFIG=:4096:8`）で 1 step をやり直した。保存先 `four-process-tfgridnet-20261102-tensor/`。公式どうし、独立どうし、公式/独立のすべてで forward、損失、勾配、更新後重みの最大差は 0。損失の乗算順と、矩形 STFT の `window=None` は、この A100 でも差を戻していない。CPU の VoiceBank 1 step と CPU の再開は前節の記録のままである。
+
+### DeepFilterNet3
+
+20 step の損失差 0.195 は、別の損失式ではなかった。保存済み入力で公式と独立を同じプロセスに並べると、step 1 の波形差は 0、損失はどちらも 46.343246、勾配の最大差 2.86e-6 は最大勾配約 19.7 の float32 で 1 ulp 程度、相対 L2 は 2.78e-7 である。同じ公式モデルの重み 1 要素だけを `nextafter` で 1 ulp 動かした対照も、step 16 で `df_dec.df_convp.1.weight` の勾配 norm が 111 と 30 に割れた。独立実装との差は、その 1 要素の摂動より早く広がる。step 12 で独立側の同じ層の勾配 norm は 44.7、公式は 20.5 である。step 16 の損失は公式 28.939、独立 29.114、1 ulp 対照 28.939。step 20 の既存 4 プロセスでは損失 24.351 と 24.156（差 0.195、約 0.8%）で、重み cosine は 0.999995 のまま、勾配 cosine は step 16 に 0.24 まで落ちている。同一実装の再実行は 20 step ずっと差 0 なので、実行時の非決定性ではない。原因は、bit 一致する forward のあとに残る 1 ulp 前後の backward 差が AdamW で増幅し、急な勾配に片側だけ当たることである。学習式は変えていない。`libdf` の特徴抽出は引き続き未実行で、両側とも独立 `DFStream` である。
+
+診断は `tests/training/reference/diagnose_df_step1.py` と `diagnose_df_horizon.py`。入力は既存の `four-process-deepfilternet3-20261102-cpu-20/input.pt` で、その結果ディレクトリは上書きしていない。
+
+### SEMamba++ と MossFormerGAN
+
+SEMamba++ の公式 CPU 比較は Triton RMSNorm が CPU tensor を拒否するため N/A のままである。CUDA の縮小幅（hid_feature 8、1 block）の 1 step、4 step、再開、VoiceBank は前節の数値のままである。公開幅の fused 学習 step は tensor で動き、コスト節に書いた。公開幅の公式との 20 step 数値比較は今回もしていない。再開後に fused の重みハッシュが連続実行と一致しない点も前節のままで、チェックポイントの読み込み自体は成功している。
+
+MossFormerGAN の公開設定は `accu_grad: 1`、`effec_batch_size: 2`、`batch_size: 1` である。学習タスクはその蓄積（損失を 2 で割り、両 backward のあと両 optimizer を 1 回）を使う。4 プロセス probe は蓄積 1 のままである。CPU の 4 step と再開は一致し、GPU 1 step の公式/独立勾配差は再実行差より大きい、という前節の判定は変えていない。20 step のスナップショットは容量のため今回も取っていない。
+
+### 学習コスト
+
+数値と shannon の条件付き推定は [GPU_COST.md](GPU_COST.md)。tensor の物理 GPU 0 だけが 1024 MiB 未満だった。2 GPU と 4 GPU は測っていない。shannon では実行していない。
+
+### 回帰テスト
+
+2026-11-02、turing、`.venvs/lab`、`OMP_NUM_THREADS=1`。
+
+| スイート | 結果 |
+|---|---|
+| `tests/data` | 12 件、失敗 0 |
+| `tests/se` | 28 件、失敗 0、skip 1（CUDA 拡張） |
+| `tests/evaluation` | 86 件、失敗 0 |
+| `tests/asr` | 5 件、失敗 0 |
+| `tests/training` | 87 件、失敗 0、skip 0。710 秒 |
+| うち `tests.training.test_four_process` | 8 件、失敗 0。543 秒 |
+
+過去の training 件数（30、47、61、68、74、76、79）は、その時点のテストメソッド数である。68 と 86 の差は失敗や skip ではなく、その後に 4 プロセス比較やモデル別試験が足された結果、現在は 87 件になっている。evaluation の 86 件は training の件数ではない。skip は失敗ではない。公式ツリーや CUDA 拡張が無い環境の skip を、公式一致の PASS には数えない。

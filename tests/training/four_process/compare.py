@@ -60,6 +60,7 @@ def identity(cfg):
     keys = (
         "model", "seed", "device", "fault", "fault_run", "dataset", "database",
         "segment_size", "sample_rate", "epoch", "order", "scan_backend", "probe",
+        "scheduler_step",
     )
     return {key: cfg.get(key) for key in keys}
 
@@ -611,6 +612,7 @@ def main():
     run.add_argument("--sample-rate", type=int, default=None)
     run.add_argument("--scan-backend", choices=("reference", "fused"), default="reference")
     run.add_argument("--epoch", type=int, default=0)
+    run.add_argument("--scheduler-step", choices=("update", "epoch"), default="update")
     resumed = sub.add_parser("resume")
     resumed.add_argument("directory")
     resumed.add_argument("--steps", type=int, required=True)

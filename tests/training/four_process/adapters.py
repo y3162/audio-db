@@ -103,13 +103,29 @@ class TFGridNet:
 class MPSENet:
     """Official order: discriminator (PESQ target, detached magnitude), then generator.
 
-    ExponentialLR is stepped after both optimizer updates in this probe so a
-    resumed worker has a scheduler state that is not the initial state. Full
-    training steps that scheduler once per epoch, not once per update.
+    ``scheduler_step=update`` steps ExponentialLR after every probe update so a
+    resumed worker has a scheduler state that is not the initial state.
+    ``scheduler_step=epoch`` leaves the learning rate unchanged for updates
+    inside one epoch. Published ``train.py`` steps both schedulers once per
+    completed epoch, after the training loop, not after each batch.
     """
     length = 8000
     clip = None
     step_every_update = True
+    def configure(self, cfg):
+        mode = cfg.get("scheduler_step") or "update"
+        if mode not in ("update", "epoch"):
+            raise RuntimeError(f"unsupported MP-SENet scheduler step {mode}")
+        self.step_every_update = mode == "update"
+        self.probe = {
+            "scheduler": (
+                "ExponentialLR gamma 0.99 stepped every probe update"
+                if self.step_every_update
+                else "ExponentialLR gamma 0.99 held for the epoch; published training steps once per completed epoch"
+            ),
+            "scheduler_step": mode,
+            "width": "dense_channel 16, one TS-Conformer; published width is 64 and four blocks",
+        }
     update_order = ("discriminator", "generator")
     lr = 5e-4
     betas = (0.8, 0.99)
