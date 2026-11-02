@@ -8,12 +8,13 @@ import ``src/se/official``.
 from __future__ import annotations
 
 import math
+import warnings
 
 import torch
 import torch.nn.functional as F
 
 from src.training.se.losses import anti_wrapping, phase_losses
-from src.training.se.stft import centered_stft
+from src.training.se.stft import _reflect_pad, centered_stft
 
 
 def multi_resolution_l1(
@@ -59,8 +60,35 @@ def _rect_magnitude_l1(reference: torch.Tensor, estimate: torch.Tensor, window: 
 
 
 def _rect_stft(waveform: torch.Tensor, window: int, hop: int) -> torch.Tensor:
-    rectangular = torch.ones(window, device=waveform.device, dtype=waveform.dtype)
-    return centered_stft(waveform, window, hop, rectangular)
+    """Rectangular STFT matching ESPnet ``Stft(window=None)``.
+
+    ``torch.stft(..., window=None)`` and an explicit ``torch.ones`` window are
+    the same on CPU. On CUDA they are not: a 256-point transform on
+    Quadro RTX 5000 differed by about 1e-5, and that alone moved this
+    multi-resolution loss by one float32 ulp (0.001953125) after the waveform
+    itself matched. The pad stays explicit so the backward does not go through
+    ``reflection_pad1d``.
+    """
+    pad = window // 2
+    if int(waveform.shape[-1]) <= pad:
+        waveform = F.pad(waveform, (0, pad + 1 - int(waveform.shape[-1])))
+    framed = _reflect_pad(waveform, pad)
+    with warnings.catch_warnings():
+        warnings.filterwarnings(
+            "ignore",
+            message="A window was not provided",
+            category=UserWarning,
+        )
+        return torch.stft(
+            framed,
+            window,
+            hop_length=hop,
+            win_length=window,
+            window=None,
+            center=False,
+            normalized=False,
+            return_complex=True,
+        )
 
 
 def matrix_phase_losses(reference: torch.Tensor, generated: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:

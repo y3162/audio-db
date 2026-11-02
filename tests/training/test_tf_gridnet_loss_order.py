@@ -1,5 +1,6 @@
 """Regression for the ESPnet multi-resolution loss backward graph."""
 import unittest
+import warnings
 
 import torch
 
@@ -18,7 +19,9 @@ class TFGridNetLossOrderTest(unittest.TestCase):
         spectral = torch.zeros_like(time)
         for size in (32, 64):
             def magnitude(x):
-                return torch.stft(x, size, hop_length=size // 2, window=torch.ones(size), return_complex=True).abs()
+                with warnings.catch_warnings():
+                    warnings.filterwarnings("ignore", message="A window was not provided")
+                    return torch.stft(x, size, hop_length=size // 2, window=None, return_complex=True).abs()
             spectral = spectral + (magnitude(expected * scale) - magnitude(target)).abs().sum((-2, -1))
         reference = (time * 0.5 + 0.5 * spectral / 2).mean()
         loss = multi_resolution_l1(target, actual, (32, 64))

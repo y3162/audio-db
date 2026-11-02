@@ -899,3 +899,49 @@ OMP_NUM_THREADS=1 MKL_NUM_THREADS=1 OPENBLAS_NUM_THREADS=1 .venvs/lab/bin/python
 ```
 
 回帰テストは `.venvs/lab`、上記と同じスレッド設定で training 79/79、SE 27/28（CUDA extension 専用 1 skip）、evaluation 86/86、ASR 5/5。失敗・エラー 0。MossFormerGAN の公式幅 1 更新、有限勾配、Generator の推論用 export/load も training テストに含む。
+
+## 4 独立プロセス比較（2026-11-01）
+
+`tests/training/four_process/compare.py` は、公式 A/B・独立 A/B を順番に別 OS プロセスで起動する。各プロセスはモデル、Adam、StepLR、乱数と出力を独立に持ち、終了コード、timeout、標準出力・標準エラーを保存する。出力先は新規ディレクトリに限る。`report` はプロセス状態と保存ファイルを読み直すので、中断・欠落・不正な結果も確認できる。`valid` は実行と条件照合の成否であり、実モデルの数値差の許容判定ではない。数値差は別に確認する。
+
+準備時に初期 state dict と固定の合成 clean/noisy tensor を一度保存する。全プロセスが strict load し、ロード後の state、Optimizer、Scheduler、RNG と波形の内容ハッシュを照合する。合成波形は DB のレシピではないので case_id と crop は NA、順序は `[0]`。16 kHz、batch 1、accumulation 1、float32、AMP/TF32 無効。Discriminator は対象外。各 step に forward、clip 前勾配、更新後重みの snapshot、損失、勾配 norm、学習率、状態ハッシュを保存する。最終 Optimizer、Scheduler、RNG の状態も保存する。報告は最大絶対差、相対 L2、cosine、損失差、勾配 norm 差を出す。cosine は norm の積が 1e-24 以下なら null とし、基準勾配絶対値で分けた集計も出す。
+
+CPU の TF-GridNet ms-snsd は既存 `compare_tf_gridnet.py` の ESPnet モデル・公式損失・独立モデル・独立損失を利用した。seed 3、2048 samples、Adam 0.001、clip 5、3 更新、StepLR を毎更新する短い合成入力の試験であり、公式レシピの epoch scheduler や実音声の検証ではない。保存先 `data/results/training/four-process-compare-20261101-cpu/`。PID は公式 A/B 3176526/3176600、独立 A/B 3176651/3176705。4 比較の全 3 step で forward、loss、勾配、更新後重みの最大絶対差は全て 0。これはその環境・入力での結果である。
+
+```bash
+OMP_NUM_THREADS=1 MKL_NUM_THREADS=1 OPENBLAS_NUM_THREADS=1 .venvs/lab/bin/python tests/training/four_process/compare.py run data/results/training/NEW-FOUR-PROCESS --model tf_gridnet --steps 3
+OMP_NUM_THREADS=1 MKL_NUM_THREADS=1 OPENBLAS_NUM_THREADS=1 .venvs/lab/bin/python tests/training/four_process/compare.py report data/results/training/NEW-FOUR-PROCESS
+OMP_NUM_THREADS=1 MKL_NUM_THREADS=1 OPENBLAS_NUM_THREADS=1 .venvs/lab/bin/python -m unittest tests.training.test_four_process -v
+```
+
+2026-11-01 時点の実モデル接続は TF-GridNet のみだった。スナップショットは全 step 保存するため、長い実行には向かない。保存した PyTorch ファイルは信頼できるローカル結果だけを読み込む。
+
+GPU 1 step は空き確認後 Quadro RTX 5000 の物理 GPU 1（実行時の `cuda:0`）を使用し、`CUBLAS_WORKSPACE_CONFIG=:4096:8` とした。`data/results/training/four-process-compare-20261101-gpu/` に保存。公式 A/B と独立 A/B はそれぞれ forward・loss・勾配・重みの最大差 0。公式/独立は forward 最大差 0、損失差 0.001953125、勾配最大差 0.00146484375、勾配相対 L2 2.7537e-7、更新後重み最大差 9.1635e-5。損失と勾配の絶対差は既存の許容値 1e-5 と 1e-4 を超え、当時は原因未調査だった。このディレクトリは上書きしていない。原因と再測定は次節。
+
+Mock の 4 プロセス比較は CPU の決定的な線形モデルで、順序を逆に変えても比較値が一致した。入力・重み・Optimizer・勾配の改変、例外、結果欠落、非有限損失をそれぞれ検出した。保存内容の破損も検出する。別の Mock checkpoint 試験では 4 更新の連続実行と 2 更新後に別プロセスで再開した実行のモデル・Optimizer・Scheduler・RNG・データ位置が一致した。
+
+モデル固有処理を `adapters.py` に分けた後、CPU 1 step を `data/results/training/four-process-compare-20261101-cpu-adapter/` で再実行した。4 組の loss・勾配・更新後重み最大差は全て 0。
+
+公式 TF-GridNet の読み込みには既存の `reference_v1()` を使い、ESPnet の encoder/decoder を比較用の PyTorch STFT/iSTFT ラッパーに置き換えている。したがって ESPnet 全体のデータ入力や学習ランチャーの再現ではない。
+
+GPU 試験の再実行例（直前に `nvidia-smi` で空きメモリを確認し、空いている物理 GPU 番号を指定する）:
+
+```bash
+CUDA_VISIBLE_DEVICES=FREE_GPU CUBLAS_WORKSPACE_CONFIG=:4096:8 OMP_NUM_THREADS=1 MKL_NUM_THREADS=1 OPENBLAS_NUM_THREADS=1 .venvs/lab/bin/python tests/training/four_process/compare.py run data/results/training/NEW-GPU-FOUR-PROCESS --model tf_gridnet --steps 1 --device cuda:0
+```
+
+## 4 独立プロセス比較の再開・GAN・実レシピ（2026-11-02）
+
+比較 worker は `checkpoint.pt` を step ごとに原子的保存する。中身は Generator、Discriminator（無いモデルは持たない）、各 Optimizer、各 Scheduler、global step、epoch、データ位置、Python `random`、NumPy、PyTorch CPU、CUDA を使ったときだけ CUDA RNG、学習設定、実行名、入力 SHA-256 である。`resume` は同じ設定と初期重みの実行だけを継続する。seed、入力ファイル、初期重み、fault が違う checkpoint は拒否する。Mock の連続 4 step と、2 step 後に別プロセスで再開した 4 step は、損失、重み、Optimizer、Scheduler、3 種類の RNG、データ位置、global step が一致した。RNG を別の妥当な状態に差し替えると Mock の数値不一致として検出する。TF-GridNet ms-snsd の CPU 2 step でも、連続実行と 1 step 後の別プロセス再開は損失・重み・RNG・Scheduler が一致した。保存先は `data/results/training/four-process-tfgridnet-20261102-cpu-cont/` と `four-process-tfgridnet-20261102-cpu-resume/`。
+
+MP-SENet は縮小構成（`dense_channel=16`、TS-Conformer 1、8,000 samples）で接続した。更新順は公式と同じで、Discriminator（PESQ 目標、detach した magnitude）のあと Generator である。Optimizer は AdamW が 2 つ。この probe は ExponentialLR を毎 step 進める。本学習は epoch ごとであり、その間隔はこの短い比較では再現していない。CPU 1 step の保存先は `data/results/training/four-process-mpsenet-20261102-cpu/`。公式 A/B と独立 A/B は forward、Generator 損失、Discriminator 損失、勾配、重みの最大差 0。公式/独立は forward と両損失の差 0、勾配最大差 3.87e-7、更新後の Discriminator 重み最大差 0、Generator 重み最大差 7.24e-4（近零勾配の bias）。同じ初期重みから 2 step 進めた `four-process-mpsenet-20261102-cpu-cont/` でも公式どうし・独立どうしは全項目の最大差 0 である。公式/独立は 2 step 目の Generator 損失差 0、Discriminator 損失差 8.61e-9、勾配最大差 2.44e-4、重み最大差 1.26e-3 で、1 step 目の Generator 重み差が次の更新に入っている。連続 2 step と 1 step 後の再開は `four-process-mpsenet-20261102-cpu-resume/` で、同じ実装の損失・両重み・RNG・Scheduler が一致した。
+
+`voicebank_28_train` を `data/db/voicebank.duckdb` から読み、本番 `resource.duckdb` は開いていない。48 kHz から 16 kHz への変換は `RecipeDataset` のロード時リサンプリングである。TF-GridNet の 1 step、segment 2048 は `data/results/training/four-process-voicebank-20261102-cpu/`。4 プロセスは同じ case `03dbca80e082f9b44aa2c7fa693f33d3f6d262c454c6744f3f7416bff963f8da`、crop 24853、resample 後の長さ 50666、clean/noisy の波形ハッシュが一致し、forward・損失・勾配・重みの最大差は 0 だった。
+
+TF-GridNet の GPU 差は、強化波形が一致したあとの 256 点矩形 STFT にあった。PyTorch 2.6 の CUDA では `torch.stft(window=None)` と `torch.ones` が 256 点だけ最大約 1e-5 違い、損失和が float32 の 1 ulp である 0.001953125 動いた。TF32 は無効、cuDNN deterministic は有効、AMP は無効だった。独立損失を ESPnet と同じ `window=None`（pad は従来の明示 reflect）にすると、同じ GPU 上の 1 step で公式/独立の forward・損失・勾配・更新後重みの最大差は 0 になった。保存先は `data/results/training/four-process-compare-20261102-gpu/`（物理 GPU 0、実行時 `cuda:0`、`CUBLAS_WORKSPACE_CONFIG=:4096:8`）。2026-11-01 の測定ファイルは残してある。
+
+```bash
+OMP_NUM_THREADS=1 MKL_NUM_THREADS=1 OPENBLAS_NUM_THREADS=1 .venvs/lab/bin/python tests/training/four_process/compare.py run data/results/training/NEW --model mp_senet --steps 1
+OMP_NUM_THREADS=1 MKL_NUM_THREADS=1 OPENBLAS_NUM_THREADS=1 .venvs/lab/bin/python tests/training/four_process/compare.py resume data/results/training/EXISTING --steps 4
+OMP_NUM_THREADS=1 MKL_NUM_THREADS=1 OPENBLAS_NUM_THREADS=1 .venvs/lab/bin/python tests/training/four_process/compare.py run data/results/training/NEW-VB --model tf_gridnet --steps 1 --dataset voicebank_28_train --database data/db/voicebank.duckdb --segment-size 2048 --sample-rate 16000
+```
