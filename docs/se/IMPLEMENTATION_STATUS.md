@@ -24,7 +24,7 @@
 ## 実行
 
 ```bash
-cd /net/spring/work/seki/exp/audio-db
+cd /path/to/audio-db
 .venvs/lab/bin/python -m unittest discover -s tests/se -v
 ```
 

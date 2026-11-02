@@ -13,13 +13,33 @@ from pathlib import Path
 from src.data.constants import CORPORA_ROOT
 from src.data.corpora_catalog import CATALOG
 
-DEFAULT_DATASET_ROOT = Path(os.environ.get("AUDIO_DB_DATASET_ROOT", "/net/spring/work/seki/database"))
+def dataset_root_argument(parser: argparse.ArgumentParser) -> None:
+    parser.add_argument("--dataset-root", type=Path, default=None,
+                        help="dataset root; overrides AUDIO_DB_DATASET_ROOT")
+
+
+def resolve_dataset_root(parser: argparse.ArgumentParser, value: Path | None) -> Path:
+    value = value or (Path(os.environ["AUDIO_DB_DATASET_ROOT"]) if os.environ.get("AUDIO_DB_DATASET_ROOT") else None)
+    if value is None:
+        parser.error("specify --dataset-root or AUDIO_DB_DATASET_ROOT")
+    return value
 
 
 def link_corpora(dataset_root: Path, corpora_root: Path = CORPORA_ROOT, *, include_non_audio: bool = False) -> list[str]:
     dataset_root = dataset_root.resolve()
-    corpora_root.mkdir(parents=True, exist_ok=True)
     lines: list[str] = []
+    # Preflight the complete catalog before creating any links.
+    for spec in CATALOG:
+        if not spec.index and not include_non_audio:
+            continue
+        source, dest = dataset_root / spec.source_name, corpora_root / spec.link_name
+        if not source.is_dir():
+            raise FileNotFoundError(f"missing dataset directory: {source}")
+        if dest.is_symlink() and dest.resolve() != source.resolve():
+            raise FileExistsError(f"{dest} points at {dest.resolve()}, expected {source}")
+        if not dest.is_symlink() and dest.exists():
+            raise FileExistsError(f"{dest} exists and is not a symlink")
+    corpora_root.mkdir(parents=True, exist_ok=True)
     for spec in CATALOG:
         if not spec.index and not include_non_audio:
             lines.append(f"skip {spec.source_name}: {spec.note}")
@@ -43,11 +63,11 @@ def link_corpora(dataset_root: Path, corpora_root: Path = CORPORA_ROOT, *, inclu
 
 def main() -> None:
     parser = argparse.ArgumentParser(description="Link standard corpora into data/corpora")
-    parser.add_argument("--dataset-root", type=Path, default=DEFAULT_DATASET_ROOT)
+    dataset_root_argument(parser)
     parser.add_argument("--corpora-root", type=Path, default=CORPORA_ROOT)
     parser.add_argument("--include-non-audio", action="store_true")
     args = parser.parse_args()
-    for line in link_corpora(args.dataset_root, args.corpora_root, include_non_audio=args.include_non_audio):
+    for line in link_corpora(resolve_dataset_root(parser, args.dataset_root), args.corpora_root, include_non_audio=args.include_non_audio):
         print(line)
 
 

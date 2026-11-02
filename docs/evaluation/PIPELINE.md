@@ -306,7 +306,7 @@ Run ID を省略すると、実験名、UTC 時刻、設定ハッシュから作
 ## テスト
 
 ```bash
-cd /net/spring/work/seki/exp/audio-db
+cd /path/to/audio-db
 .venvs/lab/bin/python -m unittest discover -s tests/evaluation -v
 ```
 

@@ -2,7 +2,7 @@
 
 索引の列は [tables/AUDIO_FILES.md](tables/AUDIO_FILES.md)。標準のリンクと登録方針は `src/data/corpora_catalog.py` の 12 コーパスである。索引は学習に使うかどうかでファイルを落とさない。sample rate はファイルの値のまま保存する。公式 transcript がある音声は原文を保存し、WER 正規化は評価時の別処理である。
 
-親ディレクトリは `python -m src.data.link_corpora --dataset-root <dir>` で指定する。未指定時は環境変数 `AUDIO_DB_DATASET_ROOT`、それも無いときは `/net/spring/work/seki/database`。
+親ディレクトリは `python -m src.data.link_corpora --dataset-root <dir>` または環境変数 `AUDIO_DB_DATASET_ROOT` で指定する。両方ある場合は引数が優先され、どちらも無ければエラーになる。全コーパスとリンク先を事前検査し、不足や競合があればリンクを作成しない。別ルートへの既存リンクは自動変更しない。
 
 | ディレクトリ | リンク名 | 役割 |
 |---|---|---|

@@ -25,7 +25,7 @@ curl -fsSL https://install.duckdb.org | DUCKDB_VERSION=2.0.0 bash
 `duckdb` 2.0.0 は Python 3.11 以降が必要。共有の Miniconda 3.13.9 を使う。
 
 ```bash
-cd /net/spring/work/seki/exp/audio-db
+cd /path/to/audio-db
 export PATH="$HOME/.local/bin:$PATH"
 export UV_CACHE_DIR=./.venvs/.uv
 uv venv .venvs/lab --python "$HOME/miniconda3/bin/python3"

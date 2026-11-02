@@ -30,7 +30,7 @@ model_ms = build_model('tf_gridnet', variant='ms-snsd')
 SE の学習は `src.training` にある。`enhance()` は推論のままである。MP-SENet は [学習](docs/training/MP_SENET.md)、ほかのモデルの到達レベルは [OTHER_MODELS.md](docs/training/OTHER_MODELS.md)、確認した条件は [検証記録](docs/training/VERIFICATION.md) を参照する。
 
 ```bash
-.venvs/lab/bin/python -m src.training.se.cli --config configs/training/mp_senet.yaml
+python -m src.training.se.cli --config configs/training/mp_senet.yaml
 ```
 
 ## 評価データ
@@ -93,11 +93,11 @@ result = asr.transcribe(waveform, sample_rate=16000)
 データセット、SE、ASR、指標は差し替えられます。実コーパスや実チェックポイントが無いときは、合成音声と `mock` で一連の処理を確認できます。`mock` は音声強調モデルではありません。設計と SNR の定義は [評価パイプライン](docs/evaluation/PIPELINE.md) にあります。`rms_v1` は VoiceBank-DEMAND や URGENT の混合手順ではありません。
 
 ```bash
-.venvs/lab/bin/python -m src.evaluation.cli \
+python -m src.evaluation.cli \
   --config configs/evaluation/smoke.yaml \
   --dry-run
 
-.venvs/lab/bin/python -m src.evaluation.cli \
+python -m src.evaluation.cli \
   --config configs/evaluation/smoke.yaml \
   --limit 2 \
   --device cpu

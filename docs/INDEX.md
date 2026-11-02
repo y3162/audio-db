@@ -28,6 +28,12 @@ DBの仕様書
 
 ---
 
+### [TSUBAME_INITIAL.md](db/TSUBAME_INITIAL.md)
+
+TSUBAME での初回 DB 構築と検証記録
+
+---
+
 ### [RECIPE.md](db/RECIPE.md)
 
 音声生成レシピとケース ID

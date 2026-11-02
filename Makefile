@@ -1,13 +1,14 @@
 .PHONY: db-ingest db-init db-link db-bootstrap
+PYTHON ?= python
 
 db-link:
-	.venvs/lab/bin/python -m src.data.link_corpora
+	$(PYTHON) -m src.data.link_corpora
 
 db-ingest:
-	uv run python -m src.data.ingest_corpora
+	$(PYTHON) -m src.data.ingest_corpora
 
 db-init:
-	.venvs/lab/bin/python -m src.data.init_eval
+	$(PYTHON) -m src.data.init_eval
 
 db-bootstrap:
-	.venvs/lab/bin/python -m src.data.bootstrap
+	$(PYTHON) -m src.data.bootstrap

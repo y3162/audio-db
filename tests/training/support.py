@@ -6,7 +6,7 @@ import math
 from pathlib import Path
 
 import torch
-import torchaudio
+import soundfile as sf
 
 from src.data.recipe import canonical_recipe, case_id_for, sha256_file
 from src.training.core.distributed import ProcessInfo
@@ -60,7 +60,9 @@ def tone(frames: int, frequency: float, rate: int = 16000) -> torch.Tensor:
 
 def write_wav(path: Path, waveform: torch.Tensor, rate: int = 16000) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
-    torchaudio.save(str(path), waveform.reshape(1, -1), rate)
+    # WAV headers emitted by some FFmpeg versions contain timestamps, which
+    # change recipe hashes when the same fixture is recreated in another run.
+    sf.write(str(path), waveform.detach().cpu().numpy(), rate, subtype="PCM_16")
 
 
 def recorded_example(

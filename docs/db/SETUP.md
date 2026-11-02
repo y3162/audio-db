@@ -1,14 +1,15 @@
 ### コーパスのシンボリックリンク
 
 ```bash
-ln -s /path/to/corpora/data/corpus_name/ ./data/corpora
+export AUDIO_DB_DATASET_ROOT=/path/to/datasets
+python -m src.data.link_corpora
 ```
 
 ---
 
 ### コーパスの投入
 
-`make db-ingest` は `corpora.audio_files` を作り直してコーパスを入れます。評価セットの初期化からは呼びません。
+転送と完全性の確認後のみ実行する。`make db-ingest` は `corpora.audio_files` を削除して作り直すため、既存 DB のバックアップと明示的な実行指示が必要です。評価セットの初期化からは呼びません。
 
 ```bash
 make db-ingest
@@ -42,7 +43,9 @@ make db-init
 
 コーパス索引は元の sample rate を保存する。モデルが別の sample rate を使うときは、学習 Dataset のロード時に変換する。レシピの `case_id` は変えない。
 
-`make db-bootstrap` は空の別ファイルへ 12 コーパスを索引し、`configs/db/init.yaml` の評価セットを登録する。出力先が既にあるときは `--rebuild` と別の未使用 `--backup` パスが必要である。候補は出力先と同じファイルシステム上の一時ディレクトリに空から作り、検証後に退避して切り替える。本番ファイルへの反映は `--replace` で、新しい DB の検証、開いているプロセスの確認、バックアップ、同一ファイルシステム上の `os.replace` の順で行う。
+`make db-bootstrap` は空の別ファイルへ 12 コーパスを索引し、`configs/db/init.yaml` の評価セットを登録する。出力先が既にあるときは `--rebuild` と別の未使用 `--backup` パスが必要である。候補は相対音声パスが変わらないよう出力先と同じディレクトリに空から作り、検証後に退避して切り替える。本番ファイルへの反映は `--replace` で、新しい DB の検証、開いているプロセスの確認、バックアップ、同一ファイルシステム上の `os.replace` の順で行う。
+
+現状の bootstrap は索引と評価セットを DB に直接書き、対応する永続 staging を自動生成しない。staging を先に保存する本リポジトリの要件を満たす再構築手順としては未完成であり、本番再構築には使わない。
 
 現行の本番再構築元は `data/staging/resource-current` である。`data/staging/` 直下や `resource-full` は過去の再構築元であり、現行の本番には使わない。
 

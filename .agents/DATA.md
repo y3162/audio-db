@@ -15,7 +15,7 @@ DuckDB は `data/db/resource.duckdb`（`src/data/constants.py`）。
 
 | | `make db-init` | `make db-ingest` |
 |---|---|---|
-| 実行 | `.venvs/lab/bin/python -m src.data.init_eval` | `uv run python -m src.data.ingest_corpora`（環境を指定していない） |
+| 実行 | `make db-init` | `make db-ingest`（いずれも `PYTHON` で環境を指定可能） |
 | 役割 | `eval` スキーマを作り、`configs/db/init.yaml` の Manifest・コーパス選択・注釈を評価セットとして登録する | `data/corpora` を全走査し、`corpora.audio_files` を入れる |
 | `corpora.audio_files` | 変更しない。前後の指紋（件数・path の最小/最大・ハッシュ）が違えばエラー | `DROP TABLE IF EXISTS` で消してから作り直す |
 | 再実行 | 冪等。同じ内容は増えない。同じ ID で内容・順序が違う再登録はエラー（その set は一部だけ残らない） | 毎回、全削除して全投入 |
@@ -73,7 +73,10 @@ DuckDB は `data/db/resource.duckdb`（`src/data/constants.py`）。
 - VoiceBank-DEMAND: 実体は `VoiceBank+DEMAND` で、リンク名は `VoiceBank-DEMAND`。clean/noisy は `clean_testset_wav` と `noisy_testset_wav`（および 28/56 話者の trainset）。`configs/db/lists/voicebank_demand_test.txt` は公式 test 824 件。28 話者 train のうち p286 と p287（872 件）を validation、残り 10,700 件を train とする。test 話者とは重ならない。transcript は同梱 txt があるときだけ索引する。SNR はファイルから推定しない。
 - 標準リンクと索引対象は `src/data/corpora_catalog.py` の 12 コーパスだけである。索引は元の sample rate・フレーム数・チャンネルを保存し、学習用のリサンプリングや切り出しはしない。transcript が公式ファイルにあるコーパス（LibriSpeech、LibriTTS、VCTK、VoiceBank-DEMAND、CHiME3 の評価セット）は、学習で使うかどうかに関係なく原文を保存する。雑音と RIR に transcript は無い。
 - `make db-bootstrap` は空の別ファイルを作る。出力先が既にあるときは `--rebuild` と明示的な `--backup` が無いと拒否し、別ファイルで再構築する。本番 `resource.duckdb` への切り替えは `--replace` だけで、検証とバックアップのあと `os.replace` で行う。
+- 初期リンクと bootstrap は `--dataset-root` または `AUDIO_DB_DATASET_ROOT` を必須とし、引数が優先される。全リンクの事前検査後に作成し、競合する既存リンクは変更しない。bootstrap の候補 DB は最終 DB と同じディレクトリで生成し、レシピの DB 相対パスを維持する。
+- 現在の bootstrap は staging を先に生成せず DB に直接登録するため、上記の staging 必須制約を満たす本番再構築手順としては未完成である。
 - 現行の本番再構築元は `data/staging/resource-current`。`data/staging/` 直下、`data/staging/resource-full`、`data/staging/voicebank`、`data/staging/training` は過去の再構築元であり、現行の本番には使わない。VoiceBank 学習セットの現行再構築元は `data/staging/voicebank-current`。
+- TSUBAME の初回 `resource.duckdb` は 2026-11-02 にコーパスから新規作成した。今回だけの staging 先行省略を含む条件と検証範囲は `docs/db/TSUBAME_INITIAL.md`。研究室側 DB のコピーや同一性の確認ではない。
 - 学習セット `voicebank_28_train` / `voicebank_28_valid` は `data/db/voicebank.duckdb`（再構築元 `data/staging/voicebank/`）。`data/db/training.duckdb` の LibriSpeech+DEMAND スモークとは別ファイルである。
 
 ## `data/` の扱い

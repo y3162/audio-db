@@ -1,7 +1,6 @@
 """Standard corpora linked at bootstrap.
 
-``source_name`` is a directory under the dataset root (default
-``/net/spring/work/seki/database`` is not hardcoded; the CLI passes the root).
+``source_name`` is a directory under the dataset root supplied by the caller.
 ``link_name`` is the directory under ``data/corpora``. Audio corpora are indexed.
 Non-audio directories are listed so a new environment records why they are skipped.
 """

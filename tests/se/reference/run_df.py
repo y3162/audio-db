@@ -7,7 +7,7 @@ os.environ['DEVICE'] = 'cpu'
 
 import torch
 
-ROOT = Path('/net/spring/work/seki/exp/audio-db')
+ROOT = Path(__file__).resolve().parents[3]
 sys.path.insert(0, str(ROOT))
 from src.se import load_enhancer
 from tests.se.reference.metrics import compare, format_row

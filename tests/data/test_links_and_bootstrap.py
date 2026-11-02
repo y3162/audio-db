@@ -3,6 +3,7 @@ from pathlib import Path
 from tempfile import TemporaryDirectory
 from unittest.mock import patch
 import sys
+import argparse
 
 import duckdb
 
@@ -10,7 +11,7 @@ from src.data.bootstrap import MANAGED_CORPORA, bootstrap, replace_production, v
 from src.data.corpora_catalog import CATALOG
 from src.data.db.eval_schema import create_eval_schema
 from src.data.db.schema import create_corpora_schema
-from src.data.link_corpora import link_corpora
+from src.data.link_corpora import link_corpora, resolve_dataset_root
 from src.data.recipe import json_hash
 
 EXCLUDED = {"LibriLM", "VCTK-RVA", "VoxCelebMeta", "cmudict", "_ingest", "FSD50K", "SpeechCommands"}
@@ -31,6 +32,14 @@ def _seed_db(path: Path, corpus: str | None = None) -> None:
 
 
 class LinkAndBootstrapTests(unittest.TestCase):
+    def test_root_argument_overrides_environment(self) -> None:
+        parser = argparse.ArgumentParser()
+        with patch.dict("os.environ", {"AUDIO_DB_DATASET_ROOT": "/environment"}):
+            self.assertEqual(resolve_dataset_root(parser, Path("/argument")), Path("/argument"))
+            self.assertEqual(resolve_dataset_root(parser, None), Path("/environment"))
+        with patch.dict("os.environ", {}, clear=True), self.assertRaises(SystemExit):
+            resolve_dataset_root(parser, None)
+
     def test_catalog_is_the_twelve(self) -> None:
         names = {spec.source_name for spec in CATALOG}
         self.assertTrue(EXCLUDED.isdisjoint(names))
@@ -68,6 +77,15 @@ class LinkAndBootstrapTests(unittest.TestCase):
             with self.assertRaises(SystemExit):
                 bootstrap(database, Path(tmp), rebuild=False)
 
+    def test_missing_last_source_does_not_create_partial_links(self) -> None:
+        with TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            for spec in CATALOG[:-1]:
+                (root / "source" / spec.source_name).mkdir(parents=True)
+            with self.assertRaises(FileNotFoundError):
+                link_corpora(root / "source", root / "links")
+            self.assertFalse((root / "links").exists())
+
     def test_missing_corpora_are_rejected(self) -> None:
         with TemporaryDirectory() as tmp:
             path = Path(tmp) / "partial.duckdb"
@@ -94,6 +112,7 @@ class LinkAndBootstrapTests(unittest.TestCase):
             connection.close()
             old = path.read_bytes()
             def ingest():
+                self.assertEqual(Path(sys.argv[1]).parent, path.parent)
                 _seed_db(Path(sys.argv[1]))
             with patch("src.data.bootstrap.link_corpora", return_value=[]), \
                  patch("src.data.bootstrap.ingest_main", side_effect=ingest), \

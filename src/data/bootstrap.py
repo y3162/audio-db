@@ -18,7 +18,7 @@ from src.data.constants import CORPORA_ROOT, DUCKDB_MAIN_PATH
 from src.data.corpora_catalog import INDEXED
 from src.data.init_eval import initialize
 from src.data.ingest_corpora import main as ingest_main
-from src.data.link_corpora import DEFAULT_DATASET_ROOT, link_corpora
+from src.data.link_corpora import dataset_root_argument, link_corpora, resolve_dataset_root
 
 MANAGED_CORPORA = frozenset(spec.link_name for spec in INDEXED)
 
@@ -36,8 +36,11 @@ def bootstrap(database: Path, dataset_root: Path, *, rebuild: bool = False, back
     for line in link_corpora(dataset_root, CORPORA_ROOT):
         print(line, flush=True)
     # DuckDB creates its own file; keep it on the destination filesystem.
-    with tempfile.TemporaryDirectory(prefix=f".{database.name}.build-", dir=database.parent) as tmp:
-        candidate = Path(tmp) / "candidate.duckdb"
+    fd, candidate_name = tempfile.mkstemp(prefix=f".{database.name}.build-", suffix=".duckdb", dir=database.parent)
+    os.close(fd)
+    candidate = Path(candidate_name)
+    candidate.unlink()  # DuckDB must create the file itself.
+    try:
         print("== ingest", candidate, flush=True)
         import sys
         previous = sys.argv
@@ -53,6 +56,8 @@ def bootstrap(database: Path, dataset_root: Path, *, rebuild: bool = False, back
             replace_production(candidate, backup, database)
         else:
             os.replace(candidate, database)
+    finally:
+        candidate.unlink(missing_ok=True)
     elapsed = time.perf_counter() - started
     print(f"bootstrap finished in {elapsed:.1f}s", flush=True)
 
@@ -194,7 +199,7 @@ def replace_production(new_database: Path, backup: Path, production: Path = DUCK
 def main() -> None:
     parser = argparse.ArgumentParser()
     parser.add_argument("--database", type=Path, default=Path("data/db/resource-next.duckdb"))
-    parser.add_argument("--dataset-root", type=Path, default=DEFAULT_DATASET_ROOT)
+    dataset_root_argument(parser)
     parser.add_argument("--rebuild", action="store_true")
     parser.add_argument("--replace", action="store_true")
     parser.add_argument("--backup", type=Path)
@@ -203,7 +208,7 @@ def main() -> None:
         parser.error("--backup is required when replacing an existing database")
     if args.replace and args.database.exists():
         parser.error("--replace requires a new --database path; rebuild it separately first")
-    bootstrap(args.database, args.dataset_root, rebuild=args.rebuild, backup=args.backup)
+    bootstrap(args.database, resolve_dataset_root(parser, args.dataset_root), rebuild=args.rebuild, backup=args.backup)
     if args.replace:
         replace_production(args.database, args.backup)
         print(f"replaced {DUCKDB_MAIN_PATH} backup {args.backup}", flush=True)

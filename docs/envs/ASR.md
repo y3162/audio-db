@@ -13,7 +13,7 @@ Whisper と Transformers もこの環境に入っています。評価の DuckDB
 ### 作成
 
 ```bash
-cd /net/spring/work/seki/exp/audio-db
+cd /path/to/audio-db
 export UV_CACHE_DIR="$PWD/.venvs/.uv"
 uv venv .venvs/asr --python 3.12
 uv pip install --python .venvs/asr/bin/python --only-binary :all: \
