@@ -59,7 +59,7 @@ from tests.training.four_process.adapters import ADAPTERS
 def identity(cfg):
     keys = (
         "model", "seed", "device", "fault", "fault_run", "dataset", "database",
-        "segment_size", "sample_rate", "epoch", "order",
+        "segment_size", "sample_rate", "epoch", "order", "scan_backend", "probe",
     )
     return {key: cfg.get(key) for key in keys}
 
@@ -85,6 +85,8 @@ def module_digest(modules):
 def prepare(path, cfg):
     seed_probe(cfg["seed"], False)
     adapter = ADAPTERS[cfg["model"]]
+    if hasattr(adapter, "configure"):
+        adapter.configure(cfg)
     modules = adapter.build("independent", torch.device("cpu"))
     state = {name: module.state_dict() for name, module in modules.items()}
     payload = {"initial": state, "kind": "synthetic"}
@@ -108,7 +110,7 @@ def prepare(path, cfg):
         payload.update(clean=clean, noisy=noisy, items=[{
             "case_id": "NA: synthetic input",
             "recipe_sha256": None,
-            "sample_rate": 16000,
+            "sample_rate": int(cfg.get("sample_rate") or 16000),
             "file_sample_rate": None,
             "sources": {},
             "clean_length": length,
@@ -127,15 +129,17 @@ def _batch(root, cfg, position, fault):
         clean, noisy = data["clean"], data["noisy"]
         items = data["items"]
     else:
-        from tests.training.four_process.recipes import describe_item, load_probe_dataset
-        dataset = load_probe_dataset(cfg)
-        dataset.set_epoch(int(cfg["epoch"]))
-        index = int(data["indices"][position])
-        item, clean, noisy = describe_item(dataset, index)
-        if item["case_id"] != data["items"][position]["case_id"]:
-            raise RuntimeError("loaded case_id does not match the prepared batch")
-        if item["clean_sha256"] != data["items"][position]["clean_sha256"] or item["noisy_sha256"] != data["items"][position]["noisy_sha256"]:
-            raise RuntimeError("loaded waveform hash does not match the prepared batch")
+        # Prepared waveforms are the worker input. Opening the database again
+        # would require every worker to use the same DuckDB build.
+        item = data["items"][position]
+        clean = data["clean"][position]
+        noisy = data["noisy"][position]
+        if not torch.is_tensor(clean):
+            clean = torch.as_tensor(clean)
+        if not torch.is_tensor(noisy):
+            noisy = torch.as_tensor(noisy)
+        if digest(clean) != item["clean_sha256"] or digest(noisy) != item["noisy_sha256"]:
+            raise RuntimeError("prepared waveform hash does not match the recorded case")
         clean, noisy = clean.unsqueeze(0), noisy.unsqueeze(0)
         items = [item]
     if fault == "input":
@@ -172,6 +176,8 @@ def worker(root, name):
     if fault == "exception":
         raise RuntimeError("injected exception")
     adapter = ADAPTERS[cfg["model"]]
+    if hasattr(adapter, "configure"):
+        adapter.configure(cfg)
     seed_probe(cfg["seed"], False)
     modules = adapter.build(implementation, device)
     prepared = torch.load(root / "input.pt", map_location="cpu", weights_only=False)
@@ -515,7 +521,7 @@ def _statuses(root, cfg):
         with (run / "stdout.log").open("w") as out, (run / "stderr.log").open("w") as err:
             try:
                 completed = subprocess.run(
-                    [sys.executable, __file__, "worker", str(root), name],
+                    [os.environ.get("FOUR_PROCESS_PYTHON", sys.executable), __file__, "worker", str(root), name],
                     cwd=ROOT, env=env, stdout=out, stderr=err, timeout=cfg["timeout"],
                 )
                 code, timed_out = completed.returncode, False
@@ -533,7 +539,12 @@ def launch(root, cfg):
     root.mkdir(parents=True, exist_ok=False)
     cfg = dict(cfg)
     cfg["epoch"] = int(cfg.get("epoch") or 0)
-    cfg["sample_rate"] = int(cfg.get("sample_rate") or 16000)
+    cfg["scan_backend"] = cfg.get("scan_backend") or "reference"
+    adapter = ADAPTERS[cfg["model"]]
+    if hasattr(adapter, "configure"):
+        adapter.configure(cfg)
+    cfg["probe"] = dict(getattr(adapter, "probe", {}) or {})
+    cfg["sample_rate"] = int(cfg.get("sample_rate") or getattr(adapter, "sample_rate", 16000))
     cfg["segment_size"] = int(cfg.get("segment_size") or ADAPTERS[cfg["model"]].length)
     prepare(root / "input.pt", cfg)
     cfg["input_sha256"] = file_digest(root / "input.pt")
@@ -576,6 +587,8 @@ def _environment(cfg):
         "cudnn_deterministic": torch.backends.cudnn.deterministic,
         "cudnn_benchmark": torch.backends.cudnn.benchmark,
         "deterministic_algorithms": torch.are_deterministic_algorithms_enabled(),
+        "scan_backend": cfg.get("scan_backend"),
+        "probe": cfg.get("probe"),
         "git": subprocess.run(["git", "rev-parse", "HEAD"], cwd=ROOT, text=True, capture_output=True).stdout.strip(),
     }
 
@@ -595,7 +608,8 @@ def main():
     run.add_argument("--dataset", default=None)
     run.add_argument("--database", default=None)
     run.add_argument("--segment-size", type=int, default=None)
-    run.add_argument("--sample-rate", type=int, default=16000)
+    run.add_argument("--sample-rate", type=int, default=None)
+    run.add_argument("--scan-backend", choices=("reference", "fused"), default="reference")
     run.add_argument("--epoch", type=int, default=0)
     resumed = sub.add_parser("resume")
     resumed.add_argument("directory")

@@ -8,34 +8,7 @@ import random
 import numpy as np
 import torch
 
-class Step:
-    def __init__(self, forward, losses, gradients, update_order):
-        self.forward = forward
-        self.losses = losses
-        self.gradients = gradients
-        self.update_order = tuple(update_order)
-
-def maybe_nan(loss, fault):
-    if fault == "nan":
-        return loss * float("nan")
-    return loss
-
-def apply_gradient_fault(modules, fault):
-    if fault == "gradient":
-        next(modules["generator"].parameters()).grad.add_(1)
-
-def _grads(module, prefix):
-    out = {}
-    for name, param in module.named_parameters():
-        if param.grad is None:
-            continue
-        out[f"{prefix}.{name}"] = param.grad.detach().cpu().clone()
-    return out
-
-def _finite(loss, label):
-    if not torch.isfinite(loss).all():
-        raise ValueError(f"nonfinite loss ({label})")
-    return loss
+from tests.training.four_process.step import Step, apply_gradient_fault, finite as _finite, grads as _grads, maybe_nan
 
 class Mock:
     """Single linear map. Each step consumes Python, NumPy, and PyTorch RNGs."""
@@ -279,4 +252,13 @@ def _mp_spectra(implementation, generator, clean, noisy, h):
         "recomputed_complex": recomputed,
     }
 
-ADAPTERS = {"mock": Mock(), "tf_gridnet": TFGridNet(), "mp_senet": MPSENet()}
+from tests.training.four_process.real_models import DeepFilterNet3, MossFormerGAN, SEMambaPP
+
+ADAPTERS = {
+    "mock": Mock(),
+    "tf_gridnet": TFGridNet(),
+    "mp_senet": MPSENet(),
+    "semambapp": SEMambaPP(),
+    "mossformergan": MossFormerGAN(),
+    "deepfilternet3": DeepFilterNet3(),
+}

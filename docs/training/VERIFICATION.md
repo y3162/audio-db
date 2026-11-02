@@ -945,3 +945,42 @@ OMP_NUM_THREADS=1 MKL_NUM_THREADS=1 OPENBLAS_NUM_THREADS=1 .venvs/lab/bin/python
 OMP_NUM_THREADS=1 MKL_NUM_THREADS=1 OPENBLAS_NUM_THREADS=1 .venvs/lab/bin/python tests/training/four_process/compare.py resume data/results/training/EXISTING --steps 4
 OMP_NUM_THREADS=1 MKL_NUM_THREADS=1 OPENBLAS_NUM_THREADS=1 .venvs/lab/bin/python tests/training/four_process/compare.py run data/results/training/NEW-VB --model tf_gridnet --steps 1 --dataset voicebank_28_train --database data/db/voicebank.duckdb --segment-size 2048 --sample-rate 16000
 ```
+
+## 5 モデルの 4 プロセス比較（2026-11-02）
+
+SEMamba++、MossFormerGAN、DeepFilterNet3 を `tests/training/four_process/adapters.py` から起動できるようにした。公式プロセスは公式モジュールと公式損失、独立プロセスは `src/training` を使う。初期重みは独立モデルで一度作り、両方へ strict load する。TF-GridNet と MP-SENet のアダプタは変えていない。本番 `resource.duckdb` は開いていない。
+
+実行は `turing`。GPU は Quadro RTX 5000（16 GB）。使用前の使用メモリは 10–18 MiB。SEMamba++ の GPU 実行中に見えた使用量は 277 MiB で、ステップ中のピークは別途測っていない。PyTorch 2.6.0+cu124、CUDA 12.4。worker は TF32 を切り、cuDNN deterministic を有効にし、AMP は使わない。`CUBLAS_WORKSPACE_CONFIG=:4096:8`。
+
+| モデル | CPU 1 step | GPU 1 step | 公式/独立 | 同一実装の再実行 | checkpoint 再開 | 実データ | 20 step | 判定 |
+|---|---|---|---|---|---|---|---|---|
+| TF-GridNet | PASS（既存、最大差 0） | PASS（既存、最大差 0） | PASS | PASS | PASS（CPU 2 step） | PASS（VoiceBank、segment 2048） | NOT TESTED | GO |
+| MP-SENet | PASS（既存、縮小幅） | NOT TESTED | 損失 0、勾配最大差 3.87e-7 | PASS | PASS（CPU 2 step） | NOT TESTED | NOT TESTED | GO（CPU の縮小 probe） |
+| SEMamba++ | 公式は NOT TESTED。独立 A/B の損失は一致 | PASS（fused、下記） | 1 step の損失差 4.39e-4 | GPU 損失 0、重み最大差 3.22e-4 | 再開は成功。step 4 の損失差 3.81e-6 | PASS（VoiceBank、16 kHz） | NOT TESTED（4 step まで） | PARTIAL |
+| MossFormerGAN | PASS（最大差 0） | 損失差 2.38e-7、勾配最大差 4.43e-4 | CPU は 0。GPU は再実行より勾配差が大きい | CPU は 0。GPU 重み最大差 8.90e-4 | PASS（CPU 4 step、重みと RNG が一致） | PASS（VoiceBank、最大差 0） | NOT TESTED（4 step まで） | GO（CPU）。GPU は再実行差つき |
+| DeepFilterNet3 | 損失・forward 0、勾配最大差 2.86e-6 | 損失・forward 0、勾配最大差 3.11e-5 | 1 step は小さい。20 step で損失差 0.195 | CPU 20 step は 0。GPU 1 step の勾配最大差 2.86e-6 | PASS（CPU 4 step、完全一致） | PASS（48 kHz、損失 0、勾配最大差 5.67e-5） | 同一実装は PASS。公式/独立は PARTIAL | PARTIAL |
+
+SEMamba++ の probe は hid_feature 8、TF-Mamba 1、d_state 4、d_conv 2、長さ 8,000、16 kHz である。公開幅は hid_feature 48、4 block、d_state 16、d_conv 4 である。Discriminator は公開の CQT と 3 解像度 STFT のまま省いていない。損失係数と、Discriminator のあと Generator という更新順も公開どおりである。ExponentialLR はこの probe では毎 step 進める。本学習は epoch ごとである。公式コードの `mamba_ssm` Block は Triton RMSNorm を呼び、CPU tensor で `ValueError: Pointer argument cannot be accessed from Triton` になる。CPU の公式 4 プロセスは実行できない。独立どうしの CPU reference 1 step は損失 46.39616012573242 で一致した。保存先 `data/results/training/four-process-semambapp-20261102-cpu/` は公式プロセスが失敗しているので `valid` は false である。
+
+GPU は物理 GPU 0、実行時 `cuda:0`、`.venvs/semamba`、`scan_backend: fused`。1 step の保存先は `four-process-semambapp-20261102-gpu/`。公式 A/B は forward 最大差 0、損失差 0、勾配最大差 3.80e-7、更新後重み最大差 3.22e-4。独立 A/B は勾配最大差 2.61e-7、重み最大差 2.85e-4。公式/独立は forward 最大差 1.49e-7、Generator 損失差 4.39e-4、Discriminator 損失差 4.77e-7、勾配最大差 1.04e-4、相対 L2 6.32e-5、cosine 0.999999998、重み最大差 3.96e-4。同じ初期重みで CPU reference と GPU fused の独立実装を 1 step 比べると、forward 最大差 0.0728、相対 L2 0.178、cosine 0.984、勾配最大差 0.151、相対 L2 0.0690、cosine 0.9976、損失差 0.0111、重み最大差 4.00e-4 だった。fused どうしの再実行より、reference と fused の波形差の方が大きい。
+
+4 step の連続実行は `four-process-semambapp-20261102-gpu-cont/`、2 step 後の別プロセス再開は `four-process-semambapp-20261102-gpu-split/`。再開後の global step、データ位置、Scheduler、RNG ハッシュは連続実行と一致した。step 4 の公式損失差は 3.81e-6、独立損失差は 7.63e-6 で、重みハッシュは一致しなかった。checkpoint の読み込みは成功し、fused カーネルの数値は再現していない。4 step 終了時の公式/独立の勾配最大差は 0.0230、独立どうしの再実行は 0.00740 だった。公開幅の 20 step は、1 step が約 30 秒で勾配スナップショットが 1 プロセスあたり約 95 MB なので、20 step × 4 プロセスで約 40 分、約 8 GB になる。今回は行っていない。
+
+VoiceBank は `voicebank_28_train`、16 kHz、segment 8,000。ファイルは 48 kHz で、リサンプリングは `RecipeDataset` のロード時である。case `03dbca80e082f9b44aa2c7fa693f33d3f6d262c454c6744f3f7416bff963f8da`、crop 14288、長さ 50666。4 プロセスの case と波形ハッシュは一致した。保存先 `four-process-semambapp-20261102-voicebank/`。公式/独立の forward 最大差 2.31e-7、損失差 1.91e-6、勾配最大差 1.82e-5。`.venvs/semamba` の DuckDB 1.4.3 は `voicebank.duckdb` を開けない。準備は `.venvs/lab`、worker は `FOUR_PROCESS_PYTHON=.venvs/semamba/bin/python` とした。worker は準備済み波形を使い、DB を開き直さない。
+
+MossFormerGAN は公開幅 `num_channel=64`、8,000 samples、16 kHz。公式側は公式 `SyncANet` と公式 `Discriminator`、公式 `loss_mossformergan_se_16k` である。公式 `batch_pesq` は CUDA tensor を固定で返すため、同じ PESQ 正規化の結果を step の device へ返すように差し替えた。PESQ が取れないバッチは止める。更新は Generator backward、clip 10、Discriminator backward、clip 10、そのあと両方 step。Discriminator の学習率は 0.001、Generator は 0.0005。AdamW betas `(0.9, 0.999)`、weight decay 0.01。公開ループに per-step scheduler は無い。probe は学習率を変えない counter を checkpoint に入れる。CPU 1 step と 4 step は 4 比較とも forward、両損失、勾配、重みの最大差 0。保存先は `four-process-mossformergan-20261102-cpu/` と `four-process-mossformergan-20261102-cpu-cont/`。連続 4 step と、2 step 後に再開した 4 step（`four-process-mossformergan-20261102-cpu-split/`）は損失、重み、Optimizer、Scheduler、RNG が一致した。
+
+GPU は物理 GPU 1。保存先 `four-process-mossformergan-20261102-gpu/`。公式どうしは損失差 0、forward 0、勾配最大差 2.68e-7、重み最大差 8.90e-4。公式/独立は損失差 2.38e-7、Discriminator 損失差 4.47e-7、forward 最大差 9.42e-6、勾配最大差 4.43e-4、相対 L2 8.17e-4、cosine 0.999999666、重み最大差 0.00200。勾配の公式/独立差は再実行差より大きい。VoiceBank は同じ case、crop 14288、48 kHz から 16 kHz。CPU の 4 比較は最大差 0。保存先 `four-process-mossformergan-20261102-voicebank/`。20 step は 4 step の結果が 1 プロセスあたり 477 MB なので、20 step × 4 で約 10 GB になる。今回は 4 step で止めた。
+
+DeepFilterNet3 は出荷幅、48 kHz、長さ 4,800。公式 `DfNet` と公式 `MultiResSpecLoss`、`LocalSnrLoss` を使う。解析 STFT と ERB は両側とも独立 `DFStream` で、step ごとに reset する。`libdf` は実行していない。AdamW は上記の出荷設定。cosine は step の前に学習率と weight decay を書き、step のあとで index を進める。CPU 1 step（`four-process-deepfilternet3-20261102-cpu/`）は公式どうしも独立どうしも最大差 0。公式/独立は損失差 0、forward 0、勾配最大差 2.86e-6、相対 L2 2.78e-7、cosine は 1 に丸まる、重み最大差 5.13e-6。連続 4 step と再開（`four-process-deepfilternet3-20261102-cpu-cont/` と `cpu-split/`）は損失、重み、Optimizer、Scheduler、RNG が一致した。
+
+CPU 20 step は `four-process-deepfilternet3-20261102-cpu-20/`。公式どうしと独立どうしは 20 step すべて損失・勾配・重みの最大差 0。公式/独立は step 1 の損失差 0、step 12 の勾配相対 L2 1.01、cosine 0.784、step 16 の損失差 0.175、勾配最大差 20.5、cosine 0.242、step 20 の損失差 0.195、forward 最大差 0.00311、重み最大差 0.00857。同じ実装の再実行は 0 なので、この増加は GPU の非決定性ではなく、公式損失と独立損失の更新が step を重ねて離れた結果である。2026-11-01 の `official-compare-20261101/deepfilternet3.json` でも 20 step の損失差は 0 ではなかった。
+
+GPU は物理 GPU 0。保存先 `four-process-deepfilternet3-20261102-gpu/`。公式どうしは損失・forward 0、勾配最大差 2.86e-6、重み最大差 9.18e-6。公式/独立は損失・forward 0、勾配最大差 3.11e-5、相対 L2 2.64e-6、重み最大差 9.10e-6。VoiceBank は 48 kHz のまま、segment 4,800。case は同じ `03dbca80…`、crop 95991、ファイル長 151996。公式/独立の損失・forward は 0、勾配最大差 5.67e-5。保存先 `four-process-deepfilternet3-20261102-voicebank/`。
+
+```bash
+OMP_NUM_THREADS=1 MKL_NUM_THREADS=1 OPENBLAS_NUM_THREADS=1 .venvs/lab/bin/python tests/training/four_process/compare.py run data/results/training/NEW-MOSS --model mossformergan --steps 1
+OMP_NUM_THREADS=1 MKL_NUM_THREADS=1 OPENBLAS_NUM_THREADS=1 .venvs/lab/bin/python tests/training/four_process/compare.py run data/results/training/NEW-DF --model deepfilternet3 --steps 1
+CUDA_VISIBLE_DEVICES=FREE_GPU CUBLAS_WORKSPACE_CONFIG=:4096:8 OMP_NUM_THREADS=1 MKL_NUM_THREADS=1 OPENBLAS_NUM_THREADS=1 .venvs/semamba/bin/python tests/training/four_process/compare.py run data/results/training/NEW-SEMAMBA --model semambapp --steps 1 --device cuda:0 --scan-backend fused
+FOUR_PROCESS_PYTHON=.venvs/semamba/bin/python CUDA_VISIBLE_DEVICES=FREE_GPU CUBLAS_WORKSPACE_CONFIG=:4096:8 OMP_NUM_THREADS=1 MKL_NUM_THREADS=1 OPENBLAS_NUM_THREADS=1 .venvs/lab/bin/python tests/training/four_process/compare.py run data/results/training/NEW-SEMAMBA-VB --model semambapp --steps 1 --device cuda:0 --scan-backend fused --dataset voicebank_28_train --database data/db/voicebank.duckdb --sample-rate 16000 --segment-size 8000
+```

@@ -131,4 +131,15 @@ class FourProcessTest(unittest.TestCase):
         schedulers=adapter.schedulers(optimizers)
         self.assertEqual(set(optimizers), {'generator','discriminator'})
         self.assertEqual(set(schedulers), {'generator','discriminator'})
+    def test_registered_update_orders(self):
+        from tests.training.four_process.adapters import ADAPTERS
+        self.assertEqual(ADAPTERS['semambapp'].update_order, ('discriminator','generator'))
+        self.assertEqual(ADAPTERS['mossformergan'].update_order, ('generator','discriminator'))
+        self.assertEqual(ADAPTERS['deepfilternet3'].update_order, ('generator',))
+        self.assertEqual(ADAPTERS['semambapp'].sample_rate, 16000)
+        self.assertEqual(ADAPTERS['mossformergan'].sample_rate, 16000)
+        self.assertEqual(ADAPTERS['deepfilternet3'].sample_rate, 48000)
+        self.assertIsNone(ADAPTERS['semambapp'].clip)
+        self.assertEqual(ADAPTERS['mossformergan'].clip, 10.0)
+        self.assertEqual(ADAPTERS['deepfilternet3'].clip, 1.0)
 if __name__=='__main__': unittest.main()
