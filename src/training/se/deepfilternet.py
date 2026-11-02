@@ -289,9 +289,11 @@ def _multi_resolution_spectral(estimate: torch.Tensor, reference: torch.Tensor) 
     loss = estimate.new_zeros(())
     for n_fft in _MR_FFTS:
         hop = n_fft // 4
-        window = torch.hann_window(n_fft, device=estimate.device, dtype=estimate.dtype)
-        predicted = centered_stft(estimate, n_fft, hop, window, normalized=True)
-        target = centered_stft(reference, n_fft, hop, window, normalized=True)
+        # The official loss registers a CPU-created Hann window and moves it
+        # with the loss module; CUDA's direct window generation differs.
+        window = torch.hann_window(n_fft, dtype=estimate.dtype).to(estimate.device)
+        predicted = _spectral_stft(estimate, n_fft, hop, window)
+        target = _spectral_stft(reference, n_fft, hop, window)
         predicted_abs = predicted.abs().clamp_min(1e-12).pow(_MR_GAMMA)
         target_abs = target.abs().clamp_min(1e-12).pow(_MR_GAMMA)
         loss = loss + F.mse_loss(predicted_abs, target_abs) * _MR_FACTOR
@@ -303,9 +305,18 @@ def _multi_resolution_spectral(estimate: torch.Tensor, reference: torch.Tensor) 
     return loss
 
 
+def _spectral_stft(waveform: torch.Tensor, n_fft: int, hop: int, window: torch.Tensor) -> torch.Tensor:
+    # CUDA reflection_pad1d backward is unavailable under strict deterministic
+    # algorithms. The explicit padding has identical forward values but may
+    # accumulate gradients in a different order.
+    if waveform.shape[-1] <= n_fft // 2 or (waveform.is_cuda and torch.are_deterministic_algorithms_enabled()):
+        return centered_stft(waveform, n_fft, hop, window, normalized=True)
+    return torch.stft(waveform, n_fft, hop, window=window, normalized=True, return_complex=True)
+
+
 def _compressed_complex(spectrum: torch.Tensor, magnitude: torch.Tensor) -> torch.Tensor:
     phase = _StableAngle.apply(spectrum)
-    return torch.complex(magnitude * torch.cos(phase), magnitude * torch.sin(phase))
+    return magnitude * torch.exp(1j * phase)
 
 
 class _StableAngle(torch.autograd.Function):
@@ -321,7 +332,7 @@ class _StableAngle(torch.autograd.Function):
         (spectrum,) = ctx.saved_tensors
         denom = (spectrum.real.square() + spectrum.imag.square()).clamp_min(1e-10)
         scale = grad / denom
-        return torch.complex(-spectrum.imag * scale, spectrum.real * scale)
+        return torch.view_as_complex(torch.stack((-spectrum.imag * scale, spectrum.real * scale), dim=-1))
 
 
 def _local_snr_db(

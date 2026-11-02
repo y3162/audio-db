@@ -62,7 +62,10 @@ def identity(cfg):
         "segment_size", "sample_rate", "epoch", "order", "scan_backend", "probe",
         "scheduler_step",
     )
-    return {key: cfg.get(key) for key in keys}
+    result = {key: cfg.get(key) for key in keys}
+    if cfg.get("official_width"):
+        result["official_width"] = True
+    return result
 
 def seed_probe(seed, cuda):
     random.seed(seed)
@@ -126,30 +129,44 @@ def prepare(path, cfg):
 
 def _batch(root, cfg, position, fault):
     data = torch.load(root / "input.pt", map_location="cpu", weights_only=False)
+    accumulation = 2 if cfg["model"] == "mossformergan" else 1
     if data["kind"] == "synthetic":
         clean, noisy = data["clean"], data["noisy"]
         items = data["items"]
     else:
         # Prepared waveforms are the worker input. Opening the database again
         # would require every worker to use the same DuckDB build.
-        item = data["items"][position]
-        clean = data["clean"][position]
-        noisy = data["noisy"][position]
-        if not torch.is_tensor(clean):
-            clean = torch.as_tensor(clean)
-        if not torch.is_tensor(noisy):
-            noisy = torch.as_tensor(noisy)
-        if digest(clean) != item["clean_sha256"] or digest(noisy) != item["noisy_sha256"]:
-            raise RuntimeError("prepared waveform hash does not match the recorded case")
-        clean, noisy = clean.unsqueeze(0), noisy.unsqueeze(0)
-        items = [item]
+        if accumulation > 1:
+            parts = [_batch_one(data, position * accumulation + i) for i in range(accumulation)]
+            clean = torch.cat([part[0] for part in parts])
+            noisy = torch.cat([part[1] for part in parts])
+            items = [part[2] for part in parts]
+        else:
+            clean, noisy, item = _batch_one(data, position)
+            items = [item]
+    if accumulation > 1 and data["kind"] == "synthetic":
+        clean = clean.repeat(accumulation, 1)
+        noisy = noisy.repeat(accumulation, 1)
+        items = [dict(items[0], micro_batch_index=i) for i in range(accumulation)]
     if fault == "input":
         noisy = noisy.clone()
         noisy[0, 0] += 1
-        items = [dict(items[0], noisy_sha256=digest(noisy), case_id=items[0]["case_id"])]
+        items = [dict(items[0], noisy_sha256=digest(noisy), case_id=items[0]["case_id"]), *items[1:]]
     if fault == "case":
-        items = [dict(items[0], case_id="wrong-case")]
+        items = [dict(items[0], case_id="wrong-case"), *items[1:]]
     return clean, noisy, items
+
+def _batch_one(data, position):
+    item = data["items"][position]
+    clean = data["clean"][position]
+    noisy = data["noisy"][position]
+    if not torch.is_tensor(clean):
+        clean = torch.as_tensor(clean)
+    if not torch.is_tensor(noisy):
+        noisy = torch.as_tensor(noisy)
+    if digest(clean) != item["clean_sha256"] or digest(noisy) != item["noisy_sha256"]:
+        raise RuntimeError("prepared waveform hash does not match the recorded case")
+    return clean.unsqueeze(0), noisy.unsqueeze(0), item
 
 def _apply_weight_fault(modules):
     with torch.no_grad():
@@ -164,6 +181,10 @@ def _load_modules(modules, state):
 
 def worker(root, name):
     cfg = json.loads((root / "config.json").read_text())
+    if cfg["model"] == "mossformergan" and "two micro-batches" not in cfg.get("probe", {}).get("update", ""):
+        raise RuntimeError("refusing to resume a MossFormerGAN probe created before accumulation=2")
+    if cfg["model"] == "semambapp" and "interleave real/fake" not in cfg.get("probe", {}).get("aggregation", ""):
+        raise RuntimeError("refusing to resume a SEMamba++ probe created before paired discriminator ordering")
     run = root / name
     torch.set_num_threads(1)
     torch.backends.cuda.matmul.allow_tf32 = False
@@ -301,7 +322,7 @@ def _initial(cfg, modules, optimizers, schedulers, cuda, position_items):
         "crop": [item.get("crop_start") for item in items],
         "sample_rate": cfg.get("sample_rate") or 16000,
         "batch_size": 1,
-        "accumulation": 1,
+        "accumulation": 2 if cfg["model"] == "mossformergan" else 1,
         "dtype": "float32",
         "tf32": False,
         "amp": False,
@@ -570,7 +591,7 @@ def resume(root, steps):
         prepared = torch.load(root / "input.pt", map_location="cpu", weights_only=False)
         if list(prepared["indices"]) != list(indices[:len(prepared["indices"])]):
             raise RuntimeError("refusing to resume because the dataset order changed")
-        if len(prepared["indices"]) < int(steps):
+        if len(prepared["indices"]) < int(steps) * (2 if cfg["model"] == "mossformergan" else 1):
             raise RuntimeError("prepared recipe batches do not cover the resumed step count")
     (root / "config.json").write_text(json.dumps(cfg, indent=2) + "\n")
     _statuses(root, cfg)
@@ -613,6 +634,7 @@ def main():
     run.add_argument("--scan-backend", choices=("reference", "fused"), default="reference")
     run.add_argument("--epoch", type=int, default=0)
     run.add_argument("--scheduler-step", choices=("update", "epoch"), default="update")
+    run.add_argument("--official-width", action="store_true")
     resumed = sub.add_parser("resume")
     resumed.add_argument("directory")
     resumed.add_argument("--steps", type=int, required=True)

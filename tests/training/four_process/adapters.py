@@ -114,6 +114,7 @@ class MPSENet:
     step_every_update = True
     def configure(self, cfg):
         mode = cfg.get("scheduler_step") or "update"
+        self.official_width = bool(cfg.get("official_width"))
         if mode not in ("update", "epoch"):
             raise RuntimeError(f"unsupported MP-SENet scheduler step {mode}")
         self.step_every_update = mode == "update"
@@ -124,7 +125,8 @@ class MPSENet:
                 else "ExponentialLR gamma 0.99 held for the epoch; published training steps once per completed epoch"
             ),
             "scheduler_step": mode,
-            "width": "dense_channel 16, one TS-Conformer; published width is 64 and four blocks",
+            "width": ("dense_channel 64, four TS-Conformers" if self.official_width else
+                      "dense_channel 16, one TS-Conformer; published width is 64 and four blocks"),
         }
     update_order = ("discriminator", "generator")
     lr = 5e-4
@@ -134,8 +136,8 @@ class MPSENet:
     def hyper(self):
         from types import SimpleNamespace
         return SimpleNamespace(
-            dense_channel=16,
-            num_tsconformers=1,
+            dense_channel=64 if getattr(self, "official_width", False) else 16,
+            num_tsconformers=4 if getattr(self, "official_width", False) else 1,
             n_fft=400,
             hop_size=100,
             win_size=400,

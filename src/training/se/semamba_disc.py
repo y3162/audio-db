@@ -123,13 +123,21 @@ class MultiScaleSubbandCQTDiscriminator(nn.Module):
             for hop, octaves, bins in zip(_CQT_HOPS, _CQT_OCTAVES, _CQT_BINS, strict=True)
         )
 
-    def forward(self, waveform: torch.Tensor) -> tuple[list[torch.Tensor], list[torch.Tensor]]:
+    def forward(self, waveform: torch.Tensor, paired: torch.Tensor | None = None):
         scores = []
         features: list[torch.Tensor] = []
+        paired_scores = []
+        paired_features: list[torch.Tensor] = []
         for discriminator in self.discriminators:
             score, maps = discriminator(waveform)
             scores.append(score)
             features.extend(maps)
+            if paired is not None:
+                score, maps = discriminator(paired)
+                paired_scores.append(score)
+                paired_features.extend(maps)
+        if paired is not None:
+            return scores, paired_scores, features, paired_features
         return scores, features
 
 
@@ -185,11 +193,19 @@ class MultiResolutionDiscriminator(nn.Module):
         self.resolutions = _RESOLUTIONS
         self.discriminators = nn.ModuleList(ResolutionDiscriminator(resolution) for resolution in _RESOLUTIONS)
 
-    def forward(self, waveform: torch.Tensor) -> tuple[list[torch.Tensor], list[torch.Tensor]]:
+    def forward(self, waveform: torch.Tensor, paired: torch.Tensor | None = None):
         scores = []
         features: list[torch.Tensor] = []
+        paired_scores = []
+        paired_features: list[torch.Tensor] = []
         for discriminator in self.discriminators:
             score, maps = discriminator(waveform)
             scores.append(score)
             features.extend(maps)
+            if paired is not None:
+                score, maps = discriminator(paired)
+                paired_scores.append(score)
+                paired_features.extend(maps)
+        if paired is not None:
+            return scores, paired_scores, features, paired_features
         return scores, features

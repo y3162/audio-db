@@ -85,10 +85,13 @@ class SEMambaPP:
         if backend not in ("reference", "fused"):
             raise ValueError(f"unknown scan backend {backend}")
         self.scan_backend = backend
+        self.official_width = bool(cfg.get("official_width"))
         self.probe = {
-            "generator": "hid_feature 8, num_tfmamba 1, d_state 4, d_conv 2, expand 2",
+            "generator": ("hid_feature 48, num_tfmamba 4, d_state 16, d_conv 4, expand 2"
+                          if self.official_width else "hid_feature 8, num_tfmamba 1, d_state 4, d_conv 2, expand 2"),
             "published_generator": "hid_feature 48, num_tfmamba 4, d_state 16, d_conv 4, expand 2",
             "discriminators": "published CQT and three-resolution magnitude stacks",
+            "aggregation": "interleave real/fake per discriminator; sum CQT and multi-resolution losses separately",
             "scan_backend": backend,
             "length": self.length,
             "sample_rate": self.sample_rate,
@@ -97,10 +100,10 @@ class SEMambaPP:
 
     def _arch(self):
         return {
-            "hid_feature": 8,
-            "num_tfmamba": 1,
-            "d_state": 4,
-            "d_conv": 2,
+            "hid_feature": 48 if getattr(self, "official_width", False) else 8,
+            "num_tfmamba": 4 if getattr(self, "official_width", False) else 1,
+            "d_state": 16 if getattr(self, "official_width", False) else 4,
+            "d_conv": 4 if getattr(self, "official_width", False) else 2,
             "expand": 2,
             "norm_epsilon": 1e-5,
             "input_channel": 2,
@@ -199,7 +202,7 @@ class MossFormerGAN:
         self.probe = {
             "generator": "published SyncANet num_channel 64, n_fft 400",
             "discriminator": "published NISQA AdaptCNN and two Conformers",
-            "update": "generator backward, generator clip, discriminator backward, discriminator clip, then both steps",
+            "update": "two micro-batches: divide each loss by 2, generator backward and clip, discriminator backward and clip; then both steps",
             "scheduler": "no per-batch schedule; the probe stores a counter and does not change the learning rate",
             "pesq": "a missing PESQ score aborts the step",
             "official_batch_pesq": "the published helper hardcodes a CUDA tensor; the probe returns the same normalization on the step device",
@@ -241,28 +244,35 @@ class MossFormerGAN:
         discriminator.train()
         optimizers["generator"].zero_grad(set_to_none=True)
         optimizers["discriminator"].zero_grad(set_to_none=True)
-        scale = torch.sqrt(noisy.shape[-1] / (noisy.square().sum(dim=-1) + 1e-6)).unsqueeze(-1)
-        normalized = noisy * scale
-        teacher = clean * scale
-        if implementation == "official":
-            audio, gen, disc = _official_moss_losses(generator, discriminator, normalized, teacher, clean.device)
-        else:
-            audio, gen, disc = _independent_moss_losses(
-                generator, discriminator, normalized, teacher, self.sample_rate
-            )
-        gen = _finite(maybe_nan(gen, fault), "generator")
-        disc = _finite(disc, "discriminator")
-        gen.backward()
-        torch.nn.utils.clip_grad_norm_(generator.parameters(), self.clip)
-        disc.backward()
-        torch.nn.utils.clip_grad_norm_(discriminator.parameters(), self.clip)
+        if clean.shape[0] != 2 or noisy.shape[0] != 2:
+            raise ValueError("MossFormerGAN probe requires two micro-batches")
+        audios, gens, discs = [], [], []
+        for clean_micro, noisy_micro in zip(clean.split(1), noisy.split(1)):
+            scale = torch.sqrt(noisy_micro.shape[-1] / (noisy_micro.square().sum(dim=-1) + 1e-6)).unsqueeze(-1)
+            normalized = noisy_micro * scale
+            teacher = clean_micro * scale
+            if implementation == "official":
+                audio, gen, disc = _official_moss_losses(generator, discriminator, normalized, teacher, clean.device)
+            else:
+                audio, gen, disc = _independent_moss_losses(
+                    generator, discriminator, normalized, teacher, self.sample_rate
+                )
+            gen = _finite(maybe_nan(gen, fault), "generator")
+            disc = _finite(disc, "discriminator")
+            (gen / 2).backward()
+            torch.nn.utils.clip_grad_norm_(generator.parameters(), self.clip)
+            (disc / 2).backward()
+            torch.nn.utils.clip_grad_norm_(discriminator.parameters(), self.clip)
+            audios.append(audio.detach())
+            gens.append(gen.detach())
+            discs.append(disc.detach())
         apply_gradient_fault(modules, fault)
         grads = {}
         grads.update(_grads(generator, "generator"))
         grads.update(_grads(discriminator, "discriminator"))
         optimizers["generator"].step()
         optimizers["discriminator"].step()
-        return Step(audio.detach(), {"generator": gen.detach(), "discriminator": disc.detach()}, grads, self.update_order)
+        return Step(torch.cat(audios), {"generator": torch.stack(gens).mean(), "discriminator": torch.stack(discs).mean()}, grads, self.update_order)
 
 
 class DeepFilterNet3:
@@ -432,11 +442,10 @@ def _semamba_discriminator(implementation, band, resolution, clean, audio):
         loss_r, _, _ = discriminator_loss(real_r, fake_r)
         return loss_q + loss_r
     from src.training.se.spectral import least_squares_discriminator
-    real_q, _ = band(clean)
-    fake_q, _ = band(audio)
-    real_r, _ = resolution(clean)
-    fake_r, _ = resolution(audio)
-    return sum(least_squares_discriminator(real, fake) for real, fake in zip(real_q + real_r, fake_q + fake_r, strict=True))
+    real_q, fake_q, _, _ = band(clean, audio)
+    real_r, fake_r, _, _ = resolution(clean, audio)
+    return (sum(least_squares_discriminator(real, fake) for real, fake in zip(real_q, fake_q, strict=True))
+            + sum(least_squares_discriminator(real, fake) for real, fake in zip(real_r, fake_r, strict=True)))
 
 
 def _semamba_generator(implementation, band, resolution, clean, parts, mel):
@@ -459,12 +468,10 @@ def _semamba_generator(implementation, band, resolution, clean, parts, mel):
         mel_loss = mel(clean.unsqueeze(1), parts["audio"].unsqueeze(1))
     else:
         from src.training.se.spectral import compressed_complex_losses, feature_matching, least_squares_generator, summed_slaney_log_mel
-        _, real_qf = band(clean)
-        fake_q, fake_qf = band(parts["audio"])
-        _, real_rf = resolution(clean)
-        fake_r, fake_rf = resolution(parts["audio"])
-        adversarial = sum(least_squares_generator(score) for score in fake_q + fake_r)
-        matching = feature_matching(real_qf + real_rf, fake_qf + fake_rf, scale=2.0, reduction="sum")
+        _, fake_q, real_qf, fake_qf = band(clean, parts["audio"])
+        _, fake_r, real_rf, fake_rf = resolution(clean, parts["audio"])
+        adversarial = sum(least_squares_generator(score) for score in fake_q) + sum(least_squares_generator(score) for score in fake_r)
+        matching = feature_matching(real_qf, fake_qf, scale=2.0, reduction="sum") + feature_matching(real_rf, fake_rf, scale=2.0, reduction="sum")
         spectral = compressed_complex_losses(
             parts["clean_mag"], parts["mag"], parts["clean_phase"], parts["phase"],
             parts["clean_complex"], parts["complex"], parts["recomputed"], phase_mode="matrix",
@@ -556,6 +563,7 @@ def _independent_moss_losses(generator, discriminator, normalized, teacher, samp
 
 
 def _official_df(independent):
+    import os
     import sys
     import types
     from pathlib import Path
@@ -585,7 +593,10 @@ def _official_df(independent):
     sys.path.insert(0, str(package.parent))
     from df.config import config
     from df.deepfilternet3 import DfNet
-    config.load(str(Path(__file__).resolve().parents[3] / "data" / "checkpoints" / "deepfilternet3" / "DeepFilterNet3" / "config.ini"))
+    config_path = Path(os.environ.get("DF_REFERENCE_CONFIG", str(Path(__file__).resolve().parents[3] / "data" / "checkpoints" / "deepfilternet3" / "DeepFilterNet3" / "config.ini")))
+    if not config_path.is_file():
+        raise FileNotFoundError(f"DeepFilterNet3 reference config not found: {config_path}")
+    config.load(str(config_path))
     official = DfNet(independent.erb_fb.detach().clone(), independent.mask.erb_inv_fb.detach().clone())
     official.load_state_dict(independent.state_dict(), strict=True)
     return official.to(independent.erb_fb.device)

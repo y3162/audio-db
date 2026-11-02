@@ -217,14 +217,15 @@ class MossFormerGANTask:
 
 
 def _stft(waveform: torch.Tensor, n_fft: int, hop: int, win: int) -> torch.Tensor:
-    window = torch.hamming_window(win, periodic=False, device=waveform.device, dtype=waveform.dtype)
+    # The released solver constructs the window on CPU before moving it.
+    window = torch.hamming_window(win, periodic=False, dtype=waveform.dtype).to(waveform.device)
     # Same frames as center=True. The pad is an index reflection so CUDA
     # deterministic mode does not need reflection_pad1d_backward.
     return torch.view_as_real(centered_stft(waveform, n_fft, hop, window))
 
 
 def _istft(spectrum: torch.Tensor, n_fft: int, hop: int, win: int, length: int) -> torch.Tensor:
-    window = torch.hamming_window(win, periodic=False, device=spectrum.device, dtype=spectrum.dtype)
+    window = torch.hamming_window(win, periodic=False, dtype=spectrum.dtype).to(spectrum.device)
     return torch.istft(torch.view_as_complex(spectrum), n_fft, hop, win, window=window, center=False)
 
 

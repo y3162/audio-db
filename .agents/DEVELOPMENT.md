@@ -8,12 +8,14 @@
 |---|---|
 | `.venvs/lab` | Python 3.13、torch 2.6.0+cu124、NumPy 2.5.4、DuckDB 2.0.0、`nnAudio==0.3.3`。SE、評価、`make db-init`、通常のテスト。SEMamba++ の CQT Discriminator が `nnAudio` を使う |
 | `.venvs/asr` | Python 3.12、NeMo、Whisper、Transformers、NumPy 2.1.3。実 ASR を使う評価・スモーク。SE と ASR を同じプロセスでつなぐため、DuckDB・PESQ・STOI も入っている |
-| `.venvs/tsubame` | TSUBAME 用の独立環境。構築条件と GPU 検証範囲は `docs/envs/TSUBAME.md`。融合カーネルは未検証 |
+| `.venvs/tsubame` | TSUBAME 用の独立環境。構築条件は `docs/envs/TSUBAME.md`、融合カーネルを含む検証範囲は `docs/training/VERIFICATION.md` |
 | `.venvs/ref`、`.venvs/semamba`、`.venvs/cuda-nvcc` | 公式実装との比較とそのためのビルド専用。公式の依存を含む。`semamba` は `mamba-ssm` と `causal-conv1d` を sm_75（turing の Quadro RTX 5000）向けにソースビルドしてあり、cubin は sm_75 だけなので A100 ではロードできない。`nnAudio==0.3.3` と librosa も入っている。独立 SEMamba++ は既定では外部 scan を使わず、明示的に `scan_backend: fused` を指定した CUDA 実行時だけ `mamba_ssm` の `mamba_inner_fn` と Triton RMSNorm を読み込む。CPU では reference に戻る。 |
 
 - NeMo は Python 3.13・NumPy 2.5.4 の lab と依存関係が合わないため、ASR の環境を分けている。NeMo などを lab に入れない。lab にパッケージを足すときは NumPy を上げない（`requirements/evaluation.txt` の手順）。
 - Numba と NeMo は、`.venvs/*` の `nvidia/cuda_nvcc`（ptxas 12.2）を使う。システムの `/usr/local/cuda` は使わない。
 - TSUBAME 4.0 は別の環境（`docs/envs/TSUBAME.md`）。
+- TSUBAME では長時間学習に `qsub`、短時間の開発・デバッグに `qrsh` を使う。資源と優先度の指定は `docs/envs/TSUBAME.md` を参照する。
+- DeepFilterNet3 の spectral loss は通常、公式と同じ反射パディングを使う。厳密な決定的 CUDA では backward の制約のため別のパディングを使い、勾配の加算順が変わり得る。比較結果は `docs/training/VERIFICATION.md`。
 
 ## サーバーと GPU
 

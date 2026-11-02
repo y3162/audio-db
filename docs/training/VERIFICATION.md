@@ -1041,3 +1041,75 @@ MossFormerGAN の公開設定は `accu_grad: 1`、`effec_batch_size: 2`、`batch
 | うち `tests.training.test_four_process` | 8 件、失敗 0。543 秒 |
 
 過去の training 件数（30、47、61、68、74、76、79）は、その時点のテストメソッド数である。68 と 86 の差は失敗や skip ではなく、その後に 4 プロセス比較やモデル別試験が足された結果、現在は 87 件になっている。evaluation の 86 件は training の件数ではない。skip は失敗ではない。公式ツリーや CUDA 拡張が無い環境の skip を、公式一致の PASS には数えない。
+
+### TSUBAME H100 追加診断（2026-11-02）
+
+`data/results/training/final-h100-20261102-cpu/` に今回の入力、各プロセスの結果とジョブログを保存した。以下は短い合成入力を使った 1 更新の比較であり、実データの学習品質の比較ではない。MossFormerGAN は同じ0.5秒波形を2回使って蓄積し、各 backward 後にクリップした。
+
+- MossFormerGAN: 公開 solver は Hamming 窓を CPU 上で作り GPU に移す。独立側が GPU 上で生成すると、H100 で公式/独立の forward 最大差 `1.29e-5`、勾配相対 L2 `0.00263` が生じた。CPU 生成に合わせた後、forward 最大差 0、勾配相対 L2 `3.95e-7`。公式 A/B は `3.91e-7`、独立 A/B は `4.03e-7`。更新後重みの最大差は公式/独立 `5.69e-4`、公式 A/B `4.77e-4`、独立 A/B `6.51e-4`。CPU の同一合成波形の蓄積2・1更新では forward、損失、勾配、重みが一致した。
+- MP-SENet: dense_channel 64、TS-Conformer 4、epoch 単位 scheduler、公式 PESQ 目標。H100 の公式/独立勾配相対 L2 `1.11e-7`、最大 `2.09e-7`。重み最大差 `6.61e-4` に対して公式 A/B `5.75e-4`、独立 A/B `7.23e-4`。probe の入力は公開 segment 長ではない。
+- TF-GridNet ms-snsd: H100 で forward、loss、勾配、更新後重みの最大差は全ペア 0。公式 separator と損失を比較し、separator の STFT は既存 probe のスタブである。
+- DeepFilterNet3: H100 の forward と loss は一致、公式/独立勾配相対 L2 `1.37e-6`、最大 `1.52e-5`。公式 A/B は相対 L2 `1.62e-7`。公式 libdf 0.5.6 と独立 DFStream を同じ合成入力で比較したところ、ERB 幅は一致し、スペクトル・ERB・DF 特徴の相対 L2 差は順に `1.65e-7`、`1.32e-7`、`2.91e-7`。CPU の20 step対照は公式/独立 loss 差 `0.283`、公式/1 ULP 摂動公式差 `0.133`。1つの摂動対照だけで前者を説明したとは判断しない。
+- SEMamba++: CUDA 12.3.2 で `sm_90` を含む `mamba-ssm==2.3.2.post1` と `causal-conv1d==1.7.0` を新規ビルドし、PyTorch 2.6.0+cu124、H100 MIG 3g.47gb で実行した。パッケージの Mamba3 自動 import は Triton 3.2 に存在しない `set_allocator` を要求するため、専用環境でその import のみ外した。Mamba1 の fused CUDA や RMSNorm の実装は変更していない。単体 Mamba は `use_fast_path=True` で forward/backward が動作し、再実行の forward 最大差 0、入力勾配最大差 `2.27e-13`。公式幅（48、4 block）の4プロセス1更新は公式/独立 forward 差 0、勾配最大差 `3.44e-6`、相対 L2 `4.55e-6`、cosine 約1。公式 A/B の勾配相対 L2 は `9.97e-7`。GAN の probe は短い入力と1件バッチであり、公開バッチと epoch 単位 scheduler の完全再現ではない。
+
+`--official-width` で MP-SENet と SEMamba++ の probe 幅を選べる。DeepFilterNet3 の参照設定は `DF_REFERENCE_CONFIG` でも指定でき、存在しない設定を暗黙に既定値で代用しない。CPU テストでは VoiceBank DB がこの環境に無いため該当テスト1件が失敗した。CUDA の MossFormerGAN 窓の回帰テストは H100 で成功した。
+
+追加の再検証: MossFormerGAN は上記と同じ合成波形の蓄積2で CPU 4 step を実行し、公式 A/B、独立 A/B、公式/独立の forward・勾配・更新後重みが全 step で一致した。2 step 後に再開した4プロセスは、それぞれ連続実行と loss、モデル、optimizer、scheduler、RNG が一致した。これは異なる micro-batch による実データ検証ではない。
+
+DeepFilterNet3 の spectral loss は公式に合わせ、複素数の再構成を複素指数で行い、Hann 窓を CPU で生成してから実行デバイスに移すよう変更した。公式 spectral loss と異なる波形に対する損失・勾配の CPU 回帰テストは成功した。同じ20 step診断を再実行すると step 20 の公式/独立 loss 差は `0.212`、公式/1 ULP 摂動公式は `0.133` であり、差の意味は未確定である。
+
+SEMamba++ 公式幅 fused の4 step 連続比較では、step 4 の勾配 cosine は公式 A/B `0.934`、独立 A/B `0.997`、公式 A/独立 A `0.990`、公式 B/独立 B `0.930`。公式 A/独立 A の forward 最大差は `0.0205`、loss 差は `0.0126`、勾配相対 L2 は `0.141`。同一実装にも大きな再実行差があるが、その事実だけを根拠に公式/独立の差を許容とは判定しない。4 step の scheduler は比較用に更新ごとに進めており、公開設定の epoch 単位ではない。
+
+H100 再確認では、DeepFilterNet3 の損失修正後の1 step は公式/独立 forward と loss が一致し、勾配相対 L2 `1.81e-7`、公式 A/B は `1.39e-7`、独立 A/B は `1.61e-7`。同じ出力波形を両 spectral loss に渡した CPU 診断では loss 差 0、波形勾配最大差 `3.05e-5`、相対 L2 `5.32e-8` だった。20 step 差は引き続き未解決。
+
+MossFormerGAN の H100 4 step（同じ合成波形を各更新で蓄積2）は、step 4 の公式 A/独立 A の勾配相対 L2 `0.00921`、cosine `0.999958`、最大差 `6.72e-4`。公式 A/B は `0.00857`、cosine `0.999963`、最大差 `9.09e-4`。最大差は事前許容値を超えたため、再実行差が近いことは原因分析の一部として記録し、実データでの同等性を保証しない。
+
+SEMamba++ の H100 checkpoint 再開は、4プロセスすべてで scheduler と RNG が連続実行と一致した一方、step 4 の loss 差は `0.00029–0.00125`、重み最大差は `0.00074–0.00095` だった。checkpoint のロード成功と、ビット単位の再現は区別する。
+
+その後、上記 DeepFilterNet3 の CPU 20 step 差をさらに切り分けた。既存の決定的 STFT は反射パディングをスライスと連結で表し、公式 `torch.stft(center=True)` と forward は同じだが CPU の backward 加算順が異なった。複素指数と Hann 窓を公式に合わせたうえで、通常経路を公式の STFT に変更した結果、同じ合成入力・初期重みの公式と独立は CPU 20 step の損失と全パラメータ勾配が一致した（`df-final-check.out`）。1 ULP 摂動対照は step 20 で loss が約 `0.133` 異なる。CUDA の厳密な決定的モードでは `reflection_pad1d` backward が使えないため、従来の明示パディングを維持する。この代替経路は backward の加算順が公式と異なり得るため、CPU の一致をそのまま決定的 CUDA 学習の一致とみなさない。
+
+修正後の DeepFilterNet3 は CPU の独立4プロセス20 step（同じ合成波形、共通 DFStream）でも、公式 A/B・独立 A/B・公式/独立の loss、全勾配、更新後重みが全 step で一致した。H100 の非決定的許可経路での1 step は公式/独立 forward と loss の差 0、勾配相対 L2 `1.64e-7`、公式 A/B `2.84e-7`。厳密な決定的 CUDA の代替経路では有限勾配を確認したが、公式との4プロセス20 step 数値一致は確認していない。
+
+SEMamba++ の H100 公式幅20 step は4独立プロセスで同一の初期状態・入力・RNG を使い、途中は loss と勾配 norm、最終 step だけ波形・全勾配・重みを保存した（`semamba20-compact/` は228 MB）。scheduler は比較用に毎 step 更新、入力は8,000サンプルの合成波形である。step 20 の勾配 cosine は公式 A/B `0.467`、独立 A/B `0.613`、公式 A/独立 A `0.034`、公式 B/独立 B `0.813`。loss 差は順に `0.121`、`0.0908`、`0.00256`、`0.0275`。公式自体の非決定性と更新差の増幅は確認できるが、公式/独立の勾配差をそれだけで説明できないため、長期学習挙動の同等性は未確定である。
+
+最終の H100 1 step（`qrsh-h100-df-final/`、厳密な決定的アルゴリズムを強制しない probe）は公式/独立の forward と loss 差 0、勾配相対 L2 `1.64e-7`、公式 A/B `2.84e-7`、独立 A/B `3.00e-7`。決定的 CUDA の明示パディング経路は単体テストで有限な backward を確認した。
+
+SEMamba++ の公式/独立 1 step における最大重み差 `3.78e-4` の箇所は `generator.dense_encoder.dense_block.dense_block.0.0.weight` で、対応勾配は公式 `-3.46e-7`、独立 `1.12e-7` と微小かつ符号が逆だった。AdamW の初回更新は epsilon に対して十分大きい勾配の符号を強く反映し、この局所的な重み差を説明する。ただし、この1箇所の分析は20 step の全勾配差の原因を証明しない。
+
+20 step の勾配を分けると、公式 A/独立 A の cosine は generator `0.0242`、CQT discriminator `-0.307`、multi-resolution discriminator `0.99960`。公式 A/B でもそれぞれ `0.462`、`0.164`、`0.99969` となり、差は主に generator と CQT 側に集中した。
+
+蓄積1で作成された旧 MossFormerGAN probe の checkpoint は、蓄積2のコードでそのまま再開すると別の更新に切り替わるため拒否する。旧結果の読み取りと report は引き続き可能で、新しい probe は別ディレクトリに作る。
+
+GPU 資源の会計上の確保時間（各 H100 MIG 3g.47gb は同時利用なし）は、ジョブ本体の `ru_wallclock` ではなく開始処理も含む `wallclock` を使う。9232560: 74.605秒、9232572: 196.918秒、9232648: 18.098秒、9232699: 46.118秒、9232825: 54.016秒、9232848: 139.252秒、9232870: 241.844秒、9232910: 188.155秒、9232940: 97.705秒、9232964: 112.439秒、9233120: 111.968秒。ここまで合計 `1281.118秒`（21分21.118秒）。9232560 は qsub から qrsh への切り替えで途中停止し、9232825 は Mamba3 の import エラーで失敗した。CPU のビルド・診断は含まない。
+
+再現例（出力先は存在しない新しいディレクトリを指定する）。CUDA の2コマンドは GPU を、CPU のコマンドは CPU を `qrsh` で確保して実行する。拡張の専用環境と参照ソース、上記の Mamba3 import 制約が必要である。
+
+```bash
+export OMP_NUM_THREADS=1 MKL_NUM_THREADS=1 OPENBLAS_NUM_THREADS=1
+export CUBLAS_WORKSPACE_CONFIG=:4096:8
+export PYTHONPATH="$PWD/.venvs/tsubame-h100-causal:$PWD/.venvs/tsubame-h100-build:$PWD/.venvs/tsubame-ref-extra:$PWD"
+export DF_REFERENCE_CONFIG="$PWD/data/results/training/final-h100-20261102-cpu/df-config.ini"
+.venvs/tsubame/bin/python tests/training/four_process/compare.py run data/results/training/NEW-SEMAMBA --model semambapp --steps 1 --device cuda:0 --scan-backend fused --official-width
+.venvs/tsubame/bin/python tests/training/four_process/compare.py run data/results/training/NEW-MOSS --model mossformergan --steps 4 --device cuda:0
+.venvs/tsubame/bin/python tests/training/four_process/compare.py run data/results/training/NEW-DF-CPU --model deepfilternet3 --steps 20 --device cpu
+```
+
+H100 で discriminator と optimizer を除き、公式・独立 generator の同じ入力に共通の単純なスペクトル損失を与えた同一プロセス内対照では、forward と loss の差は 0、勾配相対 L2 は公式 A/B `3.34e-7`、独立 A/B `3.35e-7`、公式/独立 `3.34e-7` だった。これは generator 単体の対照であり、GAN 更新の同等性を証明するものではない。
+
+固定波形の H100 discriminator 単体対照では、公式 A/B と独立 A/B の勾配差は 0、公式/独立は loss 差 `4.77e-7`、勾配相対 L2 `1.16e-7` だった。この調査で、公式は CQT と multi-resolution の discriminator、adversarial、feature matching の損失をそれぞれ別に合算してから足すのに対し、独立側は連結したリストを一度に合算していたことを確認した。独立学習と4プロセス probe を公式と同じグループ・順序へ変更した。変更前に作った SEMamba++ probe は異なる計算を混ぜないよう再開を拒否する。
+
+グループ別の損失合算順を修正した SEMamba++ の H100 公式幅1 step（`qrsh-h100-semamba-grouped1/`）では、公式/独立の discriminator loss 差は `4.77e-7` から 0 になった。forward と generator loss の差も 0、勾配相対 L2 `4.55e-6`、最大差 `3.60e-6`。公式 A/B の勾配相対 L2 は `9.98e-7` だった。上の20 step はこの合算順修正前の記録である。
+
+追加の H100 MIG ジョブの確保時間（会計 `wallclock`）は、discriminator 対照 `9233186` が103.933秒、合算順修正後の1 step `9233218` が81.316秒、修正後の4 step・再開・20 step `9233238` が312.953秒。前述分と合わせた GPU 確保時間は `1779.320秒`（29分39.320秒）で、最大同時使用は1 MIG、累計上限2時間以内だった。
+
+合算順修正後に公式幅 fused を再検証した。4 step の公式 A/B、独立 A/B、公式 A/独立 A の勾配相対 L2 は `0.0379`、`0.0875`、`0.218`、cosine は `0.99928`、`0.99617`、`0.97593`。step 4 の公式/独立 forward 最大差は `0.01899`、loss 差は `0.01395`。20 step は同じ初期状態・合成入力で4独立プロセスを実行し、途中は統計だけ、最終状態だけを保存した（約230 MB）。勾配 cosine は公式 A/B `0.669`、独立 A/B `0.242`、公式 A/独立 A `0.719`、公式 B/独立 B `0.588`。loss 差はそれぞれ `0.0213`、`0.1328`、`0.1157`、`0.00423`。4 step で公式/独立の差が自己再実行差を上回り、20 step では両側とも大きくばらつくため、融合版の学習同等性は引き続き PARTIAL。
+
+さらに公式 solver は各サブ discriminator の real/fake を交互に呼ぶが、独立側は各系列の全 real の後に全 fake を呼んでいた。独立 discriminator にペア入力を追加し、学習と probe で公式順にした。既存の単一入力は従来どおり使える。呼び出し順修正後の H100 公式幅1 step は forward・loss 差 0、公式/独立の勾配相対 L2 `4.56e-6`、公式 A/B `1.00e-6`、独立 A/B `1.00e-6` で、1 step の generator 勾配差はほぼ変わらなかった。ペア順に対応しない古い probe checkpoint は再開を拒否する。
+
+ペア呼び出し順修正後の H100 1 step（`9233293`）の会計 `wallclock` は `163.542秒`。それまでのジョブとの累計は `1942.862秒`（32分22.862秒）。
+
+ペア順修正後の4 step・再開・20 step（`9233314`）の会計 `wallclock` は `386.305秒`。全 GPU ジョブの最終合計は `2329.167秒`（38分49.167秒）である。
+
+最終の paired 順による H100 の4 step は、公式 A/B・独立 A/B・公式 A/独立 A の勾配相対 L2 が `0.116`・`0.150`・`0.233`。20 step では同順の cosine が `0.101`・`0.746`・`0.639`、公式 B/独立 B は `0.338`。loss 差は順に `0.0551`・`0.1861`・`0.1255`・`0.2564`。入力と初期条件は4プロセスで一致し、途中の統計と最終状態のみ保存した。公式自身の再実行差も大きく、公式/独立の差の意味は未確定である。paired 順でも GO ではない。
+
+最終 paired 順の2 step 後再開は4プロセスとも成功し、scheduler と RNG はそれぞれの連続実行と一致した。loss・モデル・optimizer のハッシュは4プロセスとも一致しなかった。

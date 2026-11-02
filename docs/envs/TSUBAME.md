@@ -2,7 +2,9 @@
 
 GPU の計算と CUDA 拡張のビルドはスケジューラで確保した計算ノードで行う。`gpu_h` は CPU 4 コア、ホストメモリ 48 GB、H100 の半分の MIG を割り当てる。GPU メモリの容量はジョブ内で `nvidia-smi` と PyTorch から確認する。`gpu_1` は GPU 1 枚である。詳細は [公式ジョブ手引き](https://www.t4.cii.isct.ac.jp/docs/all/handbook.ja/jobs/) と [ソフトウェア手引き](https://www.t4.cii.isct.ac.jp/docs/all/handbook.ja/software/) を参照する。
 
-以下の初期構築例では 5 モデルの小規模 GPU スモークを確認した。融合カーネルは未検証である。研究室環境をコピーせず、リポジトリのルートで実行する。
+長時間の学習は `qsub`、短時間の開発・デバッグは `qrsh` を使う。いずれも優先度は、ユーザーから別の指示がなければ `-p -5` とする。30 分程度以上のジョブは、投入前にそのジョブを含むユーザーの明示的な指示または追加承認が必要である。
+
+以下の初期構築例では 5 モデルの小規模 GPU スモークを確認した。この環境構築例には融合カーネルを含めない。別環境での融合経路の検証と制約は [学習検証記録](../training/VERIFICATION.md) を参照する。研究室環境をコピーせず、リポジトリのルートで実行する。
 
 ```bash
 uv venv .venvs/tsubame --python 3.12
@@ -13,7 +15,7 @@ uv pip install --python .venvs/tsubame/bin/python duckdb==2.0.0 numpy==2.5.4 sci
 利用する TSUBAME グループを指定して GPU を確保する。ジョブ内で `nvidia-smi` の空きと MIG を確認してから計算する。デバイス番号を他ノードの物理番号に固定しない。
 
 ```bash
-qrsh -g <TSUBAMEグループ> -l gpu_h=1 -l h_rt=1:00:00
+qrsh -g <TSUBAMEグループ> -p -5 -l gpu_h=1 -l h_rt=1:00:00
 hostname
 nvidia-smi
 nvidia-smi -L
@@ -21,9 +23,9 @@ nvidia-smi -L
 PYTHONPATH="$PWD" .venvs/tsubame/bin/python tests/training/gpu_smoke.py
 ```
 
-SEMamba++ の `scan_backend: fused` は `mamba-ssm` と `causal-conv1d` が必要。上記の初期構築例には両方とも含まれない。以前の環境で causal-conv1d 1.7.0 をソースからインストールしたが GPU 動作は未確認で、mamba-ssm のビルドは中止した。融合経路の動作確認は未実施。研究室でビルドした拡張は流用しない。
+SEMamba++ の `scan_backend: fused` は `mamba-ssm` と `causal-conv1d` が必要。上記の初期構築例には両方とも含まれない。別の拡張環境でのビルドと H100 上の検証は [学習検証記録](../training/VERIFICATION.md) を参照する。研究室でビルドした拡張は流用しない。
 
-ビルドの調査には、確保した計算ノード上で次を試している（成功手順としては未検証）。CUDA 12.3 と PyTorch CUDA 12.4 の組合せの互換性も未確認。
+初期のビルド調査では、確保した計算ノード上で次を試した。その後、CUDA 12.3.2 と PyTorch CUDA 12.4 の組合せで H100 の融合カーネルを実行したが、`mamba-ssm` の未使用 Mamba3 自動 import を外す必要があった。下記だけでは動作手順として完結しない。詳細は学習検証記録を参照する。
 
 ```bash
 module load cuda/12.3.2

@@ -160,15 +160,11 @@ class SEMambaTask:
                 audio = preview["audio"]
                 cached.append((clean, noisy, None))
             with accumulation_scope(discriminators, last=last):
-                real_scores, _ = _scores(self.discriminator_mrd, self.discriminator_band, clean)
-                fake_scores, _ = _scores(
-                    self.discriminator_mrd,
-                    self.discriminator_band,
-                    audio.detach(),
-                )
-                loss = sum(
-                    least_squares_discriminator(real, fake) for real, fake in zip(real_scores, fake_scores, strict=True)
-                )
+                real_q, fake_q, _, _ = self.discriminator_band(clean, audio.detach())
+                real_r, fake_r, _, _ = self.discriminator_mrd(clean, audio.detach())
+                loss_q = sum(least_squares_discriminator(real, fake) for real, fake in zip(real_q, fake_q, strict=True))
+                loss_r = sum(least_squares_discriminator(real, fake) for real, fake in zip(real_r, fake_r, strict=True))
+                loss = loss_q + loss_r
                 _finite(loss, "semamba discriminator")
                 # Each term is a mean. Dividing by the micro-batch count makes the
                 # summed gradient the mean over the global batch, which is what one
@@ -257,12 +253,12 @@ class SEMambaTask:
         accumulation: int,
         components: dict[str, float],
     ) -> float:
-        _, real_features = _scores(unwrap(self.discriminator_mrd), unwrap(self.discriminator_band), clean)
-        fake_scores, fake_features = _scores(
-            unwrap(self.discriminator_mrd), unwrap(self.discriminator_band), parts["audio"]
-        )
-        adversarial = sum(least_squares_generator(score) for score in fake_scores)
-        matching = feature_matching(real_features, fake_features, scale=2.0, reduction="sum")
+        band = unwrap(self.discriminator_band)
+        mrd = unwrap(self.discriminator_mrd)
+        _, fake_q, real_qf, fake_qf = band(clean, parts["audio"])
+        _, fake_r, real_rf, fake_rf = mrd(clean, parts["audio"])
+        adversarial = sum(least_squares_generator(score) for score in fake_q) + sum(least_squares_generator(score) for score in fake_r)
+        matching = feature_matching(real_qf, fake_qf, scale=2.0, reduction="sum") + feature_matching(real_rf, fake_rf, scale=2.0, reduction="sum")
         spectral = compressed_complex_losses(
             parts["clean_mag"],
             parts["mag"],
@@ -348,12 +344,6 @@ def _clone_grads(*modules: torch.nn.Module) -> dict[str, torch.Tensor]:
             prefix = module.__class__.__name__
             cloned[f"{prefix}.{name}"] = parameter.grad.detach().to(device="cpu", dtype=torch.float32).clone()
     return cloned
-
-
-def _scores(mrd, band, waveform):
-    mrd_scores, mrd_features = mrd(waveform)
-    band_scores, band_features = band(waveform)
-    return mrd_scores + band_scores, mrd_features + band_features
 
 
 def _match_bins(value: torch.Tensor, bins: int) -> torch.Tensor:
