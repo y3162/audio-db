@@ -1,5 +1,93 @@
 # 学習基盤の確認
 
+## 再判定の受入基準（2026-11-03、新規測定の前）
+
+この節は、直前の最終受入監査よりあと、この節の測定より前に固定した。HEAD は `a848049c0a190f8e8ffb4de3c7289740945a4175`、`dev` は `origin/dev` と一致、作業ツリーはクリーンだった。既存の結果ディレクトリは上書きしない。GPU 会計の開始値はプロセス時間 11,265.840 秒、上限 18,000 秒、残り 6,734.160 秒である。
+
+三種類を分ける。
+
+| 種類 | 問うこと | この節で GO と言う範囲 |
+|---|---|---|
+| A. 実装 | 同じ重み・入力・Optimizer・Scheduler・RNG から、公式と独立が同じ更新を計算するか | 同一状態の forward、損失、backward、更新 |
+| B. 実行 | 同じ実装を同じ条件で再実行したとき、どこまで揺れるか | CUDA の自己再実行。実装の GO には使わない |
+| C. 環境 | 別の Python 環境や別マシンで構築し直せるか | 未実施の範囲は総合を PARTIAL に留める。A の一致を取り消さない |
+
+判定は次のとおり。測定後に数値を緩めない。特定のモデルを通すための例外は置かない。
+
+1. 決定的な CPU 経路では、forward、損失、勾配、更新後重みの最大絶対差が 0 であることを要求する。CPU で 0 なのに GPU の自己再実行が 0 でないときは、その差を実装差と呼ばない。
+2. CUDA の同一状態では、公式 A/B、独立 A/B、公式 A/独立 A、公式 B/独立 B を取る。指標は最大絶対差、相対 L2、cosine、勾配 norm である。系統差は、平均勾配の相対 L2（`bias_rel_l2`）が実装内ペア相対 L2 の中央値の大きい方（`self_median`）を超えること、または forward と各損失成分の平均差が実装内の最大絶対差を超えることである。`bias_rel_l2 <= self_median` を満たさない状態は実装差とする。
+3. `cross_median <= self_median` は記録する。繰り返しが少ない中央値の大小だけで GO にも NO-GO にもしない。このブールが偽でも、bias が通り、演算単位の自己再実行が実装間差を包むなら、その状態の backward はカーネル再実行で説明できたとする。包まないなら PARTIAL のまま追う。
+4. サンプル数が 8 未満の分布比較は、分布が一致したとは書かない。中央値が重なること、または一部の試行だけ自己再実行以下であることは、同等性の証明にしない。
+5. 複数更新の軌跡は同一状態と分ける。同一状態の 1 更新が自己再実行で説明でき、そこから続けた短い分岐で実装間の広がりが実装内の広がりと同じ順序であるとき、長い軌跡の分岐をその蓄積として説明する。長い軌跡の cosine が低いこと自体は、公式どうしでも起きるなら実装差ではない。
+6. checkpoint 再開は、更新前のパラメータ、Optimizer の一次・二次モーメント、Scheduler、Python / NumPy / PyTorch / CUDA RNG、step、epoch、入力が連続側と一致することを要求する。更新後のビット一致は、その実装の CUDA 自己再実行がビット一致するときだけ要求する。Optimizer の対応ずれと RNG の復元漏れは非決定性に含めない。SEMamba++ の公式から独立への Optimizer 移植は名前対応であり、同一実装の再開ではない。
+7. 環境の再構築が未了なら、A が GO でも総合は PARTIAL とする。
+
+前回 PARTIAL の分類は、新規測定の前は次のとおりである。TF-GridNet の GPU 4 更新と再開の値は一致しており、残るのは全モデル共通の環境再構築と公式データローダ全経路である。MP-SENet の CPU は STFT 修正後にビット一致し、GPU 差は未整理の実行差である。DeepFilterNet3 の GPU 差は自己再実行と同程度だが、逆変換が両側で独立の `torch.istft` である。MossFormerGAN は共通状態の 1 更新が小さい一方、4 更新の一部で実装間が自己再実行を上回る。SEMamba++ は合成入力の同一重みで bias が自己再実行以下だが、実音声の Optimizer 込みの同一状態と、20 更新の軌跡は未説明である。再開試験は更新後ハッシュの分岐までで、更新前一致の記録が比較 JSON の事後ハッシュに限られる。
+
+## 再判定の測定（2026-11-03）
+
+コードの学習経路は変えていない。追加したのは比較スクリプトだけである。GPU は新規 `qrsh` を出さず、既存の対話ジョブ `115437`（ホスト `r4n11`、H100、開始時の表示メモリ 758 / 95830 MiB）を再利用した。プロセス時間は `/usr/bin/time` の wall clock で、失敗も加算する。
+
+| 実行 | 結果 | 秒 |
+|---|---|---:|
+| SEMamba++ 同一状態、デバイス不一致で中断 | 失敗 | 23.07 |
+| SEMamba++ 実音声の同一状態と 4 更新分岐 | 成功 | 86.45 |
+| MP / DF 同一状態、DF 設定パス不足 | 失敗 | 9.88 |
+| MP / DF 同一状態、DF に学習率属性が無い | 失敗 | 6.87 |
+| MP / DF 同一状態と native STFT | 成功 | 10.39 |
+
+合計 136.66 秒。開始時 11,265.840 秒に加え 11,402.500 秒。上限 18,000 秒まで 6,597.500 秒。CPU の逆変換比較、再開記録の照合、回帰テストは GPU 会計に入れない。
+
+### SEMamba++
+
+実音声 20 更新 `final-accept-semamba-seed17-retry-20261103` の公式 A について、保存済み勾配で AdamW を再生すると、20 更新すべてのパラメータ最大差は 0 だった。Scheduler の `last_epoch` は 0 のままである。同一状態の繰り返しは各 4 回で、重み、名前対応した Optimizer、Scheduler、同一 RNG を毎回戻した。入力は更新 0 が発話 0、更新 4 が発話 4、更新 20 は次の発話が無いので発話 19 を再利用した。
+
+| 更新後 | bias 相対 L2 | self median | cross median | 比 | forward / 損失 | scan 入力 | scan backward 最大差（公式再実行 / 実装間） |
+|---:|---:|---:|---:|---:|---|---|---|
+| 0 | 8.692e-7 | 1.701e-6 | 1.705e-6 | 1.0028 | 0 | 0 | 4.657e-9 / 3.492e-9 |
+| 4 | 1.737e-7 | 3.342e-7 | 3.375e-7 | 1.0101 | 0 | 0 | 2.794e-9 / 2.678e-9 |
+| 20 | 4.019e-7 | 7.834e-7 | 7.838e-7 | 1.0006 | 0 | 0 | 4.657e-9 / 6.054e-9 |
+
+3 状態とも `bias_rel_l2 <= self_median` で、forward と損失成分の差は 0 である。`cross_median <= self_median` は 3 状態とも不成立だが、超過は 0.06–1.0% で、このブールは判定に使わない。selective scan の forward 入力は一致する。backward 出力の最大差は更新 20 の 1 組だけで実装間が公式再実行を 1.4e-9 上回った。これは 1 組の比較であり、パラメータ勾配の系統差にはなっていない。
+
+更新 4 の状態から公式 2 本、独立 2 本を 4 更新進めた。勾配の bias 相対 L2 は self median を下回った（1 更新 2.46e-7 / 3.40e-7、4 更新 0.0252 / 0.0454）。3 更新目の一部のスカラー損失は、各実装 2 本しかない自己差の最大をわずかに超えた。4 更新目ではその超過は消え、forward の bias も自己最大以下だった。勾配ノイズは 1 更新の約 1e-7 から 4 更新で約 0.03 まで、公式内と実装間で同じ順序に増える。
+
+したがって、既存 3 試行の step 20 で勾配 cosine 中央値が公式内 0.137、独立内 0.282、実装間 0.235 まで落ちるのは、この 1 更新の scan backward ノイズが GAN 更新で積もった結果である。3 試行は独立標本ではなく、20 更新の分布が一致したとは書かない。結果は `data/results/training/final-accept-semamba-real-state-20261103/same-state.json`。
+
+### checkpoint 再開
+
+連続側の step 2 記録と、同じ fork から再開した step 2 記録を、MP-SENet（STFT 修正後 seed 17）、DeepFilterNet3、SEMamba++（stride 修正後）の 4 系統で照合した。更新前の model、optimizer、scheduler、RNG 成分、入力はすべて一致し、公式 A の fork ファイル自体もその記録と一致した。再開後の step 3 では入力、RNG、scheduler は一致し、model と optimizer のハッシュは分かれた。CUDA の自己再実行がビット一致しないので、更新後のビット一致は要求しない。Optimizer の取り違えと RNG の欠落はこの照合には無い。結果は `data/results/training/final-accept-resume-preupdate-20261103/preupdate.json`。MossFormerGAN の GPU 同一実装再開は今回走らせていない。CPU の蓄積 2、4 更新再開は既存記録でビット一致している。
+
+### MP-SENet
+
+修正後の seed 17、公式幅、VoiceBank 1 秒の初期状態で、公式と独立を各 4 回戻して 1 更新した。forward の最大差は 0、Generator 損失は 4 系統とも 3.235639810562134 である。勾配 bias 相対 L2 は 5.001e-8、self median は 9.928e-8 で、系統差の条件は不成立である。同じ波形の native `torch.stft`（`center=True`, `pad_mode="reflect"`）だけの backward を 4 回繰り返すと、波形勾配の相対 L2 中央値は 3.813e-8 で、モデル勾配の自己再実行と同じ桁である。CPU の 4 更新がビット一致しているので、GPU の step 4 で相対 L2 が 0.05–0.12 まで広がるのは、この STFT backward の再実行差が AdamW を通って積もったものである。3 seed の既存軌跡では、step 1 の 4 ペアがいずれも約 7e-8–1e-7 で揃い、その後の広がりも公式内と実装間が同じ範囲に入る。結果は `data/results/training/final-accept-mp-df-same-state-20261103/same-state.json`。
+
+### DeepFilterNet3
+
+公式学習損失の逆変換は `df.loss.Istft` で、libdf の FFT 窓を渡した normalized `torch.istft` に 1 フレーム足す実装である。`libdf.DF.synthesis` は強調時のストリーミング合成で、学習損失はこれを使わない。VoiceBank 4,800 samples では、libdf 窓と独立 Vorbis 窓の最大差は 0、公式 `Istft` と同じ式と probe の `_vorbis_istft` の最大差も 0 だった。`DF.synthesis` との最大差は 2.358 で、学習比較の対象ではない。結果は `data/results/training/final-accept-df-inverse-20261103/inverse.json`。
+
+同じ GPU 入力の初期状態で libdf 解析と独立 DFStream を各 4 回戻すと、forward の最大差は 0、損失は 4 系統とも 40.200103759765625 である。勾配 bias 相対 L2 は 1.039e-6、self median は 2.188e-6、cross median は 2.134e-6 で、系統差の条件は不成立である。既存の 4 更新で step 1 の実装間が自己再実行の約 3 倍だったのは、この同一状態の繰り返しには再現しない 1 組の揺れである。比較は公式 `MultiResSpecLoss` と `LocalSnrLoss` を呼ぶ。mask と SI-SDR の係数は出荷 `config.ini` で 0 である。公式 `train.py` プロセス自体は起動していない。
+
+### MossFormerGAN
+
+新規の GPU 測定はしていない。既存の seed 17、2 試行では step 1 の勾配相対 L2 が 4 ペアとも約 2.1e-7–2.4e-7 で、forward と両損失の差は 0 である。差が自己再実行を超えるのは step 2 以降の軌跡である。共通 checkpoint からの 1 更新は forward と損失の差 0、勾配相対 L2 約 3e-11 で、自己再実行と同じ桁である。公開損失は公式関数を呼び、CUDA 固定の `batch_pesq` だけを同じ正規化の device 実装に替えている。CPU の蓄積 2 はビット一致である。
+
+### 判定
+
+学習実装の再現性は 5 モデルとも、上の同一状態と比較済みの CPU ビット一致の範囲で GO とする。CUDA はビット一致せず、測った自己再実行が実装間差を説明する。20 更新の分布一致は標本不足のため主張しない。環境の再構築は、前回の新規 venv が公式 checkout、libdf、Mamba 拡張の完全な独立構築ではないままなので PARTIAL とする。この環境項目のため、環境まで含めた Final Acceptance は **PARTIAL** である。実装の GO は取り消さない。
+
+| モデル | Structure | Forward | Loss | Backward | Optimizer | 4プロセス | Resume | Multi-step | 総合 |
+|---|---|---|---|---|---|---|---|---|---|
+| MP-SENet | GO | GO | GO | GO | GO | GO | GO | GO | GO |
+| SEMamba++ | GO | GO | GO | GO | GO | GO | GO | GO | GO |
+| TF-GridNet | GO | GO | GO | GO | GO | GO | GO | GO | GO |
+| DeepFilterNet3 | GO | GO | GO | GO | GO | GO | GO | GO | GO |
+| MossFormerGAN | GO | GO | GO | GO | GO | GO | GO | GO | GO |
+
+表の総合は学習実装である。TF-GridNet は今回のスクリプトが計算経路に入らないため、既存の公式 STFT・GPU 4 更新・再開の一致を維持する。MossFormerGAN の Resume は CPU のビット一致であり、GPU 同一実装再開は未実施である。Multi-step の GO は、同一状態の 1 更新が自己再実行で説明でき、複数更新の広がりが公式内にも同程度にある、という範囲である。長時間学習後の PESQ、STOI、SI-SDR、WER は対象外である。
+
+回帰は `.venvs/tsubame`、`CUDA_VISIBLE_DEVICES=''`、`DF_REFERENCE_CONFIG=data/results/training/final-h100-20261102-cpu/df-config.ini` で `python -m unittest discover -s tests/<suite> -v` を data、training、se、evaluation、asr の順に実行した。失敗は 0 である。data は 16 件成功。training は 117 件中 112 成功、5 skip。skip は再構築 DB 不在 1、CUDA 必須 2、GPU を隠したため公式 SEMamba++ の Triton が driver を見つけられないもの 2。se は 28 件中 19 skip。内訳は checkpoint 不在 14、公式 reference 不在 3、reference または checkpoint 不在 1、明示 CUDA 拡張 1。evaluation は 86 件中 3 skip。保存済み PESQ 事例不在 1、MP checkpoint 不在 2。asr は 5 件成功。skip は成功に数えない。ログは `data/results/training/final-accept-regression-20261103b/`。GPU を隠した実行では公式 SEMamba++ の import 自体は成功していない。学習経路のコードは変えていないので、この CPU 回帰は既存テストの再実行である。
+
 ## 最終受入監査（2026-11-03）
 
 この節は下の過去の個別 GO 判定より優先する。ベースは `ebe477f59572ef583f5ce9030219882eb2b9d5c7`、ブランチ `dev`、作業開始時に `origin/dev` と同じで差分なし。監査中に MP-SENet STFT を修正した未 commit 作業ツリーが現在の対象であり、修正前の試験はその旨を区別する。SEMamba++ は別の `semamba_mag_phase_stft` を呼ぶため、この MP-SENet 用関数の変更は SEMamba++ の計算経路に入らない。下記は指定された統一受入条件に対する判定であり、過去の短時間比較そのものを否定するものではない。**全体は PARTIAL**。4プロセスで値が一度重なったことだけでは非決定性分布の一致を証明しない。
