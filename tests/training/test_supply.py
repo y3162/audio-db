@@ -1,7 +1,6 @@
 """Real RecipeDataset supply: order, crops, global batch, and resume."""
 
 import json
-import socket
 import subprocess
 import sys
 import tempfile
@@ -19,7 +18,7 @@ from src.training.core.rng import set_determinism
 from src.training.core.trainer import Trainer
 from src.training.errors import TrainingError
 from tests.training.supply import AuditedDataset, SupplyTask, optimizer_groups
-from tests.training.support import cpu_process, paired_dataset, tiny_config
+from tests.training.support import cpu_process, paired_dataset, run_distributed_workers, tiny_config
 
 def tearDownModule():
     set_determinism(False, cuda=False)
@@ -150,34 +149,28 @@ def _case_lookup(_unused):
 def _run_supply_ranks(root, *, seed, steps, count, global_batch, micro, world):
     root.mkdir(parents=True, exist_ok=True)
     paired_dataset(root / "wav", count, frames=480, segment_size=160, seed=seed)
-    port = _free_port()
-    processes = []
-    destinations = []
-    for rank in range(world):
-        destination = root / f"rank-{rank}.json"
-        destinations.append(destination)
-        processes.append(
-            subprocess.Popen(
-                [
-                    sys.executable,
-                    str(ROOT / "tests/training/supply_worker.py"),
-                    str(rank),
-                    str(world),
-                    str(port),
-                    str(root),
-                    str(destination),
-                    str(seed),
-                    str(global_batch),
-                    str(micro),
-                    str(steps),
-                    str(count),
-                ],
-                cwd=str(ROOT),
-            )
-        )
-    codes = [process.wait(timeout=180) for process in processes]
-    if any(code != 0 for code in codes):
-        raise AssertionError(f"supply workers failed: {codes}")
+    destinations = [root / f"rank-{rank}.json" for rank in range(world)]
+
+    def argv_for_port(port):
+        commands = []
+        for rank, destination in enumerate(destinations):
+            commands.append([
+                sys.executable,
+                str(ROOT / "tests/training/supply_worker.py"),
+                str(rank),
+                str(world),
+                str(port),
+                str(root),
+                str(destination),
+                str(seed),
+                str(global_batch),
+                str(micro),
+                str(steps),
+                str(count),
+            ])
+        return commands
+
+    run_distributed_workers(argv_for_port, cwd=ROOT, timeout=180)
     return [json.loads(path.read_text(encoding="utf-8")) for path in destinations]
 
 
@@ -192,12 +185,6 @@ def _resume_supply(partial: Path, destination: Path, *, steps: int):
     if completed.returncode != 0:
         raise AssertionError(completed.stderr or completed.stdout)
     return json.loads((destination / "records.json").read_text(encoding="utf-8"))
-
-
-def _free_port() -> int:
-    with socket.socket() as sock:
-        sock.bind(("127.0.0.1", 0))
-        return int(sock.getsockname()[1])
 
 
 def _resume_main() -> None:

@@ -3,6 +3,10 @@
 from __future__ import annotations
 
 import math
+import socket
+import subprocess
+import tempfile
+import time
 from pathlib import Path
 
 import torch
@@ -11,6 +15,59 @@ import soundfile as sf
 from src.data.recipe import canonical_recipe, case_id_for, sha256_file
 from src.training.core.distributed import ProcessInfo
 from src.training.data.dataset import RecipeDataset, TrainExample
+
+
+def free_tcp_port() -> int:
+    with socket.socket() as sock:
+        sock.bind(("127.0.0.1", 0))
+        return int(sock.getsockname()[1])
+
+
+def run_distributed_workers(argv_for_port, *, cwd: Path, timeout: float = 180, attempts: int = 5) -> None:
+    """Start one process group per port. Retry when the chosen port is taken.
+
+    Rank 0 binds the port after this process has already closed its probe socket,
+    so a parallel test can win the race. A failed rank used to leave the other
+    rank blocked until the wait timeout.
+    """
+    last = ""
+    for _ in range(attempts):
+        port = free_tcp_port()
+        logs = []
+        processes = []
+        for argv in argv_for_port(port):
+            handle = tempfile.TemporaryFile()
+            logs.append(handle)
+            processes.append(subprocess.Popen(argv, cwd=str(cwd), stdout=handle, stderr=subprocess.STDOUT))
+        deadline = time.monotonic() + timeout
+        failed = False
+        while time.monotonic() < deadline:
+            codes = [process.poll() for process in processes]
+            if any(code not in (None, 0) for code in codes):
+                failed = True
+                break
+            if all(code == 0 for code in codes):
+                for handle in logs:
+                    handle.close()
+                return
+            time.sleep(0.05)
+        for process in processes:
+            if process.poll() is None:
+                process.kill()
+        for process in processes:
+            process.wait()
+        chunks = []
+        for handle in logs:
+            handle.seek(0)
+            chunks.append(handle.read().decode(errors="replace"))
+            handle.close()
+        last = "\n".join(chunks)
+        if failed and ("EADDRINUSE" in last or "address already in use" in last.lower()):
+            continue
+        if not failed:
+            raise AssertionError(f"distributed workers timed out\n{last}")
+        raise AssertionError(f"distributed workers failed\n{last}")
+    raise AssertionError(f"distributed port stayed busy\n{last}")
 
 
 def cpu_process() -> ProcessInfo:

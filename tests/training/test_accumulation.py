@@ -1,7 +1,5 @@
 """Gradient accumulation, scheduler steps, and a two-process batch."""
 
-import socket
-import subprocess
 import sys
 import tempfile
 import unittest
@@ -15,7 +13,7 @@ from src.training.core.rng import set_determinism
 from src.training.core.trainer import Trainer, backward
 from src.training.se.mp_senet import MPSENetTask
 from tests.training.ddp_worker import build_model, shared_batch
-from tests.training.support import cpu_process, paired_dataset, tiny_config
+from tests.training.support import cpu_process, paired_dataset, run_distributed_workers, tiny_config
 
 ROOT = Path(__file__).resolve().parents[2]
 
@@ -101,40 +99,27 @@ def _run_scheduler(root: Path, *, micro_limit: int) -> tuple[int, float, int]:
 
 
 def _run_workers(mode: str) -> list[tuple[torch.Tensor, list[int]]]:
-    port = _free_port()
     with tempfile.TemporaryDirectory() as directory:
         root = Path(directory)
-        processes = []
-        destinations = []
-        for rank in range(2):
-            destination = root / f"{mode}-{rank}.pt"
-            destinations.append(destination)
-            processes.append(
-                subprocess.Popen(
-                    [
-                        sys.executable,
-                        str(ROOT / "tests/training/ddp_worker.py"),
-                        str(rank),
-                        "2",
-                        str(port),
-                        mode,
-                        str(destination),
-                    ],
-                    cwd=str(ROOT),
-                )
-            )
-        codes = [process.wait(timeout=120) for process in processes]
-        self_codes = codes
-        if any(code != 0 for code in self_codes):
-            raise AssertionError(f"ddp workers failed: {self_codes}")
+        destinations = [root / f"{mode}-{rank}.pt" for rank in range(2)]
+
+        def argv_for_port(port):
+            return [
+                [
+                    sys.executable,
+                    str(ROOT / "tests/training/ddp_worker.py"),
+                    str(rank),
+                    "2",
+                    str(port),
+                    mode,
+                    str(destination),
+                ]
+                for rank, destination in enumerate(destinations)
+            ]
+
+        run_distributed_workers(argv_for_port, cwd=ROOT, timeout=120)
         loaded = [torch.load(path, weights_only=True) for path in destinations]
         return [(item["gradient"], item["flags"].tolist()) for item in loaded]
-
-
-def _free_port() -> int:
-    with socket.socket() as sock:
-        sock.bind(("127.0.0.1", 0))
-        return int(sock.getsockname()[1])
 
 
 if __name__ == "__main__":

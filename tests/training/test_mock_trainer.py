@@ -1,6 +1,5 @@
 """Mock generator and discriminator driven by the real Trainer."""
 
-import socket
 import subprocess
 import sys
 import tempfile
@@ -18,7 +17,7 @@ from src.training.core.checkpoint import load_checkpoint
 from src.training.core.rng import set_determinism
 from src.training.core.trainer import Trainer
 from tests.training.mock_task import LinearPairTask
-from tests.training.support import cpu_process, paired_dataset, tiny_config
+from tests.training.support import cpu_process, paired_dataset, run_distributed_workers, tiny_config
 
 def tearDownModule():
     set_determinism(False, cuda=False)
@@ -151,28 +150,24 @@ def _resume_main() -> None:
 def _run_ddp(root: Path, micro: int) -> dict:
     root.mkdir(parents=True, exist_ok=True)
     paired_dataset(root / "wav", 4, frames=320, segment_size=80, seed=7)
-    port = _free_port()
     destination = root / "state.pt"
-    processes = []
-    for rank in range(2):
-        processes.append(
-            subprocess.Popen(
-                [
-                    sys.executable,
-                    str(ROOT / "tests/training/mock_ddp_worker.py"),
-                    str(rank),
-                    "2",
-                    str(port),
-                    str(root),
-                    str(destination),
-                    str(micro),
-                ],
-                cwd=str(ROOT),
-            )
-        )
-    codes = [process.wait(timeout=180) for process in processes]
-    if any(code != 0 for code in codes):
-        raise AssertionError(f"mock ddp workers failed: {codes}")
+
+    def argv_for_port(port):
+        return [
+            [
+                sys.executable,
+                str(ROOT / "tests/training/mock_ddp_worker.py"),
+                str(rank),
+                "2",
+                str(port),
+                str(root),
+                str(destination),
+                str(micro),
+            ]
+            for rank in range(2)
+        ]
+
+    run_distributed_workers(argv_for_port, cwd=ROOT, timeout=180)
     return torch.load(destination, weights_only=False)
 
 
@@ -235,12 +230,6 @@ def _assert_exact_state(left, right, name: str) -> None:
         return
     if left != right:
         raise AssertionError(f"{name} differs: {left!r} vs {right!r}")
-
-
-def _free_port() -> int:
-    with socket.socket() as sock:
-        sock.bind(("127.0.0.1", 0))
-        return int(sock.getsockname()[1])
 
 
 if __name__ == "__main__":

@@ -1375,3 +1375,62 @@ TF-GridNet の GO は 4 step・実音声・公式前処理の範囲である。M
 公式 libdf を両モデルに与える GPU native 対照 `df-shared-libdf-gpu4-20261103/` は valid。step 4 勾配相対 L2 は公式 A/B `0.001795`、独立 A/B `0.002870`、公式/独立 `0.001937` / `0.006365`。標準の独立 DFStream を使う対照の公式/独立 `0.007310` / `0.012201` と比べると小さいが、この1組の GPU 試行だけで全てを前処理差と断定しない。所要 `35.34` 秒を加算し、GPU 計上累計 `8243.166` 秒、上限まで `9756.834` 秒。既存ジョブ `115141`。
 
 同条件の libdf 対 DFStream・native CUDA 4更新再反復 `df-libdf-four-gpu-repeat-20261103/` は valid。step 4 の勾配相対 L2 は公式 A/B `0.003645`、独立 A/B `0.000496`、公式/独立 `0.015192` / `0.012055`。実装間は引き続き自己再実行より大きい。所要 `33.58` 秒を加算し、GPU 計上累計 `8276.746` 秒（137分56.746秒）、残り `9723.254` 秒（162分3.254秒）。既存ジョブ `115141`、予約時間そのものは含めない。計上には CPU 集計・重複時間を保守的に含む。
+
+## DeepFilterNet3 前処理の一致（2026-11-03）
+
+HEAD `1ff9da2` から `DFStream` を修正した。公式モデルと損失は変更していない。公式ソースも編集していない。
+
+前処理を同じ VoiceBank 0.1 秒（`df-libdf-four-cpu4-20261103/input.pt`）で段ごとに分けた。窓の最大差は 0、ERB 幅は一致する。同じ複素スペクトルを両側の特徴抽出へ入れると、実スペクトルは一致し、ERB と DF 特徴だけが最大 `1e-6` 残った。原因は float32 の演算順である。
+
+- `1.0 - alpha` を Python の float64 で計算していた。float32 の `1 - alpha` にすると、同一スペクトルの ERB 正規化は libdf と一致する。
+- unit norm の初期状態は `torch.linspace` ではなく、float32 の `start + i * (end - start) / (n - 1)` である。末端を `end` に揃えるとずれる。
+- 帯域パワーは libdf と同じくビンごとの `k = 1/width` を順に足す。`tensor.mean` では最大 `1e-11` 以上ずれる。
+- `torch.log10` と `torch.sqrt` は libdf の `f32::log10` / `f32::sqrt` と最大 `1e-5` ずれる。`torch.fft.rfft` は同じ窓付き波形でも `realfft` 3.3.0 と最大絶対差 `6e-8` で、float64 FFT を float32 に戻しても縮まない。
+
+この FFT 差だけで step 1 の勾配符号が反転する。差を 1% に縮小しても符号反転は残った。同一初期重み・step 4 の音声だけでは勾配相対 L2 は `0.00205` だが、4 更新後は重みの最大差 `4e-4` から勾配相対 L2 `0.105` まで増幅していた。増幅の起点は、絶対値が `1e-6` 前後の勾配の符号差が AdamW（lr `0.001`、epsilon `1e-8`）で約 `0.002` の重み差になることである。
+
+独立実装の解析 FFT、ERB の `log10`、unit norm を、libdf 0.5.6 と同じ `realfft` 3.3.0 の float32 実装にした。実行時に libdf は読まない。カーネルは `src/se/models/deepfilternet3/rfft_kernel` から作り、`libdf_rfft.so` として置く。単体テスト `tests.training.test_df_libdf_frontend` は 2 チャネルの正規乱数と学習と同じ 4,800+960 パディングで、解析スペクトルと ERB・unit norm の最大差が 0 である。
+
+修正後の 4 プロセス比較は、公式側 libdf、独立側 DFStream、VoiceBank 48 kHz・4,800 samples、seed 3、`DF_PROBE_OFFICIAL_LIBDF=1`。結果は `data/results/training/df-libdf-match-cpu4-20261103/`。4 系統の条件照合は valid。公式 A/B、独立 A/B、公式/独立の全 step で forward・loss・勾配・更新後重みの最大差は 0。修正前の CPU step 4 勾配相対 L2 は `0.10480` だった。
+
+同じ入力の H100 MIG（既存ジョブ `115141`）2 試行は `df-libdf-match-gpu4-20261103/` と `df-libdf-match-gpu4-repeat-20261103/`。どちらも valid。step 4 の勾配相対 L2 は次のとおり。
+
+| 試行 | 公式 A/B | 独立 A/B | 公式 A/独立 A | 公式 B/独立 B |
+|---|---:|---:|---:|---:|
+| 1 | 0.002297 | 0.006844 | 0.004704 | 0.000846 |
+| 2 | 0.000422 | 0.003957 | 0.002465 | 0.001438 |
+
+CPU が全要素 0 なので、この GPU 差は前処理やモデル式の取り違えではない。実装間の大きい方 `0.004704` は、同じ試行の独立再実行 `0.006844` を超えない。修正前の実装間 `0.012`–`0.015` は、公式再実行 `0.0036` と独立再実行 `0.0005`–`0.0029` の両方を超えていた。GPU 実験のプロセス経過は `36.36 + 36.35 = 72.71` 秒。累計 `8349.456` 秒、残り `9650.544` 秒（160分50.544秒）。対話予約そのものは加算していない。
+
+checkpoint 再開のコードは今回変えていない。前回の再開 GO は、この前処理修正の前に記録したものである。今回の CPU 4 更新は連続実行であり、再開の再試験ではない。
+
+この範囲の DeepFilterNet3 は、公式 libdf と独立 DFStream を使った短時間学習の再現性を GO とする。長時間学習後の PESQ・STOI・SI-SDR・WER は対象外である。MP-SENet と SEMamba++ は、この節の修正対象ではなく、直前の受入表の PARTIAL のままである。
+
+### 回帰テスト（2026-11-03、`.venvs/tsubame`、`DF_REFERENCE_CONFIG` 指定）
+
+ログは `data/results/training/regression-20261103-cont/`。失敗は無い。
+
+| スイート | 結果 |
+|---|---|
+| `tests/data` | 16件成功、skip 0 |
+| `tests/training` | 107件成功、skip 3 |
+| `tests/se` | 28件成功、skip 19 |
+| `tests/evaluation` | 86件成功、skip 3 |
+| `tests/asr` | 5件成功、skip 0 |
+
+training の skip 3件は、再構築 DB `data/db/rebuild-a.duckdb` が無いこと、およびこの全体実行の直前に `CUDA_VISIBLE_DEVICES` が空だったため `CUDA required` になる MossFormerGAN 蓄積テストと DeepFilterNet3 spectral テストである。se の skip は配布 checkpoint・参照結果・明示 CUDA 拡張テスト。evaluation の skip は保存例と MP-SENet checkpoint がこの環境に無いこと。分散テストは、選んだポートが `EADDRINUSE` のとき別ポートでやり直し、失敗した rank の相手を待たずに止める。該当の supply・mock・accumulation は単独でもこの全体実行でも成功した。
+
+CUDA を見える状態で `tests.training.test_df_reference_spectral` と `tests.training.test_moss_probe_accumulation` を再実行すると 8件成功、6.18秒だった。この 6.18秒を GPU 枠へ加算し、累計 `8355.636` 秒、残り `9644.364` 秒とする。
+
+再現:
+
+```bash
+. "$HOME/.cargo/env"
+cargo build --release --manifest-path src/se/models/deepfilternet3/rfft_kernel/Cargo.toml --target-dir /tmp/df-rfft-build
+cp /tmp/df-rfft-build/release/libdf_rfft.so src/se/models/deepfilternet3/libdf_rfft.so
+.venvs/tsubame/bin/python -m unittest tests.training.test_df_libdf_frontend -v
+export DF_REFERENCE_CONFIG="$PWD/data/results/training/final-h100-20261102-cpu/df-config.ini"
+export DF_PROBE_OFFICIAL_LIBDF=1
+export CUBLAS_WORKSPACE_CONFIG=:4096:8
+OMP_NUM_THREADS=1 .venvs/tsubame/bin/python tests/training/four_process/compare.py run data/results/training/NEW-DF --model deepfilternet3 --steps 4 --device cpu --dataset voicebank_28_train --database data/db/voicebank.duckdb --segment-size 4800 --sample-rate 48000 --seed 3
+```
