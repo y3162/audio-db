@@ -113,13 +113,23 @@ class SelectiveSSM(nn.Module):
         return self.out_proj(mixed.transpose(1, 2).type_as(hidden))
 
 
-def _fused_mixer(module, hidden):
+def _fused_xz(module, hidden):
+    """Project to the official fused-mixer layout.
+
+    The view is ``(batch, channel, time)`` with stride ``(time, batch * time, 1)``.
+    Copying it to a contiguous tensor changes selective-scan backward.
+    """
     batch, length, channels = hidden.shape
     hidden = hidden.contiguous()
     projected = module.in_proj.weight @ hidden.reshape(batch * length, channels).transpose(0, 1)
-    xz = projected.reshape(projected.shape[0], batch, length).permute(1, 0, 2).contiguous()
+    xz = projected.reshape(projected.shape[0], batch, length).permute(1, 0, 2)
     if module.in_proj.bias is not None:
         xz = xz + module.in_proj.bias.to(dtype=xz.dtype).view(1, -1, 1)
+    return xz
+
+
+def _fused_mixer(module, hidden):
+    xz = _fused_xz(module, hidden)
     try:
         from mamba_ssm.ops.selective_scan_interface import mamba_inner_fn
     except ImportError as exc:

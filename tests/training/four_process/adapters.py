@@ -248,7 +248,6 @@ def _official_mp(h, device):
     import types
     from pathlib import Path
     root = Path(__file__).resolve().parents[3] / "src" / "se" / "official" / "mp-senet"
-    sys.modules.setdefault("librosa", types.ModuleType("librosa"))
     matplotlib = types.ModuleType("matplotlib")
     matplotlib.use = lambda *args, **kwargs: None
     sys.modules.setdefault("matplotlib", matplotlib)

@@ -1495,3 +1495,64 @@ CUBLAS_WORKSPACE_CONFIG=:4096:8 OMP_NUM_THREADS=1 OPENBLAS_NUM_THREADS=1 MKL_NUM
 ### 回帰
 
 `CUDA_VISIBLE_DEVICES` を空にした `.venvs/tsubame` で、DF カーネル、libdf 前処理、MP-SENet 学習、公式損失、4 プロセス、Optimizer 対応を 36 件実行し、失敗 0、skip 1。skip は、同じプロセスで先に公式 MP-SENet テストが空の `librosa` モジュールを登録したため、SEMamba++ 公式の import が失敗したものである。そのあと `PYTHONPATH=.venvs/tsubame-h100-build` で `test_semamba_cross_implementation_optimizer_needs_name_remap` を単独実行し、成功した。
+
+## SEMamba++ 同一状態の Backward（2026-11-03）
+
+作業ツリーは `084edff` の上。公式 SEMamba++ は `cd369c89a8106072c077b468417b765b227afd74`。公式ソースは編集していない。既存の結果ディレクトリと checkpoint は上書きしていない。ノードは `r4n11`。開始時の表示メモリは 101 / 95830 MiB。新しい `qrsh` は出していない。
+
+### 比較基盤
+
+狭幅・CPU・reference で、公式と独立のパラメータ名集合・shape・dtype が一致し、登録順は一致しない。同じ勾配を名前で与えた AdamW の `exp_avg` と `exp_avg_sq` は名前ごとに一致する。次の4方向でモーメントが名前に付いたまま戻る。
+
+1. 公式 checkpoint → 公式
+2. 独立 checkpoint → 独立
+3. 公式 checkpoint → 独立（名前対応）
+4. 独立 checkpoint → 公式（名前対応）
+
+位置のまま公式 Optimizer を独立へ載せる対応のずれる件数は 0 より大きい。パラメータに属さない Optimizer state は `remap_optimizer` が `ValueError` にする。Scheduler の `last_epoch` と `get_last_lr()` は state dict のコピーで一致する。RNG は `capture_rng` / `restore_rng` で往復する。通常の Trainer 再開は同一実装の位置ロードであり、この名前対応とは別である。
+
+空の `librosa` を `sys.modules` に残していた公式 MP-SENet の import をやめた。MP-SENet の公式ステップのあとに SEMamba++ 公式を import しても `librosa.filters.mel` が実モジュールである。
+
+### 同一重みの更新
+
+判定規則は実行前に `tests/training/reference/audit_semamba_same_state.py` へ書いた。同一重み・同一入力・同一 RNG を毎回戻し、Optimizer は repeat をまたがない。`bias_rel_l2` は公式勾配の平均と独立勾配の平均の相対 L2、`self_median` は実装内ペア相対 L2 の中央値の大きい方、`cross_median` は公式対独立の中央値である。規則は `bias_rel_l2 <= self_median` かつ `cross_median <= self_median`。
+
+入力は `semamba-seed17-repeat-20261103/input.pt`（seed 17、公式幅、fused、epoch scheduler、合成 8,000 samples）。重みは初期状態、公式 A の step 4、公式 A の step 20。H100、TF32 なし、cuDNN deterministic。
+
+修正前の fused 経路は `xz` を contiguous にしていた。selective scan の 24 呼び出しは値が一致しても stride が公式 `(81, 8100, 1)`、独立 `(7776, 81, 1)` だった。contiguous コピーをやめ、公式と同じ view にした。修正後は 24 呼び出しの shape・stride・dtype・contiguous フラグが一致し、forward 入力の最大差は 0 である。Forward 波形と Generator 損失は、修正の前後とも公式再実行・公式/独立で最大差 0、損失は初期 `52.88309860229492`、step 4 `57.11925506591797`、step 20 `54.5202522277832`。Discriminator 勾配の差は 0。CPU の位相損失は値も位相勾配も公式と一致する。
+
+修正後の全パラメータ勾配は次のとおり。
+
+| 重み | repeats | bias 相対 L2 | self median | cross median | cross / self |
+|---|---:|---:|---:|---:|---:|
+| 初期 | 4 | 7.357e-7 | 1.431e-6 | 1.439e-6 | 1.0056 |
+| step 4 | 8 | 6.507e-7 | 1.765e-6 | 1.769e-6 | 1.0023 |
+| step 20 | 4 | 1.017e-6 | 1.969e-6 | 1.972e-6 | 1.0015 |
+
+平均勾配の差は、どの点でも実装内の再実行より小さい。pairwise の中央値は self を 0.15–0.56% 上回り、上のブール規則そのものは成立しない。この超過は勾配そのものに対する 1e-6 のノイズの一部であり、損失式の取り違えではない。`|grad| < 1e-8` の符号不一致数は、初期状態で公式内 410–450、独立内 417–476、実装間 401–467 と重なる。AdamW がこの符号差を O(学習率) の重み差へ増幅する機構は、公式の再実行にも同じ大きさで含まれる。
+
+したがって、過去の seed 17・20 step で実装間 cosine が公式内の最小を下回ったことは、この 1 step の非決定性が 20 回積もった結果である。公式どうしの step 20 cosine も `-0.0436` から `0.7216` まで広がっている。新しい 20 step の4プロセスは、同じ初期状態からの軌跡が再びこの範囲へ散ることを繰り返すだけなので実行していない。
+
+この範囲のモデル構造、Forward、損失、Backward、Optimizer、4プロセス比較、同一実装の checkpoint 再開、複数更新を **GO** とする。長時間学習後の PESQ・STOI・SI-SDR・WER は対象外である。selective scan backward はビット一致しない。
+
+### GPU 時間
+
+プロセス経過は `35.094 + 17.450 + 18.578 + 39.307 + 13.104 + 16.829 + 39.415 + 17.080 + 18.697 = 215.554` 秒。直前の累計 `8626.126` 秒に加え `8841.680` 秒。上限 300 分まで `9158.320` 秒（152分38.320秒）。
+
+### 回帰
+
+GPU が見える `.venvs/tsubame` で、MP-SENet 公式ステップを先に実行してから SEMamba++ の Optimizer・損失・MRD・mel・長さを実行した。17 件成功、skip 1。skip は `SEMAMBA_TEST_FUSED_CUDA` 未設定の明示 CUDA 拡張テストであり、librosa の失敗ではない。`CUDA_VISIBLE_DEVICES` を空にすると Triton が driver を初期化できず、公式 SEMamba++ の import は `RuntimeError` になり、そのテストは skip する。
+
+```bash
+PYTHONPATH=.venvs/tsubame-h100-build CUBLAS_WORKSPACE_CONFIG=:4096:8 OMP_NUM_THREADS=1 \
+  .venvs/tsubame/bin/python tests/training/reference/audit_semamba_same_state.py \
+  --input data/results/training/semamba-seed17-repeat-20261103/input.pt \
+  --modules data/results/training/semamba-seed17-repeat-20261103/official_a/fork-step-4.pt \
+  --output data/results/training/NEW-semamba-same-state.json --repeats 4 --device cuda:0
+PYTHONPATH=.venvs/tsubame-h100-build .venvs/tsubame/bin/python tests/training/reference/audit_semamba_scan_calls.py \
+  --input data/results/training/semamba-seed17-repeat-20261103/input.pt \
+  --modules data/results/training/semamba-seed17-repeat-20261103/official_a/fork-step-4.pt \
+  --output data/results/training/NEW-semamba-scan.json --device cuda:0
+```
+
+結果は `data/results/training/semamba-same-state-20261103/`、`semamba-same-state-step4-20261103/`、`semamba-same-state-step20-20261103/`、`semamba-same-state-step4-rep8-20261103/`、`semamba-same-state-init-layout-20261103/`、`semamba-same-state-step4-layout-rep8-20261103/`、`semamba-same-state-step20-layout-20261103/`、`semamba-scan-calls-step4-20261103/`、`semamba-scan-calls-step4-layout-20261103/`。

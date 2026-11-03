@@ -52,8 +52,9 @@
 - 新しいモデルを足すときは、出典 commit とライセンスを `docs/se/MODELS.md` に記録し、公式出力との比較を行う。
 - MossFormerGAN の公式 Generator は `rotary-embedding-torch==0.8.3` を import する。2026-11-02 に `.venvs/lab` へ入れた。SEMamba++ の公式学習ステップは `.venvs/semamba` で実行する。その Triton RMSNorm は CPU tensor を拒否する。`.venvs/semamba` の DuckDB は 1.4.3 で、`voicebank.duckdb` は開けない。VoiceBank の準備は `.venvs/lab` が行い、worker だけ `FOUR_PROCESS_PYTHON` で semamba を指定する。
 - チェックポイントのパスをコードに固定しない。呼び出し側が渡す。
-- SEMamba++ の学習用 mel 損失は公式と同じ Slaney フィルタを `librosa.filters.mel` で CPU 上に作るため、学習環境に librosa が必要。推論 API はこの学習損失を import しない。
-- SEMamba++ の公式と独立の generator はパラメータ名が一致しても登録順が異なる。optimizer state を別実装へ位置のままロードしない。共通 checkpoint の比較は名前で対応付ける。検証と診断手順は [学習検証記録](../docs/training/VERIFICATION.md) を参照。
+- SEMamba++ の学習用 mel 損失は公式と同じ Slaney フィルタを `librosa.filters.mel` で CPU 上に作るため、学習環境に librosa が必要。推論 API はこの学習損失を import しない。公式 MP-SENet の import 用に空の `librosa` を `sys.modules` へ残さない。残すと、同じプロセスの SEMamba++ 公式 import が `librosa.filters` を読めなくなる。
+- SEMamba++ の公式と独立の generator はパラメータ名が一致しても登録順が異なる。optimizer state を別実装へ位置のままロードしない。共通 checkpoint の比較は名前で対応付ける。パラメータに属さない state がある対応は失敗させる。検証と診断手順は [学習検証記録](../docs/training/VERIFICATION.md) を参照。
+- SEMamba++ の fused mixer が `mamba_inner_fn` に渡す `xz` は、公式と同じ stride `(time, batch * time, 1)` の view である。ここを contiguous にコピーすると selective scan の呼び出し stride が変わり、backward が公式の再実行と別のばらつきになる。
 
 ## 検証の区別
 

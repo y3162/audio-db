@@ -36,15 +36,22 @@ class OfficialStepTests(unittest.TestCase):
     def setUpClass(cls):
         if not (OFFICIAL / "models" / "model.py").is_file():
             raise unittest.SkipTest("official MP-SENet tree is not present")
-        joblib = types.ModuleType("joblib")
-        joblib.Parallel = lambda *args, **kwargs: None
-        joblib.delayed = lambda fn: fn
-        sys.modules.setdefault("joblib", joblib)
-        sys.modules.setdefault("librosa", types.ModuleType("librosa"))
-        matplotlib = types.ModuleType("matplotlib")
-        matplotlib.use = lambda *args, **kwargs: None
-        sys.modules.setdefault("matplotlib", matplotlib)
-        sys.modules.setdefault("matplotlib.pylab", types.ModuleType("matplotlib.pylab"))
+        # dataset.py imports the real librosa. An empty stub stays in
+        # sys.modules and makes a later SEMamba++ import fail.
+        cls._saved_modules = {}
+        for name in ("joblib", "matplotlib", "matplotlib.pylab"):
+            cls._saved_modules[name] = sys.modules.get(name)
+        if cls._saved_modules["joblib"] is None:
+            joblib = types.ModuleType("joblib")
+            joblib.Parallel = lambda *args, **kwargs: None
+            joblib.delayed = lambda fn: fn
+            sys.modules["joblib"] = joblib
+        if cls._saved_modules["matplotlib"] is None:
+            matplotlib = types.ModuleType("matplotlib")
+            matplotlib.use = lambda *args, **kwargs: None
+            sys.modules["matplotlib"] = matplotlib
+        if cls._saved_modules["matplotlib.pylab"] is None:
+            sys.modules["matplotlib.pylab"] = types.ModuleType("matplotlib.pylab")
         sys.path.insert(0, str(OFFICIAL))
         set_determinism(True, cuda=False)
 
@@ -53,6 +60,11 @@ class OfficialStepTests(unittest.TestCase):
         set_determinism(False, cuda=False)
         if sys.path and sys.path[0] == str(OFFICIAL):
             sys.path.pop(0)
+        for name, module in getattr(cls, "_saved_modules", {}).items():
+            if module is None:
+                sys.modules.pop(name, None)
+            else:
+                sys.modules[name] = module
 
     def test_one_step_matches_the_official_modules(self):
         from models.discriminator import MetricDiscriminator as OfficialDiscriminator

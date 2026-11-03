@@ -19,8 +19,20 @@ def remap_optimizer(state, old, new):
     if len(ids) != len(old):
         raise ValueError('unexpected optimizer parameter count')
     original = state['state']
+    unknown = set(original) - set(ids)
+    if unknown:
+        raise ValueError('optimizer state has entries that are not parameters')
     by_name = {name: original[identifier] for name, identifier in zip(old, ids) if identifier in original}
-    state['state'] = {identifier: by_name[name] for name, identifier in zip(new, ids) if name in by_name}
+    moved = {}
+    for name, identifier in zip(new, ids):
+        if name not in by_name:
+            continue
+        if identifier in moved:
+            raise ValueError('optimizer state mapped onto the same parameter twice')
+        moved[identifier] = by_name[name]
+    if len(moved) != len(by_name):
+        raise ValueError('optimizer state could not be matched to every source parameter')
+    state['state'] = moved
 
 
 def main():
