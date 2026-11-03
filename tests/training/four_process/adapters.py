@@ -188,19 +188,17 @@ class MPSENet:
         generator.train()
         discriminator.train()
         optimizers["discriminator"].zero_grad(set_to_none=True)
-        if implementation == "official":
-            detached = _mp_spectra(implementation, generator, clean, noisy, h)
-        else:
-            with torch.no_grad():
-                detached = _mp_spectra(implementation, generator, clean, noisy, h)
+        optimizers["generator"].zero_grad(set_to_none=True)
+        # Official train.py scores the detached magnitude from this same graph.
+        parts = _mp_spectra(implementation, generator, clean, noisy, h)
         ones = torch.ones(clean.shape[0], device=clean.device)
-        real = discriminator(detached["clean_mag"], detached["clean_mag"])
-        fake = discriminator(detached["clean_mag"], detached["mag_hat"].detach())
+        real = discriminator(parts["clean_mag"], parts["clean_mag"])
+        fake = discriminator(parts["clean_mag"], parts["mag_hat"].detach())
         if implementation == "official":
             from tests.training.reference.compare_mp_senet import _official_pesq, _official_discriminator_loss
-            targets = _official_pesq(clean, detached["audio"])
+            targets = _official_pesq(clean, parts["audio"])
         else:
-            targets = metric_targets(clean, detached["audio"], h.sampling_rate)
+            targets = metric_targets(clean, parts["audio"], h.sampling_rate)
         raw_d_loss = (_official_discriminator_loss(real, fake, ones, targets)
                       if implementation == "official" else discriminator_loss(real, fake, ones, targets))
         d_loss = _finite(maybe_nan(raw_d_loss, fault), "discriminator")
@@ -212,9 +210,6 @@ class MPSENet:
         for parameter in frozen:
             parameter.requires_grad_(False)
         try:
-            optimizers["generator"].zero_grad(set_to_none=True)
-            parts = (detached if implementation == "official" else
-                     _mp_spectra(implementation, generator, clean, noisy, h))
             metric = discriminator(parts["clean_mag"], parts["mag_hat"])
             if implementation == "official":
                 from tests.training.reference.compare_mp_senet import _official_components

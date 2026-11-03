@@ -42,3 +42,5 @@ uv pip install --python .venvs/tsubame/bin/python --no-deps --no-build-isolation
 再作成した `.venvs/tsubame` でも、2026-11-02 に 5 分の `gpu_h=1` qrsh ジョブで GPU 構成の認識と単純な CUDA 演算を確認し、別の 5 分のジョブで上記 5 モデルの小規模な更新・checkpoint 保存と読込・推論が成功した。SEMamba++ は reference scan であり、融合経路は未検証である。
 
 さらに同日、`.venvs/tsubame` を削除し、上記の初期構築コマンドのみで作り直した環境でも、5 モデルの同じスモークが成功した。ログは `.venvs/tsubame/logs/rebuild-gpu-smoke.log`。
+
+DeepFilterNet3 の解析 FFT は、リポジトリルートの `make df-rfft` で共有ライブラリを作る。Cargo の出力先は `DF_RFFT_TARGET`、読込先の上書きは `DF_RFFT_LIBRARY`。どちらもホスト固有のパスを既定にしない。Rust は利用者の `cargo` を使う。このリポジトリで通したコンパイラは rustc 1.99.1 で、別バージョンでの再コンパイルは未実施。手順とライセンスは [学習検証記録](../training/VERIFICATION.md)。

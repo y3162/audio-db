@@ -222,17 +222,25 @@ class MPSENetTask:
         if self.discriminator is None or self.optim_d is None:
             raise TrainingError("official loss requires a discriminator")
         raw_discriminator = unwrap(self.discriminator)
+        # One generator graph per micro-batch, matching official train.py.
+        # The discriminator sees a detached magnitude. A second forward would
+        # be a different CUDA evaluation and would feed the generator loss a
+        # waveform the discriminator did not score.
         self.optim_d.zero_grad(set_to_none=True)
+        self.optim_g.zero_grad(set_to_none=True)
         discriminator_total = 0.0
+        stored: list[tuple[torch.Tensor, dict[str, torch.Tensor]]] = []
         for index, batch in enumerate(batches):
             clean, noisy = self._waveforms(batch)
-            with torch.no_grad():
-                parts = self._generate(clean, noisy, generator=unwrap(self.generator))
+            last = index == len(batches) - 1
+            with accumulation_scope([self.generator], last=last):
+                parts = self._generate(clean, noisy, generator=self.generator)
+            stored.append((clean, parts))
             ones = torch.ones(clean.shape[0], device=self.device)
             _require_discriminator_resolution(parts["clean_mag"].shape[-2], parts["clean_mag"].shape[-1])
-            with accumulation_scope([self.discriminator], last=index == len(batches) - 1):
+            with accumulation_scope([self.discriminator], last=last):
                 real = self.discriminator(parts["clean_mag"], parts["clean_mag"])
-                fake = self.discriminator(parts["clean_mag"], parts["mag_hat"])
+                fake = self.discriminator(parts["clean_mag"], parts["mag_hat"].detach())
                 targets = metric_targets(clean, parts["audio"], int(self.spec["sampling_rate"]))
                 loss = discriminator_loss(real, fake, ones, targets) / accumulation
                 loss.backward()
@@ -242,34 +250,30 @@ class MPSENetTask:
         frozen = [parameter for parameter in raw_discriminator.parameters() if parameter.requires_grad]
         for parameter in frozen:
             parameter.requires_grad_(False)
-        self.optim_g.zero_grad(set_to_none=True)
         component_totals = {
             name: 0.0 for name in ("total", "magnitude", "phase", "complex", "consistency", "metric", "time")
         }
         try:
-            for index, batch in enumerate(batches):
-                with accumulation_scope([self.generator], last=index == len(batches) - 1):
-                    clean, noisy = self._waveforms(batch)
-                    parts = self._generate(clean, noisy, generator=self.generator)
-                    ones = torch.ones(clean.shape[0], device=self.device)
-                    # The unwrapped discriminator avoids a second DDP all-reduce.
-                    # Its parameters are frozen, so the metric gradient reaches the generator only.
-                    metric = raw_discriminator(parts["clean_mag"], parts["mag_hat"])
-                    losses = generator_losses(
-                        parts["clean_mag"],
-                        parts["mag"],
-                        parts["clean_phase"],
-                        parts["phase"],
-                        parts["clean_complex"],
-                        parts["complex"],
-                        parts["recomputed_complex"],
-                        clean,
-                        parts["audio"],
-                        metric,
-                        ones,
-                    )
-                    loss = losses["total"] / accumulation
-                    loss.backward()
+            for clean, parts in stored:
+                ones = torch.ones(clean.shape[0], device=self.device)
+                # The unwrapped discriminator avoids a second DDP all-reduce.
+                # Its parameters are frozen, so the metric gradient reaches the generator only.
+                metric = raw_discriminator(parts["clean_mag"], parts["mag_hat"])
+                losses = generator_losses(
+                    parts["clean_mag"],
+                    parts["mag"],
+                    parts["clean_phase"],
+                    parts["phase"],
+                    parts["clean_complex"],
+                    parts["complex"],
+                    parts["recomputed_complex"],
+                    clean,
+                    parts["audio"],
+                    metric,
+                    ones,
+                )
+                loss = losses["total"] / accumulation
+                loss.backward()
                 for name, value in losses.items():
                     component_totals[name] += float(value.detach())
         finally:

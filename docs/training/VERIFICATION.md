@@ -1434,3 +1434,64 @@ export DF_PROBE_OFFICIAL_LIBDF=1
 export CUBLAS_WORKSPACE_CONFIG=:4096:8
 OMP_NUM_THREADS=1 .venvs/tsubame/bin/python tests/training/four_process/compare.py run data/results/training/NEW-DF --model deepfilternet3 --steps 4 --device cpu --dataset voicebank_28_train --database data/db/voicebank.duckdb --segment-size 4800 --sample-rate 48000 --seed 3
 ```
+
+## DeepFilterNet3 ビルド再現性と MP-SENet の単一 forward（2026-11-03）
+
+HEAD `38f9628` から作業した。既存の DB、checkpoint、前セッションの結果ディレクトリは上書きしていない。
+
+### Task 1：DeepFilterNet3 の共有ライブラリ
+
+判定は **GO**（この Linux x86-64、rustc 1.99.1、cargo 1.99.1）。別マシンでの再ビルドはしていない。
+
+`make df-rfft` が `Cargo.lock` の `realfft` 3.3.0 と `rustfft` 6.4.1 で `cdylib` を作り、`src/se/models/deepfilternet3/libdf_rfft.so` に置く。Cargo の中間出力は `DF_RFFT_TARGET`（既定はリポジトリ内の `build/df-rfft`、Git 管理外）。クリーン試験は `DF_RFFT_TARGET=/tmp/df-rfft-clean-20261103` で行い、既存の `.so` は cargo が成功したあとだけ置き換えた。`DF_RFFT_LIBRARY` でそのビルド成果物を直接読み、`tests.training.test_df_rfft_kernel` と `tests.training.test_df_libdf_frontend` は 5 件成功した。libdf との解析スペクトル、ERB、unit norm の最大差は 0 のままである。
+
+C ABI は `df_rfft_abi` が 1 を返す。欠けるか版が違うライブラリは `RuntimeError`。ファイルが無く `DF_RFFT_REQUIRED=1` のときは `FileNotFoundError`。未設定なら従来どおり PyTorch に戻る。動的リンクは `libc`、`libm`、`libgcc_s` のみで、ホスト固有のパスは入っていない。
+
+ライセンスは、このクレートが MIT OR Apache-2.0、`realfft` 3.3.0 が MIT、`rustfft` 6.4.1 が MIT OR Apache-2.0。libdf はリンクしていない。`Cargo.toml` の `rust-version` は 1.70（`OnceLock`）。1.70 そのものでのコンパイルは未実施。
+
+```bash
+make df-rfft DF_RFFT_TARGET=/tmp/df-rfft-clean
+DF_RFFT_LIBRARY=/tmp/df-rfft-clean/release/libdf_rfft.so \
+  .venvs/tsubame/bin/python -m unittest tests.training.test_df_rfft_kernel tests.training.test_df_libdf_frontend -v
+```
+
+### Task 2：MP-SENet
+
+公式 `train.py` は Generator を 1 回だけ計算し、Discriminator にはその magnitude を detach して渡す。独立の学習ステップと 4 プロセス probe は、Discriminator 用の `no_grad` forward のあと Generator 損失でもう一度 forward していた。CPU では両者が一致する。CUDA では 2 回目が別の評価になり、独立どうしの再実行差が公式より大きくなり得る。両方を 1 回の forward に合わせた。公式損失式は変えていない。
+
+同じ VoiceBank 入力（seed 3、ハッシュ `dd9500c21e2b4081f40b1f9f685bc6d172b1460b3ea3ba5ed22b2989b16e2b86`、1 秒、公式幅、epoch 単位 scheduler）の H100 4 更新は `data/results/training/mp-one-forward-gpu4-20261103/`。4 系統 valid。step 1 は全ペアで forward 最大差 0、両損失差 0、勾配相対 L2 は `7.65e-8`〜`8.24e-8`。最初に重みが割れるのはこの更新で、最大は公式 A/B の `generator.dense_encoder.dense_conv_1.0.bias` の 1 要素 `4.924e-4`。対応勾配は `-1.676e-8` と `5.588e-9`。同じ AdamW（lr `5e-4`、epsilon `1e-8`）の初回更新差の閉形式は `4.92420e-4` で、実測との差は `4.1e-9`。公式再実行でも符号が割れており、実装間に限った分岐ではない。
+
+同じ比較を seed 17 と 29 でも行った。出力は `mp-one-forward-gpu4-seed17-20261103/` と `mp-one-forward-gpu4-seed29-20261103/`。どちらも valid。step 1 は 3 seed とも全ペアで forward 最大差 0、両損失差 0、勾配相対 L2 は `5.06e-8`〜`9.61e-8`。重み最大差は `3.10e-4`〜`9.28e-4` で、seed 3 と同じく epsilon 付近の勾配符号差が AdamW で広がったものである。
+
+step 4 の勾配相対 L2 は次のとおり。
+
+| seed | 公式 A/B | 独立 A/B | 公式 A/独立 A | 公式 B/独立 B |
+|---|---:|---:|---:|---:|
+| 3 | 0.03245 | 0.04986 | 0.01122 | 0.04808 |
+| 17 | 0.03651 | 0.02670 | 0.03588 | 0.02744 |
+| 29 | 0.26254 | 0.16549 | 0.18249 | 0.23387 |
+
+3 seed の min / median / max は、公式内 `0.03245 / 0.03651 / 0.26254`、独立内 `0.02670 / 0.04986 / 0.16549`、実装間 6 ペア `0.01122 / 0.04198 / 0.23387`。実装間の各ペアは、同じ seed の大きい方の自己再実行を超えていない。修正前は同じ seed 3 入力で独立 A/B が `0.0702` と `0.0749`、公式 A/B が `0.00774` と `0.01146` で、独立側だけが一桁大きかった。その偏りは 2 回目の forward をやめたあと残っていない。seed 29 の公式どうし `0.26` は、4 更新でも公式自身のばらつきが大きいことを示す。ペアは実行を共有するので独立標本ではない。長時間学習の品質は対象外である。
+
+この範囲の Forward、損失、Backward、Optimizer、4 プロセス、checkpoint 再開を **GO** とする。再開は同一実装の別プロセスで、前セッションの GPU 再開と今回の CPU 回帰 `test_two_runs_and_a_resumed_run_match` による。公式から独立への Optimizer 移植は比較用で、`shared_fork.py --remap-mp` が名前で対応付ける。
+
+seed 3 のプロセス経過は `107.45` 秒（ノード `r5n4`、シェル経過 `137` 秒。表示メモリは親 GPU の 5602 / 95830 MiB）。seed 17 と 29 はジョブ `9242017`、ノード `r13n3`、開始時 87 / 95830 MiB、プロセス経過 `119.52 + 43.52` 秒。キュー待ち約 9 分は GPU 時間に入れない。`/tmp` を計算ノードから参照できず落ちた試行は実験 0 秒、シェル約 `15.8` 秒。即時スケジュール不能の拒否は GPU を使っていない。実験プロセスの合計 `270.49` 秒を `8355.636` に加え、累計 `8626.126` 秒、残り `9373.874` 秒。
+
+```bash
+CUBLAS_WORKSPACE_CONFIG=:4096:8 OMP_NUM_THREADS=1 OPENBLAS_NUM_THREADS=1 MKL_NUM_THREADS=1 \
+  .venvs/tsubame/bin/python tests/training/four_process/compare.py run data/results/training/NEW-MP \
+  --model mp_senet --steps 4 --device cuda:0 \
+  --dataset voicebank_28_train --database data/db/voicebank.duckdb \
+  --segment-size 16000 --sample-rate 16000 --seed 3 \
+  --scheduler-step epoch --official-width
+```
+
+### Task 3：SEMamba++
+
+同一実装の Optimizer 再開は、登録順が同じなので位置ロードでモーメントが同じパラメータに戻る。狭幅 Generator の CPU 往復で `exp_avg` と `exp_avg_sq` が一致した。公式と独立は名前が一致しても登録順が違い、位置のままロードするとモーメントが別パラメータに付く。`remap_optimizer` のあと名前ごとに一致する。これは `tests.training.test_shared_fork` で確認した。公式 import には `mamba_ssm`（この環境では `PYTHONPATH=.venvs/tsubame-h100-build`）が要る。Trainer の `load_state_dict` は自分の checkpoint を位置で読む。公式状態を独立モデルへ移すのは比較操作であり、通常の再開ではない。比較の `shared_fork.py` は `--remap-semamba` が無いと拒否する。
+
+複数更新の新しい GPU 比較は今回していない。前回の 20 step では、実装間 cosine の最小が公式内の最小より低く、分布の重なりだけでは系統差の不在を示せないと記録してある。その判定は維持する。selective scan の backward は入力が同じでも再実行差がある、という前回の切り分けも変えていない。総合は **PARTIAL**。
+
+### 回帰
+
+`CUDA_VISIBLE_DEVICES` を空にした `.venvs/tsubame` で、DF カーネル、libdf 前処理、MP-SENet 学習、公式損失、4 プロセス、Optimizer 対応を 36 件実行し、失敗 0、skip 1。skip は、同じプロセスで先に公式 MP-SENet テストが空の `librosa` モジュールを登録したため、SEMamba++ 公式の import が失敗したものである。そのあと `PYTHONPATH=.venvs/tsubame-h100-build` で `test_semamba_cross_implementation_optimizer_needs_name_remap` を単独実行し、成功した。

@@ -22,6 +22,7 @@ AGENTS.override.md
 
 # program cache
 __pycache__/
+/build/
 
 # official implementation
 /src/se/official/

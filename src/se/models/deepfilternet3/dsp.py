@@ -12,10 +12,13 @@ libdf in float32. Without the library, analysis falls back to PyTorch.
 """
 import ctypes
 import math
+import os
 from dataclasses import dataclass
 from pathlib import Path
 
 import torch
+
+_ABI_VERSION = 1
 
 
 def freq_to_erb(freq_hz):
@@ -100,36 +103,93 @@ def _linspace_state(start, end, count, channels, device, dtype):
 
 
 _KERNEL = None
-_KERNEL_CHECKED = False
+_KERNEL_KEY = None
+
+
+def rfft_library_path():
+    """Shared library used for libdf-matching float32 kernels.
+
+    ``DF_RFFT_LIBRARY`` overrides the path next to this module. The override is
+    for tests and for a build that has not been installed yet. It is not a
+    host-specific default.
+    """
+    override = os.environ.get("DF_RFFT_LIBRARY")
+    if override:
+        return Path(override)
+    return Path(__file__).with_name("libdf_rfft.so")
+
+
+def _kernel_cache_key(path):
+    required = os.environ.get("DF_RFFT_REQUIRED") == "1"
+    if path.is_file():
+        stat = path.stat()
+        identity = (str(path), stat.st_mtime_ns, stat.st_size)
+    else:
+        identity = (str(path), None, None)
+    return identity, required
+
+
+def _bind_symbol(library, name, argtypes):
+    try:
+        function = getattr(library, name)
+    except AttributeError as error:
+        raise RuntimeError(
+            f"{rfft_library_path()} does not export {name}. Rebuild with `make df-rfft`."
+        ) from error
+    function.argtypes = argtypes
+    function.restype = ctypes.c_int
+    return function
 
 
 def _rfft_kernel():
-    global _KERNEL, _KERNEL_CHECKED
-    if _KERNEL_CHECKED:
+    """Load ``libdf_rfft.so``, or return None when the fallback is allowed.
+
+    ``DF_RFFT_REQUIRED=1`` raises ``FileNotFoundError`` instead of falling back
+    to ``torch.fft.rfft``. A library with the wrong ABI raises ``RuntimeError``.
+    """
+    global _KERNEL, _KERNEL_KEY
+    path = rfft_library_path()
+    key = _kernel_cache_key(path)
+    if key == _KERNEL_KEY:
         return _KERNEL
-    _KERNEL_CHECKED = True
-    path = Path(__file__).with_name("libdf_rfft.so")
+    required = key[1]
     if not path.is_file():
+        if required:
+            raise FileNotFoundError(
+                f"DeepFilterNet3 realfft kernel is missing: {path}. "
+                "Build it with `make df-rfft` from the repository root "
+                "(Rust 1.76 or newer, Cargo.lock, realfft 3.3.0)."
+            )
+        _KERNEL_KEY = key
+        _KERNEL = None
         return None
-    library = ctypes.CDLL(str(path))
-    library.df_rfft_f32.argtypes = [
+    try:
+        library = ctypes.CDLL(str(path))
+    except OSError as error:
+        raise RuntimeError(
+            f"failed to load {path}. Rebuild it on this machine with `make df-rfft`."
+        ) from error
+    abi = _bind_symbol(library, "df_rfft_abi", [])
+    version = abi()
+    if version != _ABI_VERSION:
+        raise RuntimeError(
+            f"{path} reports ABI {version}, expected {_ABI_VERSION}. Rebuild with `make df-rfft`."
+        )
+    _bind_symbol(library, "df_rfft_f32", [
         ctypes.POINTER(ctypes.c_float), ctypes.c_size_t,
         ctypes.POINTER(ctypes.c_float), ctypes.POINTER(ctypes.c_float),
-    ]
-    library.df_rfft_f32.restype = ctypes.c_int
-    library.df_log10_db.argtypes = [
+    ])
+    _bind_symbol(library, "df_log10_db", [
         ctypes.POINTER(ctypes.c_float), ctypes.c_size_t, ctypes.POINTER(ctypes.c_float),
-    ]
-    library.df_log10_db.restype = ctypes.c_int
-    library.df_sqrt_f32.argtypes = [
+    ])
+    _bind_symbol(library, "df_sqrt_f32", [
         ctypes.POINTER(ctypes.c_float), ctypes.c_size_t, ctypes.POINTER(ctypes.c_float),
-    ]
-    library.df_sqrt_f32.restype = ctypes.c_int
-    library.df_unit_norm.argtypes = [
+    ])
+    _bind_symbol(library, "df_unit_norm", [
         ctypes.POINTER(ctypes.c_float), ctypes.POINTER(ctypes.c_float),
         ctypes.c_size_t, ctypes.c_size_t, ctypes.c_size_t, ctypes.c_float,
-    ]
-    library.df_unit_norm.restype = ctypes.c_int
+    ])
+    _KERNEL_KEY = key
     _KERNEL = library
     return library
 

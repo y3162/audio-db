@@ -167,6 +167,16 @@ class FourProcessTest(unittest.TestCase):
         schedulers=adapter.schedulers(optimizers)
         self.assertEqual(set(optimizers), {'generator','discriminator'})
         self.assertEqual(set(schedulers), {'generator','discriminator'})
+        calls = {'n': 0}
+        original = modules['generator'].forward
+        def wrapped(*args, **kwargs):
+            calls['n'] += 1
+            return original(*args, **kwargs)
+        modules['generator'].forward = wrapped
+        torch = __import__('torch')
+        clean = torch.randn(1, 8000)
+        adapter.train_step('independent', modules, optimizers, schedulers, clean, clean * 0.6, 0)
+        self.assertEqual(calls['n'], 1)
     def test_registered_update_orders(self):
         from tests.training.four_process.adapters import ADAPTERS
         self.assertEqual(ADAPTERS['semambapp'].update_order, ('discriminator','generator'))

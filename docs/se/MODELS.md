@@ -6,7 +6,7 @@
 
 ## DeepFilterNet3
 
-[論文/コード](https://github.com/Rikorose/DeepFilterNet)、参照 commit `d375b2d8309e0935d165700c91da9de862a99c31`、MIT または Apache-2.0（`src/se/models/deepfilternet3/LICENSE`）。48 kHz、ERB 32、deep filter order 5。`libdf` は使わず、公開されている Rust の Vorbis 窓・非正規化 real FFT・ERB パワー・指数正規化を PyTorch で実装した。重みは `model_120.ckpt.best` を `strict=True` で読む。`config.ini` も渡せる。
+[論文/コード](https://github.com/Rikorose/DeepFilterNet)、参照 commit `d375b2d8309e0935d165700c91da9de862a99c31`、MIT または Apache-2.0（`src/se/models/deepfilternet3/LICENSE`）。48 kHz、ERB 32、deep filter order 5。実行時に `libdf` は import しない。Vorbis 窓、ERB 帯域、指数正規化は PyTorch で、解析 FFT と ERB の `log10` と unit norm は `realfft` 3.3.0 の共有ライブラリ（`make df-rfft`）で計算する。ライブラリが無いときは PyTorch に戻り、libdf とのビット一致は成り立たない。重みは `model_120.ckpt.best` を `strict=True` で読む。`config.ini` も渡せる。
 
 ## MossFormerGAN
 
@@ -28,4 +28,4 @@
 
 - SEMamba++: 参照 commit にライセンスファイルはない。[重みカード](https://huggingface.co/yongjoonlee/semambapp) は GPL-2.0。ソースはコピーせず、チェックポイント互換の再実装にした。`mamba_ssm` は使っていない。
 - MossFormerGAN: コードと[重みカード](https://huggingface.co/alibabasglab/MossFormerGAN_SE_16K) は Apache-2.0。推論は SyncANet のみ。
-- DeepFilterNet3: コードは MIT または Apache-2.0。DSP は `libdf` なしの PyTorch 実装。
+- DeepFilterNet3: コードは MIT または Apache-2.0。解析カーネルは `realfft` 3.3.0（MIT）と `rustfft` 6.4.1（MIT OR Apache-2.0）を静的に含み、libdf は再配布しない。

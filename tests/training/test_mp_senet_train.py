@@ -161,13 +161,56 @@ class StepTests(unittest.TestCase):
 
             task.optim_g.step = g_step
             task.optim_d.step = d_step
+            calls = {"n": 0}
+            real_generate = task._generate
+
+            def counting_generate(*args, **kwargs):
+                calls["n"] += 1
+                return real_generate(*args, **kwargs)
+
+            task._generate = counting_generate
             metrics = task.train_update([batch], 1)
+            self.assertEqual(calls["n"], 1)
             self.assertEqual(order, ["d", "g"])
             self.assertTrue(all(value == value for value in metrics.values()))
             _assert_equal_tensors(self, snapshots["g_at_d"], generator_before)
             self.assertFalse(_states_equal(snapshots["d_at_g"], discriminator_before))
             _assert_equal_tensors(self, task.discriminator.state_dict(), snapshots["d_at_g"])
             self.assertFalse(_states_equal(task.generator.state_dict(), generator_before))
+
+    def test_official_accumulation_forwards_each_micro_batch_once(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            base = tiny_config(root / "ckpt")
+            model = dict(base["model"])
+            model.update(n_fft=64, hop_size=16, win_size=64)
+            config = tiny_config(
+                root / "ckpt",
+                loss="official",
+                global_batch_size=2,
+                micro_batch_size_per_gpu=1,
+                segment_size=512,
+                model=model,
+            )
+            dataset = paired_dataset(root / "wav", 2, frames=512, segment_size=512, seed=config["seed"])
+            dataset.set_epoch(0)
+            batch = dataset.collate([0, 1])
+            task = MPSENetTask(config, torch.device("cpu"))
+            calls = {"n": 0}
+            real_generate = task._generate
+
+            def counting_generate(*args, **kwargs):
+                calls["n"] += 1
+                return real_generate(*args, **kwargs)
+
+            task._generate = counting_generate
+            pieces = [
+                {key: value[index:index + 1] for key, value in batch.items() if torch.is_tensor(value)}
+                for index in range(2)
+            ]
+            metrics = task.train_update(pieces, 2)
+            self.assertEqual(calls["n"], 2)
+            self.assertTrue(all(value == value for value in metrics.values()))
 
     def test_reconstruction_overfit_lowers_the_loss(self):
         with tempfile.TemporaryDirectory() as directory:

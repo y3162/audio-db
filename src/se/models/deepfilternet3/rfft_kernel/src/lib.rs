@@ -8,6 +8,14 @@ use std::sync::{Mutex, OnceLock};
 
 use realfft::RealFftPlanner;
 
+/// C ABI version. Python refuses to load a library that returns anything else.
+pub const ABI_VERSION: c_int = 1;
+
+#[no_mangle]
+pub extern "C" fn df_rfft_abi() -> c_int {
+    ABI_VERSION
+}
+
 fn planner() -> &'static Mutex<RealFftPlanner<f32>> {
     static PLANNER: OnceLock<Mutex<RealFftPlanner<f32>>> = OnceLock::new();
     PLANNER.get_or_init(|| Mutex::new(RealFftPlanner::<f32>::new()))

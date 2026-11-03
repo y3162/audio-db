@@ -2,6 +2,7 @@
 name = "df_rfft"
 version = "0.1.0"
 edition = "2021"
+rust-version = "1.70"
 description = "Unnormalized float32 real FFT matching DeepFilterNet libdf realfft 3.3.0"
 license = "MIT OR Apache-2.0"
 
