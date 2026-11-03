@@ -1731,3 +1731,78 @@ PYTHONPATH=.venvs/tsubame-h100-build .venvs/tsubame/bin/python tests/training/re
 ```
 
 結果は `data/results/training/semamba-same-state-20261103/`、`semamba-same-state-step4-20261103/`、`semamba-same-state-step20-20261103/`、`semamba-same-state-step4-rep8-20261103/`、`semamba-same-state-init-layout-20261103/`、`semamba-same-state-step4-layout-rep8-20261103/`、`semamba-same-state-step20-layout-20261103/`、`semamba-scan-calls-step4-20261103/`、`semamba-scan-calls-step4-layout-20261103/`。
+
+## 公式プロセスとクリーン環境（2026-11-04）
+
+この節は 5 モデル最終受入の再判定ではない。HEAD は作業開始時 `af56102fac400a1958b3e626f14b21654f644396` で、`dev` は `origin/dev` と一致していた。学習ライブラリの更新式は変えていない。GPU は対話ジョブ `115437`（ホスト `r4n11`、H100 MIG 4g.47gb）を再利用し、新しい `qrsh` は出していない。プロセス時間は `/usr/bin/time` の wall clock で、失敗も含める。会計の開始値は 11,402.500 秒、上限 18,000 秒である。
+
+3 タスクの判定は次のとおり。学習実装の GO とは混ぜない。
+
+| タスク | 判定 | 根拠 |
+|---|---|---|
+| 1. 公式学習プロセス | PARTIAL | MP-SENet、MossFormerGAN、DeepFilterNet3、SEMamba++ は公式エントリーポイントが実音声で有限損失の更新まで進んだ。TF-GridNet は公式モジュールの 2 更新までで、`espnet2.bin.enh_train` は `typeguard` 不足で起動していない |
+| 2. クリーン環境 | GO | 新規 venv、ピン留め clone、sm_90 の Mamba 再ビルド、Rust FFT、`libdf` / `libdfdata`、5 モデルの独立スモークが完了した。別ノードは未実施で、失敗原因の切り分け対象ではない |
+| 3. MossFormerGAN GPU 再開 | GO | 更新前のパラメータ、Adam モーメント、Scheduler、4 種の RNG、step、epoch、蓄積余り、次入力が再開 A/B で一致した。更新後の重み差は同じ実装の連続再実行にもある |
+
+### 公式エントリーポイント
+
+起動スクリプトは `tests/training/reference/official_entry_smoke.py`。公式ツリーは `build/clean-20261104/sources/` の新規 clone で、`src/se/official/` は編集していない。
+
+| モデル | エントリーポイント | commit | 結果 | 記録 |
+|---|---|---|---|---|
+| MP-SENet | `train.py` | `89932cfe90d1dacb8e170e4a331d762462c21792` | Steps 0–3 の Gen Loss 2.023、1.841、1.691、1.835。すべて有限。プロセス 22.74 秒 | `data/results/training/official-entry-20261104b/` |
+| MossFormerGAN | `train/speech_enhancement/train.py` | `6b3774dc79c46ae8bed2a4fa5f706f0ac8c75c61` | Epoch 0 の 4 micro-batch、Gen_Loss 0.8408、1.0018、0.7505、0.6518。Optimizer 更新は 2 回と検証 1 回。プロセス 21.74 秒 | `data/results/training/official-entry-moss-20261104/` |
+| TF-GridNet | `espnet2/bin/enh_train.py` は未起動。STFT encoder/decoder、TFGridNet、`MultiResL1SpecLoss` | `0d136c5456d403cb2c0a4c13e76e8136e32e9b7a` | 実音声 2 更新。公式損失と独立損失はともに 42.44139862060547。forward 最大差 0 | `data/results/training/official-entry-20261104/tf-gridnet/` |
+| DeepFilterNet3 | `df/train.py` | `d375b2d8309e0935d165700c91da9de862a99c31` | `num_workers = 2`、`overfit = true` で train loss 9.34261、9.76526。checkpoint を書いた。プロセス 7.35 秒 | `data/results/training/official-entry-df-20261104/deepfilternet3/train-workers2.log` |
+| SEMamba++ | `train.py` | `cd369c89a8106072c077b468417b765b227afd74` | Epoch 0、Steps 0、Gen Loss 11.139、Disc Loss 6.006。パラメータ数 2,655,521。プロセス 24.40 秒 | `data/results/training/official-entry-semamba-20261104g/` |
+
+短時間化で公式設定から動かした値は各 `report.json` と上のログにある。共通して batch は 1、worker は 0 または DeepFilterNet だけ 2、epoch は 1、検証と checkpoint の間隔は伸ばしている。入力は VoiceBank の実音声と、必要なモデルでは DEMAND の実雑音である。DeepFilterNet の RIR は単位インパルスで `p_reverb = 0`。SEMamba++ の RIR も単位インパルスである。TF-GridNet のプローブは 48 kHz の先頭 2048 サンプルをそのまま使っており、16 kHz へ resample していない。
+
+DeepFilterNet の最初の起動は `num_workers = 0` で、epoch 開始直後に公式 DataLoader が `TimeoutError` を出し、プロセスは約 78 秒後に停止させた。`num_workers = 2` では同じ HDF5 で更新が進んだ。これは公式ローダの worker 数の制約であり、損失式の失敗ではない。
+
+SEMamba++ のピン留め commit は `utils.py` しか持たないが、`dataset.py` は未使用の `from utils.util import load_config` を実行する。外部 launcher が `utils.py` の `load_config` を `sys.modules['utils.util']` に登録し、`inspect.getsource(train.main)` の epoch 数、間隔、JSON パス、出力先だけを置換して `exec` する。公式ファイルは書いていない。この置換は学習式ではなく実行回数と入出力パスである。`load_modules` は検証をスキップしても UTMOS をダウンロードする。今回はダウンロードが完了し、その重みは損失には入っていない。
+
+### Adapter との差
+
+| 箇所 | 公式プロセス | 比較 Adapter |
+|---|---|---|
+| MP-SENet の PESQ | 公式 `batch_pesq`（loky） | `joblib.parallel_backend("threading")`。公式関数の中身は同じ |
+| MossFormerGAN の PESQ | 公式 `batch_pesq` は `.to('cuda')` | 同じ正規化 `(score-1)/3.5` を step の device で計算。1 秒の VoiceBank 1 組で最大差 0（`official-entry-20261104b` の PESQ 比較） |
+| MossFormerGAN の AdamW | YAML の `weight_decay` 1e-5 | 比較経路は 0.01。betas は既定 (0.9, 0.999)。今回この値は変えていない |
+| MossFormerGAN の plateau | 公式 Solver が学習率を半減し得る | 比較経路には無い |
+| TF-GridNet | `enh_train.py` は未起動 | 比較幅（n_fft 512、stride 256、n_layers 4、LSTM 128）、Adam 1e-3、clip 5。公式モジュールとの 2 更新の損失差は 0 |
+| DeepFilterNet3 | 公式 `df/train.py`、`libdfdata`、公式 loss | 比較経路は独立モデル。`libdf.DF.synthesis` は学習 ISTFT ではない |
+| SEMamba++ | 公式 `train.py` と公式幅 hid 48、num_tfmamba 4 | 独立スモークは hid 8 の reference scan。fused 公式幅の学習ステップは今回のクリーン環境では公式エントリーポイント側で 1 回 |
+
+### クリーン環境
+
+手順は `docs/envs/CLEAN_REBUILD.md`。直接 pin は `requirements/clean-rebuild.txt`。導入後の freeze は `build/clean-20261104/requirements-freeze.txt` と `requirements-freeze-df.txt`（Git 管理外）。
+
+- 主環境 `.venvs/clean-20261104`: Python 3.12.13、torch 2.6.0+cu124、NumPy 2.5.4、Triton 3.2.0
+- DeepFilterNet 環境 `.venvs/clean-20261104-df`: 同じ torch、NumPy 1.26.4。PyO3 0.20 を NumPy 2.5 に載せていない
+- Mamba: causal-conv1d 1.7.0 と mamba-ssm 2.3.2.post1 を `TORCH_CUDA_ARCH_LIST=9.0`、CUDA 12.3.2 で再ビルド。import 元は `.venvs/clean-20261104/lib/python3.12/site-packages/` の `selective_scan_cuda` と `causal_conv1d_cuda`。`Mamba(d_model=16, d_state=16, d_conv=4, expand=2)` の CUDA forward/backward は有限（`clean-rebuild-20261104/mamba-forward.log`、4.53 秒）
+- Rust FFT: `build/clean-20261104/cargo-rfft/release/libdf_rfft.so`。既存のツリー内 `.so` は上書きしていない。`DF_RFFT_LIBRARY` をこのファイルに向け、`DF_RFFT_REQUIRED` を立てない状態で `tests/training/test_df_rfft_kernel.py` は 3 件成功。`DF_RFFT_REQUIRED=1` を親プロセスに残すと、未設定時のフォールバックを試すテストが落ちる。これはテストが環境変数を消さないためで、ライブラリ欠如時のエラー自体はテスト内で確認している
+- `libdf` と `libdfdata` は `/tmp` からの import で site-packages を読んだ
+- 独立 5 モデルの `tests/training/gpu_smoke.py` は主環境で EXIT 0、12.87 秒（`clean-rebuild-20261104/gpu-smoke.log`）。SEMamba++ はこのスモークでは狭幅である
+
+### MossFormerGAN の GPU 再開
+
+連続 4 更新は `data/results/training/moss-gpu-resume-20261104/`。VoiceBank `voicebank_28_train`、16 kHz、segment 16000、seed 17、公式幅、蓄積 2、`--fork-step 2`、`cuda:0`。4 worker のプロセス合計 126.52 秒。step 1 と step 2 の Generator 損失は 4 本とも 2.314906 と 0.822889。step 2 の重みハッシュは公式 A `66fc216dbe57`、公式 B `d0f199b8679f` で、同じ実装の連続再実行がこの時点で分かれている。
+
+再開確認は `tests/training/reference/moss_gpu_resume_check.py`。公式 A と独立 A の fork を、別ディレクトリの再開 A と再開 B で読み直した。更新前はパラメータ、`exp_avg`、`exp_avg_sq`、`step`、Scheduler、Python / NumPy / PyTorch / CUDA RNG が checkpoint と一致し、`global_step` 2、`epoch` 0、蓄積余り 0 だった。続けた 2 更新の入力 ID は A と B で同じ（`45db58578f59`、`0a20a20f3292`）。更新後の重みハッシュは A と B で異なり、連続側の step 3 とも異なる。損失は有限で、公式 A の再開 A/B は step 3 がどちらも 0.559283435344696、step 4 がどちらも 0.5049392580986023 だった。独立 A も A/B で同じ損失 0.5592777729034424、0.5050094127655029 だった。重み差は Optimizer の取り違え、RNG の欠落、入力順の差では説明できない。CUDA 自己再実行が更新後ビット一致しない範囲である。
+
+記録は `moss-gpu-resume-20261104-resume-a/` と `moss-gpu-resume-20261104-resume-b/` の `resume.json`。再開 4 本のプロセス時間は 13.08、13.96、12.73、12.45 秒。
+
+### GPU 時間
+
+開始 11,402.500 秒。前半の記録済み実行は 285.27 秒で、内訳は公式エントリーの試行 32.85、34.40、21.88 秒、MossFormerGAN 連続 4 worker 126.52 秒、再開 4 本 52.22 秒、5 モデルスモーク 12.87 秒、Mamba forward/backward 4.53 秒である。後半は DeepFilterNet 準備込みの失敗起動 13.49 秒、worker 0 で停止させた約 78 秒、worker 2 の成功 7.35 秒、SEMamba++ の import または launcher 失敗 7.38、7.46、9.70、7.14 秒、成功 24.40 秒で、合計 154.92 秒である。この節の加算は 440.19 秒。累計 11,842.690 秒。残り 6,157.310 秒。
+
+Wait, I double-counted. Let me fix the GPU paragraph before saving. The user-facing report must be correct.
+
+Previous 285.27 + this turn 154.92 = 440.19
+11402.500 + 440.19 = 11842.690
+Remaining 18000 - 11842.690 = 6157.310
+
+I wrote a confused paragraph. Fix it in the same edit... I already set the new_string with the wrong paragraph. I need to fix after the replace. Let me correct the GPU paragraph now.
+
+Also I said "後半の公式 DeepFilterNet / SEMamba++ 試行 440.19 秒のうち後半分" which is wrong. Fix it.

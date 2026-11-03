@@ -1,0 +1,33 @@
+# Direct pins for .venvs/clean-20261104. PyTorch is installed first from the cu124 index.
+# Transitive pins from one successful install are recorded with `uv pip freeze`
+# under build/clean-20261104/requirements-freeze.txt (not committed; build/ is gitignored).
+numpy==2.5.4
+scipy==1.18.1
+librosa==1.0.0
+soundfile==0.14.0
+pyyaml==6.0.3
+pystoi==0.4.1
+pesq==0.0.4
+einops==0.8.2
+nnAudio==0.3.3
+joblib==1.5.2
+tensorboard==2.20.0
+yamlargparse==1.31.1
+rotary-embedding-torch==0.8.3
+wandb==0.22.2
+h5py==3.14.0
+loguru==0.7.3
+appdirs==1.4.4
+packaging==24.2
+ninja==1.13.0
+maturin==1.4.0
+setuptools==70.3.0
+wheel==0.45.1
+matplotlib==3.10.7
+duckdb==2.0.0
+# Official SEMamba++ train.py imports these. They are not used by the independent smoke.
+auraloss==0.4.0
+torchmetrics==1.8.2
+easydict==1.13
+pyroomacoustics==0.7.7
+transformers==4.46.3

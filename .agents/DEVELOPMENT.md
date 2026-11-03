@@ -13,7 +13,7 @@
 
 - NeMo は Python 3.13・NumPy 2.5.4 の lab と依存関係が合わないため、ASR の環境を分けている。NeMo などを lab に入れない。lab にパッケージを足すときは NumPy を上げない（`requirements/evaluation.txt` の手順）。
 - Numba と NeMo は、`.venvs/*` の `nvidia/cuda_nvcc`（ptxas 12.2）を使う。システムの `/usr/local/cuda` は使わない。
-- TSUBAME 4.0 は別の環境（`docs/envs/TSUBAME.md`）。
+- TSUBAME 4.0 は別の環境（`docs/envs/TSUBAME.md`）。既存環境を残した再構築手順は `docs/envs/CLEAN_REBUILD.md`。2026-11-04 の再構築先は `.venvs/clean-20261104` と、公式 `libdf` 用の `.venvs/clean-20261104-df`（NumPy 1.26）である。
 - TSUBAME では長時間学習に `qsub`、短時間の開発・デバッグに `qrsh` を使う。資源と優先度の指定は `docs/envs/TSUBAME.md` を参照する。
 - DeepFilterNet3 の spectral loss は通常、公式と同じ反射パディングを使う。厳密な決定的 CUDA では backward の制約のため別のパディングを使い、勾配の加算順が変わり得る。比較結果は `docs/training/VERIFICATION.md`。
 - MP-SENet の学習 STFT は CPU と非決定的 CUDA では公式と同じ native centered reflection を使う。厳密な決定的 CUDA では reflection backward が使えないため明示的な反射に切り替え、値は一致しても勾配の加算順は変わり得る。公式 native 経路の検証と区別する。

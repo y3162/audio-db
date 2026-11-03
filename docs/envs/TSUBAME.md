@@ -43,4 +43,4 @@ uv pip install --python .venvs/tsubame/bin/python --no-deps --no-build-isolation
 
 さらに同日、`.venvs/tsubame` を削除し、上記の初期構築コマンドのみで作り直した環境でも、5 モデルの同じスモークが成功した。ログは `.venvs/tsubame/logs/rebuild-gpu-smoke.log`。
 
-DeepFilterNet3 の解析 FFT は、リポジトリルートの `make df-rfft` で共有ライブラリを作る。Cargo の出力先は `DF_RFFT_TARGET`、読込先の上書きは `DF_RFFT_LIBRARY`。どちらもホスト固有のパスを既定にしない。Rust は利用者の `cargo` を使う。このリポジトリで通したコンパイラは rustc 1.99.1 で、別バージョンでの再コンパイルは未実施。手順とライセンスは [学習検証記録](../training/VERIFICATION.md)。
+既存環境を残した再取得・再ビルドは [クリーン再構築](CLEAN_REBUILD.md)。DeepFilterNet3 の解析 FFT は、リポジトリルートの `make df-rfft` で共有ライブラリを作る。Cargo の出力先は `DF_RFFT_TARGET`、読込先の上書きは `DF_RFFT_LIBRARY`。どちらもホスト固有のパスを既定にしない。Rust は利用者の `cargo` を使う。このリポジトリで通したコンパイラは rustc 1.99.1 で、別バージョンでの再コンパイルは未実施。手順とライセンスは [学習検証記録](../training/VERIFICATION.md)。
