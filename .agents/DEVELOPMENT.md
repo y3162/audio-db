@@ -16,6 +16,7 @@
 - TSUBAME 4.0 は別の環境（`docs/envs/TSUBAME.md`）。
 - TSUBAME では長時間学習に `qsub`、短時間の開発・デバッグに `qrsh` を使う。資源と優先度の指定は `docs/envs/TSUBAME.md` を参照する。
 - DeepFilterNet3 の spectral loss は通常、公式と同じ反射パディングを使う。厳密な決定的 CUDA では backward の制約のため別のパディングを使い、勾配の加算順が変わり得る。比較結果は `docs/training/VERIFICATION.md`。
+- MP-SENet の学習 STFT は CPU と非決定的 CUDA では公式と同じ native centered reflection を使う。厳密な決定的 CUDA では reflection backward が使えないため明示的な反射に切り替え、値は一致しても勾配の加算順は変わり得る。公式 native 経路の検証と区別する。
 - DeepFilterNet3 の解析 FFT・ERB の `log10`・unit norm は、`libdf_rfft.so` があるとき `realfft` 3.3.0（libdf 0.5.6 と同じ版）で計算する。無いときは `torch.fft.rfft` / `torch.log10` / `torch.sqrt` に戻り、libdf とのビット一致は成り立たない。`DF_RFFT_REQUIRED=1` のときは欠落を `FileNotFoundError` にする。ABI が違う共有ライブラリは `RuntimeError` にする。構築はリポジトリルートの `make df-rfft`（`Cargo.lock`、`realfft =3.3.0`）。`Cargo.toml` の `rust-version` は 1.70（`OnceLock`）。出力先は `DF_RFFT_TARGET`、読込先の上書きは `DF_RFFT_LIBRARY`。どちらもホストの固定パスを既定にしない。実行時に libdf は import しない。`realfft` 3.3.0 は MIT、`rustfft` 6.4.1 は MIT OR Apache-2.0 で、共有ライブラリへ静的に入る。libdf 自体は再配布しない。
 
 ## サーバーと GPU

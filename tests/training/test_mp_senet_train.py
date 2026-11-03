@@ -98,6 +98,23 @@ class ObjectiveTests(unittest.TestCase):
         magnitude, _phase, _complex = mag_pha_stft(waveform, 64, 16, 64, 1.0)
         self.assertTrue(torch.equal(magnitude, expected))
 
+    def test_centered_stft_backward_matches_native_on_cpu(self):
+        torch.manual_seed(17)
+        waveform = torch.randn(2, 512, requires_grad=True)
+        other = waveform.detach().clone().requires_grad_()
+        reference = torch.stft(
+            waveform, 64, 16, 64, torch.hann_window(64), center=True,
+            pad_mode="reflect", return_complex=True,
+        )
+        real = torch.view_as_real(reference)
+        expected = torch.sqrt(real.pow(2).sum(-1) + 1e-9).pow(0.3)
+        actual, _, _ = mag_pha_stft(other, 64, 16, 64, 0.3)
+        weights = torch.randn_like(expected)
+        (expected * weights).sum().backward()
+        (actual * weights).sum().backward()
+        self.assertTrue(torch.equal(expected, actual))
+        self.assertTrue(torch.equal(waveform.grad, other.grad))
+
     def test_official_spectrogram_fits_the_discriminator_and_a_tiny_one_does_not(self):
         _require_discriminator_resolution(201, 321)
         with self.assertRaises(TrainingError):

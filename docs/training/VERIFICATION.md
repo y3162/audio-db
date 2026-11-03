@@ -1,5 +1,92 @@
 # 学習基盤の確認
 
+## 最終受入監査（2026-11-03）
+
+この節は下の過去の個別 GO 判定より優先する。ベースは `ebe477f59572ef583f5ce9030219882eb2b9d5c7`、ブランチ `dev`、作業開始時に `origin/dev` と同じで差分なし。監査中に MP-SENet STFT を修正した未 commit 作業ツリーが現在の対象であり、修正前の試験はその旨を区別する。SEMamba++ は別の `semamba_mag_phase_stft` を呼ぶため、この MP-SENet 用関数の変更は SEMamba++ の計算経路に入らない。下記は指定された統一受入条件に対する判定であり、過去の短時間比較そのものを否定するものではない。**全体は PARTIAL**。4プロセスで値が一度重なったことだけでは非決定性分布の一致を証明しない。
+
+事前規則: 公式 A/B、独立 A/B、公式 A/独立 A、公式 B/独立 B の全 step を保存し、同一状態と独立軌跡を分ける。差の最大値、相対 L2、cosine、勾配 norm、損失成分、更新重み、optimizer・scheduler・RNG・データ識別子を比較する。系統差が未解決、事前規則が不成立、または必要項目が欠落すれば PARTIAL とし、差の原因が明確な不具合なら NO-GO とする。観測後の閾値変更はしない。過去の SEMamba++ 同一状態監査で定めた `cross_median <= self_median` は 3 状態とも成立していないため、その節の「GO」は本受入の根拠にできない。1 step の差が軌跡の分岐を説明することは有力な仮説だが、20 step の全差の因果関係を実証したものではない。
+
+| モデル | Structure | Forward | Loss | Backward | Optimizer | 4プロセス | Resume | Multi-step | 総合 |
+|---|---|---|---|---|---|---|---|---|---|
+| MP-SENet | GO | GO | GO | PARTIAL | PARTIAL | GO | PARTIAL | PARTIAL | PARTIAL |
+| SEMamba++ | GO | GO | GO | PARTIAL | PARTIAL | PARTIAL | PARTIAL | PARTIAL | PARTIAL |
+| TF-GridNet | GO | GO | GO | GO | GO | GO | GO | GO | PARTIAL |
+| DeepFilterNet3 | GO | GO | PARTIAL | PARTIAL | PARTIAL | GO | PARTIAL | PARTIAL | PARTIAL |
+| MossFormerGAN | GO | GO | PARTIAL | PARTIAL | PARTIAL | GO | PARTIAL | PARTIAL | PARTIAL |
+
+GO はその列の既存短時間試験の範囲に限る。全モデル総合 PARTIAL は、全項目の現行コードでの再開と分布・公式全経路・クリーン環境が揃っていないためである。TF-GridNet の短時間値が完全一致しても全統一条件の完了を意味しない。MP-SENet と DeepFilterNet3 の修正後に旧 checkpoint 再開を流用できない。MossFormerGAN は PESQ adapter と少数試行の限界がある。SEMamba++ の公式/独立 optimizer state 移植は名前対応が必要で、同一実装内の通常再開と別である。分割・crop・Python/NumPy/PyTorch CPU/CUDA RNG、scheduler と epoch の全部が現行条件で実証されたものとして扱わない。
+
+表外の統一項目についても、parameter の名前・形状・初期重みの比較と各 probe の optimizer/scheduler・入力 ID の条件照合は各モデルで GO（保存済み比較範囲）。Scheduler の epoch 境界を全5モデルの公式訓練ループと独立 Trainer で実データにより一括比較した証拠は PARTIAL。データ・前処理は VoiceBank と crop の照合があるが、公式データローダ全経路は共通でないため PARTIAL。公式学習コードとの対応は、adapter・共通逆変換・PESQ の実行形態に制限があるため全モデルで PARTIAL。回帰は CPU suite 全体で GO、CUDA 専用と欠落依存の skip を含む全体としては PARTIAL とする。
+
+過去の実音声4更新の代表的な勾配相対 L2（公式 A/B、独立 A/B、公式 A/独立 A、公式 B/独立 B 順）は MP seed 3 `0.03245/0.04986/0.01122/0.04808`、DF 修正後 `0.002297/0.006844/0.004704/0.000846`、Moss `0.004066/0.001948/0.002806/0.003870`。TF は forward・loss・勾配・更新重みの最大差 0。各条件と残りの seed、損失、最大差、保存場所は本書の該当節を参照。DF の比較は公式 libdf 対独立 DFStream だが逆変換に共通の独立処理を使い、公式学習経路全体の一致ではない。MP は公式 PESQ の joblib backend を threading に変更した adapter、Moss は CPU PESQ adapter を使う。公式コード全体を無変更で起動した結果ではない。
+
+環境は Python 3.12.13、PyTorch 2.6.0+cu124、cuDNN 9.1.0、NumPy 2.5.4。公式 checkout は MP `89932cfe90d1dacb8e170e4a331d762462c21792`、SEMamba++ `cd369c89a8106072c077b468417b765b227afd74`、ESPnet `0d136c5456d403cb2c0a4c13e76e8136e32e9b7a`、DF `d375b2d8309e0935d165700c91da9de862a99c31`、ClearVoice `6b3774dc79c46ae8bed2a4fa5f706f0ac8c75c61`。Mamba 拡張には別途パスと修正が必要であり、環境構築の全再現を意味しない。
+
+4プロセス runner の `environment.json` は worker を起動する親プロセスの値を保存する。worker は `compare.py` の `worker()` で matmul / cuDNN TF32 を false、cuDNN deterministic を true、benchmark を false に変更する。したがって `environment.json` の TF32 や deterministic の値を worker の実測値と解釈しない。各 worker の実際の設定を明示的に保存する改善は未実施。
+
+`make df-rfft DF_RFFT_TARGET=/tmp/audio-db-final-115437/cargo DF_RFFT_SO=/tmp/audio-db-final-115437/libdf_rfft.so` は rustc/cargo 1.99.1 で成功し、既存 .so を変更しなかった。欠落時の optional fallback と required error を含む5テストは成功したが、最初の2テストの後始末が `DF_RFFT_LIBRARY` を消すため、この5件の実行だけでは新規 .so の読込を証明しない。そこで新規 Python 3.12 venv で FFT 単体1件と libdf 前処理2件を別プロセスに分け、各プロセスに新規 .so を指定して全件成功した。ログは `final-accept-regression-20261103/clean-fft-direct.log` と `clean-libdf-direct.log`。別マシンは未確認。新規 venv には `docs/envs/TSUBAME.md` の基本依存を導入したが、既存 libdf と公式 checkout を使っており、公式 checkout・libdf・Mamba CUDA 拡張まで新規構築した完全独立環境ではない。
+
+基本依存の直接バージョンは手順に固定されているが、すべての推移的依存についてロックした Python 環境ではない。CUDA 拡張の手順には Mamba3 自動 import の調整が必要で、そのクリーンビルドは今回行っていない。`/tmp` の venv と .so は永続成果物ではなく、再構築コマンドとテストログを上に記録する。
+
+CPU 回帰は `.venvs/tsubame`、`CUDA_VISIBLE_DEVICES=''`、`DF_REFERENCE_CONFIG=data/results/training/final-h100-20261102-cpu/df-config.ini`、公式用 `PYTHONPATH` で各 `python -m unittest discover -s tests/<suite> -v` を実行。data 16件成功、SE 28件中19 skip、evaluation 86件中3 skip、ASR 5件成功。SE の skip は checkpoint 不在14件、公式 reference 不在3件、reference または checkpoint 不在1件、明示 CUDA 拡張テスト1件。evaluation は保存済み PESQ 事例不在1件、MP checkpoint 不在2件。ログは `data/results/training/final-accept-regression-20261103/`。skip は未検証である。
+
+training は116件中111成功・5 skip、失敗0。skip は再構築 DB 不在1、CUDA 必須2、GPU を隠したため公式 SEMamba++ の Triton import が driver を見つけられないもの2。ポート競合や librosa の残存による失敗はこの実行では生じていない。GPU が見えない環境における公式 import 自体は成功していない。ログは同じディレクトリの `training.log`。
+
+MP-SENet STFT 修正後に training 全体を再実行し、117件中112成功・同じ理由で5 skip、失敗0（`training-after-fix.log`）。増えた1件は CPU native STFT backward の回帰である。
+
+DeepFilterNet3 の修正後について、公式 libdf 対独立 DFStream、VoiceBank 48 kHz・4,800 samples・seed 3 の CPU 4更新を `final-accept-df-cpu-20261103/` に新規実行し、4 worker valid。各 worker の step 2 checkpoint を別ディレクトリへコピーし、別プロセスで step 4 まで再開した。4系統とも step 3・4 の model・optimizer・scheduler・RNG（Python、NumPy、CPU torch）hash、epoch・step・入力 case ID と input hash は連続側と一致した。結果と比較は `data/results/training/final-accept-df-resume-20261103/`。CPU であり CUDA RNG や修正後の native CUDA 再開の一致は示さない。公式・独立とも逆変換には共通の独立処理を使う。
+
+MP-SENet は STFT 修正前（単一 forward 修正後）の公式幅・VoiceBank 16 kHz・1秒・seed 17 で CPU 4更新を `final-accept-mp-cpu-20261103/` に新規実行し、各 worker の step 2 から別プロセスで再開した。4系統の step 3・4 は model・optimizer・scheduler・RNG（Python、NumPy、CPU torch）hash、epoch・step・case ID と input hash が連続側と一致した。`final-accept-mp-resume-20261103/comparison.json` に比較を保存した。CPU 再開は CUDA RNG や GPU 非決定性の評価ではない。
+
+この CPU 連続試行の実装間 step 4 は、両実装内の差が0である一方、勾配相対 L2 `0.14249`、forward 最大差 `0.04012`、重み最大差 `0.001704`、G/D loss 差 `0.000263/0.002822`。初めての差は step 1 の勾配最大 `1.043e-7`・相対 L2 `6.918e-8` で、forward と損失は一致する。step 1 の最大重み差 `0.000637174` は `generator.dense_encoder.dense_conv_1.0.bias` の1要素で、対応勾配 `-1.2573e-8 / 2.5379e-8` と AdamW の初回更新式から `0.000637166` と再現できる。これはこの要素の差の増幅機構を示すが、後続の全差がこの要素だけに由来すると証明するものではない。CPU の実装内再実行が0なので、単に CUDA の非決定性と呼ぶことはできない。原因の完全な帰属が未完のため PARTIAL を維持する。
+
+公式は Generator backward で Discriminator パラメータを凍結せず、独立側は凍結する。CPU step 1 を同じ初期状態と入力から再実行し、独立 probe の凍結だけを一時的に外す対照を取った。Generator 勾配の公式/独立相対 L2 は凍結あり・なしとも `3.0423e-7`、最大差 `1.0431e-7`。この条件では凍結の有無は最初の差の原因でない。脚本と結果は `data/results/training/final-accept-mp-freeze-diagnostic-20261103/`。本番コードは変更していない。
+
+続く対照で独立側の STFT/iSTFT のみを公式関数に差し替えると、同じ CPU step 1 の Generator 勾配相対 L2 `3.0423e-7`、最大 `1.0431e-7` がいずれも0になった（`final-accept-mp-stft-diagnostic-20261103/`）。公式は native centered reflection、独立は明示反射であり、forward が一致しても backward の加算順が異なる。修正後は CPU と通常の CUDA で公式同様の native centered STFT を使う。厳密な決定的 CUDA では native backward が使えないため、従来の明示反射を維持する。MP 関連の CPU 16テストは修正後に成功、公式縮小モデル1更新の Generator/Discriminator 勾配・更新重み最大差は0（`final-accept-regression-20261103/mp-after-fix-tests.log`）。以下の修正前結果を修正後の最終証拠としない。
+
+修正後、同じ公式幅・VoiceBank・seed 17 の CPU 4プロセス4更新 `final-accept-mp-stft-fixed-cpu-20261103/` は valid。すべての step、公式内・独立内・実装間の全ペアで forward・G/D loss・勾配・更新重みの最大差が0。修正前の同条件 step 4 で実装間勾配相対 L2 が `0.14249` だった差は、この修正後の対照では観測されない。厳密な決定的 CUDA は別経路である。
+
+同じ修正後の各 step 2 checkpoint から別プロセスで CPU 再開した結果 `final-accept-mp-stft-fixed-resume-20261103/` も valid。4系統の step 3・4 の model・optimizer・scheduler・各 CPU RNG・位置・epoch・step・case ID・input hash は連続側と一致した（`comparison.json`）。
+
+修正後の公式幅・VoiceBank 1秒・H100 MIG の4プロセス4更新を、事前に seed 3・17・29 と定めて全て実施し valid。step 4 の勾配相対 L2 は公式 A/B・独立 A/B・公式 A/独立 A・公式 B/独立 B の順に、seed 3 `0.07229/0.07057/0.07042/0.07267`、seed 17 `0.07635/0.10419/0.05570/0.11579`、seed 29 `0.22239/0.30938/0.14461/0.28626`。seed 17 等で実装間が両方の自己再実行を上回り、3 seed だけでは分布一致や系統差の不在は判定できない。結果は `final-accept-mp-fixed-gpu-seed{3,17,29}-20261103/`。step 1 の forward と G/D loss 差は全ペア0、勾配相対 L2 は `6.72e-8`〜`9.74e-8`。更新後重み・勾配の最大差、cosine、norm、各 loss と入力は各 `report.json` にある。厳密 deterministic CUDA にした STFT 単体は有限 backward を確認したが、native との勾配一致は主張しない。
+
+seed 17 の同一実装 step 2 checkpoint からの別プロセス再開は `final-accept-mp-fixed-gpu-seed17-20261103-fork/`。step 3・4 は全4系統で入力・各 RNG・scheduler・位置と epoch が連続側と一致し、model と optimizer hash は step 3 から分岐した。native CUDA の再実行差を含むためビット一致ではない。最終受入の GPU Backward・Optimizer・Resume・Multi-step は引き続き PARTIAL。
+
+このジョブ `9249116` は `r6n11`、H100 MIG、22:42:47–22:46:42 JST。process wall clock は厳密 deterministic STFT `46.39`、seed 3 `78.15`、seed 17 `37.79`、再開 `34.91`、seed 29 `36.73` 秒で計 `233.97` 秒。今回の GPU 実験合計 `1731.140` 秒、以前と合わせた累計 `10572.820` 秒、上限まで `7427.180` 秒。予約時間は含めない。launcher と出力は `final-accept-mp-stft-fixed-gpu-launch-20261103.sh`、`final-accept-mp-stft-fixed-gpu-20261103.log`。
+
+さらに同じ seed 17 の公式 A・step 2 から、名前対応で optimizer state を4系統へ配り、step 3・4 を再分岐した。これは通常の同一実装再開ではない。4系統 valid、step 3 の forward と G/D loss は全ペア差0、勾配相対 L2 は公式 A/B・独立 A/B・公式 A/独立 A・公式 B/独立 B 順に `5.819e-8/5.576e-8/5.809e-8/5.674e-8`、step 4 は `4.236e-6/1.115e-5/1.276e-5/8.118e-6`。局所的な最初の更新の差は自己再実行と同水準だが、次の実装間1ペアは自己再実行を上回り、独立に進んだ軌跡の差を完全に説明する証拠にはしない。結果は `final-accept-mp-fixed-common-20261103/`。job `9249151`、`r2n5`、H100 MIG、22:47:47–22:49:40 JST、process wall clock `46.72 + 66.31 = 113.03` 秒。GPU 今回合計 `1844.170` 秒、既存を含む累計 `10685.850` 秒、上限まで `7314.150` 秒。
+
+MossFormerGAN の実音声4更新は既存 seed 3 が1試行であり、実装内と実装間の分布評価が不足する。追加として seed 17、16 kHz・1秒、蓄積2、4更新の4プロセスを **2試行**実施し、全試行と失敗を記録することを実行前に定めた。両試行 valid、入力 hash は `f24a87de52b78b193e1f94327928d4fda9fcb0a8467a7c96576ac553d736647e` で一致。step 4 の勾配相対 L2 は公式 A/B・独立 A/B・公式 A/独立 A・公式 B/独立 B 順に、1試行目 `0.003305/0.003109/0.004930/0.005039`、2試行目 `0.006805/0.002762/0.002826/0.006698`。1試行目は実装間が両自己再実行を上回る。step 1 は全ペア約 `2.1e-7`〜`2.4e-7` で、初期 forward・G/D loss 差0。結果は `final-accept-moss-seed17-trial{1,2}-20261103/`。少数反復であり、この結果だけで系統差の不在は示せない。job `9249169`、`r20n9`、H100 MIG、22:51:08–22:55:24 JST、process wall clock `167.82 + 87.65 = 255.47` 秒。GPU 今回合計 `2099.640` 秒、既存を含む累計 `10941.320` 秒、残り `7058.680` 秒。
+
+軌跡差と同一状態の更新差を分離する追加診断として、1試行目の公式 A・step 2 から optimizer を名前対応して4系統に配り、2更新を1回再分岐することを事前に定めた。Generator 1,065個・Discriminator 93個のパラメータは名前と登録順が一致し、名前対応を検査して移植した。4系統 valid、step 3 の forward・G/D loss は全ペア差0、勾配相対 L2 は公式 A/B・独立 A/B・公式 A/独立 A・公式 B/独立 B 順 `3.153e-11/3.732e-11/3.479e-11/3.031e-11`。step 4 は `4.439e-10/1.142e-6/1.141e-6/6.195e-8`、forward・G/D loss 差は全ペア0。共通状態での局所差は小さいが、通常の同一実装再開とは別であり、この1回のみで分布の同等性を主張しない。結果は `final-accept-moss-common-20261103/`、準備脚本は `final-accept-moss-common-prep-20261103/`。job `9249245`、`r6n5`、H100 MIG、23:00:20–23:03:07 JST、process wall clock `63.84 + 103.02 = 166.86` 秒。GPU 今回合計 `2424.160` 秒、既存を含む累計 `11265.840` 秒、残り `6734.160` 秒。
+
+再現には、上記の公式 checkout と VoiceBank 学習 DB、必要な依存を用意し、既存結果と異なる出力先を使う。これは学習用 DB の読み取りであり、本番 DB を初期化しない。
+
+```bash
+export OMP_NUM_THREADS=1 OPENBLAS_NUM_THREADS=1 MKL_NUM_THREADS=1
+export PYTHONPATH="$PWD/.venvs/tsubame-h100-causal:$PWD/.venvs/tsubame-h100-build:$PWD/.venvs/tsubame-ref-extra:$PWD"
+CUDA_VISIBLE_DEVICES='' .venvs/tsubame/bin/python tests/training/four_process/compare.py run \
+  data/results/training/NEW-MP-CPU --model mp_senet --steps 4 --fork-step 2 \
+  --device cpu --dataset voicebank_28_train --database data/db/voicebank.duckdb \
+  --segment-size 16000 --sample-rate 16000 --seed 17 --scheduler-step epoch --official-width
+```
+
+SEMamba++ の stride 修正後に、公式幅・fused・seed 17・VoiceBank 実音声 16 kHz・0.5秒・20更新・4プロセスを新規実行した。epoch scheduler は更新中固定、`CUBLAS_WORKSPACE_CONFIG=:4096:8`。実行前に1試行と定め、実装内2系統だけでは差の分布が十分測れないため、単一試行の成功だけでは GO にしない。入力 SHA-256 は `4efbf515c34bf68f39876823f3ea9c606e2cf7304a285d5dd7d7a114f710ec3a`、結果は `data/results/training/final-accept-semamba-seed17-retry-20261103/`、全 worker の条件照合は valid。勾配相対 L2 は公式 A/B・独立 A/B・公式 A/独立 A・公式 B/独立 B の順に、step 1 `1.721e-6/1.675e-6/1.716e-6/1.717e-6`、step 4 `0.06977/0.05278/0.02781/0.07967`、step 20 `1.336/1.109/1.391/0.9215`。step 20 の cosine は `0.1077/-0.01170/0.3975/0.4492`、forward 最大差は `2.608/3.532/2.945/2.162`、更新重み最大差は `0.004415/0.004175/0.004187/0.004330`。step 1 の forward と G/D loss 差は全ペア0。全 step の最大差・norm・loss・lr・入力 ID 等は `report.json` と各 `result.pt` にある。軌跡の分岐は観測されたが、上の同一状態の事前規則未達や分布不足を解消しないため総合 PARTIAL のままとする。
+
+追加診断として、同一 seed 17・データ・条件の20更新を **2試行**追加し、成功・失敗をすべて記録する計画を実行前に固定した。両試行とも valid、3試行の入力 hash は一致した。step 20 勾配相対 L2 は上の4ペア順に追加1回目 `1.0384/1.3229/1.0465/1.0934`、追加2回目 `2.3552/1.3730/0.9752/1.0378`、cosine は `0.3123/0.2254/0.1648/0.2699`、`0.1883/0.4050/0.3454/0.0844`。結果は `final-accept-semamba-seed17-trial2-20261103/` と `final-accept-semamba-seed17-trial3-20261103/`。これは先の1試行に対する後付けの選別ではなく、分布と時間推移の記述を補う診断である。先の同一状態監査の事前規則は変更しない。2系統ずつの各試行とその間のペアはデータを共有するので独立標本とみなさない。
+
+追加2試行は job `9249051`、`r23n2`、H100 MIG、22:29:41–22:42:05 JST。process wall clock は `427.51 + 316.58 = 744.09` 秒。`9594.760` 秒に加算し累計 `10338.850` 秒、上限まで `7661.150` 秒。予約待ちは含まない。
+
+3試行12系統の step 20 全66ペアの cosine min/median/max は、公式内15ペア `-0.0274/0.1371/0.4256`、独立内15ペア `-0.1267/0.2825/0.5097`、実装間36ペア `-0.1398/0.2355/0.5335`。相対 L2 は順に `1.0384/1.3402/3.1821`、`0.9532/1.1090/1.7350`、`0.8699/1.1426/4.2040`。結果は `final-accept-semamba-seed17-trial3-20261103/three-trial-distribution.json`。ペアは互いに独立でなく、実装間差の不在の証明にはならない。
+
+stride 修正後の SEMamba++ 公式幅・fused・seed 17・VoiceBank 0.5秒の4プロセス4更新と、各系統自身の step 2 checkpoint からの別プロセス再開はいずれも valid。step 4 の勾配相対 L2 は公式 A/B・独立 A/B・公式 A/独立 A・公式 B/独立 B 順に `0.05676/0.16148/0.18857/0.06768`。4系統の step 3・4 は input hash・case ID・Python/NumPy/CPU/CUDA RNG・scheduler・epoch・位置が連続側と一致したが、model と optimizer hash は step 3 から分岐した。通常の同一実装再開であり、実装間 optimizer state 移植ではない。結果と比較は `final-accept-semamba-fixed-resume-source-20261103/` とその `-fork/` の `comparison.json`。job `9249203`、`r17n2`、H100 MIG、22:56:21–22:59:00 JST、process wall clock `84.39 + 73.27 = 157.66` 秒。GPU 今回合計 `2257.300` 秒、既存を含む累計 `11098.980` 秒、残り `6901.020` 秒。
+
+GPU 時間は既存の実験プロセス会計 8,841.680 秒に、今回失敗した job `9248968`（`r19n8`、22:13:39–22:15:11 JST、H100 MIG、`mamba_ssm` import 不足、`91.25` 秒）と、再試行 job `9248978`（`r17n2`、22:16:26–22:23:38 JST、H100 MIG、valid、`431.50` 秒）を加え、今回 `522.75` 秒、累計 `9364.430` 秒、上限 18,000 秒まで `8635.570` 秒。いずれも `/usr/bin/time` の process wall clock で CPU 集計を含む保守的な値、予約時間は含めない。同時使用は最大1 MIG。再試行の launcher は `data/results/training/final-accept-semamba-launch-20261103.sh`。失敗の4 worker の詳細は `final-accept-semamba-seed17-20261103/` に保持。
+
+続く job `9249029`（`r17n8`、H100 MIG、22:25:08–22:29:00 JST）は MP-SENet（STFT 修正前）と DeepFilterNet3 の GPU 連続4更新および各 step 2 checkpoint からの別プロセス再開を行った。全 run は valid。両モデルとも全4系統の step 3・4 で scheduler、Python/NumPy/CPU/CUDA RNG、入力、epoch・step は一致し、モデル・optimizer hash は step 3 から分岐した。MP 公式 A は step 3 の forward 最大差と G loss 差 0、step 4 forward 最大差 `1.31e-6`。GPU は native CUDA であり、CPU 一致と合わせても bit 一致や全差の因果関係は主張しない。結果は `data/results/training/final-accept-{mp_senet,deepfilternet3}-gpu-resume-source-20261103/` とそれぞれの `-fork/` の `comparison.json`。実験プロセス時間は MP 連続 `122.34`、再開 `35.99`、DF 連続 `39.18`、再開 `32.82` 秒の計 `230.33` 秒。これを足した累計は `9594.760` 秒、残り `8405.240` 秒。launcher は `data/results/training/final-accept-resume-gpu-launch-20261103.sh`。
+
+次フェーズの案は [EXPERIMENT_PLAN.md](EXPERIMENT_PLAN.md)。以下の時系列の過去記録はその時点の条件・判定を保持する。
+
 2026-10-31、ホスト `turing`。Python 3.13.9、PyTorch 2.6.0+cu124、CUDA 12.4、NumPy 2.5.4、pesq 0.0.4。GPU は Quadro RTX 5000。使用した装置は `nvidia-smi` で使用メモリ 10 MiB だった物理 GPU 1 と 2 である。物理 GPU 0 は 9522 MiB 使用中だったので使っていない。
 
 コマンドは `.venvs/lab/bin/python -m unittest discover -s tests/training -v`。30 件、失敗 0。これは CPU である。CUDA の追試は下に分けて書く。

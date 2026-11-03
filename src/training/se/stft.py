@@ -6,10 +6,9 @@ The formulas follow the official training code at commit 89932cfe
 transform inside ``enhance`` and is not used here, so training does not go
 through ``inference_mode``.
 
-Centered STFT is padded with an index reflection before ``center=False``.
-That spectrum matches ``torch.stft(..., center=True, pad_mode="reflect")``.
-The CUDA backward of ``reflection_pad1d`` has no deterministic implementation,
-so the pad is not left to that kernel.
+MP-SENet uses the native centered STFT, matching the official backward. On
+strictly deterministic CUDA it uses explicit reflection instead, since native
+``reflection_pad1d`` backward has no deterministic implementation.
 """
 
 from __future__ import annotations
@@ -68,14 +67,15 @@ def mag_pha_stft(
     # Build the Hann window on CPU. The same call on CUDA differs by about 1e-7,
     # which is enough to wrap a phase bin by 2π. The reference code does this.
     window = torch.hann_window(win_size, dtype=waveform.dtype).to(waveform.device)
-    framed = _reflect_pad(waveform, n_fft // 2) if center else waveform
+    deterministic_cuda = waveform.is_cuda and torch.are_deterministic_algorithms_enabled()
+    framed = _reflect_pad(waveform, n_fft // 2) if center and deterministic_cuda else waveform
     spectrum = torch.stft(
         framed,
         n_fft,
         hop_length=hop_size,
         win_length=win_size,
         window=window,
-        center=False,
+        center=center and not deterministic_cuda,
         pad_mode="reflect",
         normalized=False,
         return_complex=True,

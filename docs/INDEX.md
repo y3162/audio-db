@@ -79,3 +79,9 @@ MP-SENet の学習と公式実装との差
 ### [VERIFICATION.md](training/VERIFICATION.md)
 
 学習基盤で確認した条件と結果
+
+---
+
+### [EXPERIMENT_PLAN.md](training/EXPERIMENT_PLAN.md)
+
+本格学習と固定 ASR による WER・音声品質評価の計画

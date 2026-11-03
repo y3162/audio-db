@@ -13,7 +13,7 @@
 - STFT は Hann、`n_fft=400`、`hop=100`、`win=400`、`center` の reflect pad、振幅は `sqrt(power + 1e-9)` のあと `compress_factor` 乗、位相は `atan2(imag + 1e-10, real + 1e-5)`。iSTFT は圧縮を戻してから Hann で戻す。
 - 損失の係数は公式 `train.py` のままである。振幅 MSE × 0.9、位相（瞬時・群遅延・瞬時角周波数）× 0.3、複素 MSE × 2 × 0.1、STFT 整合 MSE × 2 × 0.1、時間 L1 × 0.2、Discriminator を 1 に近づける MSE × 0.05。
 - Discriminator は実ペアを 1 へ、生成振幅を wideband PESQ の `(score - 1) / 3.5` へ近づける。PESQ が失敗したバッチは生成側の項を足さない。
-- 更新順は Discriminator、そのあと Generator。Generator の metric 項は Discriminator を通すが、Discriminator の重みは凍結する。
+- 更新順は Discriminator、そのあと Generator。Generator の metric 項は Discriminator を通す。独立側はその backward 中に Discriminator のパラメータを凍結し、公式は凍結しない。CPU 1更新の切り分けではこの違いによる Generator 勾配差は観測されなかった。
 - Optimizer は AdamW、学習率 `5e-4`、betas `(0.8, 0.99)`、weight decay `0.01`（公式が引数を省略したときの PyTorch 既定）。Scheduler は `ExponentialLR`、`gamma=0.99` で、エポックの学習ステップが終わってから 1 回進む。
 - 入力は noisy のエネルギーで正規化し、その係数を教師にも掛ける。短い区間は 0 で `segment_size` まで埋める。正規化は切り出しの前である。
 - 複数 GPU は DistributedDataParallel。勾配を累積する間は最後の micro-batch 以外で `no_sync()` を使う。
@@ -26,7 +26,7 @@
 |---|---|---|
 | バッチ | `batch_size` を GPU 数で整数除算し、余りは捨てて実効バッチが変わる | `global_batch_size = micro × world_size × accumulation` を厳密に保つ。割れない構成はエラー。micro は上限以下の最大の約数。Global step は Optimizer 更新の回数で、Scheduler とは別 |
 | 再現性 | `cudnn.benchmark = True`。seed は CUDA に一度置く | `deterministic: true` で `use_deterministic_algorithms(True)`、`cudnn.benchmark = False`、`cudnn.deterministic = True`、TF32 オフ。`CUBLAS_WORKSPACE_CONFIG=:4096:8` |
-| STFT の reflect | `torch.stft(center=True, pad_mode="reflect")` | 同じ値になる index による reflect のあと `center=False`。CUDA の `reflection_pad1d` 逆伝播に決定的実装が無い |
+| STFT の reflect | `torch.stft(center=True, pad_mode="reflect")` | CPU と通常の CUDA は公式と同じ native 経路。厳密な決定的 CUDA は明示反射のあと `center=False`。両者は forward が同じでも backward の加算順が異なり得る |
 | 全体最大 | `AdaptiveMaxPool2d(1)` | `amax`。順伝播の値は一致する。CUDA の `adaptive_max_pool2d_backward` に決定的実装が無い |
 | 切り出し | `random.randint` | `SHA-256(seed, epoch, case_id)`。呼び出し順に依存しない |
 | シャッフル | 初期化時の `random.seed(1234)` と DistributedSampler | `(seed, epoch)` から作り直す順列。末尾の端数は rank 間で揃うように捨てる |
@@ -52,7 +52,7 @@
 - VoiceBank-DEMAND 全件での学習と、論文のスコア比較。
 - 公式 Discriminator checkpoint の読み込み検証。
 - 複数ノード。
-- 公式学習ステップとの数値比較は [VERIFICATION.md](VERIFICATION.md)。公式幅の CUDA では forward と損失が一致する。更新後の重み差は、絶対値が epsilon 未満の勾配が AdamW で増幅された結果で、次 step の損失差は 1e-6 未満である。20 step の損失は同じ向きに下がる。VoiceBank-DEMAND 全件の学習曲線は未実施。
+- 公式学習ステップとの数値比較と未解決の差は [VERIFICATION.md](VERIFICATION.md)。微小勾配の AdamW による増幅は一部の重み差を説明するが、すべての複数更新差の原因を証明していない。VoiceBank-DEMAND 全件の学習曲線は未実施。
 - ASR の学習、ASR 特徴の損失。
 
 ## 学習データ
