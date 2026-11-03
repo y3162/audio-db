@@ -1797,6 +1797,48 @@ SEMamba++ のピン留め commit は `utils.py` しか持たないが、`dataset
 
 開始 11,402.500 秒。前半の記録済み実行は 285.27 秒で、内訳は公式エントリーの試行 32.85、34.40、21.88 秒、MossFormerGAN 連続 4 worker 126.52 秒、再開 4 本 52.22 秒、5 モデルスモーク 12.87 秒、Mamba forward/backward 4.53 秒である。後半は DeepFilterNet 準備込みの失敗起動 13.49 秒、worker 0 で停止させた約 78 秒、worker 2 の成功 7.35 秒、SEMamba++ の import または launcher 失敗 7.38、7.46、9.70、7.14 秒、成功 24.40 秒で、合計 154.92 秒である。この節の加算は 440.19 秒。累計 11,842.690 秒。残り 6,157.310 秒。
 
+## Optimizer・公式 Trainer・融合スモーク（2026-11-04 継続）
+
+この節は 5 モデル最終受入の再判定ではない。対象は MossFormerGAN の実効 Optimizer、TF-GridNet の `enh_train.py`、クリーン環境の Mamba パッチと公式幅 fused の 1 更新である。GPU は同じ対話環境の H100（ログのホスト `r4n11`）を再利用した。新しい `qrsh` は出していない。
+
+| タスク | 判定 | 根拠 |
+|---|---|---|
+| MossFormerGAN の Optimizer・Scheduler | GO | 公開コンストラクタは `weight_decay` を渡さない。実効値は AdamW 既定の 0.01 で、比較経路も同じ。Plateau は公開 Solver の判定に合わせ、CPU テストで確認した。4 更新の実装間差は自己再実行の範囲 |
+| TF-GridNet の公式 Trainer | GO | `espnet2.bin.enh_train` が公式 DataLoader、16 kHz、公式 STFT 設定で 1 epoch を終え、train loss 2958 と valid loss 2213 は有限。backward と Adam 更新が記録された |
+| クリーン環境の最終整備 | GO | Mamba の import 差分はパッチと適用スクリプトにした。公式幅・fused の独立 SEMamba++ が 1 更新した。別ノードは未実施 |
+
+### MossFormerGAN
+
+公開 `train/speech_enhancement/train.py` の MossFormerGAN 分岐は `torch.optim.AdamW(parameters, lr=...)` だけを呼ぶ。YAML の `weight_decay: 1e-5` は FRCRN の Adam には渡るが、この分岐には渡らない。実効値は PyTorch 既定の weight decay 0.01、betas (0.9, 0.999)、eps 1e-8、amsgrad なし、パラメータグループは 1 つである。識別器の学習率は生成器の 2 倍。独立実装と 4 プロセス比較は、この実効値のままである。YAML の 1e-5 に合わせると公開プロセスとずれる。
+
+公開 Solver に `lr_scheduler` オブジェクトは無い。検証損失が記録値以上の回を数え、5 回目で最後に改善した checkpoint の重みと Optimizer を戻し、生成器の先頭グループの学習率だけを半分にする。回数は半分にしたあとリセットしない。10 回目で学習を止める。悪化した損失は記録上の最良値を上書きするので、その次が直前より小さければ改善になる。独立実装の `step_schedulers` をこの判定に合わせた。回数、最良値、最良 snapshot は独立 checkpoint の `plateau` に残す。公開プロセスを再起動すると `val_no_impv` と `best_val_loss` は初期値に戻る。4 更新の比較ではこの分岐は起きない。
+
+CPU の `tests/training/test_mossformer_plateau.py` は 5 件成功した。維持、5 回目の半減と重み復元、識別器学習率を変えないこと、10 回目の停止、checkpoint 往復後の回数継続を見ている。
+
+GPU の 4 プロセスは `data/results/training/moss-optmatch-20261104/`。VoiceBank、16 kHz、seed 17、公式幅、蓄積 2、4 更新、プロセス 122.42 秒。初期状態の一致フラグは 4 本とも真。step 4 の生成損失差は、公式内 1.41e-5、独立内 5.61e-5、公式 A 対独立 A 5.57e-5。forward の最大差は公式内 0.00296、独立内 0.00270、実装間 0.00193。実装間は自己再実行を超えていない。
+
+再開は公式 A と独立 A を各 2 回。更新前のパラメータ、Adam モーメント、Scheduler、4 種の RNG は checkpoint と一致し、step は 2。続けた入力ハッシュも A と B で同じ。更新後の重みハッシュは分かれ、損失は公式の再開 A/B が step 3 とも 0.5592873692512512、step 4 とも 0.505000114440918。独立も同様に A/B で同じ損失である。プロセス時間は 11.27、11.17、11.10、11.15 秒。引数を分割し損ねた失敗 4 本は 4.16、4.17、4.32、4.48 秒で、学習更新には入っていない。
+
+### TF-GridNet
+
+ピン留め ESPnet `0d136c545` の `pyproject.toml` は `typeguard` を版固定していない。`typeguard==4.4.4` の `typechecked` で `espnet2.bin.enh_train` を import できた。追加したのは `configargparse==1.7`、`humanfriendly==10.0`、`torch-complex==0.4.4`、`omniio==0.1.2`、`sentencepiece==0.2.2`、`fast-bss-eval==0.1.4` である。`flash_attn` は無く、ログは ESPnet 既定への後退を出してから学習している。
+
+公式レシピは `egs2/ms_snsd/enh1` の `train_enh_tfgridnet.yaml` と `run.sh` の `sample_rate=16k`。STFT は `n_fft` 512、`stride` 256、Hann、separator は 4 層、LSTM 128。Optimizer は Adam、学習率 1e-3、weight decay 0。損失は `mr_l1_tfd` に重み 1、`si_snr` に重み 0。比較 Adapter の幅と損失はこれと同じ系統である。公開 `chunk_length` は 48000 サンプル、batch は 4、worker は 8、epoch は 35。
+
+短時間実行は batch 1、worker 0、`num_iters_per_epoch` 2、`chunk_length` 16000、`max_epoch` 1。VoiceBank `p226_001` と `p226_002` は 48 kHz なので、公式の前処理と同じ 16 kHz へ変換してから `sound` 型の scp を公式 DataLoader に渡した。結果は `data/results/training/official-entry-tf-enh-20261104b/train.log`。1 epoch の train loss は 2.958e+03、valid loss は 2.213e+03。どちらも有限で、backward 時間、勾配 norm、Adam の `optim_step_time`、学習率 1e-3、best checkpoint の更新が記録された。プロセス 12.22 秒。その前の `fast_bss_eval` 不足は 8.93 秒で、更新前に止まっている。
+
+### クリーン環境
+
+Mamba の import 修正は `patches/mamba_ssm-2.3.2.post1-init.patch` と `scripts/apply_mamba_init_patch.py` にした。適用先の `__init__.py` は、クリーン環境に入っている修正済みファイルと一致する。未修正の 2.3.2.post1 へ適用し、再実行すると `already-applied` になる。selective scan の CUDA ファイルはこの処理で変わらない。直接 pin は `requirements/clean-rebuild.txt`。freeze は `build/clean-20261104/requirements-freeze.txt` を更新した。
+
+公式幅・fused の独立 SEMamba++ は `data/results/training/semamba-fused-official-width-20261104/smoke.json`。既定幅は hid 48、num_tfmamba 4、パラメータ数 2,655,521 で、公式 `train.py` の生成器と同じ数である。fused モジュールは 24。`selective_scan_cuda` は `.venvs/clean-20261104` の `.so` を読んだ。VoiceBank を 16 kHz にした先頭 16000 サンプルで 1 更新し、生成損失 31.36404037475586、識別損失 5.976692199707031 は有限で、重みは変化した。プロセス 8.97 秒。import パスを誤った試行は 3.65 秒と 5.38 秒で、更新前に止まっている。
+
+5 モデルの独立スモークは、同じクリーン環境の `data/results/training/clean-rebuild-20261104/gpu-smoke.log` を再利用した。その後に足した ESPnet 依存は、このスモークのモデル構築を変えない。Rust FFT と libdf も再ビルドしていない。別ノードでは実行していない。
+
+### GPU 時間
+
+開始 11,842.690 秒。この継続で加算したのは 223.39 秒。内訳は 4 プロセス 122.42 秒、再開の引数失敗 17.13 秒、再開成功 44.69 秒、`enh_train` の依存不足 8.93 秒、成功 12.22 秒、SEMamba++ fused の失敗 9.03 秒、成功 8.97 秒。累計 12,066.080 秒。残り 5,933.920 秒。
+
 Wait, I double-counted. Let me fix the GPU paragraph before saving. The user-facing report must be correct.
 
 Previous 285.27 + this turn 154.92 = 440.19

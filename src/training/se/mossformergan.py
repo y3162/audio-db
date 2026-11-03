@@ -16,11 +16,19 @@ Update order follows the accumulation branch of the released solver, which is
 what the published yaml enables: backward generator, backward discriminator,
 then step generator and discriminator. Discriminator learning rate is twice
 the generator learning rate. AdamW weight decay is the PyTorch default 0.01
-because the released constructor does not pass ``weight_decay``.
+because the released constructor does not pass ``weight_decay``. The YAML
+value is not the optimizer value.
+
+The released solver has no ``lr_scheduler`` object. After each validation it
+keeps the learning rate, or, on the fifth validation that is not strictly
+better, reloads the last improving checkpoint and halves only the generator
+learning rate. The tenth such validation stops training. A non-improving
+loss replaces the stored best, matching that solver.
 """
 
 from __future__ import annotations
 
+import copy
 from typing import Any
 
 import torch
@@ -41,6 +49,28 @@ _RI = 0.1
 _MAG = 0.9
 _TIME = 0.2
 _GAN = 0.05
+# torch.optim.AdamW default. The released MossFormerGAN constructor omits weight_decay.
+OFFICIAL_ADAMW_WEIGHT_DECAY = 0.01
+
+
+def mossformer_validation_decision(best: float, stalls: int, loss: float) -> tuple[float, int, str]:
+    """Return the next best, stall count, and action for one validation.
+
+    Actions are ``improve``, ``hold``, ``halve``, and ``stop``. This follows
+    ``Solver.train`` in ClearerVoice ``train/speech_enhancement/solver.py``:
+    a loss that is not strictly lower replaces the stored best and increments
+    the stall count. The fifth stall halves the generator learning rate. The
+    tenth stall stops. The stall count is not cleared by the halving.
+    """
+    if loss >= best:
+        best = float(loss)
+        stalls += 1
+        if stalls == 5:
+            return best, stalls, "halve"
+        if stalls >= 10:
+            return best, stalls, "stop"
+        return best, stalls, "hold"
+    return float(loss), 0, "improve"
 
 
 class MossFormerGANTask:
@@ -62,13 +92,15 @@ class MossFormerGANTask:
             self.discriminator = Discriminator(ndf=16).to(device)
         generator_config = dict(config)
         generator_config["optimizer"] = dict(config["optimizer"])
-        generator_config["optimizer"]["weight_decay"] = 0.01
+        generator_config["optimizer"]["weight_decay"] = OFFICIAL_ADAMW_WEIGHT_DECAY
         self.optim_g = build_optimizer(self.generator.parameters(), generator_config)
         self.optim_d = build_optimizer(self.discriminator.parameters(), generator_config, lr=float(config["optimizer"]["lr"]) * 2)
         self.sched_g = build_scheduler(self.optim_g, config)
         self.sched_d = build_scheduler(self.optim_d, config)
         self._stalls = 0
-        self._best_loss: float | None = None
+        self._best_val = float("inf")
+        self._best_snapshot: dict[str, Any] | None = None
+        self.stop_training = False
 
     def distribute(self, process: ProcessInfo) -> None:
         self.generator = wrap_module(self.generator, process)
@@ -96,16 +128,36 @@ class MossFormerGANTask:
         value = (validation.get("losses") or {}).get("generator", {}).get("value")
         if value is None:
             return
-        if self._best_loss is None or float(value) < self._best_loss:
-            self._best_loss = float(value)
-            self._stalls = 0
+        self._best_val, self._stalls, action = mossformer_validation_decision(
+            self._best_val, self._stalls, float(value)
+        )
+        if action == "improve":
+            self._best_snapshot = self._capture_training_state()
             return
-        self._stalls += 1
-        if self._stalls >= 5:
-            for optimizer in (self.optim_g, self.optim_d):
-                for group in optimizer.param_groups:
-                    group["lr"] *= 0.5
-            self._stalls = 0
+        if action == "halve":
+            self._restore_best_and_halve_generator()
+            return
+        if action == "stop":
+            self.stop_training = True
+
+    def _capture_training_state(self) -> dict[str, Any]:
+        return {
+            "generator": {key: value.detach().cpu().clone() for key, value in unwrap(self.generator).state_dict().items()},
+            "discriminator": {
+                key: value.detach().cpu().clone() for key, value in unwrap(self.discriminator).state_dict().items()
+            },
+            "optim_g": copy.deepcopy(self.optim_g.state_dict()),
+            "optim_d": copy.deepcopy(self.optim_d.state_dict()),
+        }
+
+    def _restore_best_and_halve_generator(self) -> None:
+        snapshot = self._best_snapshot
+        if snapshot is not None:
+            unwrap(self.generator).load_state_dict(snapshot["generator"])
+            unwrap(self.discriminator).load_state_dict(snapshot["discriminator"])
+            self.optim_g.load_state_dict(snapshot["optim_g"])
+            self.optim_d.load_state_dict(snapshot["optim_d"])
+        self.optim_g.param_groups[0]["lr"] *= 0.5
 
     def generator_state_dict(self) -> dict[str, torch.Tensor]:
         return unwrap(self.generator).state_dict()
@@ -122,6 +174,12 @@ class MossFormerGANTask:
             "optim_d": self.optim_d.state_dict(),
             "sched_g": None if self.sched_g is None else self.sched_g.state_dict(),
             "sched_d": None if self.sched_d is None else self.sched_d.state_dict(),
+            "plateau": {
+                "best_val_loss": self._best_val,
+                "val_no_impv": self._stalls,
+                "stop": self.stop_training,
+                "best_snapshot": self._best_snapshot,
+            },
         }
 
     def load_state_dict(self, state: dict[str, Any]) -> None:
@@ -133,6 +191,11 @@ class MossFormerGANTask:
         self.discriminator.load_state_dict(state["discriminator"], strict=True)
         self.optim_g.load_state_dict(state["optim_g"])
         self.optim_d.load_state_dict(state["optim_d"])
+        plateau = state.get("plateau") or {}
+        self._best_val = float(plateau.get("best_val_loss", float("inf")))
+        self._stalls = int(plateau.get("val_no_impv", 0))
+        self.stop_training = bool(plateau.get("stop", False))
+        self._best_snapshot = plateau.get("best_snapshot")
 
     def train_update(self, batches: list[dict[str, Any]], accumulation: int) -> dict[str, float]:
         self.train_mode()

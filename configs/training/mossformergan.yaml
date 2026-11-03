@@ -18,7 +18,7 @@ optimizer:
   name: adamw
   lr: 0.0005
   betas: [0.9, 0.999]
-  weight_decay: 0.01
+  weight_decay: 0.01  # effective AdamW default; the released constructor does not read the YAML 1e-5
 
 scheduler:
   name: none

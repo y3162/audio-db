@@ -201,7 +201,7 @@ class MossFormerGAN:
     update_order = ("generator", "discriminator")
     lr = 5e-4
     betas = (0.9, 0.999)
-    weight_decay = 0.01
+    weight_decay = 0.01  # AdamW default. The released constructor ignores the YAML 1e-5.
 
     def configure(self, cfg):
         del cfg
@@ -209,7 +209,7 @@ class MossFormerGAN:
             "generator": "published SyncANet num_channel 64, n_fft 400",
             "discriminator": "published NISQA AdaptCNN and two Conformers",
             "update": "two micro-batches: divide each loss by 2, generator backward and clip, discriminator backward and clip; then both steps",
-            "scheduler": "no per-batch schedule; the probe stores a counter and does not change the learning rate",
+            "scheduler": "no per-batch schedule; the released solver halves the generator learning rate only after five non-improving validations, which this four-update probe does not reach",
             "pesq": "a missing PESQ score aborts the step",
             "official_batch_pesq": "the published helper hardcodes a CUDA tensor; the probe returns the same normalization on the step device",
             "length": self.length,

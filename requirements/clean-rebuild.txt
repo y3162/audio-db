@@ -31,3 +31,12 @@ torchmetrics==1.8.2
 easydict==1.13
 pyroomacoustics==0.7.7
 transformers==4.46.3
+# Official ESPnet enh_train.py at commit 0d136c545. typeguard is unpinned upstream;
+# 4.4.4 provides typechecked. flash_attn is optional and is not installed.
+typeguard==4.4.4
+configargparse==1.7
+humanfriendly==10.0
+torch-complex==0.4.4
+omniio==0.1.2
+sentencepiece==0.2.2
+fast-bss-eval==0.1.4

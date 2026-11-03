@@ -17,6 +17,7 @@ from pathlib import Path
 from typing import Any
 
 import torch
+import torch.distributed as dist
 import torch.nn as nn
 from torch.nn.parallel import DistributedDataParallel
 
@@ -147,7 +148,8 @@ class Trainer:
         if self.process.rank == 0:
             self.checkpoint_dir.mkdir(parents=True, exist_ok=True)
         barrier(self.process)
-        while self.global_step < self.max_steps:
+        halt = False
+        while self.global_step < self.max_steps and not halt:
             indices = epoch_indices(
                 len(dataset),
                 self.seed,
@@ -190,7 +192,8 @@ class Trainer:
                 if self.validation_interval and self.global_step % self.validation_interval == 0:
                     validation_summary = self._validate(validation, epoch)
                 if epoch_done:
-                    self.task.step_schedulers(validation_summary)
+                    self.task.step_schedulers(self._scheduler_validation(validation_summary))
+                    halt = bool(getattr(self.task, "stop_training", False))
                 checkpoint_path = None
                 if self._should_save(self.global_step):
                     checkpoint_path = self._save(dataset, epoch, cursor, usable_batches)
@@ -204,10 +207,25 @@ class Trainer:
                         rendered = " ".join(f"{name}={value:.6f}" for name, value in sorted(metrics.items()))
                         print(f"step {self.global_step} {rendered}", flush=True)
                 barrier(self.process)
-            if self.global_step >= self.max_steps:
+            if halt or self.global_step >= self.max_steps:
                 break
             epoch += 1
         barrier(self.process)
+
+    def _scheduler_validation(self, summary: dict[str, Any] | None) -> dict[str, Any] | None:
+        metric = None
+        if self.process.rank == 0 and summary:
+            generator = (summary.get("losses") or {}).get("generator") or {}
+            value = generator.get("value")
+            if generator.get("status") == "ok" and value is not None:
+                metric = float(value)
+        if self.process.distributed:
+            packed = torch.tensor([float("nan") if metric is None else metric], dtype=torch.float64)
+            dist.broadcast(packed, src=0)
+            metric = None if torch.isnan(packed).item() else float(packed.item())
+        if metric is None:
+            return None
+        return {"losses": {"generator": {"value": metric, "status": "ok"}}}
 
     def _should_save(self, step: int) -> bool:
         if self.process.rank != 0:

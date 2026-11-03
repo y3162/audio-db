@@ -1,0 +1,14 @@
+--- a/mamba_ssm/__init__.py	2026-11-04 01:07:57.326000888 +0900
++++ b/mamba_ssm/__init__.py	2026-11-04 01:07:47.643067878 +0900
+@@ -2,6 +2,8 @@
+ 
+ from mamba_ssm.ops.selective_scan_interface import selective_scan_fn, mamba_inner_fn
+ from mamba_ssm.modules.mamba_simple import Mamba
+-from mamba_ssm.modules.mamba2 import Mamba2
+-from mamba_ssm.modules.mamba3 import Mamba3
+-from mamba_ssm.models.mixer_seq_simple import MambaLMHeadModel
++# clean-rebuild: Mamba2, Mamba3, and the language-model head are unused by
++# SEMamba++ and import transformers. The Mamba1 CUDA kernels are unchanged.
++# from mamba_ssm.modules.mamba2 import Mamba2
++# from mamba_ssm.modules.mamba3 import Mamba3
++# from mamba_ssm.models.mixer_seq_simple import MambaLMHeadModel

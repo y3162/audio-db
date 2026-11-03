@@ -43,7 +43,7 @@ Mamba 拡張のソースはタグの tarball である。
 - https://github.com/Dao-AILab/causal-conv1d/archive/refs/tags/v1.7.0.tar.gz
 - https://github.com/state-spaces/mamba/archive/refs/tags/v2.3.2.post1.tar.gz
 
-`mamba-ssm` 2.3.2.post1 の `mamba_ssm/__init__.py` は `Mamba2`、`Mamba3`、言語モデルヘッドを import する。Triton 3.2.0 には `Mamba3` が要求する API が無く、ヘッドは `transformers` を要求する。インストール前にその 3 行だけをコメントする。Mamba1 の selective scan 実装は変えない。公式 SEMamba++ は `mamba_ssm.models.mixer_seq_simple` を直接 import するため、学習エントリーポイントには別途 `transformers==4.46.3` が要る。
+`mamba-ssm` 2.3.2.post1 の `mamba_ssm/__init__.py` は `Mamba2`、`Mamba3`、言語モデルヘッドを import する。Triton 3.2.0 には `Mamba3` が要求する API が無く、ヘッドは `transformers` を要求する。インストール後に `scripts/apply_mamba_init_patch.py --init <venv>/lib/python3.12/site-packages/mamba_ssm/__init__.py` を実行する。差分の正本は `patches/mamba_ssm-2.3.2.post1-init.patch` で、対象は import 3 行だけである。再実行は何もしない。selective scan のソースや CUDA 拡張はこのスクリプトが書き換えない。公式 SEMamba++ は `mamba_ssm.models.mixer_seq_simple` を直接 import するため、学習エントリーポイントには別途 `transformers==4.46.3` が要る。
 
 ## CUDA 拡張
 
@@ -86,5 +86,5 @@ PYTHONPATH="$PWD" CUDA_VISIBLE_DEVICES=0 \
 
 - 別ノード、別 GPU アーキテクチャでの再ビルドは未実施。今回の cubin は `sm_90` だけである。未実施の理由はジョブを増やさないためであり、依存関係やコンパイラの失敗ではない。
 - 公式 DeepFilterNet の学習は、HDF5 を `df/scripts/prepare_data.py` で作り、`libdfdata` の DataLoader で読む。`num_workers = 0` では epoch 開始直後に `TimeoutError` になり、プロセスは戻らなかった。`num_workers = 2` と `overfit = true` では 2 更新が完了した。記録は `docs/training/VERIFICATION.md` の 2026-11-04 節。
-- ESPnet の `espnet2/bin/enh_train.py` はピン留め commit にある。この環境には `typeguard` を入れていないので、そのモジュールの import だけでは学習は始まらない。公式の STFT encoder/decoder、TFGridNet、`MultiResL1SpecLoss` の 2 更新は別スクリプトで完了している。
+- ESPnet の `espnet2/bin/enh_train.py` は、`typeguard==4.4.4`、`configargparse`、`humanfriendly`、`torch-complex`、`omniio`、`sentencepiece`、`fast-bss-eval` を入れると起動する。`flash_attn` は無く、ESPnet は自前の注意実装へ戻る。MS-SNSD の公式設定は 16 kHz、`chunk_length` 48000、`n_fft` 512、`stride` 256、Adam、`mr_l1_tfd` である。2026-11-04 の短時間実行は batch 1、worker 0、更新 2、chunk 16000、1 epoch で、VoiceBank を 16 kHz に変換して公式 DataLoader に渡した。記録は `docs/training/VERIFICATION.md`。
 - SEMamba++ の `train.py` は epoch 数を引数にしない。短時間実行は出力ディレクトリの外部 launcher が `main` のソース文字列だけを差し替えて `exec` する。ピン留めツリーは `utils.py` しか無いのに `dataset.py` が未使用の `utils.util` を import するので、launcher が同じ関数を `sys.modules` に登録する。公式ファイルは編集しない。
