@@ -1,5 +1,7 @@
 # audio-db
 
+固定 ASR の WER を主指標として音声強調モデルを学習・評価する研究基盤。詳細の入口は [ドキュメント案内](docs/INDEX.md)、開発上の制約は [AGENTS.md](AGENTS.md)。
+
 ## セットアップ
 
 ```bash

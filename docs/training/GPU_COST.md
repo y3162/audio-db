@@ -1,5 +1,7 @@
 # 学習コスト（2026-11-02、tensor 実測）
 
+> 旧条件での測定。epoch 時間は当時の仮定による外挿で、現行の TF-GridNet 公式 chunk や DeepFilterNet3 schedule の見積もりではない。現行設定は [公式学習監査](OFFICIAL_TRAINING_AUDIT.md)。
+
 長時間学習はしていない。測ったのは公式幅の 1 更新（warmup を除いた定常 step）である。学習セットは VoiceBank 28 話者 train の 10,700 件。`steps_per_epoch = ceil(10700 / global_batch)`。`epoch_seconds = steps_per_epoch × measured_seconds_per_step`。この式にデータローダ、validation、checkpoint は入っていない。GPU-days は `epoch_hours × GPU数 / 24` で、経過時間とは別である。
 
 ## 実測条件
@@ -60,7 +62,7 @@ TF-GridNet（5 GiB）と DeepFilterNet3（3 GiB）は 1 枚に同居できる。
 
 ## shannon（条件付き推定。実測ではない）
 
-shannon は今回使っていない。既知の仕様は A100 80GB が 8 枚（`docs/envs/SHINODA_LAB.md`）。SXM か PCIe か、メモリ帯域は、このリポジトリの記録では未確定である。tensor の A100-PCIE-40GB の秒数を shannon の実測として扱わない。
+shannon は今回使っていない。既知の仕様は A100 80GB が 8 枚（`docs/envs/SHINODA_LAB.md`）。この測定時点では SXM か PCIe か、メモリ帯域は未確定だった。その後 A100 PCIe 80GB を確認した条件は [研究室環境の検証](RESIDUAL_20261104.md)。tensor の A100-PCIE-40GB の秒数を shannon の実測として扱わない。
 
 40 GB に収まった計算が 80 GB でも同程度の秒数になる、というシナリオを置く。不確実性は帯域と基板差で、目安を ±20% とする。これは推定であり、保証ではない。
 

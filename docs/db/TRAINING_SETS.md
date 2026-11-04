@@ -9,7 +9,7 @@
 
 出力は 16 kHz、最長 2 秒、教師は `dry_clean`。`noise_start` と SNR はレシピに保存する。学習と検証で、発話パス、話者、雑音ファイルは重ならない。LibriSpeech test-clean と CHiME3 et05 は入っていない。
 
-VoiceBank+DEMAND の WAV は `/net/spring/work/seki/database/VoiceBank+DEMAND` にあるが、`data/corpora` にはリンクされていない。このスモークセットは公式の VoiceBank-DEMAND ではない。RIR は `data/corpora` に無い。
+このスモークセットは VoiceBank-DEMAND ではない。現在の VoiceBank の分割と再構築元は [コーパス](CORPORA.md) と [データ上の制約](../../.agents/DATA.md) を参照する。
 
 登録のやり直し:
 

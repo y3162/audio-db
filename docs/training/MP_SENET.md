@@ -30,8 +30,8 @@
 | 全体最大 | `AdaptiveMaxPool2d(1)` | `amax`。順伝播の値は一致する。CUDA の `adaptive_max_pool2d_backward` に決定的実装が無い |
 | 切り出し | `random.randint` | `SHA-256(seed, epoch, case_id)`。呼び出し順に依存しない |
 | シャッフル | 初期化時の `random.seed(1234)` と DistributedSampler | `(seed, epoch)` から作り直す順列。末尾の端数は rank 間で揃うように捨てる |
-| DataLoader | `num_workers=4` | プロセス内で読む。worker の乱数を増やさない |
-| PESQ | `joblib` のプロセスプール | 同じ `pesq(..., "wb")` を入力順に計算する |
+| 読み込み | `num_workers=4` | `data.load_workers`（既定 4）のスレッドと `data.prefetch`（既定 true）。順序・crop は case ID と seed から決定 |
+| PESQ | `joblib` のプロセスプール | 同じ `pesq(..., "wb")` を入力順に計算。4 行以上は spawn プロセスで並列化 |
 | Checkpoint | `g_*` と `do_*` を別ファイル。RNG と Scheduler は保存しない | 1 ファイルにモデル、Optimizer、Scheduler、global step、epoch、消費済み micro-batch、RNG、設定、環境、データセット識別子。一時ファイルへ書いてから rename する。推論用に `generator` キーの `generator.pt` も書く |
 | データ | 公式ファイルリストの clean/noisy wav | DuckDB の名前付きセットとレシピ。教師は `output.reference`。`none` と評価用セットは拒否する |
 | 起動 | `mp.spawn` と設定ファイル内の GPU 数 | CPU はプロセスグループなし。GPU は `CUDA_VISIBLE_DEVICES` と `torchrun`。物理 GPU 番号はコードに書かない |
