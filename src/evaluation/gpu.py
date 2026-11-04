@@ -9,7 +9,7 @@ from src.evaluation.errors import ConfigError
 BUSY_MEMORY_MIB = 1024
 
 
-def parse_nvidia_smi(text: str) -> list[dict[str, int]]:
+def parse_nvidia_smi(text: str) -> list[dict[str, int | None]]:
     rows = []
     for line in text.splitlines():
         if not line.strip():
@@ -21,10 +21,24 @@ def parse_nvidia_smi(text: str) -> list[dict[str, int]]:
             {
                 "index": int(parts[0]),
                 "memory_used_mib": int(parts[1]),
-                "utilization": int(parts[2]),
+                "utilization": _utilization(parts[2]),
             }
         )
     return rows
+
+
+def _utilization(text: str) -> int | None:
+    """MIG devices report utilization as ``[N/A]``. Memory is still enforced."""
+    token = text.strip().strip("[]")
+    if token.upper() == "N/A":
+        return None
+    return int(token)
+
+
+def _utilization_text(value: int | None) -> str:
+    if value is None:
+        return "n/a"
+    return f"{value}%"
 
 
 def device_index(device: str) -> int:
@@ -67,6 +81,6 @@ def assert_gpu_idle(device: str, *, allow_busy: bool = False) -> None:
     if chosen["memory_used_mib"] >= BUSY_MEMORY_MIB:
         raise ConfigError(
             f"GPU {index} is in use ({chosen['memory_used_mib']} MiB, "
-            f"utilization {chosen['utilization']}%). Choose a free GPU, or set "
+            f"utilization {_utilization_text(chosen['utilization'])}. Choose a free GPU, or set "
             "runtime.allow_busy_gpu only when that GPU is yours."
         )

@@ -150,7 +150,20 @@ class MPSENetTask:
         The caller has already switched to eval mode and disabled gradients.
         PESQ and STOI use the recipe teacher. A score that cannot be computed
         is ``na`` or ``unavailable``, never zero.
+
+        Centered iSTFT restores a length that is a multiple of the hop. Full
+        utterances are trimmed to that grid here. Training segments that
+        already match are unchanged, and ``_generate`` still rejects a
+        mismatch on the update path.
         """
+        clean_length = int(batch["clean"].shape[-1])
+        aligned = align_validation_length(
+            clean_length, int(self.spec["hop_size"]), int(self.spec["n_fft"])
+        )
+        if aligned != clean_length:
+            batch = dict(batch)
+            batch["clean"] = batch["clean"][..., :aligned]
+            batch["noisy"] = batch["noisy"][..., :aligned]
         clean, noisy = self._waveforms(batch)
         with torch.no_grad():
             parts = self._generate(clean, noisy, generator=unwrap(self.generator))
@@ -330,6 +343,18 @@ class MPSENetTask:
             "phase_hat": phase_hat,
             "recomputed_complex": recomputed,
         }
+
+
+def align_validation_length(length: int, hop: int, n_fft: int) -> int:
+    """Largest hop multiple that centered iSTFT can restore, at most ``length``."""
+    if hop < 1:
+        raise TrainingError("hop must be positive")
+    if length % hop == 0:
+        return length
+    aligned = (length // hop) * hop
+    if aligned <= n_fft // 2:
+        raise TrainingError(f"utterance length {length} is too short to align to hop {hop}")
+    return aligned
 
 
 def _conv_out(size: int) -> int:

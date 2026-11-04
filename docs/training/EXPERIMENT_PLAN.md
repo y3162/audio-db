@@ -16,28 +16,27 @@ VoiceBank+DEMAND の公式 28 話者のうち train 26 話者 10,700 発話、va
 
 共通比較では validation PESQ を checkpoint 選択の事前指定基準とし、同じ validation の WER も追跡する。ASR を使う WER に切り替えて事後選択しない。現行 Trainer の validation・保存間隔は step 指定で、best は PESQ である。上記の epoch ごとの実行、patience 15 の early stopping、自動的な発散検出は本計画の要件であり、現行コードで実装済みと仮定しない。各 epoch の更新数と端数処理を固定し、必要な機能を実装・再開試験してから本学習を開始する。
 
-| モデル | 初期計画（global batch / segment） | 更新・scheduler |
+100 step 試験で固定した設定は `configs/training/trial100/`。本学習では `max_steps` を epoch 数に合わせ、`checkpoint_dir` を空の新しいディレクトリにする。`validation_interval` と `checkpoint_interval` は、そのモデルの `steps_per_epoch` の約数で、かつ最終 step に当たるようにする。当たらないと、epoch 末の plateau は検証値を見ない。patience 15 の共通 early stopping は、MossFormerGAN の公開ルール以外は未実装である。
+
+| モデル | 試験で動いた設定 | 公開条件との差 |
 |---|---|---|
-| MP-SENet | 4 / 2秒・16 kHz | AdamW 5e-4、betas 0.8/0.99、WD 0.01、epoch ExponentialLR 0.99 |
-| SEMamba++ | 8 / 3秒・16 kHz、必要なら micro 4×2 | AdamW 2e-4、betas 0.8/0.99、epoch ExponentialLR 0.99、fused。蓄積経路の最終受入が必要 |
-| TF-GridNet | 4 / 3秒・16 kHz、ms-snsd | Adam、clip 5、validation に基づく ReduceLROnPlateau。公式設定を起動前に固定 |
-| DeepFilterNet3 | 初期 16 / 3秒・48 kHz | AdamW、出荷 cosine と batch schedule。可変 batch の実装・steps_per_epoch を事前確認 |
-| MossFormerGAN | 2 / 2秒・16 kHz、micro 1×2 | AdamW、G 5e-4・D 1e-3、公式の更新順。scheduler は公式設定を確認 |
+| MP-SENet | global 4、2 秒、16 kHz、AdamW 5e-4、betas 0.8/0.99、WD 0.01、ExponentialLR 0.99、400 epoch が公開既定 | workers は 0。検証の端数サンプルは hop 倍数へ切る |
+| SEMamba++ | global 8、3 秒、16 kHz、hid 48、fused、AdamW 2e-4、100 epoch。実行は micro 4 × 蓄積 2 | 公式 batch 8 の 1 forward はこの MIG で OOM。蓄積 2 は Generator を forward し直す |
+| TF-GridNet | global 4、3 秒、16 kHz、ms-snsd、Adam 1e-3、WD 0、clip 5、plateau 0.7/1 | 公開 epoch は 5,000 iter × 35。1 走査は 2,675 step。workers は 0 |
+| DeepFilterNet3 | global 16、3 秒、48 kHz、公式幅、AdamW 1e-3、amsgrad、clip 1、cosine | epoch 0 の batch だけ測定。24 以降は未測定。`MAX_EPOCHS` は ini を読み直していない |
+| MossFormerGAN | global 2、2 秒、16 kHz、micro 1 × 2、AdamW 5e-4、D はその 2 倍、WD 0.01、clip 10、120 epoch | 1 step で G と D を各 1 回。公開プロセスの再起動は plateau 回数を戻す |
 
 ## 資源と順序
 
-下表は [GPU_COST.md](GPU_COST.md) の旧 commit・A100 PCIe 40 GB、合成 noisy 入力、3〜4 定常 step の中央値からの外挿であり、H100 や実データの保証値ではない。epoch は train 10,700 件、I/O・validation・保存を除く。時間は 100 epoch・1 seed の概算で、early stopping と DF の batch schedule は含まない。チェックポイントは当時の実測値。評価時間は全件・ASR とも未実測なので pilot で計測する。
+H100 MIG 4g.47gb、VoiceBank 実音声、定常 step の中央値からの見積もりは [GPU_BUDGET.md](GPU_BUDGET.md)。旧 A100 の表は [GPU_COST.md](GPU_COST.md) に残し、ここでは使わない。標準シナリオの 1 seed は、公開 epoch 数で MP-SENet 235 時間、SEMamba++ 192 時間、TF-GridNet 24 時間、MossFormerGAN 146 時間、DeepFilterNet3 は batch 16 の 2 epoch で 0.9 時間である。合計約 597 時間。3 seed は約 1,792 時間。DeepFilterNet3 の batch 増加と ASR の WER はこの合計に入っていない。
 
-| モデル | 秒/step | 時間/epoch | VRAM GiB | checkpoint MB | 100 epoch GPU 時間 |
-|---|---:|---:|---:|---:|---:|
-| MP-SENet | 1.065 | 0.791 | 31.33 | 29.7 | 79.1 h |
-| SEMamba++ | 3.294 | 1.224 | 26.64 | 90.3 | 122.4 h |
-| TF-GridNet | 0.216 | 0.161 | 4.98 | 31.1 | 16.1 h |
-| DeepFilterNet3 | 1.659 | 0.308 | 3.03 | 34.4 | 30.8 h（batch 16 固定仮定） |
-| MossFormerGAN | 1.483 | 2.204 | 16.96 | 137 | 220.4 h |
+実行順は次のとおり。各本学習ジョブは 30 分を超えるので、投入のたびに明示の承認を得る。
 
-1. 受入残件を解消し、名前付き評価セット・固定 ASR の小規模 end-to-end を監査する。
-2. TF-GridNet の pilot と seed 17 本学習、validation 選択、固定 test 評価を実施する。
-3. 残りのモデルを同じ test に追加し、追加 seed と追加 ASR を実施する。3 seed の単純合計は上表の約3倍であり、資源・I/O・validation を再測定してから個別にジョブを承認する。
+1. TF-GridNet の seed 17 を、公式の 5,000 iter × 35 epoch で 1 GPU に出す。検証間隔は 5,000 step。
+2. 同じ checkpoint を固定 ASR の小規模な名前付きセットへ通し、WER の所要時間を測る。全件評価はその時間を見てから承認する。
+3. MossFormerGAN、MP-SENet、SEMamba++（蓄積 2）の順に seed 17 を出す。DeepFilterNet3 は batch 16 の epoch 0–1 を先に走らせ、batch 24 の 1 step を測ってから残りを承認する。
+4. seed 17 の test 評価が揃ってから seed 3 と 29 を出す。
 
-GPU は使用前に空きを確認し、TSUBAME の30分程度以上の各ジョブは明示的な指示または追加承認を得る。本計画はジョブ投入の承認ではない。
+本格学習の開始判断は **PARTIAL** である。100 step、有限損失、再開、検証の外挿は 5 モデルとも通った。開始前に残るのは、30 分超ジョブの承認、DeepFilterNet3 の大きい batch の 1 step、SEMamba++ を蓄積 2 のまま使うことの確認、検証 interval を epoch 末に合わせた YAML である。別ノードでの環境再構築と、公式プロセスとの Adapter 差は、学習を始める条件にはしない。
+
+GPU は使用前に空きを確認する。この計画はジョブ投入の承認ではない。

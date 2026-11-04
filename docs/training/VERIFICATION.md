@@ -1839,12 +1839,44 @@ Mamba の import 修正は `patches/mamba_ssm-2.3.2.post1-init.patch` と `scrip
 
 開始 11,842.690 秒。この継続で加算したのは 223.39 秒。内訳は 4 プロセス 122.42 秒、再開の引数失敗 17.13 秒、再開成功 44.69 秒、`enh_train` の依存不足 8.93 秒、成功 12.22 秒、SEMamba++ fused の失敗 9.03 秒、成功 8.97 秒。累計 12,066.080 秒。残り 5,933.920 秒。
 
-Wait, I double-counted. Let me fix the GPU paragraph before saving. The user-facing report must be correct.
+## Final Acceptance の再判定（2026-11-04）
 
-Previous 285.27 + this turn 154.92 = 440.19
-11402.500 + 440.19 = 11842.690
-Remaining 18000 - 11842.690 = 6157.310
+HEAD は作業開始時 `082083d947276632f9a3485e7011e7d5853dc034` で、`dev` は `origin/dev` と一致し、作業ツリーはクリーンだった。学習の更新式は、MP-SENet の検証長を hop 倍数へ切る変更を除き、変えていない。その変更は検証経路だけで、長さが一致する学習 step には入らない。GPU 会計の開始値は 12,066.080 秒、新しい上限は 25,200 秒、開始時の残りは 13,133.920 秒である。
 
-I wrote a confused paragraph. Fix it in the same edit... I already set the new_string with the wrong paragraph. I need to fix after the replace. Let me correct the GPU paragraph now.
+既存の学習実装 GO は取り消さない。CUDA のビット一致は、これまでどおり公式実装自身の再実行差を基準にし、この節でも要求しない。未実施の項目は GO にしない。
 
-Also I said "後半の公式 DeepFilterNet / SEMamba++ 試行 440.19 秒のうち後半分" which is wrong. Fix it.
+| 観点 | 判定 | 根拠 |
+|---|---|---|
+| 学習実装の公式再現性 | GO | 5 モデルとも、直前までの Structure、Forward、Loss、Backward、Optimizer、4 プロセス、同一実装の再開、複数更新が GO のままである。根拠は本書の 2026-11-03 再判定と、その後の公式プロセス節である |
+| 公式学習プロセスとの対応 | PARTIAL | 5 モデルとも公式入口または公式モジュールが実音声の更新まで進んでいる。PESQ の実行形態、MossFormerGAN の再起動時に plateau 状態が初期化されること、TF-GridNet の短時間実行が batch と chunk 長を変えていること、SEMamba++ の launcher が実行回数だけを差し替えることは残る |
+| Checkpoint 再開 | GO | 既存の更新前一致に加え、今回の 100 step 試験は 5 モデルとも step 50 から別プロセスで 2 更新続き、入力 case ID が連続実行と一致した。更新後の重みハッシュの一致は求めていない |
+| クリーン環境の再構築 | PARTIAL | 2026-11-04 の新規 venv、Mamba、Rust FFT、libdf は同一ノードで GO である。別ノードではまだ実行していない |
+| 本格学習の実行準備 | PARTIAL | 5 モデルの 100 step、有限な損失、メモリ、再開は通った。SEMamba++ の公式 batch 8 はこの MIG に載らず、DeepFilterNet3 の batch 増加は未測定で、epoch 末の検証を interval で合わせる必要がある |
+
+残件が試験学習を止めるものではなかったので、100 step へ進んだ。別ノードの再構築、TF-GridNet の短時間公式実行が公開設定の音声長を変えていること、MossFormerGAN の公開プロセス再起動が plateau を初期化すること、比較 Adapter と公式プロセスの差、CUDA を自己再実行差で見ていることは、いずれもこの GO の範囲の外として残す。
+
+100 step の条件、時間、メモリ、予算は [GPU_BUDGET.md](GPU_BUDGET.md)。本格学習の開始判断は [EXPERIMENT_PLAN.md](EXPERIMENT_PLAN.md)。
+
+### この節の GPU 時間
+
+プロセスの wall clock は `/usr/bin/time` である。失敗を含む。予約時間は含めない。ジョブは `115437`、`r4n11`、H100 MIG 4g.47gb。
+
+| 実行 | 秒 |
+|---|---:|
+| `src` が見えず止まった起動 | 2.28 |
+| TF-GridNet 8 step の予備 | 62.72 |
+| TF-GridNet 100 step | 57.12 |
+| TF-GridNet 再開 | 8.30 |
+| MP-SENet 100 step | 89.77 |
+| MP-SENet 再開 | 9.02 |
+| MP-SENet 検証（長さ不一致で失敗） | 6.04 |
+| MP-SENet 検証（hop 整列のあと） | 12.39 |
+| DeepFilterNet3 100 step | 212.42 |
+| DeepFilterNet3 再開 | 10.40 |
+| MossFormerGAN 100 step | 98.22 |
+| MossFormerGAN 再開 | 11.11 |
+| SEMamba++ micro 8 の OOM | 14.10 |
+| SEMamba++ 蓄積 2 の 100 step | 480.27 |
+| SEMamba++ 再開 | 20.99 |
+
+合計 1,095.15 秒。開始 12,066.080 秒に加え 13,161.230 秒。上限 25,200 秒まで 12,038.770 秒。最初の 2.28 秒は GPU カーネルに入る前の失敗である。

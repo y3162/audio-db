@@ -40,7 +40,7 @@
 
 ## 検証と best checkpoint
 
-検証は rank 0 だけが、勾配を切って評価モードで計算する。終わったら学習モードに戻し、学習用の乱数状態は検証の前に保存して戻す。指標を出せないときは 0 ではなく `na` または `unavailable` と理由を残す。PESQ と STOI はレシピの教師波形を参照にする。
+検証は rank 0 だけが、勾配を切って評価モードで計算する。終わったら学習モードに戻し、学習用の乱数状態は検証の前に保存して戻す。指標を出せないときは 0 ではなく `na` または `unavailable` と理由を残す。PESQ と STOI はレシピの教師波形を参照にする。発話長が hop の倍数でないとき、検証だけ先頭を hop 倍数まで切る。中心化 iSTFT がその長さを復元するためである。学習の更新経路は、長さが合わない iSTFT を引き続き拒否する。
 
 公式は epoch 40 以降、検証 PESQ が改善したときだけ Generator を `g_best` に保存する。ここも `best_checkpoint_start_epoch`（既定 40）以降で、検証 PESQ の平均が改善したときだけ `best_generator.pt` を書く。中身は `generator` キーだけで、`load_enhancer()` が読む。ステップ、指標、設定は隣の `best_generator.json` に書く。再開用の `step_XXXXXXXX.pt` とは別である。
 

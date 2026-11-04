@@ -1,0 +1,46 @@
+# 100-step trial. MossFormerGAN_SE_16K.yaml: 16 kHz, 2 s, batch 1,
+# accu_grad to effective batch 2, AdamW lr 5e-4 (discriminator 1e-2 is
+# applied in the task as 2x), effective weight decay 0.01, clip 10,
+# max_epoch 120. One optimizer step updates generator and discriminator
+# once each, after both backwards. The plateau rule runs at epoch end.
+
+seed: 17
+deterministic: false
+global_batch_size: 2
+micro_batch_size_per_gpu: 1
+max_steps: 100
+segment_size: 32000
+loss: official
+grad_clip: 10.0
+checkpoint_dir: data/results/training/trial100-20261104/mossformergan
+checkpoint_interval: 50
+validation_interval: 0
+best_checkpoint_start_epoch: 40
+
+optimizer:
+  name: adamw
+  lr: 0.0005
+  betas: [0.9, 0.999]
+  weight_decay: 0.01
+
+scheduler:
+  name: none
+
+model:
+  name: mossformergan
+  variant: se_16k
+  sampling_rate: 16000
+  architecture:
+    n_fft: 400
+    win_len: 400
+    hop: 100
+    num_channel: 64
+
+data:
+  database: data/db/voicebank.duckdb
+  train_set: voicebank_28_train
+  validation_set: voicebank_28_valid
+
+runtime:
+  device: cuda
+  allow_busy_gpu: false

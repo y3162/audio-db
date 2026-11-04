@@ -153,6 +153,9 @@ class IdentityTests(unittest.TestCase):
         rows = parse_nvidia_smi("0, 128, 0\n1, 20000, 90\n")
         self.assertEqual(rows[1]["memory_used_mib"], 20000)
         self.assertEqual(rows[0]["index"], 0)
+        mig = parse_nvidia_smi("0, 758, [N/A]\n")
+        self.assertEqual(mig[0]["memory_used_mib"], 758)
+        self.assertIsNone(mig[0]["utilization"])
 
 
 class MockContractTests(unittest.TestCase):

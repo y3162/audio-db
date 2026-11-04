@@ -9,7 +9,7 @@ from __future__ import annotations
 import os
 import subprocess
 
-from src.evaluation.gpu import BUSY_MEMORY_MIB, parse_nvidia_smi
+from src.evaluation.gpu import BUSY_MEMORY_MIB, _utilization_text, parse_nvidia_smi
 from src.training.errors import TrainingError
 
 
@@ -56,5 +56,5 @@ def assert_gpu_idle(local_rank: int, *, allow_busy: bool) -> None:
     if chosen["memory_used_mib"] >= BUSY_MEMORY_MIB:
         raise TrainingError(
             f"GPU {index} is in use ({chosen['memory_used_mib']} MiB, "
-            f"utilization {chosen['utilization']}%). Set CUDA_VISIBLE_DEVICES to a free GPU."
+            f"utilization {_utilization_text(chosen['utilization'])}. Set CUDA_VISIBLE_DEVICES to a free GPU."
         )
