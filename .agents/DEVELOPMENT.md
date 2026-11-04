@@ -23,6 +23,7 @@
 
 - 研究室サーバーは ampere（RTX 3090 ×4）、tensor（A100 40GB ×7、80GB ×1）、turing（Quadro RTX 5000 ×4）、shannon（A100 80GB ×8）。`.venvs/lab` は共通。
 - GPU は他のユーザーも使う。使う前に `nvidia-smi` で空きを確認し、使用メモリが 1024 MiB 未満の GPU だけを指定する。評価 CLI は、使用メモリが 1024 MiB 以上の CUDA GPU を拒否する。`runtime.allow_busy_gpu: true` は、その GPU が自分のジョブだと分かっているときだけ使う。
+- 学習の空き確認は、CUDA が認識した装置が MIG の場合、その MIG の空きメモリを使う。親 GPU の使用量は他の MIG を含み得るため判定に使わない。CUDA context 自身の使用分も含む。qsub での実機検証状況は `docs/training/JOB_CONTINUATION_AUDIT.md`。
 - `CUDA_VISIBLE_DEVICES` で隠すと、見える GPU の番号は 0 から振り直される。`device` の指定はその番号。
 - 設定やスモークに書かれた `cuda:1`（`configs/evaluation/e2e.yaml`、`tests/asr_smoke/run_smoke.py`）は固定の例。そのまま実行せず、空きを確認する。多くの試験は CPU で足りる。
 

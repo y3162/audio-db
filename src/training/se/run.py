@@ -42,7 +42,9 @@ def build_task(config: dict, device):
     raise TrainingError(f"no training task for {name}")
 
 
-def execute(config_path: str | Path, *, resume: str | Path | None = None) -> None:
+def execute(config_path: str | Path, *, resume: str | Path | None = None,
+            deadline: float | None = None, segment_steps: int | None = None,
+            strict_resume: bool = False) -> Trainer:
     config = load_training_config(config_path)
     device_name = config["runtime"]["device"]
     if device_name == "cuda":
@@ -111,6 +113,13 @@ def execute(config_path: str | Path, *, resume: str | Path | None = None) -> Non
         validation_interval=config["validation_interval"],
         config=config,
     )
-    trainer.fit(train, validation, resume=None if resume is None else Path(resume))
+    if strict_resume and resume is not None:
+        from src.training.core.checkpoint import load_checkpoint
+        saved = load_checkpoint(Path(resume), process.device)
+        if saved.get("config") != config:
+            raise TrainingError("checkpoint configuration does not match this experiment")
+    trainer.fit(train, validation, resume=None if resume is None else Path(resume),
+                deadline=deadline, segment_steps=segment_steps)
     if process.distributed and dist.is_initialized():
         dist.destroy_process_group()
+    return trainer

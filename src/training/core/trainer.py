@@ -126,13 +126,22 @@ class Trainer:
         self.chunk_history: list[dict[str, Any]] = []
         self.plateau_count = 0
         self.plateau_metric: float | None = None
+        self.stop_reason: str | None = None
+        self.last_checkpoint: str | None = None
 
     def fit(
         self,
         dataset: RecipeDataset,
         validation: RecipeDataset | None = None,
         resume: Path | None = None,
+        *,
+        deadline: float | None = None,
+        segment_steps: int | None = None,
     ) -> None:
+        if (deadline is not None or segment_steps is not None) and self.process.world_size != 1:
+            raise TrainingError("managed stops require one training process")
+        if segment_steps is not None and segment_steps < 1:
+            raise TrainingError("segment_steps must be positive")
         epoch = 0
         skip = 0
         if resume is not None:
@@ -162,6 +171,9 @@ class Trainer:
                 self.checkpoint_dir.mkdir(parents=True, exist_ok=True)
                 append_record(self._log_path(), _run_header(self))
         self.task.distribute(self.process)
+        self._deadline = deadline
+        self._managed = deadline is not None or segment_steps is not None
+        self._segment_end = None if segment_steps is None else self.global_step + segment_steps
         if self.process.rank == 0:
             self.checkpoint_dir.mkdir(parents=True, exist_ok=True)
         barrier(self.process)
@@ -246,9 +258,11 @@ class Trainer:
                 if epoch_done:
                     self.task.step_schedulers(self._scheduler_validation(validation_summary))
                     halt = bool(getattr(self.task, "stop_training", False)) or self._batch_schedule_should_stop(validation_summary)
+                timed_stop = not halt and self.global_step < self.max_steps and self._stop_requested()
                 checkpoint_path = None
-                if self._should_save(self.global_step) or ((self.steps_per_epoch or self.config.get("batch_schedule")) and epoch_done and self.process.rank == 0):
+                if self._should_save(self.global_step) or timed_stop or ((self.steps_per_epoch or self.config.get("batch_schedule")) and epoch_done and self.process.rank == 0):
                     checkpoint_path = self._save(dataset, epoch, cursor, usable_batches)
+                    self.last_checkpoint = checkpoint_path
                 if self.process.rank == 0:
                     self._log_train(logical_epoch, metrics, checkpoint_path, validation_summary, group)
                     if (
@@ -259,6 +273,10 @@ class Trainer:
                         rendered = " ".join(f"{name}={value:.6f}" for name, value in sorted(metrics.items()))
                         print(f"step {self.global_step} {rendered}", flush=True)
                 barrier(self.process)
+                if timed_stop:
+                    self.stop_reason = "CHECKPOINTED"
+                    halt = True
+                    break
             if pending is not None:
                 pending.result()
                 pending = None
@@ -266,6 +284,8 @@ class Trainer:
                 break
             epoch += 1
         barrier(self.process)
+        if self.stop_reason is None:
+            self.stop_reason = "COMPLETED"
 
     def _run_chunk_epochs(self, dataset, validation, skip, epoch, halt) -> None:
         """One epoch is one pass of the ESPnet chunk iterator, not a fixed update count."""
@@ -307,16 +327,31 @@ class Trainer:
                     self.task.step_schedulers(self._scheduler_validation(validation_summary))
                     if self._chunk_should_stop(espnet_epoch, validation_summary):
                         halt = True
+                complete = halt or (epoch_done and espnet_epoch >= max_epochs)
+                timed_stop = not complete and self.global_step < self.max_steps and self._stop_requested()
                 checkpoint_path = None
-                if self._should_save(self.global_step) or (epoch_done and self.process.rank == 0):
+                if self._should_save(self.global_step) or timed_stop or (epoch_done and self.process.rank == 0):
                     checkpoint_path = self._save(dataset, epoch, cursor, usable)
+                    self.last_checkpoint = checkpoint_path
                 if self.process.rank == 0:
                     self._log_train(espnet_epoch, metrics, checkpoint_path, validation_summary, group)
                 barrier(self.process)
+                if timed_stop:
+                    self.stop_reason = "CHECKPOINTED"
+                    halt = True
+                    break
             if halt or self.global_step >= self.max_steps:
                 break
             epoch += 1
         barrier(self.process)
+        if self.stop_reason is None:
+            if self._managed and self.global_step >= self.max_steps and epoch < max_epochs and not halt:
+                raise TrainingError("chunk iterator reached max_steps before completing training")
+            self.stop_reason = "COMPLETED"
+
+    def _stop_requested(self) -> bool:
+        return ((self._deadline is not None and time.time() >= self._deadline)
+                or (self._segment_end is not None and self.global_step >= self._segment_end))
 
     def _planned_chunks(self, dataset, espnet_epoch: int, *, train: bool):
         spec = self.config["chunk_iterator"]
@@ -504,7 +539,7 @@ class Trainer:
             "plateau_metric": self.plateau_metric,
         }
         path = self.checkpoint_dir / f"step_{self.global_step:08d}.pt"
-        save_atomic(path, payload)
+        save_atomic(path, payload, verify_training=True)
         exported = _inference_payload(self.task)
         if exported is not None:
             save_atomic(self.checkpoint_dir / "generator.pt", exported)

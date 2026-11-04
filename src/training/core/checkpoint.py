@@ -7,6 +7,7 @@ then renamed. A killed writer leaves the previous checkpoint in place.
 from __future__ import annotations
 
 import os
+import tempfile
 from pathlib import Path
 from typing import Any
 
@@ -32,13 +33,28 @@ def assert_output_allowed(path: Path) -> None:
             raise TrainingError(f"refusing to write training output under {relative}: {path}")
 
 
-def save_atomic(path: Path, payload: dict[str, Any]) -> None:
+def save_atomic(path: Path, payload: dict[str, Any], *, verify_training: bool = False) -> None:
     assert_output_allowed(path)
     path.parent.mkdir(parents=True, exist_ok=True)
     assert_output_allowed(path.parent)
-    temporary = path.parent / f".{path.name}.tmp"
-    torch.save(payload, temporary)
-    os.replace(temporary, path)
+    fd, name = tempfile.mkstemp(prefix=f".{path.name}.", suffix=".tmp", dir=path.parent)
+    temporary = Path(name)
+    try:
+        with os.fdopen(fd, "wb") as stream:
+            torch.save(payload, stream)
+            stream.flush()
+            os.fsync(stream.fileno())
+        if verify_training:
+            restored = load_checkpoint(temporary, torch.device("cpu"))
+            for key in ("global_step", "epoch", "micro_batches_consumed"):
+                if key not in restored or restored[key] != payload[key]:
+                    raise TrainingError(f"checkpoint verification failed: {key}")
+            for key in ("task", "rng", "dataset", "config", "batch_plan"):
+                if key not in restored:
+                    raise TrainingError(f"checkpoint verification failed: missing {key}")
+        os.replace(temporary, path)
+    finally:
+        temporary.unlink(missing_ok=True)
 
 
 def load_checkpoint(path: Path, device: torch.device) -> dict[str, Any]:

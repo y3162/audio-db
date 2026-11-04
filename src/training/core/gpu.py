@@ -1,13 +1,14 @@
 """Refuse a CUDA device that already appears busy.
 
-``CUDA_VISIBLE_DEVICES`` renumbers the devices PyTorch sees. The memory check
-uses the physical index from that variable, not a number stored in the config.
+``CUDA_VISIBLE_DEVICES`` renumbers the devices PyTorch sees. MIG memory is
+checked on the CUDA-visible instance; full GPUs use their physical index.
 """
 
 from __future__ import annotations
 
 import os
 import subprocess
+import torch
 
 from src.evaluation.gpu import BUSY_MEMORY_MIB, _utilization_text, parse_nvidia_smi
 from src.training.errors import TrainingError
@@ -30,6 +31,21 @@ def physical_index(local_rank: int) -> int:
 
 def assert_gpu_idle(local_rank: int, *, allow_busy: bool) -> None:
     if allow_busy:
+        return
+    # CUDA resolves MIG UUIDs and scheduler device cgroups to the actual
+    # compute instance. nvidia-smi --query-gpu reports the parent instead.
+    try:
+        is_mig = "MIG" in torch.cuda.get_device_name(local_rank)
+    except Exception as exc:
+        raise TrainingError(f"cannot identify allocated CUDA device: {exc}") from exc
+    if is_mig:
+        try:
+            free, total = torch.cuda.mem_get_info(local_rank)
+        except Exception as exc:
+            raise TrainingError(f"cannot inspect allocated MIG memory: {exc}") from exc
+        used_mib = (total - free) / (1024 * 1024)
+        if used_mib >= BUSY_MEMORY_MIB:
+            raise TrainingError(f"allocated MIG device {local_rank} is in use ({used_mib:.0f} MiB)")
         return
     try:
         completed = subprocess.run(
