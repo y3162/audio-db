@@ -8,6 +8,7 @@ from pathlib import Path
 import torch.distributed as dist
 
 from src.training.core.batch import plan_batches
+from src.training.core.batch_schedule import scheduled_batch_size
 from src.training.core.distributed import setup_process
 from src.training.core.gpu import assert_gpu_idle
 from src.training.core.rng import set_determinism
@@ -49,11 +50,24 @@ def execute(config_path: str | Path, *, resume: str | Path | None = None) -> Non
         assert_gpu_idle(local_rank, allow_busy=config["runtime"]["allow_busy_gpu"])
     set_determinism(config["deterministic"], cuda=device_name == "cuda")
     process = setup_process(device_name)
-    plan = plan_batches(
-        config["global_batch_size"],
-        config["micro_batch_size_per_gpu"],
-        process.world_size,
-    )
+    if config.get("batch_schedule"):
+        first = scheduled_batch_size(
+            0,
+            int(config["batch_size_limit"]),
+            [tuple(item) for item in config["batch_schedule"]],
+        )
+        if first > int(config["micro_batch_size_per_gpu"]):
+            raise TrainingError(
+                f"scheduled batch {first} exceeds micro_batch_size_per_gpu "
+                f"{config['micro_batch_size_per_gpu']}"
+            )
+        plan = plan_batches(first, first, process.world_size)
+    else:
+        plan = plan_batches(
+            config["global_batch_size"],
+            config["micro_batch_size_per_gpu"],
+            process.world_size,
+        )
     if process.rank == 0:
         print(
             "batch plan "

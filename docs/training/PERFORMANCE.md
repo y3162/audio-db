@@ -1,4 +1,6 @@
-> 訂正（2026-11-04）：TF-GridNet の 5,000 更新は固定更新の研究案であり、ESPnet chunk iterator の公式 epoch ではない。35 × 5,000 の時間はその研究案の外挿。詳細は [監査](OFFICIAL_TRAINING_AUDIT.md)。
+> 訂正：DeepFilterNet3 の schedule は `min(schedule値, 設定 batch_size)`。出荷 batch_size 64 では epoch 10 以降の実効 batch は 64 であり、9999 をそのまま投入しない。batch 64 の実行可否は未測定。公式 `df/train.py:236`。
+
+> 訂正（2026-11-04）：TF-GridNet の 5,000 更新は固定更新の研究案であり、ESPnet chunk iterator の公式 epoch ではない。このファイルの 0.191 秒/step は長さ 48,000 の固定 crop の測定で、可変チャンク epoch の合計時間には換算しない。詳細は [監査](OFFICIAL_TRAINING_AUDIT.md)。
 
 # 学習 step の内訳と入力を変えない高速化（2026-11-04）
 

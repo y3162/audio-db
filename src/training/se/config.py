@@ -19,6 +19,10 @@ _TOP = {
     "micro_batch_size_per_gpu",
     "max_steps",
     "logical_steps_per_epoch",
+    "chunk_iterator",
+    "batch_schedule",
+    "batch_size_limit",
+    "early_stopping_patience",
     "segment_size",
     "loss",
     "checkpoint_dir",
@@ -103,6 +107,24 @@ def load_training_config(path: str | Path) -> dict[str, Any]:
         config["logical_steps_per_epoch"] = _int(raw["logical_steps_per_epoch"], "logical_steps_per_epoch")
         if not config["data"]["validation_set"]:
             raise TrainingError("logical_steps_per_epoch requires validation_set")
+    if "chunk_iterator" in raw:
+        config["chunk_iterator"] = _chunk_iterator(raw["chunk_iterator"])
+        if not config["data"]["validation_set"]:
+            raise TrainingError("chunk_iterator requires validation_set")
+        if "logical_steps_per_epoch" in config:
+            raise TrainingError("chunk_iterator cannot be combined with logical_steps_per_epoch")
+    if "batch_schedule" in raw:
+        config["batch_schedule"] = _batch_schedule(raw["batch_schedule"])
+        config["batch_size_limit"] = _int(
+            raw.get("batch_size_limit", config["global_batch_size"]),
+            "batch_size_limit",
+        )
+        if "chunk_iterator" in config:
+            raise TrainingError("batch_schedule cannot be combined with chunk_iterator")
+    if "early_stopping_patience" in raw:
+        config["early_stopping_patience"] = _int(
+            raw["early_stopping_patience"], "early_stopping_patience", minimum=1,
+        )
     if config["validation_interval"] > 0 and not config["data"]["validation_set"]:
         raise TrainingError("validation_interval requires data.validation_set")
     if config["data"]["validation_set"] == config["data"]["train_set"]:
@@ -220,6 +242,52 @@ def _mp_senet_model(raw: dict[str, Any]) -> dict[str, Any]:
         "beta": _float(raw["beta"], "model.beta"),
         "sampling_rate": _int(raw["sampling_rate"], "model.sampling_rate"),
     }
+
+
+def _chunk_iterator(raw: Any) -> dict[str, Any]:
+    if not isinstance(raw, dict):
+        raise TrainingError("chunk_iterator must be a mapping")
+    allowed = {
+        "num_samples_per_epoch",
+        "chunk_length",
+        "chunk_shift_ratio",
+        "num_cache_chunks",
+        "shuffle",
+        "max_epochs",
+        "early_stopping_patience",
+        "keep_nbest",
+    }
+    _unknown(raw, allowed, "chunk_iterator")
+    return {
+        "num_samples_per_epoch": _int(raw["num_samples_per_epoch"], "chunk_iterator.num_samples_per_epoch"),
+        "chunk_length": _int(raw["chunk_length"], "chunk_iterator.chunk_length", minimum=2),
+        "chunk_shift_ratio": _float(raw.get("chunk_shift_ratio", 0.5), "chunk_iterator.chunk_shift_ratio", minimum=0.0),
+        "num_cache_chunks": _int(raw.get("num_cache_chunks", 1024), "chunk_iterator.num_cache_chunks"),
+        "shuffle": _bool(raw.get("shuffle", True), "chunk_iterator.shuffle"),
+        "max_epochs": _int(raw["max_epochs"], "chunk_iterator.max_epochs"),
+        "early_stopping_patience": _int(
+            raw.get("early_stopping_patience", 5),
+            "chunk_iterator.early_stopping_patience",
+            minimum=0,
+        ),
+        "keep_nbest": _int(raw.get("keep_nbest", 5), "chunk_iterator.keep_nbest"),
+    }
+
+
+def _batch_schedule(raw: Any) -> list[list[int]]:
+    if not isinstance(raw, list) or not raw:
+        raise TrainingError("batch_schedule must be a non-empty list of [epoch, batch_size]")
+    schedule = []
+    for item in raw:
+        if not isinstance(item, list) or len(item) != 2:
+            raise TrainingError("batch_schedule entries must be [epoch, batch_size]")
+        schedule.append([
+            _int(item[0], "batch_schedule epoch", minimum=0),
+            _int(item[1], "batch_schedule batch_size"),
+        ])
+    if schedule[0][0] != 0:
+        raise TrainingError("batch_schedule must start at epoch 0")
+    return schedule
 
 
 def _data(raw: Any) -> dict[str, Any]:

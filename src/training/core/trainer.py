@@ -25,7 +25,9 @@ import torch.nn as nn
 from torch.nn.parallel import DistributedDataParallel
 
 from src.evaluation.envinfo import capture_environment
-from src.training.core.batch import BatchPlan
+from src.training.core.batch import BatchPlan, plan_batches
+from src.training.core.batch_schedule import scheduled_batch_size
+from src.training.data.chunk_plan import epoch_chunk_batches
 from src.training.core.checkpoint import load_checkpoint, save_atomic
 from src.training.core.distributed import ProcessInfo, barrier, unwrap
 from src.training.core.metrics_log import append_record, truncate_after, write_json
@@ -121,6 +123,9 @@ class Trainer:
         if isinstance(start, bool) or not isinstance(start, int) or start < 0:
             raise TrainingError("best_checkpoint_start_epoch must be an integer >= 0")
         self.best_checkpoint_start_epoch = start
+        self.chunk_history: list[dict[str, Any]] = []
+        self.plateau_count = 0
+        self.plateau_metric: float | None = None
 
     def fit(
         self,
@@ -142,6 +147,10 @@ class Trainer:
             epoch = int(payload["epoch"])
             skip = int(payload["micro_batches_consumed"])
             self.best_pesq = _stored_best_pesq(payload, self.checkpoint_dir)
+            self.chunk_history = list(payload.get("chunk_history") or [])
+            self.plateau_count = int(payload.get("plateau_count") or 0)
+            stored_metric = payload.get("plateau_metric")
+            self.plateau_metric = None if stored_metric is None else float(stored_metric)
             if self.global_step >= self.max_steps:
                 raise TrainingError("checkpoint global_step is already at max_steps")
             if self.process.rank == 0:
@@ -161,13 +170,17 @@ class Trainer:
         halt = False
         loader = ThreadPoolExecutor(max_workers=1, thread_name_prefix="audio-db-prefetch") if prefetch else None
         try:
-            self._run_epochs(dataset, validation, skip, epoch, halt, loader, prefetch)
+            if self.config.get("chunk_iterator"):
+                self._run_chunk_epochs(dataset, validation, skip, epoch, halt)
+            else:
+                self._run_epochs(dataset, validation, skip, epoch, halt, loader, prefetch)
         finally:
             if loader is not None:
                 loader.shutdown(wait=True, cancel_futures=True)
 
     def _run_epochs(self, dataset, validation, skip, epoch, halt, loader, prefetch) -> None:
         while self.global_step < self.max_steps and not halt:
+            self._apply_batch_schedule(epoch)
             indices = epoch_indices(
                 len(dataset),
                 self.seed,
@@ -194,10 +207,12 @@ class Trainer:
                 skip = 0
                 continue
             dataset.set_epoch(epoch)
+            self._retarget_schedule(usable_batches // accumulation)
             cursor = skip
             skip = 0
             pending: Future | None = None
             while cursor < usable_batches and self.global_step < self.max_steps:
+                self._note_schedule(epoch, cursor // accumulation, usable_batches // accumulation)
                 if pending is not None:
                     group, cursor = pending.result()
                     pending = None
@@ -219,13 +234,20 @@ class Trainer:
                 epoch_done = (self.global_step % self.steps_per_epoch == 0) if self.steps_per_epoch else cursor >= usable_batches
                 logical_epoch = (self.global_step - 1) // self.steps_per_epoch if self.steps_per_epoch else epoch
                 validation_summary = None
-                if (self.steps_per_epoch and epoch_done) or (not self.steps_per_epoch and self.validation_interval and self.global_step % self.validation_interval == 0):
+                scheduled_epoch = bool(self.config.get("batch_schedule") and epoch_done and validation is not None)
+                step_validation = bool(
+                    not self.steps_per_epoch
+                    and not self.config.get("batch_schedule")
+                    and self.validation_interval
+                    and self.global_step % self.validation_interval == 0
+                )
+                if (self.steps_per_epoch and epoch_done) or scheduled_epoch or step_validation:
                     validation_summary = self._validate(validation, logical_epoch)
                 if epoch_done:
                     self.task.step_schedulers(self._scheduler_validation(validation_summary))
-                    halt = bool(getattr(self.task, "stop_training", False))
+                    halt = bool(getattr(self.task, "stop_training", False)) or self._batch_schedule_should_stop(validation_summary)
                 checkpoint_path = None
-                if self._should_save(self.global_step) or (self.steps_per_epoch and epoch_done and self.process.rank == 0):
+                if self._should_save(self.global_step) or ((self.steps_per_epoch or self.config.get("batch_schedule")) and epoch_done and self.process.rank == 0):
                     checkpoint_path = self._save(dataset, epoch, cursor, usable_batches)
                 if self.process.rank == 0:
                     self._log_train(logical_epoch, metrics, checkpoint_path, validation_summary)
@@ -244,6 +266,196 @@ class Trainer:
                 break
             epoch += 1
         barrier(self.process)
+
+    def _run_chunk_epochs(self, dataset, validation, skip, epoch, halt) -> None:
+        """One epoch is one pass of the ESPnet chunk iterator, not a fixed update count."""
+        if self.process.world_size != 1:
+            raise TrainingError("the chunk iterator is implemented for one process")
+        spec = self.config["chunk_iterator"]
+        max_epochs = int(spec["max_epochs"])
+        while epoch < max_epochs and self.global_step < self.max_steps and not halt:
+            micro = self.plan.micro_batch_size
+            accumulation = self.plan.accumulation_steps
+            if accumulation != 1:
+                raise TrainingError("chunk iterator updates use one official batch and no gradient accumulation")
+            batches = self._planned_chunks(dataset, epoch + 1, train=True)
+            usable = len(batches)
+            if usable < 1:
+                raise TrainingError(f"chunk epoch {epoch + 1} produced no batches")
+            if skip > usable:
+                raise TrainingError(
+                    f"checkpoint chunk position {skip} is past the {usable} batches in epoch {epoch + 1}"
+                )
+            if skip == usable:
+                epoch += 1
+                skip = 0
+                continue
+            dataset.set_epoch(epoch)
+            cursor = skip
+            skip = 0
+            while cursor < usable and self.global_step < self.max_steps:
+                group = [dataset.collate_chunks(batches[cursor])]
+                cursor += 1
+                metrics = self.task.train_update(group, accumulation)
+                self._require_finite(metrics)
+                self.global_step += 1
+                epoch_done = cursor >= usable
+                espnet_epoch = epoch + 1
+                validation_summary = None
+                if epoch_done:
+                    validation_summary = self._validate_chunks(validation, espnet_epoch)
+                    self.task.step_schedulers(self._scheduler_validation(validation_summary))
+                    if self._chunk_should_stop(espnet_epoch, validation_summary):
+                        halt = True
+                checkpoint_path = None
+                if self._should_save(self.global_step) or (epoch_done and self.process.rank == 0):
+                    checkpoint_path = self._save(dataset, epoch, cursor, usable)
+                if self.process.rank == 0:
+                    self._log_train(espnet_epoch, metrics, checkpoint_path, validation_summary)
+                barrier(self.process)
+            if halt or self.global_step >= self.max_steps:
+                break
+            epoch += 1
+        barrier(self.process)
+
+    def _planned_chunks(self, dataset, espnet_epoch: int, *, train: bool):
+        spec = self.config["chunk_iterator"]
+        num_samples = int(spec["num_samples_per_epoch"]) if train else None
+        return epoch_chunk_batches(
+            dataset.case_ids(),
+            dataset.waveform_lengths(),
+            espnet_epoch=espnet_epoch,
+            seed=self.seed,
+            num_samples=num_samples,
+            chunk_length=int(spec["chunk_length"]),
+            batch_size=self.plan.micro_batch_size,
+            cache_size=int(spec["num_cache_chunks"]),
+            shuffle=bool(spec["shuffle"]) if train else False,
+            shift_ratio=float(spec["chunk_shift_ratio"]),
+        )
+
+    def _validate_chunks(self, validation, espnet_epoch: int) -> dict[str, Any] | None:
+        if validation is None:
+            raise TrainingError("chunk_iterator requires a validation set")
+        rng_state = capture_rng(cuda=self.process.uses_cuda)
+        summary = None
+        try:
+            if self.process.rank == 0:
+                self.task.eval_mode()
+                batches = self._planned_chunks(validation, espnet_epoch, train=False)
+                if not batches:
+                    raise TrainingError("validation chunk iterator produced no batches")
+                reports = [self.task.validation_report(validation.collate_chunks(chunks)) for chunks in batches]
+                summary = _aggregate_validation(reports)
+                summary["best_checkpoint"] = self._retain_chunk_models(espnet_epoch, summary)
+                append_record(self._log_path(), {
+                    "type": "validation",
+                    "global_step": self.global_step,
+                    "epoch": espnet_epoch,
+                    "losses": summary["losses"],
+                    "pesq": summary["pesq"],
+                    "stoi": summary["stoi"],
+                    "si_snr": summary.get("si_snr"),
+                    "best_checkpoint": summary["best_checkpoint"],
+                    "seed": self.seed,
+                })
+        finally:
+            restore_rng(rng_state, cuda=self.process.uses_cuda)
+            self.task.train_mode()
+        barrier(self.process)
+        return summary
+
+    def _chunk_should_stop(self, espnet_epoch: int, summary: dict[str, Any] | None) -> bool:
+        spec = self.config["chunk_iterator"]
+        patience = spec.get("early_stopping_patience")
+        if patience is None or summary is None or self.process.rank != 0:
+            stopped = False
+        else:
+            loss = _loss_value(summary)
+            if loss is None:
+                stopped = False
+            else:
+                best = min(self.chunk_history, key=lambda row: (row["loss"], row["epoch"]))
+                stopped = espnet_epoch - int(best["epoch"]) > int(patience)
+        if self.process.distributed:
+            flag = torch.tensor([1 if stopped else 0], dtype=torch.int64)
+            dist.broadcast(flag, src=0)
+            stopped = bool(int(flag.item()))
+        return stopped
+
+    def _retain_chunk_models(self, espnet_epoch: int, summary: dict[str, Any]) -> str | None:
+        loss = _loss_value(summary)
+        si = summary.get("si_snr") or {}
+        si_value = float(si["value"]) if si.get("status") == "ok" and si.get("value") is not None else None
+        if loss is None:
+            return None
+        self.chunk_history.append({"epoch": espnet_epoch, "loss": loss, "si_snr": si_value})
+        keep = int(self.config["chunk_iterator"]["keep_nbest"])
+        by_loss = sorted(self.chunk_history, key=lambda row: (row["loss"], row["epoch"]))[:keep]
+        ranked_si = [row for row in self.chunk_history if row["si_snr"] is not None]
+        by_si = sorted(ranked_si, key=lambda row: (-row["si_snr"], row["epoch"]))[:keep]
+        kept = {int(row["epoch"]) for row in by_loss + by_si}
+        exported = _inference_payload(self.task)
+        path = None
+        if exported is not None:
+            path = self.checkpoint_dir / f"{espnet_epoch}epoch.pt"
+            save_atomic(path, exported)
+            for row, name, metric in (
+                (by_loss[0], "valid.loss.best.pt", "loss"),
+                (by_si[0] if by_si else None, "valid.si_snr.best.pt", "si_snr"),
+            ):
+                if row is not None and int(row["epoch"]) == espnet_epoch:
+                    save_atomic(self.checkpoint_dir / name, exported)
+                    write_json(self.checkpoint_dir / f"{name}.json", {
+                        "metric": metric, "epoch": espnet_epoch, "value": row[metric],
+                        "global_step": self.global_step,
+                    })
+        for old in self.checkpoint_dir.glob("*epoch.pt"):
+            if old.name[0].isdigit() and int(old.name.split("epoch")[0]) not in kept:
+                old.unlink()
+        return None if path is None else str(path)
+
+    def _batch_schedule_should_stop(self, summary: dict[str, Any] | None) -> bool:
+        """DeepFilterNet resets its patience counter when validation loss improves."""
+        patience = self.config.get("early_stopping_patience")
+        if not self.config.get("batch_schedule") or patience is None or summary is None:
+            return False
+        if self.process.rank != 0:
+            return False
+        loss = _loss_value(summary)
+        if loss is None:
+            return False
+        if self.plateau_metric is None or loss < self.plateau_metric:
+            self.plateau_count = 0
+            self.plateau_metric = loss
+            return False
+        self.plateau_count += 1
+        return self.plateau_count >= int(patience)
+
+    def _apply_batch_schedule(self, epoch: int) -> None:
+        schedule = self.config.get("batch_schedule")
+        if not schedule:
+            return
+        if self.process.world_size != 1:
+            raise TrainingError("batch_schedule is implemented for one process")
+        limit = int(self.config["batch_size_limit"])
+        size = scheduled_batch_size(epoch, limit, [tuple(item) for item in schedule])
+        cap = int(self.config["micro_batch_size_per_gpu"])
+        if size > cap:
+            raise TrainingError(
+                f"scheduled batch {size} at epoch {epoch} exceeds micro_batch_size_per_gpu {cap}"
+            )
+        self.plan = plan_batches(size, size, self.process.world_size)
+
+    def _retarget_schedule(self, steps_per_epoch: int) -> None:
+        retarget = getattr(self.task, "retarget_deepfilter_schedule", None)
+        if retarget is not None and self.config.get("batch_schedule"):
+            retarget(steps_per_epoch)
+
+    def _note_schedule(self, epoch: int, index_in_epoch: int, steps_per_epoch: int) -> None:
+        note = getattr(self.task, "note_schedule_position", None)
+        if note is not None and self.config.get("batch_schedule"):
+            note(epoch * steps_per_epoch + index_in_epoch)
 
     def _scheduler_validation(self, summary: dict[str, Any] | None) -> dict[str, Any] | None:
         metric = None
@@ -287,6 +499,9 @@ class Trainer:
             "best_loss": self.best_loss,
             "logical_steps_per_epoch": self.steps_per_epoch,
             "logical_epoch": self.global_step // self.steps_per_epoch if self.steps_per_epoch else stored_epoch,
+            "chunk_history": self.chunk_history,
+            "plateau_count": self.plateau_count,
+            "plateau_metric": self.plateau_metric,
         }
         path = self.checkpoint_dir / f"step_{self.global_step:08d}.pt"
         save_atomic(path, payload)
@@ -344,8 +559,15 @@ class Trainer:
         return summary
 
     def _check_resume(self, payload: dict[str, Any], dataset: RecipeDataset) -> None:
-        if payload["batch_plan"] != self.plan.as_dict():
+        if self.config.get("batch_schedule"):
+            if payload["config"].get("batch_schedule") != self.config.get("batch_schedule"):
+                raise TrainingError("checkpoint batch schedule does not match this run")
+            if payload["config"].get("batch_size_limit") != self.config.get("batch_size_limit"):
+                raise TrainingError("checkpoint batch size limit does not match this run")
+        elif payload["batch_plan"] != self.plan.as_dict():
             raise TrainingError("checkpoint batch plan does not match this run")
+        if payload["config"].get("chunk_iterator") != self.config.get("chunk_iterator"):
+            raise TrainingError("checkpoint chunk iterator does not match this run")
         if payload["dataset"] != dataset.identity():
             raise TrainingError("checkpoint dataset identity does not match this run")
         saved = payload["config"]
@@ -387,7 +609,7 @@ class Trainer:
             return None
         if self.config.get("model", {}).get("name") == "semambapp":
             return None
-        if self.steps_per_epoch:
+        if self.steps_per_epoch or self.config.get("batch_schedule"):
             loss = summary["losses"].get("generator", {})
             if loss.get("status") != "ok" or loss.get("value") is None:
                 return None
@@ -509,7 +731,16 @@ def _aggregate_validation(reports: list[dict[str, Any]]) -> dict[str, Any]:
     }
     if reports and all("si_sdr" in report for report in reports):
         result["si_sdr"] = _combine_metric([report["si_sdr"] for report in reports])
+    if reports and all("si_snr" in report for report in reports):
+        result["si_snr"] = _combine_metric([report["si_snr"] for report in reports])
     return result
+
+
+def _loss_value(summary: dict[str, Any]) -> float | None:
+    loss = (summary.get("losses") or {}).get("generator") or {}
+    if loss.get("status") != "ok" or loss.get("value") is None:
+        return None
+    return float(loss["value"])
 
 
 def _combine_metric(items: list[dict[str, Any]]) -> dict[str, Any]:

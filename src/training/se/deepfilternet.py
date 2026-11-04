@@ -136,6 +136,10 @@ class DeepFilterNetTask:
             self._df_lrs = None
             self._df_wds = None
         self._df_step = 0
+        self._schedule_pinned = False
+        self._df_built_steps: int | None = (
+            int(schedule["steps_per_epoch"]) if schedule["name"] == "deepfilter_cosine" else None
+        )
 
     def distribute(self, process: ProcessInfo) -> None:
         self.generator = wrap_module(self.generator, process)
@@ -179,6 +183,30 @@ class DeepFilterNetTask:
             self.sched_g.load_state_dict(state["sched_g"])
         self._df_step = int(state.get("schedule_step") or 0)
 
+    def retarget_deepfilter_schedule(self, steps_per_epoch: int) -> None:
+        """Rebuild the cosine tables when the official loader length changes.
+
+        DeepFilterNet indexes ``epoch * len(loader) + step`` into a table built
+        from the current loader length, not into the table from the first epoch.
+        """
+        if self.config["scheduler"]["name"] != "deepfilter_cosine":
+            return
+        steps = int(steps_per_epoch)
+        if steps < 1:
+            raise TrainingError("deepfilter steps_per_epoch must be positive")
+        if self._df_built_steps == steps and self._df_lrs is not None:
+            return
+        schedule = dict(self.config["scheduler"])
+        schedule["steps_per_epoch"] = steps
+        rebuilt = dict(self.config)
+        rebuilt["scheduler"] = schedule
+        self._df_lrs, self._df_wds = deepfilter_cosine_schedules(rebuilt)
+        self._df_built_steps = steps
+
+    def note_schedule_position(self, index: int) -> None:
+        self._df_step = int(index)
+        self._schedule_pinned = True
+
     def train_update(self, batches: list[dict[str, Any]], accumulation: int) -> dict[str, float]:
         self.train_mode()
         self._apply_deepfilter_schedule()
@@ -194,7 +222,7 @@ class DeepFilterNetTask:
             total += float(loss.detach())
         clip_gradients(unwrap(self.generator), self.grad_clip)
         self.optim_g.step()
-        if self._df_lrs is not None:
+        if self._df_lrs is not None and not self._schedule_pinned:
             self._df_step += 1
         mean = total / len(batches)
         return {"generator": mean, "deepfilter": mean}

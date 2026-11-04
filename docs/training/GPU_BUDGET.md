@@ -1,4 +1,8 @@
-> 訂正（2026-11-04）：TF-GridNet の 5,000 更新は固定更新の研究案であり、ESPnet chunk iterator の公式 epoch ではない。35 × 5,000 の時間はその研究案の外挿。詳細は [監査](OFFICIAL_TRAINING_AUDIT.md)。
+> 訂正：DeepFilterNet3 の schedule は `min(schedule値, 設定 batch_size)`。出荷 batch_size 64 では epoch 10 以降の実効 batch は 64 であり、9999 をそのまま投入しない。batch 64 の実行可否は未測定。公式 `df/train.py:236`。
+
+> 訂正（2026-11-04）：TF-GridNet の 5,000 更新は固定更新の研究案であり、ESPnet chunk iterator の公式 epoch ではない。下の 9.9 時間は研究案の外挿で、公式学習の見積もりには使わない。公式モードの 1 epoch の更新数は未計測。詳細は [監査](OFFICIAL_TRAINING_AUDIT.md)。
+
+> 2026-11-04 のプロトコル実装セッションでは GPU を使っていない。見えていた GPU の使用メモリは 17,957 MiB で、1024 MiB 未満ではなかった。検証予算の加算は 0 秒。DeepFilterNet3 の batch 32 と 64 は引き続き未測定。
 
 # 本格学習の GPU 予算（2026-11-04、高速化後）
 
@@ -32,11 +36,11 @@ Peak allocated は最適化の前後で同じバイト数だった。MP-SENet 31
 | DeepFilterNet3 batch 24 | 445 | 未測定 | 2.200 | 0.335 h |
 | MossFormerGAN | 5,350 | 0.769 | 0.757 | 1.193 h |
 
-TF-GridNet の公開再現は 5,000 iter の行を使う。DeepFilterNet3 の batch 24 は 40 step の定常 35 点で、epoch 2 の学習率そのものではない。1 epoch の計算時間は batch 16 とほぼ同じで、batch を増やしたことによる短縮は無い。
+表の「公式 5,000 iter」は固定更新の研究案であり、可変チャンクの公式 epoch ではない。DeepFilterNet3 の batch 24 は 40 step の定常 35 点で、epoch 2 の学習率そのものではない。1 epoch の計算時間は batch 16 とほぼ同じで、batch を増やしたことによる短縮は無い。
 
 ## 公開 epoch 数
 
-標準は最適化後の step 中央値と、最適化後の検証外挿である。DeepFilterNet3 は、測った batch 16 の 2 epoch だけを合計に入れる。120 epoch は下の別表である。TF-GridNet は 5,000 iter × 35 epoch。
+標準は最適化後の step 中央値と、最適化後の検証外挿である。DeepFilterNet3 は、測った batch 16 の 2 epoch だけを合計に入れる。120 epoch は下の別表である。TF-GridNet の 9.9 時間は固定 5,000 更新 × 35 の研究案であり、可変チャンクの公式学習時間ではない。
 
 | モデル | epoch | 前 標準 | 後 標準 | 後 楽観 | 後 保守 | 削減 |
 |---|---:|---:|---:|---:|---:|---:|

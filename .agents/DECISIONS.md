@@ -7,7 +7,7 @@
 
 ## 採用決定済み・未実装
 
-1. **TF-GridNet の公開再現では、1 epoch を 5,000 optimizer step にする。** 公式 `num_iters_per_epoch` に合わせ、その境界で検証と ReduceLROnPlateau を進める。現行 Trainer の epoch はデータ 1 周（batch 4 で 2,675 更新）であり、2026-11-04 の 5,000 更新では plateau が `last_epoch` 0 のままだった。この checkpoint を公式 35 epoch の続きとして扱わない。実装したら、現状の学習記述も合わせる。
+（なし）
 
 ## 実装済み
 
@@ -40,6 +40,6 @@
 22. **SEMamba++ の GAN 更新は公式の系列順を使う。** 各サブ discriminator は real と fake を交互に処理し、CQT と multi-resolution の各損失を別に集計してから加算する。mel 損失と multi-resolution discriminator は公式の CPU 生成 Hann 窓を使い、mel basis は librosa の Slaney フィルタを使う。通常経路の反射パディングは公式に合わせ、厳密な決定的 CUDA では明示パディングを使う。処理順や項の結合を変えると浮動小数点の累算順が変わる。
 
 
-## TF-GridNet の固定更新スケジュール（2026-11-04）
+26. **TF-GridNet の公式学習は ESPnet の可変チャンク iterator である。** `num_iters_per_epoch: 5000` は元発話数であり、optimizer 更新数ではない。1 epoch はその iterator が尽きるまでで、境界で検証、ReduceLROnPlateau、early stopping（patience 5、valid loss）、best 5（valid loss 最小と valid si_snr 最大）を進める。記録される si_snr は負の SI-SDR なので、max は SI-SDR が低い方を選ぶ。`logical_steps_per_epoch` と `configs/training/tf_gridnet_fixed5000_seed17.yaml` は研究用の固定更新で、公式 35 epoch の再開点にしない。公式学習の設定は `configs/training/tf_gridnet_chunk_seed17.yaml`。複数 process の chunk 分割はしない。詳細は [公式設定監査](../docs/training/OFFICIAL_TRAINING_AUDIT.md)。
 
-ESPnet chunk iterator の `num_iters_per_epoch` は元発話数で、更新数ではない。固定 5000 更新を公式 epoch と呼ばない。独立 Trainer の `logical_steps_per_epoch` は研究用の固定更新境界で、データ周回とは独立し、境界で validation・scheduler・loss 最小 checkpoint を実行する。旧 checkpoint はこのモードへ再開できない。公式 chunking・early stopping・best 5 は未対応で、本格学習条件は未確定。詳細は [公式設定監査](../docs/training/OFFICIAL_TRAINING_AUDIT.md)。
+27. **DeepFilterNet3 の公式学習は出荷 ini の batch schedule と 120 epoch である。** 実効 batch は `min(schedule, 64)`。128 と 9999 は 64 になる。cosine の表は loader 長が変わった epoch で作り直し、`epoch * steps + step` で引く。早期停止は validation loss が 25 epoch 改善しないときで、改善するとカウンタを戻す。勾配蓄積で公式 batch を置き換えない。batch 32 と 64 の所要時間は未測定。設定は `configs/training/deepfilternet3_schedule_seed17.yaml`。

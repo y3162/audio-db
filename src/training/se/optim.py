@@ -46,6 +46,8 @@ def build_scheduler(optimizer: torch.optim.Optimizer, config: dict[str, Any]):
             mode="min",
             factor=float(schedule["factor"]),
             patience=int(schedule["patience"]),
+            threshold=1e-4,
+            threshold_mode="rel",
         )
     raise TrainingError(f"unsupported scheduler {name}")
 

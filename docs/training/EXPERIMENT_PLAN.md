@@ -30,16 +30,16 @@ VoiceBank+DEMAND の公式 28 話者のうち train 26 話者 10,700 発話、va
 
 ## 資源と順序
 
-H100 MIG 4g.47gb、VoiceBank 実音声、定常 step の中央値からの見積もりは [GPU_BUDGET.md](GPU_BUDGET.md)。内訳は [PERFORMANCE.md](PERFORMANCE.md)。旧 A100 の表は [GPU_COST.md](GPU_COST.md) に残し、ここでは使わない。高速化後の標準シナリオの 1 seed は、公開 epoch 数で MP-SENet 191 時間、SEMamba++ 67 時間、TF-GridNet 9.9 時間、MossFormerGAN 143 時間、DeepFilterNet3 は batch 16 の 2 epoch で 0.65 時間である。合計約 411 時間。3 seed は約 1,234 時間。最適化前の同じ範囲は 597 時間と 1,792 時間だった。DeepFilterNet3 の batch 32 以上と ASR の WER はこの合計に入っていない。batch 24 の epoch 2–4 を足しても 1 seed は約 1 時間しか増えない。
+H100 MIG 4g.47gb、VoiceBank 実音声、定常 step の中央値からの見積もりは [GPU_BUDGET.md](GPU_BUDGET.md)。内訳は [PERFORMANCE.md](PERFORMANCE.md)。旧 A100 の表は [GPU_COST.md](GPU_COST.md) に残し、ここでは使わない。高速化後の標準シナリオの 1 seed は、公開 epoch 数で MP-SENet 191 時間、SEMamba++ 67 時間、MossFormerGAN 143 時間、DeepFilterNet3 は batch 16 の 2 epoch で 0.65 時間である。TF-GridNet の 9.9 時間は固定 5,000 更新の研究案で、可変チャンクの公式学習には入れない。その 4 モデルだけの合計は約 401 時間。旧表の 411 時間は研究案の TF-GridNet を足した数である。上の 4 モデルの 3 seed は約 1,204 時間。旧表の 1,234 時間は研究案の TF-GridNet を含む。最適化前の同じ範囲は 597 時間と 1,792 時間だった。DeepFilterNet3 の batch 32 以上と ASR の WER はこの合計に入っていない。batch 24 の epoch 2–4 を足しても 1 seed は約 1 時間しか増えない。
 
 実行順は次のとおり。各本学習ジョブは 30 分を超えるので、投入のたびに明示の承認を得る。
 
-1. TF-GridNet の seed 17 を、公式の 5,000 iter × 35 epoch で 1 GPU に出す。検証間隔は 5,000 step。
+1. TF-GridNet の seed 17 は `configs/training/tf_gridnet_chunk_seed17.yaml`。固定 5,000 更新ではない。投入前に、実発話長から 1 epoch の更新数を数える。DeepFilterNet3 は `configs/training/deepfilternet3_schedule_seed17.yaml`。batch 32 に入る前にメモリと秒/step を測る。どちらも 30 分を超えるので、測定と本学習は別に承認を得る。
 2. 同じ checkpoint を固定 ASR の小規模な名前付きセットへ通し、WER の所要時間を測る。全件評価はその時間を見てから承認する。
 3. MossFormerGAN、MP-SENet、SEMamba++（蓄積 2）の順に seed 17 を出す。DeepFilterNet3 は batch 16 の epoch 0–1 と、測定済みの batch 24 の epoch 2–4 までを先に承認する。batch 32 以上は未測定なので、その epoch の前に step 時間とメモリを測る。
 4. seed 17 の test 評価が揃ってから seed 3 と 29 を出す。
 
-本格学習の開始判断は **PARTIAL** のままである。TF-GridNet seed 17 の最初の 5,000 更新は 1,045.70 秒で終わり、検証損失は有限、checkpoint から 2 更新の再開も通った。詳細は [VERIFICATION.md](VERIFICATION.md)。この実行の epoch はデータ 1 周であり、公式の 5,000 反復イテレータではない。step 5,000 では ReduceLROnPlateau が進んでいない。残り 34 epoch をこの checkpoint から続けると、公開スケジュールの patience を再現しない。次は Trainer に 5,000 optimizer step の epoch を足し、その境界で検証と plateau を進めることである。そのあと、約 10.2 時間の 35 epoch を新規に承認してから投入する。今回の checkpoint を公式再現の続きとしては使わない。
+本格学習は、MP-SENet と MossFormerGAN は設定が固定されている。SEMamba++ は micro 4 × 蓄積 2 を公式 batch 8 と等価だと置かない。TF-GridNet は `tf_gridnet_chunk_seed17.yaml` で、2026-11-04 の固定 5,000 更新 checkpoint からは再開しない。DeepFilterNet3 は schedule 設定で、batch 32 以降は未測定である。いずれも 30 分を超えるジョブは別承認が要る。詳細は [OFFICIAL_TRAINING_AUDIT.md](OFFICIAL_TRAINING_AUDIT.md)。
 
 Whisper Large v3 は、同じ test セットの登録順先頭 4 発話で clean / noisy / enhanced を通した。全 824 件は、1 checkpoint あたり約 0.9 時間の比例見積もりであり、まだ承認していない。
 

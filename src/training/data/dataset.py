@@ -83,6 +83,7 @@ class RecipeDataset:
         # functions of the case id, seed, and epoch.
         self.load_workers = 1
         self._load_pool: ThreadPoolExecutor | None = None
+        self._length_cache: list[int] | None = None
 
     def __len__(self) -> int:
         return len(self.examples)
@@ -126,7 +127,39 @@ class RecipeDataset:
             raise TrainingError("batch waveforms have different lengths") from exc
         return {"clean": clean, "noisy": noisy, "case_id": case_ids}
 
-    def _load(self, index: int) -> tuple[torch.Tensor, torch.Tensor, str]:
+    def case_ids(self) -> list[str]:
+        return [example.case_id for example in self.examples]
+
+    def waveform_lengths(self) -> list[int]:
+        """Sample counts after resampling and normalization, before a crop."""
+        if self._length_cache is None:
+            self._length_cache = [int(self._load(index, crop=False)[0].numel()) for index in range(len(self))]
+        return list(self._length_cache)
+
+    def collate_chunks(self, chunks) -> dict[str, Any]:
+        """Slice already normalized utterances. Chunks from one case load once."""
+        index_of = {example.case_id: index for index, example in enumerate(self.examples)}
+        loaded: dict[int, tuple[torch.Tensor, torch.Tensor, str]] = {}
+        clean_rows = []
+        noisy_rows = []
+        case_ids = []
+        for chunk in chunks:
+            index = index_of.get(chunk.case_id)
+            if index is None:
+                raise TrainingError(f"chunk case {chunk.case_id} is not in {self.name}")
+            if index not in loaded:
+                loaded[index] = self._load(index, crop=False)
+            clean, noisy, case_id = loaded[index]
+            if chunk.stop > int(clean.numel()) or chunk.start < 0 or chunk.stop <= chunk.start:
+                raise TrainingError(
+                    f"chunk {chunk.start}:{chunk.stop} is outside {case_id} ({clean.numel()} samples)"
+                )
+            clean_rows.append(clean[chunk.start:chunk.stop].contiguous())
+            noisy_rows.append(noisy[chunk.start:chunk.stop].contiguous())
+            case_ids.append(case_id)
+        return {"clean": torch.stack(clean_rows), "noisy": torch.stack(noisy_rows), "case_id": case_ids}
+
+    def _load(self, index: int, *, crop: bool | None = None) -> tuple[torch.Tensor, torch.Tensor, str]:
         example = self.examples[index]
         if case_id_for(example.recipe) != example.case_id:
             raise TrainingError(f"case_id does not match the recipe hash: {example.case_id}")
@@ -161,7 +194,9 @@ class RecipeDataset:
                 f"{tuple(noisy.shape)} vs {tuple(clean.shape)}"
             )
         noisy, clean = _normalize(noisy, clean)
-        if self.training:
+        if crop is None:
+            crop = self.training
+        if crop:
             if self.segment_size is None:
                 raise TrainingError("training requires segment_size")
             noisy, clean = _segment(noisy, clean, example.case_id, self.seed, self.epoch, self.segment_size)

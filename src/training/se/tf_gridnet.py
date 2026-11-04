@@ -20,6 +20,7 @@ from src.training.core.rng import seed_model_init
 from src.training.core.trainer import accumulation_scope
 from src.training.errors import TrainingError
 from src.training.se.optim import build_optimizer, build_scheduler, clip_gradients, step_scheduler
+from src.evaluation.metrics.sisdr import score_si_sdr
 from src.training.se.spectral import multi_resolution_l1, si_sdr_loss
 
 
@@ -132,6 +133,9 @@ class TFGridNetTask:
             },
             "pesq": {"status": "na", "value": None, "reason": "not computed for mr_l1_tfd", "count": 0},
             "stoi": {"status": "na", "value": None, "reason": "not computed for mr_l1_tfd", "count": 0},
+            # Official stats['si_snr'] is the SI-SDR loss (negative SI-SDR). The
+            # recipe maximizes that value, which ranks the lower SI-SDR first.
+            "si_snr": _negative_si_sdr(clean, estimate),
         }
 
     def _enhance(self, module: torch.nn.Module, noisy: torch.Tensor) -> torch.Tensor:
@@ -150,6 +154,21 @@ def _urgent_waveform(module: torch.nn.Module, noisy: torch.Tensor, sample_rate: 
     spectrum = torch.stft(noisy / scale, n_fft, hop, n_fft, window, return_complex=True).transpose(1, 2)
     enhanced = module(spectrum).transpose(1, 2)
     return torch.istft(enhanced, n_fft, hop, n_fft, window, length=noisy.shape[-1]) * scale
+
+
+def _negative_si_sdr(clean: torch.Tensor, estimate: torch.Tensor) -> dict[str, Any]:
+    values = []
+    for index in range(clean.shape[0]):
+        scored = score_si_sdr(clean[index], estimate[index])
+        if scored.get("status") != "ok" or scored.get("value") is None:
+            return {
+                "status": scored.get("status", "na"),
+                "value": None,
+                "reason": scored.get("reason"),
+                "count": 0,
+            }
+        values.append(-float(scored["value"]))
+    return {"status": "ok", "value": sum(values) / len(values), "reason": None, "count": len(values)}
 
 
 def _raise_if_nonfinite(loss: torch.Tensor, name: str) -> None:
