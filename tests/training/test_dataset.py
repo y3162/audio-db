@@ -101,6 +101,46 @@ class RecipeWaveformTests(unittest.TestCase):
             self.assertEqual(rendered.reference_name, "reverberant_clean")
             self.assertEqual(wet_batch["clean"].shape[-1], wet.segment_size)
 
+    def test_official_mode_can_skip_utterance_rms(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            scaled = paired_dataset(root, 1, frames=480, segment_size=None, training=False)
+            from src.training.data.dataset import RecipeDataset
+
+            raw = RecipeDataset(
+                list(scaled.examples),
+                root,
+                name=scaled.name,
+                role=scaled.role,
+                seed=scaled.seed,
+                sample_rate=scaled.sample_rate,
+                segment_size=None,
+                training=False,
+                database=None,
+                rms_normalize=False,
+            )
+            scaled_batch = scaled.collate([0])
+            raw_batch = raw.collate([0])
+            self.assertEqual(tuple(scaled_batch["noisy"].shape), tuple(raw_batch["noisy"].shape))
+            self.assertFalse(torch.equal(scaled_batch["noisy"], raw_batch["noisy"]))
+            rms = torch.sqrt(torch.mean(scaled_batch["noisy"] ** 2))
+            self.assertTrue(torch.allclose(rms, torch.ones(())))
+            rendered = render_recipe(raw.examples[0].recipe, root)
+            observed = rendered.observed.detach().to(dtype=torch.float32).reshape(-1)
+            self.assertTrue(torch.equal(raw_batch["noisy"][0], observed))
+            self.assertNotIn("rms_normalize", scaled.identity())
+            self.assertFalse(raw.identity()["rms_normalize"])
+
+    def test_chunk_config_disables_rms_and_other_configs_keep_it(self):
+        from src.training.se.config import load_training_config
+
+        official = load_training_config(ROOT / "configs/training/tf_gridnet_chunk_seed17.yaml")
+        research = load_training_config(ROOT / "configs/training/tf_gridnet_fixed5000_seed17.yaml")
+        mp_senet = load_training_config(ROOT / "configs/training/mp_senet.yaml")
+        self.assertFalse(official["data"]["rms_normalize"])
+        self.assertTrue(research["data"]["rms_normalize"])
+        self.assertTrue(mp_senet["data"]["rms_normalize"])
+
     def test_missing_teacher_is_rejected(self):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)

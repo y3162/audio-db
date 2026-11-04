@@ -8,7 +8,7 @@
 - **UNKNOWN**: この監査では一次ソースまで閉じていない
 - **N/A**: 対象外
 
-公式ディレクトリは読み取り専用。共通の VoiceBank-DEMAND（train 10,700 / valid 872 / test 824、話者分離）は研究上の共通条件であり、各論文のデータセット再現ではない。実装の数値比較の範囲は [VERIFICATION.md](VERIFICATION.md)。本格学習の設定は `configs/training/tf_gridnet_chunk_seed17.yaml` と `configs/training/deepfilternet3_schedule_seed17.yaml`、および既存の `configs/training/mp_senet.yaml` 系である。`trial100/` は 100 step 試験であり本格学習の条件ではない。
+公式ディレクトリは読み取り専用。共通の VoiceBank-DEMAND（train 10,700 / valid 872 / test 824、話者分離）は研究上の共通条件であり、各論文のデータセット再現ではない。実装の数値比較の範囲は [VERIFICATION.md](VERIFICATION.md)。本格学習の設定は `configs/training/tf_gridnet_chunk_seed17.yaml`、`configs/training/deepfilternet3_schedule_seed17.yaml`、`configs/training/semambapp_seed17.yaml`、`configs/training/mp_senet_seed17.yaml`、`configs/training/mossformergan_seed17.yaml` である。`trial100/` は 100 step 試験であり本格学習の条件ではない。
 
 固定 ESPnet commit は `0d136c5456d403cb2c0a4c13e76e8136e32e9b7a`（`build/clean-20261104/sources/espnet/`）。
 
@@ -17,9 +17,9 @@
 | モデル | 更新式の既存 GO | 学習プロトコル | 本格学習 |
 |---|---|---|---|
 | MP-SENet | 検証した step の範囲で GO | 損失・AdamW・ExponentialLR・PESQ best は一致。切り出し順は case id 決定的で、公式 DataLoader の消費順とは別 | 設定は固定済み。開始は別承認 |
-| SEMamba++ | 同じ範囲で GO | micro 4 × 蓄積 2 は公式 batch 8 の 1 forward と等価だと置かない | PARTIAL。等価性を置かずに、決めた GPU 構成として走らせるなら可 |
-| TF-GridNet | 同じ範囲で GO | 可変チャンク iterator を公式と比較済み。固定 5,000 更新は研究用 | PARTIAL。iterator は CPU で一致。実発話での 1 epoch 更新数と GPU 時間は未測定 |
-| DeepFilterNet3 | 同じ範囲で GO | batch schedule と cosine の添え字を公式に合わせた。batch 32 と 64 は未測定 | PARTIAL。batch 16 と 24 までは測定済み。32 以降は測ってから |
+| SEMamba++ | 同じ範囲で GO | 公式の 3 秒 batch 8 は PARTIAL。研究設定は micro 4 × 蓄積 2 で、fused の batch 形状差を測定済み | GO。`semambapp_seed17.yaml`。この MIG に収まり、100 step と再開は既存 |
+| TF-GridNet | 同じ範囲で GO | RMS なしの chunk iterator。VoiceBank は MS-SNSD と別。epoch 1–5 の更新数を実長で数えた | GO。`tf_gridnet_chunk_seed17.yaml`。4 step と別プロセス再開まで |
+| DeepFilterNet3 | 同じ範囲で GO | schedule と cosine は一致。検証集約とオンライン混合は公式と別 | GO。batch 32 と 64 は測定済み。`deepfilternet3_schedule_seed17.yaml` の `max_steps` は 22711 |
 | MossFormerGAN | 同じ範囲で GO | AdamW の実効 weight decay 0.01、独自 plateau は checkpoint に残す | 設定は固定済み。開始は別承認 |
 
 ## MP-SENet
@@ -42,7 +42,7 @@
 
 | 項目 | 公式設定値 | 公式実効値 | 独立実装値 | 判定 | 根拠 |
 |---|---|---|---|---|---|
-| 構造・データ | hid 48、4 TFMamba、16 kHz、segment 48000、batch 8 | fused scan、1 forward の batch 8 | 同じ構造。micro 4 × 蓄積 2 | INTENTIONAL | `src/se/official/semambapp/config.yaml`。MIG で batch 8 は OOM。等価とは扱わない |
+| 構造・データ | hid 48、4 TFMamba、16 kHz、segment 48000、batch 8 | fused scan、1 forward の batch 8 | 同じ構造。研究設定は micro 4 × 蓄積 2 | DIFF（公式 1 forward） / 研究設定は明示 | 3 秒は OOM。長さ 8,000 の fused 比較は [VERIFICATION.md](VERIFICATION.md)。`semambapp_seed17.yaml` |
 | 損失 | adversarial 1、feature matching 1、mel 0.1、mag 0.9、phase 0.3、complex 0.1、consistency 0.1。waveform L1 はコメントアウト | その和 | 同値 | GO | `src/training/se/semambapp.py` 冒頭、公式 `train.py` の損失組み立て |
 | optimizer / scheduler | AdamW 0.0002、beta 0.8/0.99、decay 0.99 | AdamW 既定 weight decay 0.01。epoch ごとに ExponentialLR | 同値 | GO | `config.yaml`、`train.py:163`、`:435` |
 | 更新順 | D のあと G | サブ discriminator は real と fake を交互 | 同じ順 | GO | `.agents/DECISIONS.md` |
@@ -63,7 +63,7 @@
 | best | valid `si_snr` max と valid `loss` min、各上位 5 | `si_snr` の記録値は SI-SDR 損失（負の SI-SDR）。max は SI-SDR が低い方を選ぶ | 同じ規則。`valid.loss.best.pt` と `valid.si_snr.best.pt` | GO | `espnet2/enh/loss/criterions/time_domain.py:290`、`FixedOrderSolver` |
 | early stop | patience 5、valid loss min | `epoch - best_epoch > patience` | 同じ | GO | `espnet2/train/reporter.py:404` |
 | data | MS-SNSD | MS-SNSD | VoiceBank-DEMAND | INTENTIONAL | 共通分割 |
-| 正規化 | `speech_volume_normalize` 既定 None | 音量正規化なし | 発話全体を RMS 正規化してから切る | DIFF Major | `src/training/data/dataset.py` の `_normalize` |
+| 正規化 | `speech_volume_normalize` 既定 None | 音量正規化なし | `tf_gridnet_chunk_seed17.yaml` は `rms_normalize: false`。固定 5,000 更新と他モデルは発話 RMS | GO（公式モード） | `enh` の既定、`tests/training/test_dataset.py` |
 | 再開 | epoch 末の `checkpoint.pth`（model、optimizer、scheduler、reporter） | 公式は epoch 途中の iterator を保証しない | epoch 途中も、計画を seed から再生成してバッチ位置を飛ばす。model、optimizer、scheduler、RNG、論理 epoch を戻す | INTENTIONAL | 途中再開は独立実装の追加保証 |
 | 複数 GPU | サンプルを rank で割ってからチャンク | バッチの中身が変わる | 1 process のみ。複数 process はエラー | INTENTIONAL | 公式レシピは batch 4 の単一プロセスを想定 |
 
@@ -79,13 +79,13 @@
 | 蓄積による代替 | なし | その batch の 1 forward | batch が `micro_batch_size_per_gpu` を超えるとエラー。蓄積に置き換えない | GO | `trainer.py` の `_apply_batch_schedule` |
 | optimizer | AdamW、lr 0.001、betas 0.9/0.999、decay 1e-12、amsgrad | `load_opt` が amsgrad=True | 同値 | GO | `df/train.py:480-498`、ini `[optim]` |
 | cosine | warmup 3 epoch、lr 1e-4 から 1e-3、下限 1e-6、decay は 1e-12 から 0.01 | loader 長が変わると表を作り直し、`epoch * len(loader) + step` で引く | 同じ | GO | `df/train.py:244-246`、`:352-360`、`DeepFilterNetTask.retarget_deepfilter_schedule` |
-| epoch | ini `max_epochs` 120 | 120 | scheduler `epochs: 120`。`max_steps` は安全上限 | GO | ini 14 行、`deepfilternet3_schedule_seed17.yaml` |
+| epoch | ini `max_epochs` 120 | 120 | `epochs: 120`。`max_steps: 22711` は 10,700 発話の optimizer 更新の合計 | GO | `2*668+3*445+5*334+110*167`。最終 cosine 添え字は `120*167-1` |
 | early stop | ini patience 25、valid loss min | 改善でカウンタを 0 に戻し、25 回改善しなければ停止 | 同じ | GO | `df/checkpoint.py:156`、`trainer.py` の `_batch_schedule_should_stop` |
 | best | valid loss min | 改善時だけ置き換える | validation loss 最小の `best_generator.pt`。開始 epoch の待ちは無し | GO | `df/train.py:285` |
 | 損失 | multi-res factor 500、complex 500、gamma 0.3、FFT 256/512/1024/2048、local SNR 1e-3、mask と SI-SDR は 0 | その重み | 同値 | GO | ini `[multiresspecloss]`、`[localsnrloss]`、`src/training/se/deepfilternet.py` |
 | データ | オンライン混合、SNR と gain のリスト、reverb 確率 | 毎 epoch 合成 | 固定 VoiceBank 対。3 秒 crop | INTENTIONAL | 共通分割。公式の合成分布ではない |
-| 検証 batch | `batch_size_eval` 64 | 学習 batch とは別に 64 | 登録済み検証セットを 1 発話ずつ | DIFF Major | 選択指標のバッチ構成が違う |
-| GPU | batch 64 まで | — | batch 16 と 24 は測定済み。32 と 64 は未測定 | UNKNOWN | [GPU_BUDGET.md](GPU_BUDGET.md) |
+| 検証 batch | `batch_size_eval` 64 | 学習 batch とは別に 64。batch 内は要素平均で、パディングを含む | 1 発話ずつ計算し、発話間は非加重平均。eval の BatchNorm は running stats | DIFF Major。研究条件として固定 | `tests/training/test_df_validation_reduction.py`。公式の batch 64 検証とは呼ばない |
+| GPU | batch 64 まで | — | batch 32 の定常中央値 3.471 秒、reserved 6.49 GiB。batch 64 は 7.025 秒、reserved 12.88 GiB | GO | `data/results/training/go-20261104/df-batch32-rerun/`、`df-batch64/` |
 | 再開 | model と optimizer の epoch checkpoint。patience ファイル | schedule の位置は epoch から再現 | 同じ。cosine の添え字は epoch と epoch 内 step から再計算 | GO | `trainer.py` |
 
 ## MossFormerGAN
@@ -101,7 +101,8 @@
 
 ## まだ閉じていないもの
 
-- TF-GridNet の 1 epoch が、VoiceBank 10,700 発話の実長で何 optimizer step になるかは未計測。固定 5,000 更新の 9.9 時間は使わない。
-- DeepFilterNet3 の batch 32 と 64 の peak メモリと秒/step は未計測。見える GPU は使用メモリが 1024 MiB を超えていたため、このセッションでは計測していない。
+- TF-GridNet の公式コーパスは MS-SNSD であり、この研究は VoiceBank-DEMAND を使う。`enh_train.py` の 35 epoch は起動していない。固定 5,000 更新の 9.9 時間は公式 chunk の見積もりに使わない。epoch 1–5 の更新数は計測済み。
+- SEMamba++ の公式 3 秒・batch 8 の 1 forward は、この MIG では OOM のままである。
+- DeepFilterNet3 の検証 227 秒は、8 件からの古い外挿のままである。全件の再測定はしていない。batch 32 と 64 の step 時間は計測済み。
 - 公式 DataLoader の消費順と、case id 決定的な順序のバッチ差は、MP-SENet、SEMamba++、MossFormerGAN、DeepFilterNet3 の固定レシピ経路に残る。TF-GridNet の公式モードだけ iterator 順を合わせた。
 - オンラインのノイズ混合・RIR・SNR 分布は、VoiceBank の固定レシピでは再現しない。

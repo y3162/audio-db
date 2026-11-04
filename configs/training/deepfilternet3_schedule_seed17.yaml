@@ -5,8 +5,12 @@
 # The per-step cosine is rebuilt from the current loader length and indexed as
 # epoch * steps + step, matching df/train.py. early_stopping_patience 25 and
 # max_epochs 120 are the shipped config.ini values, not the Python default 10.
-# max_steps is only a safety cap. Gradient accumulation is not substituted
-# for a batch that does not fit. Batch 32 and 64 have not been timed on MIG.
+# max_steps is the exact optimizer-step count of 120 epochs on 10,700
+# utterances: 2*floor(10700/16)+3*floor(10700/24)+5*floor(10700/32)
+# +110*floor(10700/64) = 22711. The next step would index past the cosine
+# table. Gradient accumulation is not substituted for a batch that does not fit.
+# Validation is one utterance at a time, then an unweighted mean. That is not
+# the official mean of padded eval batches. Online mixing is not used.
 
 seed: 17
 deterministic: false
@@ -20,7 +24,7 @@ batch_schedule:
   - [10, 64]
   - [20, 128]
   - [40, 9999]
-max_steps: 200000
+max_steps: 22711
 segment_size: 144000
 loss: official
 grad_clip: 1.0

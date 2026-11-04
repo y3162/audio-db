@@ -8,6 +8,9 @@
 # valid si_snr (max). The logged si_snr is the negative SI-SDR loss, so
 # maximizing it ranks the lower SI-SDR first, as the pinned ESPnet trainer does.
 # Do not resume a fixed-5000 checkpoint into this directory.
+# data.rms_normalize is false: the pinned ESPnet enh task leaves
+# speech_volume_normalize at its default None. The shared research
+# configs keep utterance RMS (the dataset default).
 
 seed: 17
 deterministic: false
@@ -67,6 +70,7 @@ data:
   validation_set: voicebank_28_valid
   load_workers: 4
   prefetch: true
+  rms_normalize: false
 
 runtime:
   device: cuda

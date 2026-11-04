@@ -1,0 +1,48 @@
+# Timing only. Shipped schedule uses batch 64 from epoch 10 onward
+# (min(schedule, 64); 128 and 9999 stay at 64). Not a training run.
+# steps_per_epoch 167 is floor(10700/64).
+
+seed: 17
+deterministic: false
+global_batch_size: 64
+micro_batch_size_per_gpu: 64
+max_steps: 8
+segment_size: 144000
+loss: official
+grad_clip: 1.0
+checkpoint_dir: data/results/training/go-20261104/deepfilternet3-batch64
+checkpoint_interval: 0
+validation_interval: 0
+best_checkpoint_start_epoch: 40
+
+optimizer:
+  name: adamw
+  lr: 0.001
+  betas: [0.9, 0.999]
+  weight_decay: 1.0e-12
+  amsgrad: true
+
+scheduler:
+  name: deepfilter_cosine
+  steps_per_epoch: 167
+  epochs: 120
+  lr_min: 1.0e-6
+  lr_warmup: 1.0e-4
+  warmup_epochs: 3
+  weight_decay_end: 0.01
+
+model:
+  name: deepfilternet3
+  sampling_rate: 48000
+  architecture: {}
+
+data:
+  database: data/db/voicebank.duckdb
+  train_set: voicebank_28_train
+  validation_set: voicebank_28_valid
+  load_workers: 4
+  prefetch: true
+
+runtime:
+  device: cuda
+  allow_busy_gpu: false

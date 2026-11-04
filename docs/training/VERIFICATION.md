@@ -1974,3 +1974,41 @@ step 5,000 の checkpoint を別ディレクトリで 2 更新再開した。`da
 ESPnet `ChunkIterFactory` は `num_iters_per_epoch` を元発話数として使用し、重複チャンクから可変数の batch を作る。前節の 5000 更新を公式 1 epoch とする解釈は撤回する。固定 5000 更新の研究用設定と CPU 回帰を追加したが、公式 epoch、best 5、早期停止は未対応。詳細は [監査](OFFICIAL_TRAINING_AUDIT.md)。今回 GPU 実行なし。
 
 固定更新モードの CPU 回帰は `python -m unittest tests.training.test_logical_epoch -q`。3 ケース・batch 1・4 更新/境界で 12 更新し、検証 4/8/12、scheduler 3 回、best loss 保存、step 2/4 の再開後の入力 ID、重み、optimizer を通じた学習、scheduler 状態、RNG の保存キーを確認した。模擬 task であり、実モデル・CUDA・別プロセスの新モード検証ではない。既存 `tests.training.test_mp_senet_train` と `tests.training.test_model_tasks` は 27 件成功。固定更新モードの 5,000 更新 GPU 再実行はしていない。
+
+## 研究用本格学習の最終確認（2026-11-04）
+
+前節の「公式 epoch は未対応、GPU 実行なし」は、その時点の記録である。chunk iterator、best、early stopping はその後実装済みで、この節が実長と短い GPU を足す。本格学習は開始していない。既存の結果ディレクトリは上書きしていない。`qsub` は出していない。
+
+### TF-GridNet
+
+`data.rms_normalize: false` は公式モードだけに入る。長さは変わらず、スケール後の noisy の平均二乗は 1、無効時の波形はレンダリング結果と一致する。identity は RMS ありのときキーを省き、なしのとき `false` を残す。CPU の公式 iterator 比較は、合成データで ID・位置・波形スライス・バッチ順がピン留め ESPnet と一致したままである。
+
+実長は WAV ヘッダから求めた。48 kHz は `ceil(frames/3)`。train の 30 件を `_load` と照合し、不一致は 0 だった。epoch 1–5 の optimizer 更新は 575、574、593、566、588。端数チャンクの破棄は 2、2、3、3、3。検証は 85 batch。記録は `data/results/training/go-20261104/tf-epoch-count.json`。
+
+GPU は同じ MIG で 4 更新した。設定は `data/results/training/go-20261104/tf-chunk-smoke.yaml`。長さキャッシュをヘッダから入れ、全件デコードで GPU を占有しないようにした。step 1–4 の case ID は、同じ長さで独立に組んだ計画の先頭 4 batch と一致した。計画全体は 575 batch で、epoch 集計と一致する。損失は有限で、step 1 の `mr_l1_tfd` は 9825.908、step 4 は 7908.896。学習率は 0.001。checkpoint は step 2 と step 4。peak allocated は 5,351,750,656 バイト。プロセス 22.89 秒。
+
+別プロセスの再開は `tf-chunk-smoke-resume.yaml` と `step_00000002.pt`。step 3 と 4 の case ID は連続実行と一致した。step 3 の損失は 8086.077 で一致し、step 4 は 7908.896 と 7908.890 に分かれた。`deterministic: false` の再実行差として残す。プロセス 18.74 秒。検証は epoch 末だけなので、この 4 更新では走っていない。
+
+### DeepFilterNet3
+
+batch 32 の定常中央値は 3.471 秒、batch 64 は 7.025 秒。どちらも OOM していない。詳細は [PERFORMANCE.md](PERFORMANCE.md)。等長の発話平均はパディングなしの batch 平均と一致し、長短をパディングしたときは一致しない。研究用検証は発話ごとの非加重平均に固定した。`max_steps` は 22711。batch 変更後の cosine 添え字は、既存の CPU テスト `test_batch_schedule_changes_size_and_cosine_index` が通る。GPU ではその制御を繰り返していない。
+
+### SEMamba++
+
+長さ 8,000、fused、`deterministic: false`、seed 17。batch 8 の自己再実行は音声最大差 0。蓄積 2 との音声最大差は 0.001338273286819458。forward だけの同じ比較もこの値だった。generator 勾配の相対 L2 は自己再実行 2.90e-4、蓄積 0.0282。更新後重みの相対 L2 は 1.39e-5 と 2.01e-4。勾配 norm は約 16.00 と 16.02。記録は `data/results/training/go-20261104/semamba-accum-cuda.json`。3 秒の batch 8 は以前の OOM のままである。研究設定は micro 4 × 蓄積 2 で、`configs/training/semambapp_seed17.yaml` に差を書いた。100 step と再開は既存の結果を使う。
+
+### MP-SENet と MossFormerGAN
+
+`configs/training/mp_senet_seed17.yaml` と `configs/training/mossformergan_seed17.yaml` は、試験で通った更新条件のまま epoch 数だけを本学習へ伸ばしている。発話 RMS は既定のままである。Trainer が case ID をログへ足したことは、更新式を変えない。大規模な再比較はしていない。
+
+### 受入
+
+| モデル | 公式学習再現性 | 研究用本格学習 | 未解決事項 |
+|---|---|---|---|
+| MP-SENet | GO | GO | 切り出し順は case id 決定的。公式 DataLoader の消費順とは別 |
+| MossFormerGAN | GO | GO | 公開プロセスの再起動は plateau を初期化する。独立 checkpoint は保持する |
+| SEMamba++ | PARTIAL | GO | 3 秒の batch 8 は未実施。研究設定との差は上の数値 |
+| TF-GridNet | PARTIAL | GO | データは VoiceBank。MS-SNSD の `enh_train.py` 35 epoch は未起動。秒/step は形状等価 |
+| DeepFilterNet3 | PARTIAL | GO | 検証集約は公式 batch と別。オンライン混合は使わない。検証 227 秒は古い外挿 |
+
+研究用本格学習の GO は、設定が凍結され、実モデルの更新と再開が通り、メモリに収まり、時間が上の式で見積もれる、という範囲である。35 epoch や 120 epoch の完走はまだない。

@@ -1,5 +1,7 @@
 # Research schedule: fixed 5000 updates, not ESPnet chunk iterator epochs.
-# Do not resume the earlier 5000-step checkpoint.
+# Utterance RMS stays on (dataset default) so this run matches the shared
+# VoiceBank preprocessing used by the other research models. The official
+# chunk config turns that scale off. Do not resume the earlier 5000-step checkpoint.
 seed: 17
 deterministic: false
 global_batch_size: 4

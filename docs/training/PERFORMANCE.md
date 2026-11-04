@@ -114,7 +114,26 @@ SEMamba++、TF-GridNet、DeepFilterNet3 は、同日直列対照の collate が 
 | step / epoch | 668 | 445 |
 | 更新だけの epoch | 949 秒 | 979 秒 |
 
-OOM はしなかった。1 発話あたりの時間は 0.089 秒と 0.092 秒で、batch を増やしても epoch の計算は短くならない。batch 32、64、128 は未測定である。予約メモリが batch に比例するなら、batch 24 の 4.89 GiB から約 6.5、13、26 GiB で、46 GiB の MIG には数値上は収まる。比例するとは測っていない。スケジュール末尾の batch 9999 はこの MIG に載らない。
+OOM はしなかった。1 発話あたりの時間は 0.089 秒と 0.092 秒で、batch を増やしても epoch の計算は短くならない。スケジュール末尾の batch 9999 は実効 64 であり、9999 のままは投入しない。
+
+## DeepFilterNet3 batch 32 と 64
+
+`configs/training/measure/deepfilternet3-batch32.yaml` と `deepfilternet3-batch64.yaml`。各 8 step の予定で、定常は後半 5 点。先読みが collate の印を消すため、秒/step は update と step の中央値を使う。collate の記録は 0 秒で、読み込みは更新と重なっている。
+
+| | batch 32 | batch 64 |
+|---|---:|---:|
+| 定常 秒/step | 3.471 | 7.025 |
+| p90 | 3.525 | 7.061 |
+| Peak allocated | 5,991,804,416 バイト（5.58 GiB） | 11,841,566,208 バイト（11.03 GiB） |
+| Peak reserved | 6,973,030,400 バイト（6.49 GiB） | 13,832,814,592 バイト（12.88 GiB） |
+| 更新 / epoch | 334 | 167 |
+| 更新だけの epoch | 0.322 h | 0.326 h |
+
+損失はすべて有限。OOM はしていない。batch は縮めていない。結果は `data/results/training/go-20261104/df-batch32-rerun/` と `df-batch64/`。最初の batch 32 は profiler の時刻印が欠けて step 2 で止まり、`df-batch32/` に残している。
+
+## TF-GridNet の実長
+
+48 kHz の WAV ヘッダフレーム数を `ceil(frames/3)` した長さは、`RecipeDataset._load` の 30 件と一致した。RMS は長さを変えない。epoch 回数は [GPU_BUDGET.md](GPU_BUDGET.md)。公式モードの 4 更新は peak allocated 5,351,750,656 バイト、peak reserved 6,182,404,096 バイトで、RMS ありの 24 step（4.98 GiB / 5.76 GiB）と同じ帯である。
 
 ## 再現
 

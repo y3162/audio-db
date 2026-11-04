@@ -243,6 +243,14 @@ class DeepFilterNetTask:
                 group["weight_decay"] = decay
 
     def validation_report(self, batch: dict[str, Any]) -> dict[str, Any]:
+        """Score one batch. The trainer calls this once per validation utterance.
+
+        Official ``run_epoch`` averages per-batch ``F.mse_loss`` values, so a
+        padded eval batch weights longer items and the pad. This report is the
+        loss of the given waveforms. The trainer then takes an unweighted mean
+        across utterances. Eval mode uses BatchNorm running statistics, so the
+        forward of one utterance does not depend on who else is in the batch.
+        """
         clean = batch["clean"].to(self.device)
         noisy = batch["noisy"].to(self.device)
         with torch.no_grad():

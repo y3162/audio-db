@@ -1,0 +1,48 @@
+# Research full run, seed 17. Same update as configs/training/trial100/mp_senet.yaml.
+# 10,700 utterances, batch 4, 2,675 optimizer steps per epoch, 400 epochs.
+# ExponentialLR steps at the end of each data epoch. Best PESQ starts at epoch 40.
+# Utterance RMS stays on. This is not the 100-step trial directory.
+
+seed: 17
+deterministic: false
+global_batch_size: 4
+micro_batch_size_per_gpu: 4
+max_steps: 1070000
+segment_size: 32000
+loss: official
+checkpoint_dir: data/results/training/mp-senet-seed17
+checkpoint_interval: 2675
+validation_interval: 2675
+best_checkpoint_start_epoch: 40
+
+optimizer:
+  name: adamw
+  lr: 0.0005
+  betas: [0.8, 0.99]
+  weight_decay: 0.01
+
+scheduler:
+  name: exponential
+  gamma: 0.99
+
+model:
+  name: mp_senet
+  dense_channel: 64
+  num_tsconformers: 4
+  n_fft: 400
+  hop_size: 100
+  win_size: 400
+  compress_factor: 0.3
+  beta: 2.0
+  sampling_rate: 16000
+
+data:
+  database: data/db/voicebank.duckdb
+  train_set: voicebank_28_train
+  validation_set: voicebank_28_valid
+  load_workers: 4
+  prefetch: true
+
+runtime:
+  device: cuda
+  allow_busy_gpu: false

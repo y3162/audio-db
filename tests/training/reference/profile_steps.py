@@ -111,6 +111,10 @@ def main() -> None:
         if process.uses_cuda:
             torch.cuda.synchronize(process.device)
         update_seconds = time.perf_counter() - started
+        # Prefetch collates the next step on another thread, so the start mark
+        # may already have been consumed. Time from the update in that case.
+        if state["mark"] is None:
+            state["mark"] = started
         total = time.perf_counter() - state["mark"]
         rows.append({
             "optimizer_step": step,

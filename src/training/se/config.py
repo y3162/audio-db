@@ -69,7 +69,7 @@ _MODEL = {
     "beta",
     "sampling_rate",
 }
-_DATA = {"database", "train_set", "validation_set", "load_workers", "prefetch"}
+_DATA = {"database", "train_set", "validation_set", "load_workers", "prefetch", "rms_normalize"}
 _RUNTIME = {"device", "allow_busy_gpu"}
 
 
@@ -310,6 +310,7 @@ def _data(raw: Any) -> dict[str, Any]:
         "validation_set": validation,
         "load_workers": workers,
         "prefetch": _bool(raw.get("prefetch", True), "data.prefetch"),
+        "rms_normalize": _bool(raw.get("rms_normalize", True), "data.rms_normalize"),
     }
 
 

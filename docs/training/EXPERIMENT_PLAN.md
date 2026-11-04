@@ -1,4 +1,4 @@
-> 訂正（2026-11-04）：TF-GridNet の 5,000 更新は固定更新の研究案であり、ESPnet chunk iterator の公式 epoch ではない。35 × 5,000 の時間はその研究案の外挿。詳細は [監査](OFFICIAL_TRAINING_AUDIT.md)。
+> 訂正（2026-11-04）：TF-GridNet の 5,000 更新は固定更新の研究案であり、ESPnet chunk iterator の公式 epoch ではない。35 × 5,000 の時間はその研究案の外挿。詳細は [監査](OFFICIAL_TRAINING_AUDIT.md)。その後、5 モデルの研究用 seed 17 は GO にした。開始に残るのは、30 分を超える各ジョブの承認である。
 
 # 本格学習と ASR 評価の計画（案）
 
@@ -24,25 +24,27 @@ VoiceBank+DEMAND の公式 28 話者のうち train 26 話者 10,700 発話、va
 |---|---|---|
 | MP-SENet | global 4、2 秒、16 kHz、AdamW 5e-4、betas 0.8/0.99、WD 0.01、ExponentialLR 0.99、400 epoch が公開既定 | 読み込み workers 4 と次 step の先読み。検証の端数サンプルは hop 倍数へ切る |
 | SEMamba++ | global 8、3 秒、16 kHz、hid 48、fused、AdamW 2e-4、100 epoch。実行は micro 4 × 蓄積 2 | 公式 batch 8 の 1 forward はこの MIG で OOM。蓄積 2 は Generator を forward し直す |
-| TF-GridNet | global 4、3 秒、16 kHz、ms-snsd、Adam 1e-3、WD 0、clip 5、plateau 0.7/1 | 公開 epoch は 5,000 iter × 35。1 走査は 2,675 step |
-| DeepFilterNet3 | global 16、3 秒、48 kHz、公式幅、AdamW 1e-3、amsgrad、clip 1、cosine | batch 24 は同じ MIG で 40 step 完了。epoch 時間は batch 16 とほぼ同じ。batch 32 以上は未測定。`MAX_EPOCHS` は ini を読み直していない |
+| TF-GridNet | `tf_gridnet_chunk_seed17.yaml`。chunk 48,000、batch 4、RMS なし、35 epoch | 固定 5,000 更新は使わない。seed 17 の epoch 1 は 575 更新 |
+| DeepFilterNet3 | `deepfilternet3_schedule_seed17.yaml`。120 epoch、`max_steps` 22711 | batch 32 は 3.471 秒、batch 64 は 7.025 秒。検証は発話ごとの非加重平均 |
 | MossFormerGAN | global 2、2 秒、16 kHz、micro 1 × 2、AdamW 5e-4、D はその 2 倍、WD 0.01、clip 10、120 epoch | 1 step で G と D を各 1 回。公開プロセスの再起動は plateau 回数を戻す |
 
 ## 資源と順序
 
-H100 MIG 4g.47gb、VoiceBank 実音声、定常 step の中央値からの見積もりは [GPU_BUDGET.md](GPU_BUDGET.md)。内訳は [PERFORMANCE.md](PERFORMANCE.md)。旧 A100 の表は [GPU_COST.md](GPU_COST.md) に残し、ここでは使わない。高速化後の標準シナリオの 1 seed は、公開 epoch 数で MP-SENet 191 時間、SEMamba++ 67 時間、MossFormerGAN 143 時間、DeepFilterNet3 は batch 16 の 2 epoch で 0.65 時間である。TF-GridNet の 9.9 時間は固定 5,000 更新の研究案で、可変チャンクの公式学習には入れない。その 4 モデルだけの合計は約 401 時間。旧表の 411 時間は研究案の TF-GridNet を足した数である。上の 4 モデルの 3 seed は約 1,204 時間。旧表の 1,234 時間は研究案の TF-GridNet を含む。最適化前の同じ範囲は 597 時間と 1,792 時間だった。DeepFilterNet3 の batch 32 以上と ASR の WER はこの合計に入っていない。batch 24 の epoch 2–4 を足しても 1 seed は約 1 時間しか増えない。
+H100 MIG 4g.47gb、VoiceBank 実音声、定常 step の中央値からの見積もりは [GPU_BUDGET.md](GPU_BUDGET.md)。内訳は [PERFORMANCE.md](PERFORMANCE.md)。旧 A100 の表は [GPU_COST.md](GPU_COST.md) に残し、ここでは使わない。研究用本格学習の 1 seed は、MP-SENet 190.8 時間、SEMamba++ 67.0 時間、MossFormerGAN 143.1 時間、TF-GridNet の公式 chunk は約 1.2–1.3 時間、DeepFilterNet3 の 120 epoch は学習 38.8 時間に古い検証外挿 7.6 時間を足して約 46.4 時間である。合計は約 449 時間。3 seed は約 1,346 時間。TF-GridNet の 9.9 時間は固定 5,000 更新の研究案であり、この合計には入れない。ASR の全件 WER はこの合計に入っていない。
 
 実行順は次のとおり。各本学習ジョブは 30 分を超えるので、投入のたびに明示の承認を得る。
 
-1. TF-GridNet の seed 17 は `configs/training/tf_gridnet_chunk_seed17.yaml`。固定 5,000 更新ではない。投入前に、実発話長から 1 epoch の更新数を数える。DeepFilterNet3 は `configs/training/deepfilternet3_schedule_seed17.yaml`。batch 32 に入る前にメモリと秒/step を測る。どちらも 30 分を超えるので、測定と本学習は別に承認を得る。
-2. 同じ checkpoint を固定 ASR の小規模な名前付きセットへ通し、WER の所要時間を測る。全件評価はその時間を見てから承認する。
-3. MossFormerGAN、MP-SENet、SEMamba++（蓄積 2）の順に seed 17 を出す。DeepFilterNet3 は batch 16 の epoch 0–1 と、測定済みの batch 24 の epoch 2–4 までを先に承認する。batch 32 以上は未測定なので、その epoch の前に step 時間とメモリを測る。
-4. seed 17 の test 評価が揃ってから seed 3 と 29 を出す。
+1. TF-GridNet の seed 17 は `configs/training/tf_gridnet_chunk_seed17.yaml`。epoch 1 は 575 更新。固定 5,000 更新の checkpoint からは再開しない。
+2. DeepFilterNet3 の seed 17 は `configs/training/deepfilternet3_schedule_seed17.yaml`。batch 32 と 64 は測定済みで、この MIG に収まる。
+3. SEMamba++ の seed 17 は `configs/training/semambapp_seed17.yaml`。micro 4 × 蓄積 2。
+4. MossFormerGAN、MP-SENet の seed 17 は `configs/training/mossformergan_seed17.yaml` と `configs/training/mp_senet_seed17.yaml`。
+5. 同じ checkpoint を固定 ASR の小規模な名前付きセットへ通し、WER の所要時間を測る。全件評価はその時間を見てから承認する。
+6. seed 17 の test 評価が揃ってから seed 3 と 29 を出す。
 
-本格学習は、MP-SENet と MossFormerGAN は設定が固定されている。SEMamba++ は micro 4 × 蓄積 2 を公式 batch 8 と等価だと置かない。TF-GridNet は `tf_gridnet_chunk_seed17.yaml` で、2026-11-04 の固定 5,000 更新 checkpoint からは再開しない。DeepFilterNet3 は schedule 設定で、batch 32 以降は未測定である。いずれも 30 分を超えるジョブは別承認が要る。詳細は [OFFICIAL_TRAINING_AUDIT.md](OFFICIAL_TRAINING_AUDIT.md)。
+いずれも 30 分を超えるジョブは、投入の前にそのジョブを含む明示の承認が要る。詳細は [OFFICIAL_TRAINING_AUDIT.md](OFFICIAL_TRAINING_AUDIT.md)。
 
 Whisper Large v3 は、同じ test セットの登録順先頭 4 発話で clean / noisy / enhanced を通した。全 824 件は、1 checkpoint あたり約 0.9 時間の比例見積もりであり、まだ承認していない。
 
-開始前に残るのは、TF-GridNet の epoch 境界、その 35 epoch の承認、SEMamba++ を蓄積 2 のまま使うことの確認、DeepFilterNet3 の batch 32 以上である。別ノードでの環境再構築と、公式プロセスとの Adapter 差は、学習を始める条件にはしない。
+5 モデルの研究用 seed 17 設定は固定した。残る開始条件は、30 分を超える各ジョブの明示承認である。別ノードでの環境再構築と、公式プロセスとの Adapter 差は、学習を始める条件にはしない。コミット済み YAML の `allow_busy_gpu` は false なので、選択した GPU の `memory.used` が 1024 MiB 未満である必要がある。
 
 GPU は使用前に空きを確認する。この計画はジョブ投入の承認ではない。

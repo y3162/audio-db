@@ -86,6 +86,7 @@ def execute(config_path: str | Path, *, resume: str | Path | None = None) -> Non
         sample_rate=sample_rate,
         segment_size=config["segment_size"],
         training=True,
+        rms_normalize=data["rms_normalize"],
     )
     validation = None
     if data["validation_set"]:
@@ -97,6 +98,7 @@ def execute(config_path: str | Path, *, resume: str | Path | None = None) -> Non
             sample_rate=sample_rate,
             segment_size=None,
             training=False,
+            rms_normalize=data["rms_normalize"],
         )
     trainer = Trainer(
         task,

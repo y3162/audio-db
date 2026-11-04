@@ -64,6 +64,7 @@ class RecipeDataset:
         segment_size: int | None,
         training: bool,
         database: str | None,
+        rms_normalize: bool = True,
     ) -> None:
         if role not in ("train", "validation"):
             raise TrainingError(f"unknown split role {role!r}")
@@ -78,6 +79,7 @@ class RecipeDataset:
         self.segment_size = segment_size
         self.training = training
         self.database = database
+        self.rms_normalize = bool(rms_normalize)
         self.epoch = 0
         # Parallel loads do not draw from a shared RNG. Crop and order are
         # functions of the case id, seed, and epoch.
@@ -96,7 +98,7 @@ class RecipeDataset:
     def identity(self) -> dict[str, Any]:
         ids = [example.case_id for example in self.examples]
         digest = hashlib.sha256("\n".join(ids).encode("utf-8")).hexdigest()
-        return {
+        identity = {
             "name": self.name,
             "role": self.role,
             "database": self.database,
@@ -107,6 +109,12 @@ class RecipeDataset:
             "training": self.training,
             "seed": self.seed,
         }
+        # Omit the default so checkpoints saved before this flag still match.
+        # Official TF-GridNet leaves speech_volume_normalize unset, so that
+        # mode records the disabled flag and will not resume an RMS run.
+        if not self.rms_normalize:
+            identity["rms_normalize"] = False
+        return identity
 
     def collate(self, indices: list[int]) -> dict[str, Any]:
         if self.load_workers > 1 and len(indices) > 1:
@@ -193,7 +201,8 @@ class RecipeDataset:
                 f"case {example.case_id} resampled lengths differ: "
                 f"{tuple(noisy.shape)} vs {tuple(clean.shape)}"
             )
-        noisy, clean = _normalize(noisy, clean)
+        if self.rms_normalize:
+            noisy, clean = _normalize(noisy, clean)
         if crop is None:
             crop = self.training
         if crop:
@@ -220,6 +229,7 @@ def load_recipe_dataset(
     sample_rate: int,
     segment_size: int | None,
     training: bool,
+    rms_normalize: bool = True,
 ) -> RecipeDataset:
     """Load a named set and reject evaluation data and missing teachers."""
     path = Path(database)
@@ -272,6 +282,7 @@ def load_recipe_dataset(
         segment_size=segment_size,
         training=training,
         database=str(database),
+        rms_normalize=rms_normalize,
     )
 
 

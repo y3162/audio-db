@@ -250,7 +250,7 @@ class Trainer:
                 if self._should_save(self.global_step) or ((self.steps_per_epoch or self.config.get("batch_schedule")) and epoch_done and self.process.rank == 0):
                     checkpoint_path = self._save(dataset, epoch, cursor, usable_batches)
                 if self.process.rank == 0:
-                    self._log_train(logical_epoch, metrics, checkpoint_path, validation_summary)
+                    self._log_train(logical_epoch, metrics, checkpoint_path, validation_summary, group)
                     if (
                         self.global_step == 1
                         or self.global_step % 10 == 0
@@ -311,7 +311,7 @@ class Trainer:
                 if self._should_save(self.global_step) or (epoch_done and self.process.rank == 0):
                     checkpoint_path = self._save(dataset, epoch, cursor, usable)
                 if self.process.rank == 0:
-                    self._log_train(espnet_epoch, metrics, checkpoint_path, validation_summary)
+                    self._log_train(espnet_epoch, metrics, checkpoint_path, validation_summary, group)
                 barrier(self.process)
             if halt or self.global_step >= self.max_steps:
                 break
@@ -585,23 +585,24 @@ class Trainer:
         metrics: dict[str, float],
         checkpoint_path: str | None,
         validation_summary: dict[str, Any] | None,
+        group: list[dict[str, Any]] | None = None,
     ) -> None:
-        append_record(
-            self._log_path(),
-            {
-                "type": "train",
-                "global_step": self.global_step,
-                "epoch": epoch,
-                "losses": metrics,
-                "learning_rate": self.task.learning_rates(),
-                "global_batch_size": self.plan.global_batch_size,
-                "micro_batch_size": self.plan.micro_batch_size,
-                "gradient_accumulation_steps": self.plan.accumulation_steps,
-                "seed": self.seed,
-                "checkpoint": checkpoint_path,
-                "validated": validation_summary is not None,
-            },
-        )
+        record = {
+            "type": "train",
+            "global_step": self.global_step,
+            "epoch": epoch,
+            "losses": metrics,
+            "learning_rate": self.task.learning_rates(),
+            "global_batch_size": self.plan.global_batch_size,
+            "micro_batch_size": self.plan.micro_batch_size,
+            "gradient_accumulation_steps": self.plan.accumulation_steps,
+            "seed": self.seed,
+            "checkpoint": checkpoint_path,
+            "validated": validation_summary is not None,
+        }
+        if group is not None:
+            record["case_ids"] = [case_id for batch in group for case_id in batch["case_id"]]
+        append_record(self._log_path(), record)
 
     def _consider_best(self, epoch: int, summary: dict[str, Any]) -> str | None:
         """Save the generator when validation PESQ improves after the official start epoch."""
