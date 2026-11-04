@@ -126,6 +126,9 @@ build_mamba() {
   if [[ "${AUDIO_DB_REBUILD_MAMBA:-}" == 1 ]]; then
     uv pip uninstall --python "$python" causal-conv1d mamba-ssm >/dev/null 2>&1 || true
     rm -f "${site}"/causal_conv1d_cuda*.so "${site}"/selective_scan_cuda*.so
+    # Incremental objects compiled on a newer glibc stay in these trees and
+    # are linked into the next .so. Shannon cannot load that GLIBC_2.32 symbol.
+    rm -rf "${causal}/build" "${mamba}/build"
   fi
   init="${site}/mamba_ssm/__init__.py"
   if [[ -f "$init" ]] && grep -q 'clean-rebuild:' "$init" \
