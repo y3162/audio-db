@@ -13,6 +13,7 @@ import math
 import os
 import statistics
 import subprocess
+import threading
 import time
 from pathlib import Path
 from typing import Any
@@ -39,6 +40,9 @@ def main(argv: list[str] | None = None) -> None:
     parser.add_argument("--resume")
     parser.add_argument("--validation-items", type=int, default=8)
     parser.add_argument("--validation-only", action="store_true")
+    parser.add_argument("--allow-busy", action="store_true")
+    parser.add_argument("--load-workers", type=int)
+    parser.add_argument("--prefetch", action=argparse.BooleanOptionalAction)
     args = parser.parse_args(argv)
     if args.validation_only:
         if not args.resume or not args.checkpoint_dir:
@@ -55,6 +59,12 @@ def main(argv: list[str] | None = None) -> None:
         return
     started = time.perf_counter()
     config = load_training_config(args.config)
+    if args.allow_busy:
+        config["runtime"]["allow_busy_gpu"] = True
+    if args.load_workers is not None:
+        config["data"]["load_workers"] = args.load_workers
+    if args.prefetch is not None:
+        config["data"]["prefetch"] = args.prefetch
     if args.max_steps is not None:
         config["max_steps"] = args.max_steps
     if args.checkpoint_dir is not None:
@@ -139,7 +149,8 @@ def run(config: dict[str, Any], directory: Path, *, resume: Path | None, validat
             "sample_rate": sample_rate,
             "seed": config["seed"],
             "deterministic": config["deterministic"],
-            "dataloader_workers": 0,
+            "dataloader_workers": int(config["data"].get("load_workers", 1)),
+            "prefetch": bool(config["data"].get("prefetch", False)),
             "mixed_precision": False,
             "steps": steps,
             "checkpoint_seconds": meter.checkpoint_seconds,
@@ -163,10 +174,9 @@ class _Meter:
         self.steps: list[dict[str, Any]] = []
         self.checkpoint_seconds: list[float] = []
         self._collate_seconds = 0.0
-        self._collate_count = 0
-        self._started: float | None = None
-        self._case_ids: list[str] = []
-        self._audio_samples = 0
+        self._lock = threading.Lock()
+        self._left: float | None = None
+        self._between = 0.0
 
     def install(self) -> None:
         dataset_collate = self.dataset.collate
@@ -174,32 +184,39 @@ class _Meter:
         save = self.trainer._save
 
         def collate(*args, **kwargs):
-            if self._collate_count % self.accumulation == 0:
-                if self.trainer.process.uses_cuda:
-                    torch.cuda.synchronize(self.trainer.process.device)
-                self._started = time.perf_counter()
-                self._collate_seconds = 0.0
-                self._case_ids = []
-                self._audio_samples = 0
             started = time.perf_counter()
             batch = dataset_collate(*args, **kwargs)
-            self._collate_seconds += time.perf_counter() - started
-            self._collate_count += 1
-            self._case_ids.extend(str(item) for item in batch["case_id"])
-            self._audio_samples += int(batch["clean"].shape[0] * batch["clean"].shape[-1])
+            elapsed = time.perf_counter() - started
+            with self._lock:
+                self._collate_seconds += elapsed
             return batch
 
-        def train_update(*args, **kwargs):
+        def train_update(batches, *args, **kwargs):
+            entered = time.perf_counter()
+            stall = None if self._left is None else entered - self._left
+            between = self._between
+            self._between = 0.0
             if self.trainer.process.uses_cuda:
                 torch.cuda.reset_peak_memory_stats(self.trainer.process.device)
                 torch.cuda.synchronize(self.trainer.process.device)
             update_started = time.perf_counter()
-            metrics = update(*args, **kwargs)
+            metrics = update(batches, *args, **kwargs)
             if self.trainer.process.uses_cuda:
                 torch.cuda.synchronize(self.trainer.process.device)
             update_seconds = time.perf_counter() - update_started
-            total = time.perf_counter() - (self._started if self._started is not None else update_started)
+            with self._lock:
+                collate_seconds = self._collate_seconds
+                self._collate_seconds = 0.0
+            if stall is None:
+                total = collate_seconds + update_seconds
+            else:
+                total = max(0.0, stall + update_seconds - between)
+            self._left = time.perf_counter()
+            grad_started = time.perf_counter()
             grad_l2, nonfinite = _grad_stats(self.trainer.task)
+            self._between += time.perf_counter() - grad_started
+            case_ids = [str(item) for batch in batches for item in batch["case_id"]]
+            audio_samples = sum(int(batch["clean"].shape[0] * batch["clean"].shape[-1]) for batch in batches)
             allocated = reserved = None
             if self.trainer.process.uses_cuda:
                 device = self.trainer.process.device
@@ -208,15 +225,16 @@ class _Meter:
             self.steps.append({
                 "optimizer_step": self.trainer.global_step + 1,
                 "step_seconds": total,
-                "collate_seconds": self._collate_seconds,
+                "collate_seconds": collate_seconds,
                 "update_seconds": update_seconds,
+                "stall_seconds": stall,
                 "losses": {name: float(value) for name, value in metrics.items()},
                 "nonfinite_loss": any(not math.isfinite(float(value)) for value in metrics.values()),
                 "grad_l2": grad_l2,
                 "nonfinite_grads": nonfinite,
                 "learning_rate": self.trainer.task.learning_rates(),
-                "case_ids": list(self._case_ids),
-                "audio_seconds": self._audio_samples / self.sample_rate,
+                "case_ids": case_ids,
+                "audio_seconds": audio_samples / self.sample_rate,
                 "peak_allocated_bytes": allocated,
                 "peak_reserved_bytes": reserved,
             })
@@ -229,7 +247,9 @@ class _Meter:
             path = save(*args, **kwargs)
             if self.trainer.process.uses_cuda:
                 torch.cuda.synchronize(self.trainer.process.device)
-            self.checkpoint_seconds.append(time.perf_counter() - started)
+            elapsed = time.perf_counter() - started
+            self.checkpoint_seconds.append(elapsed)
+            self._between += elapsed
             return path
 
         self.dataset.collate = collate

@@ -42,6 +42,8 @@ data:
   database: data/db/training.duckdb
   train_set: libri_demand_smoke_train
   validation_set: libri_demand_smoke_valid
+  load_workers: 4
+  prefetch: true
 
 runtime:
   device: cpu

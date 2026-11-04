@@ -41,6 +41,9 @@ data:
   database: data/db/voicebank.duckdb
   train_set: voicebank_28_train
   validation_set: voicebank_28_valid
+  # Crop and order depend on the case id, not on worker scheduling.
+  load_workers: 4
+  prefetch: true
 
 runtime:
   device: cuda

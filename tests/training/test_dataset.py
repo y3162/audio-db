@@ -58,6 +58,18 @@ class RecipeWaveformTests(unittest.TestCase):
             self.assertEqual(first["case_id"], [dataset.examples[0].case_id])
             self.assertEqual(first["case_id"][0], case_id_for(dataset.examples[0].recipe))
 
+    def test_threaded_loads_match_the_serial_batch(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            dataset = paired_dataset(root, 4, frames=800, segment_size=200, seed=9)
+            dataset.set_epoch(1)
+            serial = dataset.collate([3, 1, 0, 2])
+            dataset.load_workers = 4
+            threaded = dataset.collate([3, 1, 0, 2])
+            self.assertEqual(serial["case_id"], threaded["case_id"])
+            self.assertTrue(torch.equal(serial["clean"], threaded["clean"]))
+            self.assertTrue(torch.equal(serial["noisy"], threaded["noisy"]))
+
     def test_crop_does_not_depend_on_which_item_was_read_first(self):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)

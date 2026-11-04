@@ -13,6 +13,8 @@ from __future__ import annotations
 
 import contextlib
 import json
+import time
+from concurrent.futures import Future, ThreadPoolExecutor
 from pathlib import Path
 from typing import Any
 
@@ -148,7 +150,17 @@ class Trainer:
         if self.process.rank == 0:
             self.checkpoint_dir.mkdir(parents=True, exist_ok=True)
         barrier(self.process)
+        dataset.load_workers = int(self.config.get("data", {}).get("load_workers", 1))
+        prefetch = bool(self.config.get("data", {}).get("prefetch", False))
         halt = False
+        loader = ThreadPoolExecutor(max_workers=1, thread_name_prefix="audio-db-prefetch") if prefetch else None
+        try:
+            self._run_epochs(dataset, validation, skip, epoch, halt, loader, prefetch)
+        finally:
+            if loader is not None:
+                loader.shutdown(wait=True, cancel_futures=True)
+
+    def _run_epochs(self, dataset, validation, skip, epoch, halt, loader, prefetch) -> None:
         while self.global_step < self.max_steps and not halt:
             indices = epoch_indices(
                 len(dataset),
@@ -178,12 +190,23 @@ class Trainer:
             dataset.set_epoch(epoch)
             cursor = skip
             skip = 0
+            pending: Future | None = None
             while cursor < usable_batches and self.global_step < self.max_steps:
-                group = []
-                for _ in range(accumulation):
-                    start = cursor * micro
-                    group.append(dataset.collate(indices[start : start + micro]))
-                    cursor += 1
+                if pending is not None:
+                    group, cursor = pending.result()
+                    pending = None
+                else:
+                    group, cursor = _load_group(dataset, indices, cursor, micro, accumulation)
+                self._batch_ready = time.perf_counter()
+                if (
+                    prefetch
+                    and loader is not None
+                    and cursor < usable_batches
+                    and self.global_step + 1 < self.max_steps
+                ):
+                    pending = loader.submit(
+                        _load_group, dataset, indices, cursor, micro, accumulation
+                    )
                 metrics = self.task.train_update(group, accumulation)
                 self._require_finite(metrics)
                 self.global_step += 1
@@ -207,6 +230,9 @@ class Trainer:
                         rendered = " ".join(f"{name}={value:.6f}" for name, value in sorted(metrics.items()))
                         print(f"step {self.global_step} {rendered}", flush=True)
                 barrier(self.process)
+            if pending is not None:
+                pending.result()
+                pending = None
             if halt or self.global_step >= self.max_steps:
                 break
             epoch += 1
@@ -393,6 +419,16 @@ class Trainer:
         for name, value in metrics.items():
             if value != value or value in (float("inf"), float("-inf")):
                 raise TrainingError(f"non-finite metric {name}")
+
+
+def _load_group(dataset, indices, cursor: int, micro: int, accumulation: int):
+    """Load the next optimizer step. The returned cursor is the following step."""
+    group = []
+    for _ in range(accumulation):
+        start = cursor * micro
+        group.append(dataset.collate(indices[start : start + micro]))
+        cursor += 1
+    return group, cursor
 
 
 def _environment(process: ProcessInfo) -> dict[str, Any]:

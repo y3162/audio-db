@@ -85,3 +85,15 @@ MP-SENet の学習と公式実装との差
 ### [EXPERIMENT_PLAN.md](training/EXPERIMENT_PLAN.md)
 
 本格学習と固定 ASR による WER・音声品質評価の計画
+
+---
+
+### [PERFORMANCE.md](training/PERFORMANCE.md)
+
+5 モデルの学習 step の内訳と、入力を変えない高速化
+
+---
+
+### [GPU_BUDGET.md](training/GPU_BUDGET.md)
+
+本格学習の GPU 時間見積もり

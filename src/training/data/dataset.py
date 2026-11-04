@@ -9,6 +9,7 @@ not a database row number.
 from __future__ import annotations
 
 import hashlib
+from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -78,6 +79,10 @@ class RecipeDataset:
         self.training = training
         self.database = database
         self.epoch = 0
+        # Parallel loads do not draw from a shared RNG. Crop and order are
+        # functions of the case id, seed, and epoch.
+        self.load_workers = 1
+        self._load_pool: ThreadPoolExecutor | None = None
 
     def __len__(self) -> int:
         return len(self.examples)
@@ -103,11 +108,14 @@ class RecipeDataset:
         }
 
     def collate(self, indices: list[int]) -> dict[str, Any]:
+        if self.load_workers > 1 and len(indices) > 1:
+            loaded = list(self._workers().map(self._load, indices))
+        else:
+            loaded = [self._load(index) for index in indices]
         clean_rows = []
         noisy_rows = []
         case_ids = []
-        for index in indices:
-            clean, noisy, case_id = self._load(index)
+        for clean, noisy, case_id in loaded:
             clean_rows.append(clean)
             noisy_rows.append(noisy)
             case_ids.append(case_id)
@@ -158,6 +166,14 @@ class RecipeDataset:
                 raise TrainingError("training requires segment_size")
             noisy, clean = _segment(noisy, clean, example.case_id, self.seed, self.epoch, self.segment_size)
         return clean, noisy, example.case_id
+
+    def _workers(self) -> ThreadPoolExecutor:
+        if self._load_pool is None:
+            self._load_pool = ThreadPoolExecutor(
+                max_workers=self.load_workers,
+                thread_name_prefix="audio-db-load",
+            )
+        return self._load_pool
 
 
 def load_recipe_dataset(

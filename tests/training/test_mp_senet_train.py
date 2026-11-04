@@ -131,6 +131,28 @@ class ObjectiveTests(unittest.TestCase):
         self.assertTrue(torch.isfinite(scored).all())
         self.assertIsNone(metric_targets(torch.zeros(1, 16000), torch.zeros(1, 16000), 16000))
 
+    def test_parallel_pesq_matches_the_serial_scores(self):
+        from src.training.se.losses import _pesq_wideband
+
+        time = torch.arange(16000, dtype=torch.float32) / 16000
+        rows = []
+        estimates = []
+        for index in range(4):
+            clean = 0.2 * torch.sin(2 * torch.pi * (180 + 20 * index) * time)
+            estimate = clean + 0.01 * torch.sin(2 * torch.pi * (400 + 10 * index) * time)
+            rows.append(clean)
+            estimates.append(estimate)
+        clean = torch.stack(rows)
+        estimate = torch.stack(estimates)
+        serial = [
+            _pesq_wideband((16000, clean[index].numpy(), estimate[index].numpy()))
+            for index in range(4)
+        ]
+        pooled = metric_targets(clean, estimate, 16000)
+        expected = torch.tensor([(score - 1.0) / 3.5 for score in serial], dtype=torch.float32)
+        self.assertIsNotNone(pooled)
+        self.assertTrue(torch.equal(pooled, expected))
+
 
 class StepTests(unittest.TestCase):
     @classmethod
@@ -287,6 +309,33 @@ class StepTests(unittest.TestCase):
             self.assertIn("environment", payload)
             self.assertEqual(payload["dataset"]["case_ids_sha256"], resumed_dataset_hash(wav))
 
+    def test_prefetch_and_load_workers_match_the_serial_run(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            wav = root / "wav"
+            serial = _train(root / "serial", wav, max_steps=3, resume=None)
+            fast = _train(
+                root / "fast",
+                wav,
+                max_steps=3,
+                resume=None,
+                load_workers=4,
+                prefetch=True,
+            )
+            _assert_equal_tensors(self, serial.generator.state_dict(), fast.generator.state_dict())
+            _assert_equal_tensors(self, serial.optim_g.state_dict(), fast.optim_g.state_dict())
+            interrupted = root / "fast-stop"
+            _train(interrupted, wav, max_steps=1, resume=None, load_workers=4, prefetch=True)
+            resumed = _train(
+                interrupted,
+                wav,
+                max_steps=3,
+                resume=interrupted / "step_00000001.pt",
+                load_workers=4,
+                prefetch=True,
+            )
+            _assert_equal_tensors(self, serial.generator.state_dict(), resumed.generator.state_dict())
+
     def test_trained_generator_loads_through_the_inference_api(self):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
@@ -438,8 +487,19 @@ class ValidationTests(unittest.TestCase):
             self.assertEqual(again.best_pesq, 2.5)
 
 
-def _train(checkpoint_dir: Path, wav: Path, *, max_steps: int, resume: Path | None) -> MPSENetTask:
+def _train(
+    checkpoint_dir: Path,
+    wav: Path,
+    *,
+    max_steps: int,
+    resume: Path | None,
+    load_workers: int = 1,
+    prefetch: bool = False,
+) -> MPSENetTask:
     config = tiny_config(checkpoint_dir, max_steps=max_steps)
+    config["data"] = dict(config["data"])
+    config["data"]["load_workers"] = load_workers
+    config["data"]["prefetch"] = prefetch
     dataset = paired_dataset(wav, 8, seed=config["seed"])
     task = MPSENetTask(config, torch.device("cpu"))
     trainer = Trainer(

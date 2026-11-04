@@ -64,7 +64,7 @@ _MODEL = {
     "beta",
     "sampling_rate",
 }
-_DATA = {"database", "train_set", "validation_set"}
+_DATA = {"database", "train_set", "validation_set", "load_workers", "prefetch"}
 _RUNTIME = {"device", "allow_busy_gpu"}
 
 
@@ -230,7 +230,14 @@ def _data(raw: Any) -> dict[str, Any]:
     database = raw["database"]
     if not isinstance(database, str) or not database:
         raise TrainingError("data.database must be a path")
-    return {"database": database, "train_set": train_set, "validation_set": validation}
+    workers = _int(raw.get("load_workers", 4), "data.load_workers", minimum=1)
+    return {
+        "database": database,
+        "train_set": train_set,
+        "validation_set": validation,
+        "load_workers": workers,
+        "prefetch": _bool(raw.get("prefetch", True), "data.prefetch"),
+    }
 
 
 def _runtime(raw: Any) -> dict[str, Any]:

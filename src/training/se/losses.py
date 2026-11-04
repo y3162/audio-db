@@ -94,22 +94,45 @@ def discriminator_loss(
 def metric_targets(clean: torch.Tensor, enhanced: torch.Tensor, sample_rate: int) -> torch.Tensor | None:
     """Normalized wideband PESQ, ``(score - 1) / 3.5``, or None if any item fails.
 
-    Scoring is sequential. The official code uses a process pool; the values
-    are the same PESQ call, without depending on process scheduling.
+    Four or more rows are scored in a spawn process pool. Each score is the
+    same ``pesq`` call as the serial path, and the row order is preserved.
+    Fewer rows stay serial because the pool does not pay for itself.
     """
     if sample_rate != 16000:
         raise ValueError(f"MP-SENet metric PESQ is defined at 16 kHz, got {sample_rate}")
-    from pesq import pesq
-
-    scores: list[float] = []
     clean_rows = clean.detach().cpu()
     enhanced_rows = enhanced.detach().cpu()
-    for reference, estimate in zip(clean_rows, enhanced_rows, strict=True):
-        try:
-            score = float(pesq(sample_rate, reference.numpy(), estimate.numpy(), "wb"))
-        except Exception:
-            score = -1.0
-        scores.append(score)
+    pairs = [
+        (sample_rate, reference.numpy(), estimate.numpy())
+        for reference, estimate in zip(clean_rows, enhanced_rows, strict=True)
+    ]
+    if len(pairs) >= 4:
+        scores = list(_pesq_pool().map(_pesq_wideband, pairs))
+    else:
+        scores = [_pesq_wideband(pair) for pair in pairs]
     if any(score < 0.0 for score in scores):
         return None
     return torch.tensor([(score - 1.0) / 3.5 for score in scores], dtype=torch.float32)
+
+
+def _pesq_wideband(item: tuple) -> float:
+    sample_rate, reference, estimate = item
+    from pesq import pesq
+
+    try:
+        return float(pesq(sample_rate, reference, estimate, "wb"))
+    except Exception:
+        return -1.0
+
+
+_PESQ_POOL = None
+
+
+def _pesq_pool():
+    global _PESQ_POOL
+    if _PESQ_POOL is None:
+        import multiprocessing as mp
+        from concurrent.futures import ProcessPoolExecutor
+
+        _PESQ_POOL = ProcessPoolExecutor(max_workers=4, mp_context=mp.get_context("spawn"))
+    return _PESQ_POOL

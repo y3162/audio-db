@@ -20,23 +20,23 @@ VoiceBank+DEMAND の公式 28 話者のうち train 26 話者 10,700 発話、va
 
 | モデル | 試験で動いた設定 | 公開条件との差 |
 |---|---|---|
-| MP-SENet | global 4、2 秒、16 kHz、AdamW 5e-4、betas 0.8/0.99、WD 0.01、ExponentialLR 0.99、400 epoch が公開既定 | workers は 0。検証の端数サンプルは hop 倍数へ切る |
+| MP-SENet | global 4、2 秒、16 kHz、AdamW 5e-4、betas 0.8/0.99、WD 0.01、ExponentialLR 0.99、400 epoch が公開既定 | 読み込み workers 4 と次 step の先読み。検証の端数サンプルは hop 倍数へ切る |
 | SEMamba++ | global 8、3 秒、16 kHz、hid 48、fused、AdamW 2e-4、100 epoch。実行は micro 4 × 蓄積 2 | 公式 batch 8 の 1 forward はこの MIG で OOM。蓄積 2 は Generator を forward し直す |
-| TF-GridNet | global 4、3 秒、16 kHz、ms-snsd、Adam 1e-3、WD 0、clip 5、plateau 0.7/1 | 公開 epoch は 5,000 iter × 35。1 走査は 2,675 step。workers は 0 |
-| DeepFilterNet3 | global 16、3 秒、48 kHz、公式幅、AdamW 1e-3、amsgrad、clip 1、cosine | epoch 0 の batch だけ測定。24 以降は未測定。`MAX_EPOCHS` は ini を読み直していない |
+| TF-GridNet | global 4、3 秒、16 kHz、ms-snsd、Adam 1e-3、WD 0、clip 5、plateau 0.7/1 | 公開 epoch は 5,000 iter × 35。1 走査は 2,675 step |
+| DeepFilterNet3 | global 16、3 秒、48 kHz、公式幅、AdamW 1e-3、amsgrad、clip 1、cosine | batch 24 は同じ MIG で 40 step 完了。epoch 時間は batch 16 とほぼ同じ。batch 32 以上は未測定。`MAX_EPOCHS` は ini を読み直していない |
 | MossFormerGAN | global 2、2 秒、16 kHz、micro 1 × 2、AdamW 5e-4、D はその 2 倍、WD 0.01、clip 10、120 epoch | 1 step で G と D を各 1 回。公開プロセスの再起動は plateau 回数を戻す |
 
 ## 資源と順序
 
-H100 MIG 4g.47gb、VoiceBank 実音声、定常 step の中央値からの見積もりは [GPU_BUDGET.md](GPU_BUDGET.md)。旧 A100 の表は [GPU_COST.md](GPU_COST.md) に残し、ここでは使わない。標準シナリオの 1 seed は、公開 epoch 数で MP-SENet 235 時間、SEMamba++ 192 時間、TF-GridNet 24 時間、MossFormerGAN 146 時間、DeepFilterNet3 は batch 16 の 2 epoch で 0.9 時間である。合計約 597 時間。3 seed は約 1,792 時間。DeepFilterNet3 の batch 増加と ASR の WER はこの合計に入っていない。
+H100 MIG 4g.47gb、VoiceBank 実音声、定常 step の中央値からの見積もりは [GPU_BUDGET.md](GPU_BUDGET.md)。内訳は [PERFORMANCE.md](PERFORMANCE.md)。旧 A100 の表は [GPU_COST.md](GPU_COST.md) に残し、ここでは使わない。高速化後の標準シナリオの 1 seed は、公開 epoch 数で MP-SENet 191 時間、SEMamba++ 67 時間、TF-GridNet 9.9 時間、MossFormerGAN 143 時間、DeepFilterNet3 は batch 16 の 2 epoch で 0.65 時間である。合計約 411 時間。3 seed は約 1,234 時間。最適化前の同じ範囲は 597 時間と 1,792 時間だった。DeepFilterNet3 の batch 32 以上と ASR の WER はこの合計に入っていない。batch 24 の epoch 2–4 を足しても 1 seed は約 1 時間しか増えない。
 
 実行順は次のとおり。各本学習ジョブは 30 分を超えるので、投入のたびに明示の承認を得る。
 
 1. TF-GridNet の seed 17 を、公式の 5,000 iter × 35 epoch で 1 GPU に出す。検証間隔は 5,000 step。
 2. 同じ checkpoint を固定 ASR の小規模な名前付きセットへ通し、WER の所要時間を測る。全件評価はその時間を見てから承認する。
-3. MossFormerGAN、MP-SENet、SEMamba++（蓄積 2）の順に seed 17 を出す。DeepFilterNet3 は batch 16 の epoch 0–1 を先に走らせ、batch 24 の 1 step を測ってから残りを承認する。
+3. MossFormerGAN、MP-SENet、SEMamba++（蓄積 2）の順に seed 17 を出す。DeepFilterNet3 は batch 16 の epoch 0–1 と、測定済みの batch 24 の epoch 2–4 までを先に承認する。batch 32 以上は未測定なので、その epoch の前に step 時間とメモリを測る。
 4. seed 17 の test 評価が揃ってから seed 3 と 29 を出す。
 
-本格学習の開始判断は **PARTIAL** である。100 step、有限損失、再開、検証の外挿は 5 モデルとも通った。開始前に残るのは、30 分超ジョブの承認、DeepFilterNet3 の大きい batch の 1 step、SEMamba++ を蓄積 2 のまま使うことの確認、検証 interval を epoch 末に合わせた YAML である。別ノードでの環境再構築と、公式プロセスとの Adapter 差は、学習を始める条件にはしない。
+本格学習の開始判断は **PARTIAL** のままである。読み込みの並列化と次 step の先読みは採用し、100 step の case ID は最適化前と一致した。TF-GridNet の seed 17 は、30 分を超えるジョブの承認と、epoch 末に当たる validation interval の YAML を書けば開始できる。開始前に残るのはその承認、SEMamba++ を蓄積 2 のまま使うことの確認、DeepFilterNet3 の batch 32 以上である。別ノードでの環境再構築と、公式プロセスとの Adapter 差は、学習を始める条件にはしない。
 
 GPU は使用前に空きを確認する。この計画はジョブ投入の承認ではない。

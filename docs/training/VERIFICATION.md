@@ -1880,3 +1880,30 @@ HEAD は作業開始時 `082083d947276632f9a3485e7011e7d5853dc034` で、`dev` �
 | SEMamba++ 再開 | 20.99 |
 
 合計 1,095.15 秒。開始 12,066.080 秒に加え 13,161.230 秒。上限 25,200 秒まで 12,038.770 秒。最初の 2.28 秒は GPU カーネルに入る前の失敗である。
+
+## 読み込みの並列化と先読み（2026-11-04）
+
+学習式は変えていない。`data.load_workers: 4` と `data.prefetch: true`、4 行以上の PESQ プロセスプールを学習設定の既定にした。根拠と step 時間は [PERFORMANCE.md](../training/PERFORMANCE.md)、予算は [GPU_BUDGET.md](../training/GPU_BUDGET.md)。
+
+CPU では、スレッド読み込みの波形が直列と一致し、prefetch ありの 3 更新と step 1 からの再開が直列実行の重みと Optimizer に一致した。4 行の PESQ は直列スコアと一致した。VoiceBank の TF-GridNet step 2 の 4 波形も直列と workers 4 で一致した。
+
+H100 MIG の 100 step では、5 モデルとも朝の case ID 列と一致し、step 1 の generator 損失も一致した。step 2 以降の損失は `deterministic: false` の再実行でずれる。同日の直列再実行も TF-GridNet の step 1 が 95173.195 と 95173.188 に分かれたので、このずれを先読みの系統差とはしない。公式 4 プロセスはやり直していない。
+
+step 50 から別プロセスで 2 更新した再開は 5 モデルとも valid で、step 51 と 52 の case ID は連続実行と一致した。非有限の損失は 0 だった。
+
+DeepFilterNet3 の batch 24 は 40 step 完了し、OOM はしなかった。定常中央値 2.200 秒、peak allocated 4.21 GiB、peak reserved 4.89 GiB。batch 16 の先読み後 1.421 秒より 1 step は長い。epoch の計算時間はほぼ同じである。batch 32 以上は未実行。
+
+### この節の GPU 時間
+
+`/usr/bin/time` の elapsed。Profiler 付きの 8 step も含む。予約時間は含めない。開始時の累計は 13,161.230 秒。
+
+| 実行 | 秒 |
+|---|---:|
+| MIG の認識 | 39.80 |
+| Profiler 5 モデル | 463.17 |
+| 先読み後の 100 step 5 モデル | 550.49 |
+| DeepFilterNet3 batch 24 の 40 step | 98.61 |
+| 直列対照 20 step 5 モデル | 317.90 |
+| 先読み後の再開 5 モデル | 68.45 |
+
+合計 1,538.42 秒。累計 14,699.65 秒。上限 25,200 秒まで 10,500.35 秒。親 GPU の `memory.used` は他の MIG を含み、Utilization は `[N/A]` だった。計算に使ったのは、このジョブに見えている MIG 4g.47gb の 1 切片である。
