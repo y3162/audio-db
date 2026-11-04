@@ -63,3 +63,5 @@ TF-GridNet の重みカードは、コードの Apache-2.0 とは別に利用条
 同じ `make setup PLATFORM=...` を再実行する。成功済みの仮想環境（lock のハッシュが一致し、import できるもの）と、検証済みのファイルはやり直さない。`FORCE_SETUP=1` は lock の同期からやり直すが、仮想環境ディレクトリは消さない。
 
 公式 `libdfdata` は HDF5 が必要である。TSUBAME では `hdf5-parallel/1.14.3/gcc11.4.1` を読む。モジュールが無い場合、`libdf` 本体の成否と `libdfdata` の未構築は分けて表示する。
+
+`libdf` のビルドは `src/se/official/deepfilternet` を書き換えない。Cargo 1.99 はピンした `Cargo.lock`（version 3）を `--locked` のまま読めず、ロックの更新を拒否する。再ビルドが必要なときは `build/libdf-src` の共有 clone だけでロックを更新し、`--offline` で maturin する。既に `build/libdf-cargo/wheels` にある wheel が import できるときは、それを入れ直して再コンパイルしない。

@@ -12,7 +12,7 @@
 | `.venvs/asr` | Python 3.12、NeMo、Whisper、Transformers、NumPy 2.1.3。実 ASR を使う評価・スモーク。SE と ASR を同じプロセスでつなぐため、DuckDB・PESQ・STOI も入っている |
 | `.venvs/official` | 公式実装・ESPnet レシピとの比較。NumPy 2.5 |
 | `.venvs/semambapp` | SEMamba++ の fused CUDA。`mamba-ssm==2.3.2.post1` と `causal-conv1d==1.7.0` をソースビルドし、import 3 行だけ `patches/mamba_ssm-2.3.2.post1-init.patch` を適用する |
-| `.venvs/deepfilternet` | 公式 `libdf` / `libdfdata`。NumPy 1.26。独立実装の実行時依存ではない |
+| `.venvs/deepfilternet` | 公式 `libdf` / `libdfdata`。NumPy 1.26。独立実装の実行時依存ではない。公式 checkout の `Cargo.lock` は更新しない。再ビルドは `build/libdf-src` だけで行う |
 
 旧パス `.venvs/lab`、`.venvs/tsubame`、`.venvs/ref`、`.venvs/semamba`、`.venvs/cuda-nvcc`、`.venvs/clean-20261104` は役割別環境へ移行する前のものである。セットアップはこれらを削除しない。`.venvs/lab` は SHINODA-LAB の旧環境名で、今の対応は `.venvs/se` である。
 

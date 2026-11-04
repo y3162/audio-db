@@ -68,7 +68,7 @@ role_imports() {
       "$python" -c 'import torch, causal_conv1d_cuda, selective_scan_cuda'
       ;;
     deepfilternet)
-      "$python" -c 'import torch, libdf'
+      "$python" -c 'import torch, libdf, libdfdata'
       ;;
     *)
       echo "unknown role ${role}" >&2
@@ -136,6 +136,47 @@ build_mamba() {
   "$python" scripts/apply_mamba_init_patch.py --init "$init" || return 1
 }
 
+libdf_imports() {
+  local python=$1
+  "$python" -c 'import libdf, libdfdata' >/dev/null 2>&1
+}
+
+install_libdf_wheels() {
+  local python=$1
+  local lib_wheel data_wheel
+  lib_wheel=$(ls -1 build/libdf-cargo/wheels/DeepFilterLib-*.whl 2>/dev/null | head -1 || true)
+  data_wheel=$(ls -1 build/libdf-cargo/wheels/DeepFilterDataLoader-*.whl 2>/dev/null | head -1 || true)
+  if [[ -z "$lib_wheel" || -z "$data_wheel" ]]; then
+    return 1
+  fi
+  uv pip install --python "$python" --no-deps "$lib_wheel" "$data_wheel" || return 1
+  libdf_imports "$python"
+}
+
+# Cargo 1.99 rewrites the pinned lock (version 3) and refuses that rewrite
+# when --locked is set. The official checkout stays at its commit. A shared
+# clone under build/libdf-src may refresh its own lock, offline.
+libdf_build_tree() {
+  local src dest commit
+  src="$(pwd)/src/se/official/deepfilternet"
+  dest="$(pwd)/build/libdf-src"
+  commit=$(git -C "$src" rev-parse HEAD)
+  if [[ ! -d "$dest/.git" ]] || [[ "$(git -C "$dest" rev-parse HEAD 2>/dev/null || true)" != "$commit" ]]; then
+    rm -rf "$dest"
+    git clone --shared "$src" "$dest"
+    git -C "$dest" checkout --detach "$commit"
+  fi
+  printf '%s\n' "$dest"
+}
+
+maturin_release() {
+  local python=$1
+  if "$python" -m maturin build --release --offline --locked --interpreter "$python"; then
+    return 0
+  fi
+  "$python" -m maturin build --release --offline --interpreter "$python"
+}
+
 build_libdf() {
   local python=$1
   local repo="src/se/official/deepfilternet"
@@ -143,11 +184,20 @@ build_libdf() {
     echo "Pinned DeepFilterNet checkout is missing. Run: make assets" >&2
     return 1
   fi
+  if libdf_imports "$python"; then
+    return 0
+  fi
+  if install_libdf_wheels "$python"; then
+    echo "reinstalled libdf wheels"
+    return 0
+  fi
   export PATH="$(dirname "$python"):${PATH}"
   export CARGO_TARGET_DIR="${PWD}/build/libdf-cargo"
+  local tree
+  tree=$(libdf_build_tree)
   (
-    cd "$repo/pyDF"
-    "$python" -m maturin build --release --locked --interpreter "$python"
+    cd "$tree/pyDF"
+    maturin_release "$python"
   ) || return 1
   local wheel
   wheel=$(ls -1 "${CARGO_TARGET_DIR}/wheels"/DeepFilterLib-*.whl | head -1)
@@ -162,8 +212,8 @@ build_libdf() {
     return 1
   fi
   (
-    cd "$repo/pyDF-data"
-    "$python" -m maturin build --release --locked --interpreter "$python"
+    cd "$tree/pyDF-data"
+    maturin_release "$python"
   ) || return 1
   wheel=$(ls -1 "${CARGO_TARGET_DIR}/wheels"/DeepFilterDataLoader-*.whl | head -1)
   uv pip install --python "$python" --no-deps "$wheel" || return 1

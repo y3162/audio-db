@@ -10,7 +10,7 @@ make doctor
 
 CUDA は `cuda/12.3.2`、HDF5 は `hdf5-parallel/1.14.3/gcc11.4.1` をセットアップが読み、融合カーネルの `TORCH_CUDA_ARCH_LIST` は `9.0` である。PyTorch の wheel は cu124。詳細は [セットアップ](SETUP.md)。
 
-2026-11-04 に計算ノード `r4n11` で `make setup PLATFORM=tsubame` を実行した。5 つの仮想環境、公式ソースの pin した commit、公式重みの SHA-256、5 モデルの CPU `state_dict` 読み込み、`libdf` / `libdfdata` の import、追跡済み `libdf_rfft.so` の実行は通った。同じコマンドの再実行は仮想環境を作り直さず、診断は `PASS=45 FAIL=0 SKIP=0 NOT_TESTED=2` だった。`NOT_TESTED` は PyTorch の CUDA 加算と `causal_conv1d_fn` の実行で、`nvidia-smi` の使用メモリが 1024 MiB 以上だったためである。拡張の import は成功している。SHINODA-LAB の同じ入口は未実行である。
+2026-11-04 に計算ノード `r4n11` で `make setup PLATFORM=tsubame` を再実行し、終了コード 0 だった。診断は `PASS=47 FAIL=0 SKIP=0 NOT_TESTED=0`。PyTorch の CUDA 加算と `causal_conv1d_fn` も通った。`deepfilternet` は、Cargo 1.99 が公式 `Cargo.lock` を `--locked` で更新できないため、既存 wheel を入れ直した。公式 checkout の `Cargo.lock` は変えていない。SHINODA-LAB の同じ入口は未実行である。
 
 以下は 2026-11-02 から 2026-11-04 に記録した、旧パス `.venvs/tsubame` と `.venvs/clean-20261104` の構築例である。新しい役割別環境は上の `make setup` が作る。旧ディレクトリは削除しない。
 
