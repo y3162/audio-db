@@ -37,6 +37,10 @@ H100 MIG 4g.47gb、VoiceBank 実音声、定常 step の中央値からの見積
 3. MossFormerGAN、MP-SENet、SEMamba++（蓄積 2）の順に seed 17 を出す。DeepFilterNet3 は batch 16 の epoch 0–1 と、測定済みの batch 24 の epoch 2–4 までを先に承認する。batch 32 以上は未測定なので、その epoch の前に step 時間とメモリを測る。
 4. seed 17 の test 評価が揃ってから seed 3 と 29 を出す。
 
-本格学習の開始判断は **PARTIAL** のままである。読み込みの並列化と次 step の先読みは採用し、100 step の case ID は最適化前と一致した。TF-GridNet の seed 17 は、30 分を超えるジョブの承認と、epoch 末に当たる validation interval の YAML を書けば開始できる。開始前に残るのはその承認、SEMamba++ を蓄積 2 のまま使うことの確認、DeepFilterNet3 の batch 32 以上である。別ノードでの環境再構築と、公式プロセスとの Adapter 差は、学習を始める条件にはしない。
+本格学習の開始判断は **PARTIAL** のままである。TF-GridNet seed 17 の最初の 5,000 更新は 1,045.70 秒で終わり、検証損失は有限、checkpoint から 2 更新の再開も通った。詳細は [VERIFICATION.md](VERIFICATION.md)。この実行の epoch はデータ 1 周であり、公式の 5,000 反復イテレータではない。step 5,000 では ReduceLROnPlateau が進んでいない。残り 34 epoch をこの checkpoint から続けると、公開スケジュールの patience を再現しない。次は Trainer に 5,000 optimizer step の epoch を足し、その境界で検証と plateau を進めることである。そのあと、約 10.2 時間の 35 epoch を新規に承認してから投入する。今回の checkpoint を公式再現の続きとしては使わない。
+
+Whisper Large v3 は、同じ test セットの登録順先頭 4 発話で clean / noisy / enhanced を通した。全 824 件は、1 checkpoint あたり約 0.9 時間の比例見積もりであり、まだ承認していない。
+
+開始前に残るのは、TF-GridNet の epoch 境界、その 35 epoch の承認、SEMamba++ を蓄積 2 のまま使うことの確認、DeepFilterNet3 の batch 32 以上である。別ノードでの環境再構築と、公式プロセスとの Adapter 差は、学習を始める条件にはしない。
 
 GPU は使用前に空きを確認する。この計画はジョブ投入の承認ではない。

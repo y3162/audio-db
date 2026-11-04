@@ -95,6 +95,8 @@ SEMamba++、TF-GridNet、DeepFilterNet3 は、同日直列対照の collate が 
 
 検証 8 件からの全件外挿も短くなった（MP-SENet 484 秒から 263 秒、SEMamba++ 604 秒から 176 秒、TF-GridNet 123 秒から 56 秒）。発話長で層化していない。全学習時間へ足すときは、遅い方の外挿を保守側に残す。詳細は [GPU_BUDGET.md](GPU_BUDGET.md)。
 
+同じ日の追加で、TF-GridNet の chunk 48,000・batch 4 を 24 step 測り直した。定常中央値は 0.1916 秒で、上の 0.191 秒と一致した。5,000 更新と検証 872 件を含むプロセスは 1,045.70 秒だった。step 時間の中央値だけでは、この 1 epoch の実測にならない。
+
 ## DeepFilterNet3 batch 24
 
 出荷スケジュール `0/16,2/24,5/32,10/64,20/128,40/9999` の epoch 2–4 が batch 24 である。`steps_per_epoch` は `floor(10700/24)=445`。測定は step 0 から 40 step で、epoch 2 の学習率そのものではない。計算時間を見るための実行である。設定は `configs/training/measure/deepfilternet3-batch24.yaml`。学習の batch 16 設定は変えていない。

@@ -1,0 +1,64 @@
+# TF-GridNet ms-snsd, seed 17, one published epoch.
+# ESPnet egs2/ms_snsd/enh1 train_enh_tfgridnet.yaml:
+# batch 4, chunk 48000, 16 kHz, Adam 1e-3, weight decay 0, eps 1e-8,
+# gradient clip 5, ReduceLROnPlateau factor 0.7 patience 1,
+# num_iters_per_epoch 5000, max_epoch 35.
+# This file runs the first 5000 optimizer updates only.
+# The trainer still treats one data epoch as one shuffled pass
+# (10700 / 4 = 2675 updates). Plateau steps only when that pass ends
+# and a validation summary exists, so the learning rate stays 1e-3
+# through these 5000 updates. Validation and the checkpoint land on
+# step 5000.
+
+seed: 17
+deterministic: false
+global_batch_size: 4
+micro_batch_size_per_gpu: 4
+max_steps: 5000
+segment_size: 48000
+loss: official
+grad_clip: 5.0
+checkpoint_dir: data/results/training/tf-gridnet-seed17-epoch1-20261104
+checkpoint_interval: 5000
+validation_interval: 5000
+best_checkpoint_start_epoch: 40
+
+optimizer:
+  name: adam
+  lr: 0.001
+  betas: [0.9, 0.999]
+  weight_decay: 0.0
+
+scheduler:
+  name: plateau
+  factor: 0.7
+  patience: 1
+
+model:
+  name: tf_gridnet
+  variant: ms-snsd
+  sampling_rate: 16000
+  architecture:
+    n_fft: 512
+    stride: 256
+    n_layers: 4
+    lstm_hidden_units: 128
+    attn_n_head: 4
+    attn_approx_qk_dim: 512
+    emb_dim: 32
+    emb_ks: 4
+    emb_hs: 4
+    activation: prelu
+    eps: 1.0e-5
+  stft: {}
+
+data:
+  database: data/db/voicebank.duckdb
+  train_set: voicebank_28_train
+  validation_set: voicebank_28_valid
+  load_workers: 4
+  prefetch: true
+
+runtime:
+  device: cuda
+  allow_busy_gpu: true

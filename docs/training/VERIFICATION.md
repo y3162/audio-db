@@ -1907,3 +1907,59 @@ DeepFilterNet3 の batch 24 は 40 step 完了し、OOM はしなかった。定
 | 先読み後の再開 5 モデル | 68.45 |
 
 合計 1,538.42 秒。累計 14,699.65 秒。上限 25,200 秒まで 10,500.35 秒。親 GPU の `memory.used` は他の MIG を含み、Utilization は `[N/A]` だった。計算に使ったのは、このジョブに見えている MIG 4g.47gb の 1 切片である。
+
+## 固定 ASR と TF-GridNet の最初の 5,000 更新（2026-11-04）
+
+HEAD は `87ad09e`、`dev` は `origin/dev` と一致、作業開始時のツリーはクリーンだった。GPU 会計の開始値は 14,699.65 秒。新しい `qsub` / `qrsh` は出していない。対話環境は `r4n11`、見えている装置は MIG `MIG-1182cb20-01d4-5444-8a31-5422d48a9c2d`。開始時の `torch.cuda.mem_get_info()` は free 46.05 GiB / total 46.38 GiB だった。親 GPU の `memory.used` は他切片を含むため、測定プロセスだけ `allow_busy_gpu` にした。
+
+### 高速化後の短い再確認
+
+公式 4 プロセスはやり直していない。CPU の既存テスト 3 件は成功した。スレッド読み込みの波形は直列と一致し、prefetch ありの 3 更新と step 1 からの再開は直列実行の重み・Optimizer と一致し、4 行の PESQ は直列スコアと一致した。CUDA のビット一致は要求していない。
+
+同じ chunk 48,000・batch 4・seed 17 の新しい 24 step では、step 1 の `mr_l1_tfd` が 95173.1875 だった。続けて走らせた 5,000 更新の step 1 は 95173.195312 で、同日に記録済みの直列再実行 95173.195 と一致する側だった。この差は、先に記録した非決定的 CUDA の再実行差の範囲であり、先読みが作った新しい系統差としては扱わない。
+
+### TF-GridNet の 5,000 更新
+
+設定は `configs/training/tf_gridnet_seed17_epoch1.yaml`。chunk 48,000、global batch 4、16 kHz、Adam 1e-3、eps 1e-8、weight decay 0、clip 5、`mr_l1_tfd`。`max_steps: 5000`、`validation_interval: 5000`。結果は `data/results/training/tf-gridnet-seed17-epoch1-20261104/`。
+
+直前の 24 step 予備は `data/results/training/tf-gridnet-seed17-probe-20261104/`。定常 19 点の中央値は 0.1916 秒、peak allocated 4.98 GiB、peak reserved 5.76 GiB。検証 8 件からの 872 件外挿は 46.0 秒で、発話長では層化していない。この予備から 1 epoch を 17 分程度と見積もり、30 分未満なので実行した。
+
+5,000 更新のプロセス時間は 1,045.70 秒。train の `mr_l1_tfd` は step 1 が 95173.195、step 2,675 が 20774.313、step 5,000 が 22435.607。非有限の学習損失は 0。学習率は全 step で 0.001。検証 872 件の `mr_l1_tfd` は 22655.620 で有限。PESQ と STOI はこの損失の検証報告では `na`（`not computed for mr_l1_tfd`）。`best_generator` は `best_checkpoint_start_epoch: 40` のため保存していない。ログ上の epoch は 0 が 2,675 step、1 が 2,325 step である。
+
+この 5,000 step は公式の `num_iters_per_epoch` と同じ更新回数である。Trainer の epoch はデータ 1 周（10,700 / 4 = 2,675）のままで、公式の 5,000 反復イテレータではない。step 5,000 は 2 周目の途中で、ReduceLROnPlateau は `last_epoch` 0、`best` inf のままである。学習率は公式の 1 epoch 中と同じ 0.001 だが、epoch 境界と patience の状態は公式と対応していない。35 epoch へこの checkpoint をそのまま続けても、検証 step とデータ周の終端は 175,000 step 以内で重ならず、plateau は進まない。
+
+step 5,000 の checkpoint を別ディレクトリで 2 更新再開した。`data/results/training/tf-gridnet-seed17-epoch1-resume-20261104/`。step 5,001 と 5,002 の損失は有限、学習率は 0.001、プロセス 11.16 秒。元の checkpoint は上書きしていない。
+
+### Whisper Large v3
+
+`.venvs/asr` はこのノードに無い。`.venvs/clean-20261104` に `openai-whisper==20240930`、`tiktoken==0.7.0`、`more-itertools==10.5.0` を足した。torch 2.6.0+cu124 と numpy 2.5.4 は変えていない。
+
+評価セットは `resource.duckdb` の `voicebank_demand_test`、登録順の先頭 4 発話、48 kHz、全文、`max_seconds` なし。ASR は `large-v3`、`language: en`、`task: transcribe`、`temperature: 0`、`condition_on_previous_text: false`、fp16。WER は `wer-norm-v1` の micro。PESQ は 16 kHz wideband、STOI も 16 kHz へ変換してから計算する。clean は参照なので PESQ / STOI / SI-SDR の推定値には入らない。
+
+| checkpoint | 条件 | micro WER | N | PESQ | STOI | SI-SDR |
+|---|---|---:|---:|---:|---:|---:|
+| 100 step `perf-fast-20261104` | clean | 0 | 54 | na | na | na |
+| 100 step | noisy | 0 | 54 | 2.531 | 0.930 | 8.844 |
+| 100 step | enhanced | 0 | 54 | 1.660 | 0.902 | 5.583 |
+| 5,000 step | clean | 0 | 54 | na | na | na |
+| 5,000 step | noisy | 0 | 54 | 2.531 | 0.930 | 8.844 |
+| 5,000 step | enhanced | 0 | 54 | 2.808 | 0.939 | 19.542 |
+
+4 発話とも仮説は参照と一致した。WER はこの子集では条件を分けない。100 step の音質は noisy を下回り、5,000 step の 4 発話平均は上回った。どちらも学習済み性能ではない。記録は `data/results/se-evaluation/whisper-vb4-20261104/` と `whisper-vb4-epoch1-20261104/`。
+
+5,000 step の checkpoint では、4 発話の enhance 0.55 秒、ASR 8.26 秒、PESQ 等 6.08 秒だった。発話あたり 3.96 秒を 824 件へ比例すると約 0.91 時間。このうち enhance と ASR は約 0.50 時間。先頭 4 件の比例であり、長さで層化していない。重みの初回取得 2.88 GB は別である。
+
+### この節の GPU 時間
+
+`/usr/bin/time` の elapsed。予約時間は含めない。失敗した最初の予備は、計測ファイルが checkpoint ディレクトリを空でなくしたため更新前に止まり、シェル全体 13.57 秒を計上した。
+
+| 実行 | 秒 |
+|---|---:|
+| 空でないディレクトリで止まった予備 | 13.57 |
+| chunk 48,000 の 24 step と検証 8 件 | 15.82 |
+| TF-GridNet 5,000 更新と検証 872 件 | 1,045.70 |
+| step 5,000 からの 2 更新 | 11.16 |
+| Whisper、100 step checkpoint、4 発話 | 59.50 |
+| Whisper、5,000 step checkpoint、4 発話 | 43.77 |
+
+合計 1,189.52 秒。累計 15,889.17 秒。上限 25,200 秒まで 9,310.83 秒。
