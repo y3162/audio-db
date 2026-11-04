@@ -7,12 +7,14 @@ and does not stop other metrics.
 ``Downsample = 64``. The loader then adds ``2 * 75 * 64`` samples of search
 padding, which is itself a multiple of 64, so the VAD length
 ``(N + 9600) // 64`` increases exactly when ``N`` crosses a multiple of 64.
-On a time-aligned pair that extra bin does not move the score. On a pair the
-delay search cannot lock (the stored failure has SI-SDR near -39 dB), the new
-bin can split another utterance and assign a delay of several seconds. The MOS
-then jumps by multiple points. The score is not edited and the delay is not
-forced to zero. A jump larger than ``SPLIT_ABS_TOL`` across that one-bin crop
-is refused as ``na``.
+In one observed failure the new bin changed the detected utterances and delay,
+and the MOS jumped by multiple points. The guard compares the full score with
+the last length before the preceding bin; these lengths can differ by up to 64
+samples. A large difference may also vary gradually within the bin, without a
+detected split or delay change. It is a conservative length-sensitivity flag,
+not proof that an utterance split occurred. The raw score is not edited and the
+delay is not forced to zero. Differences larger than ``SPLIT_ABS_TOL`` remain
+``na`` because the full-length value's reliability has not been established.
 """
 
 from __future__ import annotations

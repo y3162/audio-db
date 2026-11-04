@@ -70,6 +70,12 @@ ASR のモデル一覧と共通 API
 
 ---
 
+### [PESQ_LENGTH_INVESTIGATION.md](evaluation/PESQ_LENGTH_INVESTIGATION.md)
+
+PESQ の長さ依存の調査と、同じ有効発話集合による比較
+
+---
+
 ### [MP_SENET.md](training/MP_SENET.md)
 
 MP-SENet の学習と公式実装との差

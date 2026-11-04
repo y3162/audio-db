@@ -47,3 +47,4 @@
 
 28. **長時間学習の管理経路は更新完了境界で保存し、前ジョブの成功を確認してから続ける。** `job_chain` は設定・source・commit・DB・環境と checkpoint の指紋を記録し、前状態と qacct の正常終了を要求する。保留数の上限を超える自動投入や、古い checkpoint への自動巻き戻しはしない。実装と対話 GPU スモークはあるが、qsub ジョブ間の動作は未検証であり本学習 GO ではない。検証範囲と残件は [ジョブ継続の検証](../docs/training/JOB_CONTINUATION_AUDIT.md)。
 29. **研究室の本学習は、時間制限が無いホストではジョブを分割しない。** 定期 checkpoint と再開を使う。`SIGTERM` は現在の optimizer 更新を終えてから checkpoint を書き、`CHECKPOINTED` で戻る。`SIGKILL` は書き込み中の一時ファイルを捨て、直前の完成 checkpoint を残す。同じ `checkpoint_dir` の二重起動は `.lock` で拒否する。完了時の `complete.json` がある実験は再開しない。破損した checkpoint は `TrainingError` にして再開元にしない。TSUBAME の `qsub` 連鎖はこの決定の対象外である。
+30. **noisy と enhanced の音質比較は指標ごとに共通の有効 case だけで行う。** 条件別の単独平均は従来どおり残し、同一 record の両値が有限かつ `ok` の case の平均・差と除外理由を `summary.json` に別途記録する。PESQ の長さ依存があるときは値を埋めず、詳細は [調査](../docs/evaluation/PESQ_LENGTH_INVESTIGATION.md) に記録する。

@@ -295,6 +295,8 @@ Run ID を省略すると、実験名、UTC 時刻、設定ハッシュから作
 
 `results.jsonl` が再集計の入力です。WER は micro 集計、PESQ / STOI / SI-SDR は有限な発話スコアの平均です。欠けたスコアは平均に 0 として入れません。
 
+`summary.json` の `groups` は条件ごとの有効発話で個別に集計するため、noisy と enhanced の件数・集合が異なる場合があります。両者の比較には `paired_signal_metrics` を使います。モデル・設定・SNR・指標ごとに、同一 record で両条件とも有限かつ `ok` の case だけを採用し、両平均、enhanced − noisy の平均、case ID、除外 case と理由を記録します。共通 case が無ければ件数 0、平均と差は null です。条件別の既存集計は変えません。CLI にも paired の集計を表示します。
+
 ### 再開
 
 成功したレコードだけを再利用します。再利用の条件は、設定ハッシュ、torch の版、発話、モデル、variant、チェックポイント内容、SNR、サンプリングレート、入力波形、clean 参照、強調 seed が一致することです。失敗と skip はやり直します。音声やチェックポイントの内容が変わると、同じ枠を上書きして計算し直します。

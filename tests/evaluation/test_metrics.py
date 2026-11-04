@@ -3,6 +3,7 @@
 import math
 import unittest
 from pathlib import Path
+from unittest.mock import patch
 
 import torch
 
@@ -178,3 +179,16 @@ class MetricTests(unittest.TestCase):
         self.assertEqual(scored["reason"], "pesq_utterance_split_discontinuity")
         self.assertIsNone(scored["value"])
         self.assertGreater(abs(scored["raw_value"] - scored["boundary_value"]), 0.1)
+
+    def test_pesq_length_sensitive_pair_remains_unscored(self):
+        # Even a single detected utterance and zero estimated lag do not prove
+        # that a score changing by >0.1 over a few milliseconds is reliable.
+        # A stub makes the guard test independent of optional saved waveforms.
+        reference = torch.ones(43444)
+        with patch("pesq.pesq", side_effect=lambda rate, ref, est, mode:
+                   3.095 if len(ref) == 43444 else 3.227):
+            scored = score_pesq(reference, reference, 16000)
+        self.assertEqual(scored["status"], "na")
+        self.assertEqual(scored["boundary_length"], 43391)
+        self.assertIsNone(scored["value"])
+        self.assertEqual(scored["raw_value"], 3.095)

@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import csv
 import io
+import math
 from pathlib import Path
 from typing import Any
 
@@ -49,7 +50,65 @@ def build_summary(records: list[dict[str, Any]]) -> dict[str, Any]:
         "num_error": sum(record.get("status") == "error" for record in records),
         "num_skipped": sum(record.get("status") == "skipped" for record in records),
         "groups": groups,
+        "paired_signal_metrics": _paired_signal_metrics(records),
     }
+
+
+def _paired_signal_metrics(records: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Compare noisy and enhanced only on records valid for both conditions."""
+    grouped: dict[tuple, list[dict[str, Any]]] = {}
+    for record in records:
+        if record.get("status") != "ok":
+            continue
+        identity = record.get("identity") or {}
+        key = (
+            identity.get("config_hash"), record.get("model", {}).get("name"),
+            record.get("model", {}).get("variant"), record.get("snr_db"),
+        )
+        grouped.setdefault(key, []).append(record)
+    result = []
+    for key, items in sorted(grouped.items(), key=lambda item: _sort_key(((*item[0], ""), item[1]))):
+        for metric in SIGNAL_METRICS:
+            if not all(
+                any(condition in row.get(metric, {}).get("values", {}) for row in items)
+                for condition in ("noisy", "enhanced")
+            ):
+                continue
+            pairs, case_ids, excluded = [], [], []
+            for record in items:
+                values = record.get(metric, {}).get("values", {})
+                cells = [values.get(condition) or {} for condition in ("noisy", "enhanced")]
+                if all(_pair_exclusion(cell) is None for cell in cells):
+                    pairs.append((float(cells[0]["value"]), float(cells[1]["value"])))
+                    case_ids.append(record.get("utterance_id"))
+                else:
+                    excluded.append({
+                        "utterance_id": record.get("utterance_id"),
+                        "noisy_reason": _pair_exclusion(cells[0]),
+                        "enhanced_reason": _pair_exclusion(cells[1]),
+                    })
+            if not pairs and not excluded:
+                continue
+            count = len(pairs)
+            result.append({
+                "config_hash": key[0], "model": key[1], "variant": key[2],
+                "snr_db": key[3], "metric": metric, "count": count,
+                "case_ids": case_ids,
+                "noisy_mean": sum(p[0] for p in pairs) / count if count else None,
+                "enhanced_mean": sum(p[1] for p in pairs) / count if count else None,
+                "mean_difference": sum(p[1] - p[0] for p in pairs) / count if count else None,
+                "excluded": excluded,
+            })
+    return result
+
+
+def _pair_exclusion(cell: dict[str, Any]) -> str | None:
+    value = cell.get("value")
+    if cell.get("status") == "ok" and isinstance(value, (int, float)) and math.isfinite(value):
+        return None
+    if cell.get("status") == "ok":
+        return "nonfinite_or_invalid"
+    return cell.get("reason") or cell.get("status") or "missing"
 
 
 def write_summary(run_dir: Path, summary: dict[str, Any]) -> None:
@@ -88,6 +147,13 @@ def format_summary(summary: dict[str, Any]) -> str:
                     f"si_sdr={_fmt(group['si_sdr_mean'])}",
                 ]
             )
+        )
+    for paired in summary.get("paired_signal_metrics", []):
+        lines.append(
+            f"paired {paired['metric']} model={paired['model']} variant={paired['variant']} "
+            f"snr={paired['snr_db']} n={paired['count']} excluded={len(paired['excluded'])} "
+            f"noisy={_fmt(paired['noisy_mean'])} enhanced={_fmt(paired['enhanced_mean'])} "
+            f"difference={_fmt(paired['mean_difference'])}"
         )
     return "\n".join(lines)
 
