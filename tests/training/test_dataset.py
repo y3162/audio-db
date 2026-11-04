@@ -1,20 +1,25 @@
 """Recipe datasets, crop identity, and evaluation-set refusal."""
 
 import json
+import random
 import tempfile
 import unittest
 from pathlib import Path
+from unittest.mock import patch
 
+import duckdb
 import torch
 
+from src.data.audio import read_audio_stream_info
+from src.data.db.schema import create_corpora_schema
 from src.data.recipe import canonical_recipe, case_id_for, sha256_file
 from src.evaluation.audio.render import render_recipe
 from src.evaluation.datasets.evaldb import EvaluationDB
 from src.training.core.rng import seed_model_init
-from src.training.data.dataset import load_recipe_dataset
+from src.training.data.dataset import load_recipe_dataset, resampled_frame_count
 from src.training.data.sampler import crop_start, epoch_indices
 from src.training.errors import TrainingError
-from tests.training.support import paired_dataset, tone, write_wav
+from tests.training.support import paired_dataset, recorded_example, tone, write_wav
 
 ROOT = Path(__file__).resolve().parents[2]
 REBUILD = ROOT / "data/db/rebuild-a.duckdb"
@@ -291,6 +296,112 @@ class DuckDBTests(unittest.TestCase):
             self.assertIn("chime3_et05", str(chime.exception))
 
 
+class CatalogLengthTests(unittest.TestCase):
+    def test_catalog_lengths_match_load_and_keep_order(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            frames = [100, 480, 250]
+            examples = [
+                recorded_example(root, f"item{index}", frames=count, clean_hz=180, noisy_hz=90)
+                for index, count in enumerate(frames)
+            ]
+            catalog = _catalog(root, [(example, 16000) for example in examples])
+            dataset = _catalog_dataset(examples, root, catalog, sample_rate=16000, training=True)
+            state = random.getstate()
+            torch_state = torch.get_rng_state().clone()
+            with patch("duckdb.connect", wraps=duckdb.connect) as connect:
+                lengths = dataset.waveform_lengths()
+            self.assertEqual(connect.call_count, 1)
+            self.assertEqual(lengths, frames)
+            self.assertEqual(random.getstate(), state)
+            self.assertTrue(torch.equal(torch.get_rng_state(), torch_state))
+            for index, length in enumerate(lengths):
+                loaded = dataset._load(index, crop=False)
+                self.assertEqual(int(loaded[0].numel()), length)
+                self.assertEqual(int(loaded[1].numel()), length)
+            dataset.set_epoch(3)
+            cropped = dataset.collate([2, 0])
+            again = _catalog_dataset(examples, root, catalog, sample_rate=16000, training=True)
+            again.set_epoch(3)
+            self.assertTrue(torch.equal(cropped["clean"], again.collate([2, 0])["clean"]))
+            self.assertEqual(cropped["case_id"], [examples[2].case_id, examples[0].case_id])
+
+    def test_resampled_catalog_length_matches_load(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            clean = root / "clean.wav"
+            noisy = root / "noisy.wav"
+            write_wav(clean, tone(48001, 220, rate=48000), rate=48000)
+            write_wav(noisy, tone(48001, 110, rate=48000), rate=48000)
+            recipe = canonical_recipe(
+                {
+                    "recipe_version": 1,
+                    "sources": {
+                        "clean": {"path": clean.name, "sha256": sha256_file(clean)},
+                        "noisy": {"path": noisy.name, "sha256": sha256_file(noisy)},
+                    },
+                    "operations": [],
+                    "output": {"sample_rate": 48000, "reference": "dry_clean", "max_seconds": 0.5},
+                }
+            )
+            from src.training.data.dataset import TrainExample
+
+            example = TrainExample(case_id_for(recipe), recipe, "train", "toy", "dry_clean")
+            catalog = _catalog(root, [(example, 48000)])
+            dataset = _catalog_dataset([example], root, catalog, sample_rate=16000, training=False)
+            expected = resampled_frame_count(min(48001, int(0.5 * 48000)), 48000, 16000)
+            self.assertEqual(dataset.waveform_lengths(), [expected])
+            self.assertEqual(int(dataset._load(0, crop=False)[0].numel()), expected)
+
+    def test_operation_length_follows_clean_not_noise(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            clean = root / "clean.wav"
+            noise = root / "noise.wav"
+            write_wav(clean, tone(320, 200))
+            write_wav(noise, tone(4000, 40))
+            recipe = canonical_recipe(
+                {
+                    "recipe_version": 1,
+                    "sources": {
+                        "clean": {"path": clean.name, "sha256": sha256_file(clean)},
+                        "noise": {"path": noise.name, "sha256": sha256_file(noise)},
+                    },
+                    "operations": [
+                        {
+                            "type": "additive_noise",
+                            "version": 1,
+                            "source": "noise",
+                            "snr_db": 5,
+                            "noise_start": 0,
+                            "noise_start_unit": "sample",
+                            "seed": 1,
+                        }
+                    ],
+                    "output": {"sample_rate": 16000, "reference": "dry_clean"},
+                }
+            )
+            from src.training.data.dataset import TrainExample
+
+            example = TrainExample(case_id_for(recipe), recipe, "train", "toy", "dry_clean")
+            catalog = _catalog(root, [(example, 16000)])
+            dataset = _catalog_dataset([example], root, catalog, sample_rate=16000, training=False)
+            self.assertEqual(dataset.waveform_lengths(), [320])
+            self.assertEqual(int(dataset._load(0, crop=False)[0].numel()), 320)
+
+    def test_missing_catalog_row_is_an_error(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            example = recorded_example(root, "only", frames=80, clean_hz=100, noisy_hz=50)
+            catalog = root / "empty.duckdb"
+            connection = duckdb.connect(str(catalog))
+            create_corpora_schema(connection)
+            connection.close()
+            dataset = _catalog_dataset([example], root, catalog, sample_rate=16000, training=False)
+            with self.assertRaises(TrainingError):
+                dataset.waveform_lengths()
+
+
 def RecipeDataset_copy(dataset):
     from src.training.data.dataset import RecipeDataset
 
@@ -334,6 +445,50 @@ def _rir_dataset(root: Path, clean: Path, impulse: Path, reference: str):
         training=True,
         database=None,
     )
+
+
+def _catalog_dataset(examples, root: Path, catalog: Path, *, sample_rate: int, training: bool):
+    from src.training.data.dataset import RecipeDataset
+
+    return RecipeDataset(
+        examples,
+        root,
+        name="catalog",
+        role="train" if training else "validation",
+        seed=17,
+        sample_rate=sample_rate,
+        segment_size=64,
+        training=training,
+        database=None,
+        audio_catalog=catalog,
+        corpora_root=root,
+    )
+
+
+def _catalog(root: Path, rows: list[tuple]) -> Path:
+    catalog = root / "catalog.duckdb"
+    connection = duckdb.connect(str(catalog))
+    create_corpora_schema(connection)
+    inserted = []
+    for example, rate in rows:
+        for name, source in example.recipe["sources"].items():
+            if name not in ("clean", "noisy", "noise"):
+                continue
+            path = source["path"]
+            info_rate, frames, _channels = read_audio_stream_info(root / path)
+            inserted.append((path, info_rate, frames))
+            if info_rate != rate:
+                raise AssertionError(f"{path} rate {info_rate} != {rate}")
+    connection.executemany(
+        """
+        INSERT INTO corpora.audio_files
+            (path, corpus, file_name, sample_rate, frames, channels)
+        VALUES (?, 'toy', ?, ?, ?, 1)
+        """,
+        [(path, Path(path).name, rate, frames) for path, rate, frames in reversed(inserted)],
+    )
+    connection.close()
+    return catalog
 
 
 def _write_manifest(root: Path) -> None:

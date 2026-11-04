@@ -9,6 +9,8 @@ not a database row number.
 from __future__ import annotations
 
 import hashlib
+import math
+import os
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
 from pathlib import Path
@@ -17,6 +19,7 @@ from typing import Any
 import torch
 import torch.nn.functional as F
 
+from src.data.constants import CORPORA_ROOT, DUCKDB_MAIN_PATH
 from src.data.recipe import case_id_for
 from src.evaluation.audio.render import render_recipe
 from src.evaluation.datasets.evaldb import EvaluationDB
@@ -65,6 +68,8 @@ class RecipeDataset:
         training: bool,
         database: str | None,
         rms_normalize: bool = True,
+        audio_catalog: str | Path | None = None,
+        corpora_root: str | Path | None = None,
     ) -> None:
         if role not in ("train", "validation"):
             raise TrainingError(f"unknown split role {role!r}")
@@ -80,6 +85,8 @@ class RecipeDataset:
         self.training = training
         self.database = database
         self.rms_normalize = bool(rms_normalize)
+        self.audio_catalog = Path(DUCKDB_MAIN_PATH if audio_catalog is None else audio_catalog)
+        self.corpora_root = Path(CORPORA_ROOT if corpora_root is None else corpora_root)
         self.epoch = 0
         # Parallel loads do not draw from a shared RNG. Crop and order are
         # functions of the case id, seed, and epoch.
@@ -139,9 +146,13 @@ class RecipeDataset:
         return [example.case_id for example in self.examples]
 
     def waveform_lengths(self) -> list[int]:
-        """Sample counts after resampling and normalization, before a crop."""
+        """Sample counts after resampling, before a crop.
+
+        Lengths come from one ``corpora.audio_files`` query. The files are not
+        decoded, and this method does not draw random numbers or change epoch state.
+        """
         if self._length_cache is None:
-            self._length_cache = [int(self._load(index, crop=False)[0].numel()) for index in range(len(self))]
+            self._length_cache = _lengths_from_catalog(self)
         return list(self._length_cache)
 
     def collate_chunks(self, chunks) -> dict[str, Any]:
@@ -367,3 +378,120 @@ def _segment(
         return noisy[start:stop].contiguous(), clean[start:stop].contiguous()
     pad = segment_size - int(noisy.numel())
     return F.pad(noisy, (0, pad)).contiguous(), F.pad(clean, (0, pad)).contiguous()
+
+
+def resampled_frame_count(frames: int, source_rate: int, target_rate: int) -> int:
+    """Match ``torchaudio.functional.resample`` output length without a waveform.
+
+    After reducing the rates by their gcd, torchaudio keeps
+    ``ceil(new_rate * frames / old_rate)`` samples.
+    """
+    if frames < 1 or source_rate < 1 or target_rate < 1:
+        raise TrainingError(f"cannot resample {frames} frames from {source_rate} to {target_rate}")
+    if source_rate == target_rate:
+        return frames
+    divisor = math.gcd(source_rate, target_rate)
+    source = source_rate // divisor
+    target = target_rate // divisor
+    return (target * frames + source - 1) // source
+
+
+def _lengths_from_catalog(dataset: RecipeDataset) -> list[int]:
+    """One catalog query, then lengths in dataset index order."""
+    requested: list[tuple[int, str]] = []
+    for index, example in enumerate(dataset.examples):
+        for name in _duration_sources(example):
+            stored = example.recipe["sources"][name]["path"]
+            requested.append((index, _corpus_key(dataset.root, stored, dataset.corpora_root)))
+    metadata = _audio_metadata(dataset.audio_catalog, [path for _, path in requested])
+    lengths: list[int | None] = [None] * len(dataset)
+    for index, path in requested:
+        example = dataset.examples[index]
+        frames, file_rate = metadata[path]
+        output = example.recipe["output"]
+        used = _frames_before_resample(frames, file_rate, output.get("max_seconds"))
+        rendered = resampled_frame_count(used, file_rate, int(output["sample_rate"]))
+        length = resampled_frame_count(rendered, int(output["sample_rate"]), dataset.sample_rate)
+        current = lengths[index]
+        if current is None:
+            lengths[index] = length
+        elif current != length:
+            raise TrainingError(
+                f"case {example.case_id} sources resample to different lengths ({current} and {length})"
+            )
+    if any(item is None for item in lengths):
+        raise TrainingError(f"{dataset.name} is missing a waveform length")
+    return [int(item) for item in lengths]
+
+
+def _duration_sources(example: TrainExample) -> list[str]:
+    """Sources whose resampled lengths are the utterance length."""
+    sources = example.recipe["sources"]
+    operations = example.recipe["operations"]
+    reference = example.reference_name
+    if operations:
+        if "clean" not in sources:
+            raise TrainingError(f"case {example.case_id} operations have no clean source")
+        return ["clean"]
+    names: list[str] = []
+    if "noisy" in sources:
+        names.append("noisy")
+    elif "clean" in sources:
+        names.append("clean")
+    else:
+        raise TrainingError(f"case {example.case_id} has no clean or noisy source")
+    if reference == "dry_clean" and "clean" not in names:
+        if "clean" not in sources:
+            raise TrainingError(f"case {example.case_id} has no clean teacher")
+        names.append("clean")
+    return names
+
+
+def _frames_before_resample(frames: int, source_rate: int, max_seconds: float | None) -> int:
+    if max_seconds is None:
+        return frames
+    keep = max(1, int(float(max_seconds) * source_rate))
+    return min(frames, keep)
+
+
+def _corpus_key(root: Path, stored: str, corpora_root: Path) -> str:
+    audio = Path(os.path.normpath((root / stored).absolute()))
+    base = Path(os.path.normpath(corpora_root if corpora_root.is_absolute() else corpora_root.absolute()))
+    try:
+        relative = audio.relative_to(base)
+    except ValueError as exc:
+        raise TrainingError(f"audio is outside {base}: {stored}") from exc
+    text = relative.as_posix()
+    if text == ".." or text.startswith("../"):
+        raise TrainingError(f"audio is outside {base}: {stored}")
+    return text
+
+
+def _audio_metadata(catalog: Path, paths: list[str]) -> dict[str, tuple[int, int]]:
+    unique = list(dict.fromkeys(paths))
+    if not unique:
+        return {}
+    if not catalog.is_file():
+        raise TrainingError(f"audio catalog not found: {catalog}")
+    import duckdb
+
+    connection = duckdb.connect(str(catalog), read_only=True)
+    try:
+        rows = connection.execute(
+            """
+            SELECT path, frames, sample_rate
+            FROM corpora.audio_files
+            WHERE path IN (SELECT UNNEST(?::VARCHAR[]))
+            """,
+            [unique],
+        ).fetchall()
+    except Exception as exc:
+        raise TrainingError(f"audio catalog query failed: {catalog}") from exc
+    finally:
+        connection.close()
+    found = {str(path): (int(frames), int(rate)) for path, frames, rate in rows}
+    missing = [path for path in unique if path not in found]
+    if missing:
+        preview = ", ".join(missing[:3])
+        raise TrainingError(f"audio catalog is missing {len(missing)} file(s): {preview}")
+    return found

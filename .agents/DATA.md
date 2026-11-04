@@ -53,7 +53,8 @@ DuckDB は `data/db/resource.duckdb`（`src/data/constants.py`）。
 - 教師はレシピの `output.reference` だけである。`dry_clean` と `reverberant_clean` を取り違えない。`none` のケースは学習に入れず、エラーにする。
 - サンプルの識別子は `case_id`（レシピの SHA-256）である。rowid や登録順の採番は学習の並びに使わない。
 - `configs/db/init.yaml` の評価セット（LibriSpeech test-clean、CHiME3 et05 を含む）は学習にも検証にも使わない。
-- 学習は `data/db/resource.duckdb` を開かない。このファイルは評価用の名前付きセットを持つ本番 DB だからである。学習セットは `data/db/training.duckdb` にあり、再構築元は `data/staging/training/` である。`libri_demand_smoke_train` は LibriSpeech train-clean-100、`libri_demand_smoke_valid` は dev-clean で、DEMAND のシーンは重ならない。VoiceBank-DEMAND の公式セットではない。接続確認に `rebuild-a.duckdb` を読み取り専用で開いてもよい。
+- 学習セットの読み込みは `data/db/resource.duckdb` を使わない。このファイルは評価用の名前付きセットを持つ本番 DB だからである。学習セットは `data/db/training.duckdb` にあり、再構築元は `data/staging/training/` である。`libri_demand_smoke_train` は LibriSpeech train-clean-100、`libri_demand_smoke_valid` は dev-clean で、DEMAND のシーンは重ならない。VoiceBank-DEMAND の公式セットではない。接続確認に `rebuild-a.duckdb` を読み取り専用で開いてもよい。
+- チャンク計画の発話長だけは、`data/db/resource.duckdb` の `corpora.audio_files`（`path`、`frames`、`sample_rate`）を読み取り専用で一括取得する。`eval` は読まない。音声のデコードとリサンプリングはせず、torchaudio のリサンプリング後サンプル数と同じ整数を使う。学習セットの並び、クロップ、乱数は変えない。
 
 ## 指標の欠損と有効性
 
