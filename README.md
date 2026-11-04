@@ -1,5 +1,15 @@
 # audio-db
 
+## セットアップ
+
+```bash
+cp .env.example .env
+make setup PLATFORM=tsubame
+make doctor
+```
+
+SHINODA-LAB では `PLATFORM=shinoda_lab` にする。仮想環境は `.venvs/se`、`.venvs/asr`、`.venvs/official`、`.venvs/semambapp`、`.venvs/deepfilternet` で、プラットフォーム名は入らない。手順は [セットアップ](docs/envs/SETUP.md)。
+
 ## 音声強調
 
 `available_enhancers()` は MP-SENet、TF-GridNet、DeepFilterNet3、MossFormerGAN、SEMamba++ を返します。チェックポイントパスを渡します。公式波形との対応と、CLI のファイル出力など波形以外で未確認の範囲は `docs/se/VALIDATION.md` にあります。

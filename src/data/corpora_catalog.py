@@ -36,3 +36,12 @@ CATALOG: tuple[CorpusSpec, ...] = (
 
 INDEXED = tuple(spec for spec in CATALOG if spec.index)
 SKIPPED = tuple(spec for spec in CATALOG if not spec.index)
+
+
+def corpus_env_var(spec: CorpusSpec) -> str:
+    """Environment variable for one corpus path.
+
+    An individual path overrides ``AUDIO_DB_DATASET_ROOT / source_name``.
+    """
+    token = spec.source_name.upper().replace("+", "_").replace("-", "_")
+    return f"AUDIO_DB_CORPUS_{token}"

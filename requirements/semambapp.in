@@ -1,0 +1,7 @@
+# .venvs/semambapp. Same stack as se.in, plus the build tools for the fused CUDA
+# extensions. mamba-ssm and causal-conv1d are built from the pinned git commits
+# in requirements/official-assets.toml and are not on this list.
+-r se.in
+ninja==1.13.0
+packaging==24.2
+wheel==0.45.1

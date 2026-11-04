@@ -1,0 +1,162 @@
+# Official sources and weights. Versions are pinned. A blank sha256 means the
+# checksum is not yet verified; those files are not installed.
+
+[[source]]
+id = "mp_senet"
+url = "https://github.com/yxlu-0102/MP-SENet.git"
+commit = "89932cfe90d1dacb8e170e4a331d762462c21792"
+dest = "src/se/official/mp-senet"
+license = "MIT"
+license_note = "Repository LICENSE. Local copy also at src/se/models/mp_senet/LICENSE."
+
+[[source]]
+id = "deepfilternet"
+url = "https://github.com/Rikorose/DeepFilterNet.git"
+commit = "d375b2d8309e0935d165700c91da9de862a99c31"
+dest = "src/se/official/deepfilternet"
+license = "MIT OR Apache-2.0"
+license_note = "LICENSE-MIT and LICENSE-APACHE in the repository. libdf is not redistributed."
+
+[[source]]
+id = "clearervoice"
+url = "https://github.com/modelscope/ClearerVoice-Studio.git"
+commit = "6b3774dc79c46ae8bed2a4fa5f706f0ac8c75c61"
+dest = "src/se/official/clearervoice-studio"
+license = "Apache-2.0"
+license_note = "Repository license. MossFormerGAN weights are a separate Hugging Face distribution."
+
+[[source]]
+id = "semambapp"
+url = "https://github.com/infected4098/SEMambapp.git"
+commit = "cd369c89a8106072c077b468417b765b227afd74"
+dest = "src/se/official/semambapp"
+license = "unspecified"
+license_note = "The pinned tree has no license file. The weight card is marked GPL-2.0. This repository does not copy that source into src/se."
+
+[[source]]
+id = "espnet"
+url = "https://github.com/espnet/espnet.git"
+commit = "0d136c5456d403cb2c0a4c13e76e8136e32e9b7a"
+dest = "src/se/official/espnet"
+sparse = ["espnet2"]
+license = "Apache-2.0"
+license_note = "Only espnet2 is fetched on a new clone. An existing tree at this commit is left as-is."
+
+[[source]]
+id = "causal_conv1d"
+url = "https://github.com/Dao-AILab/causal-conv1d.git"
+commit = "cd81f0413cad2fc1e6f17e785ac39f59aae690cd"
+dest = "build/native-src/causal-conv1d"
+license = "BSD-3-Clause"
+license_note = "Tag v1.7.0. Built into .venvs/semambapp; the checkout is not imported by src/se."
+
+[[source]]
+id = "mamba"
+url = "https://github.com/state-spaces/mamba.git"
+commit = "a14b1dff0454a3bc27d9eb31355dc01e4b2490ec"
+dest = "build/native-src/mamba"
+license = "Apache-2.0"
+license_note = "Tag v2.3.2.post1. Import shim: patches/mamba_ssm-2.3.2.post1-init.patch. Selective scan sources are not patched."
+
+[[weight]]
+id = "mp_senet_vb"
+model = "mp_senet"
+kind = "git-file"
+source = "mp_senet"
+path = "best_ckpt/g_best_vb"
+dest = "data/checkpoints/mp-senet/g_best_vb"
+sha256 = "aedfb1aa549159f71b39613d94db831dfa983b3a68b0deea02e84e0ad563f4f9"
+size = 9142950
+license_note = "Distributed inside the pinned MP-SENet tree."
+
+[[weight]]
+id = "mp_senet_dns"
+model = "mp_senet"
+kind = "git-file"
+source = "mp_senet"
+path = "best_ckpt/g_best_dns"
+dest = "data/checkpoints/mp-senet/g_best_dns"
+sha256 = "97a77ba67c5c484c65363bb703ea85962f773ca0819e22ce81b4ec33db5e7206"
+size = 9138054
+license_note = "Distributed inside the pinned MP-SENet tree."
+
+[[weight]]
+id = "mp_senet_config"
+model = "mp_senet"
+kind = "git-file"
+source = "mp_senet"
+path = "best_ckpt/config.json"
+dest = "data/checkpoints/mp-senet/config.json"
+sha256 = "339cb60721e4ab0ee3ed4825ca9dfc981c7554c7b5e87f043e454e5a17b58f92"
+size = 525
+license_note = "Config next to the official checkpoints."
+
+[[weight]]
+id = "deepfilternet3"
+model = "deepfilternet3"
+kind = "zip"
+url = "https://github.com/Rikorose/DeepFilterNet/raw/d375b2d8309e0935d165700c91da9de862a99c31/models/DeepFilterNet3.zip"
+dest_dir = "data/checkpoints/deepfilternet3"
+sha256 = "49c52edc8947ae1f9bf50d81530beaf3a2c3245aeaf34b6f31ff535cd22284d2"
+size = 7986207
+license_note = "Official raw URL at the pinned DeepFilterNet commit."
+
+[[weight.member]]
+path = "DeepFilterNet3/checkpoints/model_120.ckpt.best"
+sha256 = "23b92884f63ccf54bb026014604625ab231657b6480df65db4095c4c171e6003"
+size = 8714073
+
+[[weight.member]]
+path = "DeepFilterNet3/config.ini"
+sha256 = "415eb925d44990d938fb739f514aa3662c1ec0ea836cff044fa1291b82cb4290"
+size = 2067
+
+[[weight]]
+id = "semambapp"
+model = "semambapp"
+kind = "http"
+url = "https://huggingface.co/yongjoonlee/semambapp/resolve/main/semambapp.pth"
+dest = "data/checkpoints/semambapp/semambapp.pth"
+sha256 = "ccb9d1c49146e915c427e5724fec36825196f6b7a8fe23414c26a5224b39af72"
+size = 10956623
+license_note = "Weight card https://huggingface.co/yongjoonlee/semambapp is marked GPL-2.0. SHA-256 matches the published x-linked-etag."
+
+[[weight]]
+id = "mossformergan"
+model = "mossformergan"
+kind = "http"
+url = "https://huggingface.co/alibabasglab/MossFormerGAN_SE_16K/resolve/main/last_best_checkpoint.pt"
+dest = "data/checkpoints/mossformergan/last_best_checkpoint.pt"
+sha256 = "04bf00db575389e1ea8b1fcca48d9efcf073e50ad170e6dd5230df3bac98be27"
+size = 38845593
+license_note = "https://huggingface.co/alibabasglab/MossFormerGAN_SE_16K documents Apache-2.0. SHA-256 is the published x-linked-etag and is checked against the downloaded bytes."
+
+[[weight]]
+id = "tf_gridnet_urgent24"
+model = "tf_gridnet"
+kind = "http"
+url = "https://huggingface.co/wyz/tfgridnet_for_urgent24/resolve/main/exp/enh_train_enh_tfgridnet_raw/21epoch.pth"
+dest = "data/checkpoints/tf-gridnet/urgent24/exp/enh_train_enh_tfgridnet_raw/21epoch.pth"
+sha256 = "51c500e0368c9cfc469e5d83a6cabf35c0de9bbcc027ab633aefcbc2a3e3cb91"
+size = 34175373
+license_note = "URGENT 2024 ESPnet baseline, model id wyz/tfgridnet_for_urgent24. Checkpoint license terms were not stated separately from the ESPnet recipe. SHA-256 matches docs/se/VALIDATION.md and the Hugging Face x-linked-etag."
+
+[[weight]]
+id = "tf_gridnet_ms_snsd"
+model = "tf_gridnet"
+kind = "http"
+url = "https://huggingface.co/espnet/ms_snsd_tfgridnet/resolve/main/valid.loss.best.pth"
+dest = "data/checkpoints/tf-gridnet/ms-snsd/valid.loss.best.pth"
+sha256 = "a680263b1339d86ddc5d168a5f985fbd0b3e658d7711971f3c03fe2d23af7bac"
+size = 10332955
+license_note = "ESPnet model id espnet/ms_snsd_tfgridnet. Checkpoint license terms beyond the ESPnet Apache-2.0 code were not stated on the card. SHA-256 matches docs/se/VALIDATION.md and the Hugging Face x-linked-etag."
+
+[[weight]]
+id = "tf_gridnet_ms_snsd_config"
+model = "tf_gridnet"
+kind = "http"
+url = "https://huggingface.co/espnet/ms_snsd_tfgridnet/resolve/main/config.yaml"
+dest = "data/checkpoints/tf-gridnet/ms-snsd/config.yaml"
+sha256 = "2f2763974aa83cd1831be67aafed5f8ebd03795e12462d1807d637daf7c6c8ea"
+size = 4927
+license_note = "Training config published with espnet/ms_snsd_tfgridnet. SHA-256 was computed from that file."

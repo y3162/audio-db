@@ -60,7 +60,7 @@ TF-GridNet（5 GiB）と DeepFilterNet3（3 GiB）は 1 枚に同居できる。
 
 ## shannon（条件付き推定。実測ではない）
 
-shannon は今回使っていない。既知の仕様は A100 80GB が 8 枚（`docs/envs/LAB.md`）。SXM か PCIe か、メモリ帯域は、このリポジトリの記録では未確定である。tensor の A100-PCIE-40GB の秒数を shannon の実測として扱わない。
+shannon は今回使っていない。既知の仕様は A100 80GB が 8 枚（`docs/envs/SHINODA_LAB.md`）。SXM か PCIe か、メモリ帯域は、このリポジトリの記録では未確定である。tensor の A100-PCIE-40GB の秒数を shannon の実測として扱わない。
 
 40 GB に収まった計算が 80 GB でも同程度の秒数になる、というシナリオを置く。不確実性は帯域と基板差で、目安を ±20% とする。これは推定であり、保証ではない。
 

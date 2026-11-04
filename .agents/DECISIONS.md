@@ -16,7 +16,8 @@
 3. **合成混合は `rms_v1`。条件を case に保存して再生成する。** 区間全体の平均二乗電力の比で、VoiceBank-DEMAND・URGENT の手順でも、ITU-T P.56 でも、VAD でもない。seed は SHA-256 で作り（Python の `hash()` は使わない）、雑音の対応はセットの seed と path で決める（実験 seed では変わらない）。SE を変えても同じ入力で比べるため。
 4. **WER は micro 集計と `wer-norm-v1`。出せない値は `na` と理由で残し、0 にしない。** 部分音声と全文の組は無効にする。不正な WER を作らないため。
 5. **CHiME3 の正解は公式注釈の `prompt`。CH0・real・simu・`tr05_org` を clean 参照にしない。** 時間整合した clean 参照が無いのに PESQ / STOI を出さないため。
-6. **SE と ASR は独立モジュール。評価は共通 API だけを呼ぶ。** ASR は使う系列のバックエンドだけを import し、環境も lab と分ける（NeMo の依存が合わない）。
+6. **SE と ASR は独立モジュール。評価は共通 API だけを呼ぶ。** ASR は使う系列のバックエンドだけを import し、環境も `.venvs/se` と分ける（NeMo の依存が合わない）。
+6a. **プラットフォームはセットアップの入力だけにする。** 仮想環境は `.venvs/se`、`.venvs/asr`、`.venvs/official`、`.venvs/semambapp`、公式 `libdf` 用の `.venvs/deepfilternet` である。`tsubame` と `shinoda_lab` は環境名に入れない。旧称 lab と `.venvs/lab` は SHINODA-LAB を指していた。`make setup` は DB を初期化しない。依存の固定は `requirements/*.lock.txt`、公式ソースと重みは `requirements/official-assets.toml`。
 7. **推論 API は推論専用。** `transcribe()` と `enhance()` に学習や勾配の経路を持たせない。
 8. **独立 SE 実装は、公式コードに実行時依存しない。一致は最終波形の最大絶対誤差で判定する。** 5 モデルとも判定済み（`docs/se/VALIDATION.md`）。未検証の範囲もそこに残してある。
 9. **ASR は、ASR 用に fine-tune されたチェックポイントを、そのデコーダのまま使う。** 自己教師ありだけのチェックポイントは拒否する。Parakeet は TDT / CTC / RNN-T をモデル ID のデコーダのまま使い、Whisper は `transcribe` だけにする。系列やデコーダの取り違えを防ぐため。

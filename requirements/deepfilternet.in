@@ -1,0 +1,9 @@
+# .venvs/deepfilternet. Official libdf (PyO3 / numpy crate 0.20) is built here
+# because it does not share the NumPy 2.5 environment used by .venvs/se.
+torch==2.6.0+cu124
+torchaudio==2.6.0+cu124
+numpy==1.26.4
+maturin==1.4.0
+loguru==0.7.3
+packaging==24.2
+patchelf==0.19.3.0

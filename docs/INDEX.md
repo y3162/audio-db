@@ -1,6 +1,12 @@
-### [LAB.md](envs/LAB.md)
+### [SETUP.md](envs/SETUP.md)
 
-研究室サーバー用の環境構築手順書
+`.env` と `make setup` の共通手順
+
+---
+
+### [SHINODA_LAB.md](envs/SHINODA_LAB.md)
+
+研究室サーバー（旧称 lab）の差分
 
 ---
 

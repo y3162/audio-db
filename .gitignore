@@ -9,6 +9,9 @@
 CLAUDE.local.md
 AGENTS.override.md
 /PROMPT.md
+.env
+.env.*
+!.env.example
 
 # .gitkeep
 /.venvs/*

@@ -1,6 +1,6 @@
 # ASR 用の仮想環境
 
-NeMo は `.venvs/lab`（Python 3.13）と依存関係が合わないため、ASR は別の仮想環境に入れます。lab のパッケージは変更しません。
+NeMo は `.venvs/se` と依存関係が合わないため、ASR は `.venvs/asr` に入れる。構築は `make setup` が `requirements/asr.lock.txt` から行う。
 
 | | |
 |---|---|

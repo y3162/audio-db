@@ -1,0 +1,18 @@
+# Direct dependencies for .venvs/se. Compile with scripts/setup/compile_locks.sh.
+torch==2.6.0+cu124
+torchaudio==2.6.0+cu124
+numpy==2.5.4
+scipy==1.18.1
+librosa==1.0.0
+soundfile==0.14.0
+pyyaml==6.0.3
+pystoi==0.4.1
+pesq==0.0.4
+einops==0.8.2
+nnAudio==0.3.3
+duckdb==2.0.0
+rotary-embedding-torch==0.8.3
+numba==0.68.1
+llvmlite==0.50.0
+nvidia-cuda-nvcc-cu12==12.2.140
+pytest==9.2.0

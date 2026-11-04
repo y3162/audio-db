@@ -1,15 +1,22 @@
 # 開発環境と検証
 
-環境の構築手順・固定バージョン・実行前の環境変数は `docs/envs/LAB.md`、`docs/envs/ASR.md`、`docs/envs/TSUBAME.md`。検証の記録は `docs/se/VALIDATION.md`、`docs/se/IMPLEMENTATION_STATUS.md`、`docs/asr/MODELS.md`。
+環境の構築手順は `docs/envs/SETUP.md`、`docs/envs/TSUBAME.md`、`docs/envs/SHINODA_LAB.md`、`docs/envs/ASR.md`。検証の記録は `docs/se/VALIDATION.md`、`docs/se/IMPLEMENTATION_STATUS.md`、`docs/asr/MODELS.md`。
 
 ## 仮想環境
 
+プラットフォーム（`tsubame` / `shinoda_lab`）は `make setup` の引数だけである。仮想環境名には入れない。依存の正本は `requirements/<role>.lock.txt`。`make setup` は DB を初期化しない。
+
 | 環境 | 用途 |
 |---|---|
-| `.venvs/lab` | Python 3.13、torch 2.6.0+cu124、NumPy 2.5.4、DuckDB 2.0.0、`nnAudio==0.3.3`。SE、評価、`make db-init`、通常のテスト。SEMamba++ の CQT Discriminator が `nnAudio` を使う |
+| `.venvs/se` | Python 3.12、torch 2.6.0+cu124、NumPy 2.5.4、DuckDB 2.0.0、`nnAudio==0.3.3`。SE、評価、`make db-init`、通常のテスト。SEMamba++ の CQT Discriminator が `nnAudio` を使う |
 | `.venvs/asr` | Python 3.12、NeMo、Whisper、Transformers、NumPy 2.1.3。実 ASR を使う評価・スモーク。SE と ASR を同じプロセスでつなぐため、DuckDB・PESQ・STOI も入っている |
-| `.venvs/tsubame` | TSUBAME 用の独立環境。構築条件は `docs/envs/TSUBAME.md`、融合カーネルを含む検証範囲は `docs/training/VERIFICATION.md` |
-| `.venvs/ref`、`.venvs/semamba`、`.venvs/cuda-nvcc` | 公式実装との比較とそのためのビルド専用。公式の依存を含む。`semamba` は `mamba-ssm` と `causal-conv1d` を sm_75（turing の Quadro RTX 5000）向けにソースビルドしてあり、cubin は sm_75 だけなので A100 ではロードできない。`nnAudio==0.3.3` と librosa も入っている。独立 SEMamba++ は既定では外部 scan を使わず、明示的に `scan_backend: fused` を指定した CUDA 実行時だけ `mamba_ssm` の `mamba_inner_fn` と Triton RMSNorm を読み込む。CPU では reference に戻る。 |
+| `.venvs/official` | 公式実装・ESPnet レシピとの比較。NumPy 2.5 |
+| `.venvs/semambapp` | SEMamba++ の fused CUDA。`mamba-ssm==2.3.2.post1` と `causal-conv1d==1.7.0` をソースビルドし、import 3 行だけ `patches/mamba_ssm-2.3.2.post1-init.patch` を適用する |
+| `.venvs/deepfilternet` | 公式 `libdf` / `libdfdata`。NumPy 1.26。独立実装の実行時依存ではない |
+
+旧パス `.venvs/lab`、`.venvs/tsubame`、`.venvs/ref`、`.venvs/semamba`、`.venvs/cuda-nvcc`、`.venvs/clean-20261104` は役割別環境へ移行する前のものである。セットアップはこれらを削除しない。`.venvs/lab` は SHINODA-LAB の旧環境名で、今の対応は `.venvs/se` である。
+
+`semamba` は `mamba-ssm` と `causal-conv1d` を sm_75（turing の Quadro RTX 5000）向けにソースビルドしてあり、cubin は sm_75 だけなので A100 ではロードできない。独立 SEMamba++ は既定では外部 scan を使わず、明示的に `scan_backend: fused` を指定した CUDA 実行時だけ `mamba_ssm` の `mamba_inner_fn` と Triton RMSNorm を読み込む。CPU では reference に戻る。
 
 - NeMo は Python 3.13・NumPy 2.5.4 の lab と依存関係が合わないため、ASR の環境を分けている。NeMo などを lab に入れない。lab にパッケージを足すときは NumPy を上げない（`requirements/evaluation.txt` の手順）。
 - Numba と NeMo は、`.venvs/*` の `nvidia/cuda_nvcc`（ptxas 12.2）を使う。システムの `/usr/local/cuda` は使わない。
@@ -21,7 +28,7 @@
 
 ## サーバーと GPU
 
-- 研究室サーバーは ampere（RTX 3090 ×4）、tensor（A100 40GB ×7、80GB ×1）、turing（Quadro RTX 5000 ×4）、shannon（A100 80GB ×8）。`.venvs/lab` は共通。
+- 研究室サーバーは ampere（RTX 3090 ×4）、tensor（A100 40GB ×7、80GB ×1）、turing（Quadro RTX 5000 ×4）、shannon（A100 80GB ×8）。役割別の `.venvs/se` を共通に使う。構築の入口は `make setup PLATFORM=shinoda_lab`。
 - GPU は他のユーザーも使う。使う前に `nvidia-smi` で空きを確認し、使用メモリが 1024 MiB 未満の GPU だけを指定する。評価 CLI は、使用メモリが 1024 MiB 以上の CUDA GPU を拒否する。`runtime.allow_busy_gpu: true` は、その GPU が自分のジョブだと分かっているときだけ使う。
 - 学習の空き確認は、CUDA が認識した装置が MIG の場合、その MIG の空きメモリを使う。親 GPU の使用量は他の MIG を含み得るため判定に使わない。CUDA context 自身の使用分も含む。qsub での実機検証状況は `docs/training/JOB_CONTINUATION_AUDIT.md`。
 - `CUDA_VISIBLE_DEVICES` で隠すと、見える GPU の番号は 0 から振り直される。`device` の指定はその番号。
@@ -32,11 +39,11 @@
 - CUDA checkpoint を GPU へ読み込んだ場合、CPU と CUDA の RNG 状態も GPU tensor になり得る。`restore_rng` は復元前に各状態を CPU に移す。CUDA 再開が動くことと、非決定的演算を含む学習がビット一致することは別に検証する。
 
 ```bash
-.venvs/lab/bin/python -m unittest discover -s tests/se -v          # SE
-.venvs/lab/bin/python -m unittest discover -s tests/asr -v         # ASR。重みをダウンロードしない
-.venvs/lab/bin/python -m unittest discover -s tests/evaluation -v  # 評価。一時 DB だけを書き、resource.duckdb は変更しない
-.venvs/lab/bin/python -m unittest discover -s tests/training -v    # 学習。CPU。resource.duckdb は開かない
-.venvs/lab/bin/python -m src.evaluation.cli --config configs/evaluation/smoke.yaml --limit 2 --device cpu   # 合成音声 + mock
+.venvs/se/bin/python -m unittest discover -s tests/se -v          # SE
+.venvs/se/bin/python -m unittest discover -s tests/asr -v         # ASR。重みをダウンロードしない
+.venvs/se/bin/python -m unittest discover -s tests/evaluation -v  # 評価。一時 DB だけを書き、resource.duckdb は変更しない
+.venvs/se/bin/python -m unittest discover -s tests/training -v    # 学習。CPU。resource.duckdb は開かない
+.venvs/se/bin/python -m src.evaluation.cli --config configs/evaluation/smoke.yaml --limit 2 --device cpu   # 合成音声 + mock
 .venvs/asr/bin/python -m tests.asr_smoke.run_smoke parakeet whisper wav2vec2   # 実 ASR のスモーク（GPU）
 ```
 
