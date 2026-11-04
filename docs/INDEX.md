@@ -88,6 +88,12 @@ MP-SENet の学習と公式実装との差
 
 ---
 
+### [RESIDUAL_20261104.md](training/RESIDUAL_20261104.md)
+
+SEMamba++ の epoch 境界再開、Whisper 実評価、研究室 3 ホストの CUDA 拡張検証
+
+---
+
 ### [EXPERIMENT_PLAN.md](training/EXPERIMENT_PLAN.md)
 
 本格学習と固定 ASR による WER・音声品質評価の計画
