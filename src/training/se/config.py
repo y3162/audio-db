@@ -18,6 +18,7 @@ _TOP = {
     "global_batch_size",
     "micro_batch_size_per_gpu",
     "max_steps",
+    "logical_steps_per_epoch",
     "segment_size",
     "loss",
     "checkpoint_dir",
@@ -98,6 +99,10 @@ def load_training_config(path: str | Path) -> dict[str, Any]:
         "data": _data(raw["data"]),
         "runtime": _runtime(raw["runtime"]),
     }
+    if "logical_steps_per_epoch" in raw:
+        config["logical_steps_per_epoch"] = _int(raw["logical_steps_per_epoch"], "logical_steps_per_epoch")
+        if not config["data"]["validation_set"]:
+            raise TrainingError("logical_steps_per_epoch requires validation_set")
     if config["validation_interval"] > 0 and not config["data"]["validation_set"]:
         raise TrainingError("validation_interval requires data.validation_set")
     if config["data"]["validation_set"] == config["data"]["train_set"]:

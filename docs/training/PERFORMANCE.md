@@ -1,3 +1,5 @@
+> 訂正（2026-11-04）：TF-GridNet の 5,000 更新は固定更新の研究案であり、ESPnet chunk iterator の公式 epoch ではない。35 × 5,000 の時間はその研究案の外挿。詳細は [監査](OFFICIAL_TRAINING_AUDIT.md)。
+
 # 学習 step の内訳と入力を変えない高速化（2026-11-04）
 
 モデル構造、batch、segment、損失、Optimizer、STFT、selective scan は変えていない。変えたのは発話の並列読み込み、次の Optimizer 更新分の先読み、4 行以上の wideband PESQ のプロセス並列である。`torch.compile`、CUDA Graph、AMP、TF32 の切り替えは入れていない。

@@ -3,8 +3,9 @@
 The trainer does not know about a particular model. A task owns its modules,
 losses, and the order of optimizer updates. One ``train_update`` consumes
 ``accumulation_steps`` micro-batches and counts as one global step. The
-learning-rate scheduler advances once when that epoch's usable micro-batches
-are finished, matching the official MP-SENet loop. Gradient accumulation
+learning-rate scheduler normally advances when the usable micro-batches in a
+data pass are finished. An optional fixed-update logical epoch instead triggers
+validation and scheduler updates at fixed optimizer-step boundaries. Gradient accumulation
 changes how many optimizer updates fit in an epoch, not how often the
 scheduler steps.
 """
@@ -113,6 +114,8 @@ class Trainer:
         self.validation_interval = validation_interval
         self.config = config
         self.global_step = 0
+        self.steps_per_epoch = config.get("logical_steps_per_epoch")
+        self.best_loss = None
         self.best_pesq: float | None = None
         start = config.get("best_checkpoint_start_epoch", 40)
         if isinstance(start, bool) or not isinstance(start, int) or start < 0:
@@ -133,6 +136,9 @@ class Trainer:
             self.task.load_state_dict(payload["task"])
             restore_rng(payload["rng"], cuda=self.process.uses_cuda)
             self.global_step = int(payload["global_step"])
+            if payload.get("logical_steps_per_epoch") != self.steps_per_epoch:
+                raise TrainingError("checkpoint logical epoch settings do not match this run")
+            self.best_loss = payload.get("best_loss")
             epoch = int(payload["epoch"])
             skip = int(payload["micro_batches_consumed"])
             self.best_pesq = _stored_best_pesq(payload, self.checkpoint_dir)
@@ -210,18 +216,19 @@ class Trainer:
                 metrics = self.task.train_update(group, accumulation)
                 self._require_finite(metrics)
                 self.global_step += 1
-                epoch_done = cursor >= usable_batches
+                epoch_done = (self.global_step % self.steps_per_epoch == 0) if self.steps_per_epoch else cursor >= usable_batches
+                logical_epoch = (self.global_step - 1) // self.steps_per_epoch if self.steps_per_epoch else epoch
                 validation_summary = None
-                if self.validation_interval and self.global_step % self.validation_interval == 0:
-                    validation_summary = self._validate(validation, epoch)
+                if (self.steps_per_epoch and epoch_done) or (not self.steps_per_epoch and self.validation_interval and self.global_step % self.validation_interval == 0):
+                    validation_summary = self._validate(validation, logical_epoch)
                 if epoch_done:
                     self.task.step_schedulers(self._scheduler_validation(validation_summary))
                     halt = bool(getattr(self.task, "stop_training", False))
                 checkpoint_path = None
-                if self._should_save(self.global_step):
+                if self._should_save(self.global_step) or (self.steps_per_epoch and epoch_done and self.process.rank == 0):
                     checkpoint_path = self._save(dataset, epoch, cursor, usable_batches)
                 if self.process.rank == 0:
-                    self._log_train(epoch, metrics, checkpoint_path, validation_summary)
+                    self._log_train(logical_epoch, metrics, checkpoint_path, validation_summary)
                     if (
                         self.global_step == 1
                         or self.global_step % 10 == 0
@@ -277,6 +284,9 @@ class Trainer:
             "dataset": dataset.identity(),
             "environment": _environment(self.process),
             "best_pesq": self.best_pesq,
+            "best_loss": self.best_loss,
+            "logical_steps_per_epoch": self.steps_per_epoch,
+            "logical_epoch": self.global_step // self.steps_per_epoch if self.steps_per_epoch else stored_epoch,
         }
         path = self.checkpoint_dir / f"step_{self.global_step:08d}.pt"
         save_atomic(path, payload)
@@ -377,6 +387,24 @@ class Trainer:
             return None
         if self.config.get("model", {}).get("name") == "semambapp":
             return None
+        if self.steps_per_epoch:
+            loss = summary["losses"].get("generator", {})
+            if loss.get("status") != "ok" or loss.get("value") is None:
+                return None
+            score = float(loss["value"])
+            if self.best_loss is not None and score >= self.best_loss:
+                return None
+            exported = _inference_payload(self.task)
+            if exported is None:
+                return None
+            self.best_loss = score
+            path = self.checkpoint_dir / "best_generator.pt"
+            save_atomic(path, exported)
+            write_json(self.checkpoint_dir / "best_generator.json", {
+                "metric": "validation_loss", "loss": score, "global_step": self.global_step,
+                "epoch": epoch, "validation": summary, "config": self.config, "checkpoint": str(path),
+            })
+            return str(path)
         pesq = summary["pesq"]
         if pesq["status"] != "ok" or pesq["value"] is None:
             return None

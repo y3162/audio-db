@@ -1,3 +1,5 @@
+> 訂正（2026-11-04）：TF-GridNet の 5,000 更新は固定更新の研究案であり、ESPnet chunk iterator の公式 epoch ではない。35 × 5,000 の時間はその研究案の外挿。詳細は [監査](OFFICIAL_TRAINING_AUDIT.md)。
+
 # 本格学習と ASR 評価の計画（案）
 
 実行承認用の計画であり、長時間ジョブはまだ開始していない。最終受入で PARTIAL の条件は解消してから対応モデルを本試験に入れる。まず TF-GridNet と固定 ASR で評価パイプラインを確認し、残りのモデルを順に追加する。ASR の重みとデコーダは固定する。第一 ASR は Whisper Large v3、Parakeet TDT 0.6B v2 と ASR fine-tuned Wav2Vec 2.0 は第2段階とし、各 checkpoint の取得可否と推論メモリを先に確認する。

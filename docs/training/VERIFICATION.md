@@ -1926,7 +1926,7 @@ HEAD は `87ad09e`、`dev` は `origin/dev` と一致、作業開始時のツリ
 
 5,000 更新のプロセス時間は 1,045.70 秒。train の `mr_l1_tfd` は step 1 が 95173.195、step 2,675 が 20774.313、step 5,000 が 22435.607。非有限の学習損失は 0。学習率は全 step で 0.001。検証 872 件の `mr_l1_tfd` は 22655.620 で有限。PESQ と STOI はこの損失の検証報告では `na`（`not computed for mr_l1_tfd`）。`best_generator` は `best_checkpoint_start_epoch: 40` のため保存していない。ログ上の epoch は 0 が 2,675 step、1 が 2,325 step である。
 
-この 5,000 step は公式の `num_iters_per_epoch` と同じ更新回数である。Trainer の epoch はデータ 1 周（10,700 / 4 = 2,675）のままで、公式の 5,000 反復イテレータではない。step 5,000 は 2 周目の途中で、ReduceLROnPlateau は `last_epoch` 0、`best` inf のままである。学習率は公式の 1 epoch 中と同じ 0.001 だが、epoch 境界と patience の状態は公式と対応していない。35 epoch へこの checkpoint をそのまま続けても、検証 step とデータ周の終端は 175,000 step 以内で重ならず、plateau は進まない。
+訂正：この 5,000 step を公式の `num_iters_per_epoch` と同じ更新回数とはみなせない。chunk iterator は同値を元発話数として使用し、更新数は可変である。Trainer の epoch はデータ 1 周（10,700 / 4 = 2,675）のままで、公式の 5,000 反復イテレータではない。step 5,000 は 2 周目の途中で、ReduceLROnPlateau は `last_epoch` 0、`best` inf のままである。学習率は公式の 1 epoch 中と同じ 0.001 だが、epoch 境界と patience の状態は公式と対応していない。35 epoch へこの checkpoint をそのまま続けても、検証 step とデータ周の終端は 175,000 step 以内で重ならず、plateau は進まない。
 
 step 5,000 の checkpoint を別ディレクトリで 2 更新再開した。`data/results/training/tf-gridnet-seed17-epoch1-resume-20261104/`。step 5,001 と 5,002 の損失は有限、学習率は 0.001、プロセス 11.16 秒。元の checkpoint は上書きしていない。
 
@@ -1963,3 +1963,10 @@ step 5,000 の checkpoint を別ディレクトリで 2 更新再開した。`da
 | Whisper、5,000 step checkpoint、4 発話 | 43.77 |
 
 合計 1,189.52 秒。累計 15,889.17 秒。上限 25,200 秒まで 9,310.83 秒。
+
+
+## 2026-11-04 公式 chunk iterator の再確認
+
+ESPnet `ChunkIterFactory` は `num_iters_per_epoch` を元発話数として使用し、重複チャンクから可変数の batch を作る。前節の 5000 更新を公式 1 epoch とする解釈は撤回する。固定 5000 更新の研究用設定と CPU 回帰を追加したが、公式 epoch、best 5、早期停止は未対応。詳細は [監査](OFFICIAL_TRAINING_AUDIT.md)。今回 GPU 実行なし。
+
+固定更新モードの CPU 回帰は `python -m unittest tests.training.test_logical_epoch -q`。3 ケース・batch 1・4 更新/境界で 12 更新し、検証 4/8/12、scheduler 3 回、best loss 保存、step 2/4 の再開後の入力 ID、重み、optimizer を通じた学習、scheduler 状態、RNG の保存キーを確認した。模擬 task であり、実モデル・CUDA・別プロセスの新モード検証ではない。既存 `tests.training.test_mp_senet_train` と `tests.training.test_model_tasks` は 27 件成功。固定更新モードの 5,000 更新 GPU 再実行はしていない。

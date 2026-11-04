@@ -38,3 +38,8 @@
 24. **H100 MIG 4g.47gb では SEMamba++ の公式 batch 8 を 1 forward に載せない。** 2026-11-04 の試験で micro 8 は 45.56 GiB を確保したあと discriminator で OOM した。本試験は global batch 8 を micro 4 × 蓄積 2 で維持する。蓄積 2 は discriminator 更新後に generator を forward し直すので、batch 8 が載る GPU より長い。MP-SENet の検証は hop 倍数へ切り、更新経路の長さ検査は変えない。
 25. **学習入力の先読みは、crop と順序の定義を変えない。** `data.load_workers`（既定 4）は発話の読み込みをスレッドで並べ、`data.prefetch`（既定 true）は次の Optimizer 更新分を GPU 更新と重ねる。切り出しとサンプル順は case id・seed・epoch の関数のままである。MP-SENet と MossFormerGAN の wideband PESQ は、行が 4 以上のとき spawn したプロセスで同じ `pesq` を行順のまま計算する。モデル、損失、batch、Optimizer、STFT、selective scan は変えていない。`torch.compile`、CUDA Graph、AMP、TF32 の変更は入れていない。
 22. **SEMamba++ の GAN 更新は公式の系列順を使う。** 各サブ discriminator は real と fake を交互に処理し、CQT と multi-resolution の各損失を別に集計してから加算する。mel 損失と multi-resolution discriminator は公式の CPU 生成 Hann 窓を使い、mel basis は librosa の Slaney フィルタを使う。通常経路の反射パディングは公式に合わせ、厳密な決定的 CUDA では明示パディングを使う。処理順や項の結合を変えると浮動小数点の累算順が変わる。
+
+
+## TF-GridNet の固定更新スケジュール（2026-11-04）
+
+ESPnet chunk iterator の `num_iters_per_epoch` は元発話数で、更新数ではない。固定 5000 更新を公式 epoch と呼ばない。独立 Trainer の `logical_steps_per_epoch` は研究用の固定更新境界で、データ周回とは独立し、境界で validation・scheduler・loss 最小 checkpoint を実行する。旧 checkpoint はこのモードへ再開できない。公式 chunking・early stopping・best 5 は未対応で、本格学習条件は未確定。詳細は [公式設定監査](../docs/training/OFFICIAL_TRAINING_AUDIT.md)。
