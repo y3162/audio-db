@@ -7,6 +7,7 @@ then renamed. A killed writer leaves the previous checkpoint in place.
 from __future__ import annotations
 
 import os
+import pickle
 import tempfile
 from pathlib import Path
 from typing import Any
@@ -60,7 +61,10 @@ def save_atomic(path: Path, payload: dict[str, Any], *, verify_training: bool = 
 def load_checkpoint(path: Path, device: torch.device) -> dict[str, Any]:
     if not path.is_file():
         raise TrainingError(f"checkpoint not found: {path}")
-    payload = torch.load(path, map_location=device, weights_only=False)
+    try:
+        payload = torch.load(path, map_location=device, weights_only=False)
+    except (EOFError, OSError, RuntimeError, pickle.UnpicklingError) as exc:
+        raise TrainingError(f"checkpoint {path} is unreadable") from exc
     if not isinstance(payload, dict) or payload.get("format") != "audio-db-training-v1":
         raise TrainingError(f"checkpoint {path} is not an audio-db training checkpoint")
     return payload

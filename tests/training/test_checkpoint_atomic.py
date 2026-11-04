@@ -22,6 +22,13 @@ class AtomicCheckpointTests(unittest.TestCase):
             self.assertEqual(path.read_bytes(), b"previous checkpoint")
             self.assertEqual(list(path.parent.iterdir()), [path])
 
+    def test_truncated_checkpoint_is_refused(self):
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "checkpoint.pt"
+            path.write_bytes(b"not a torch checkpoint")
+            with self.assertRaisesRegex(TrainingError, "unreadable"):
+                load_checkpoint(path, torch.device("cpu"))
+
     def test_verified_checkpoint_can_be_loaded(self):
         with tempfile.TemporaryDirectory() as directory:
             path = Path(directory) / "checkpoint.pt"

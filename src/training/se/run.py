@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import fcntl
 import os
 from pathlib import Path
 
@@ -40,6 +41,18 @@ def build_task(config: dict, device):
     if name == "deepfilternet3":
         return DeepFilterNetTask(config, device)
     raise TrainingError(f"no training task for {name}")
+
+
+def experiment_lock(directory: Path):
+    """Exclusive lock for one experiment directory. Same-process reentry succeeds."""
+    directory.mkdir(parents=True, exist_ok=True)
+    handle = (directory / ".lock").open("a+")
+    try:
+        fcntl.flock(handle.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+    except BlockingIOError as exc:
+        handle.close()
+        raise TrainingError(f"experiment is already running: {directory}") from exc
+    return handle
 
 
 def execute(config_path: str | Path, *, resume: str | Path | None = None,
@@ -118,8 +131,14 @@ def execute(config_path: str | Path, *, resume: str | Path | None = None,
         saved = load_checkpoint(Path(resume), process.device)
         if saved.get("config") != config:
             raise TrainingError("checkpoint configuration does not match this experiment")
-    trainer.fit(train, validation, resume=None if resume is None else Path(resume),
-                deadline=deadline, segment_steps=segment_steps)
+    lock = experiment_lock(Path(config["checkpoint_dir"])) if process.rank == 0 else None
+    try:
+        trainer.fit(train, validation, resume=None if resume is None else Path(resume),
+                    deadline=deadline, segment_steps=segment_steps)
+    finally:
+        if lock is not None:
+            fcntl.flock(lock.fileno(), fcntl.LOCK_UN)
+            lock.close()
     if process.distributed and dist.is_initialized():
         dist.destroy_process_group()
     return trainer

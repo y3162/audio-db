@@ -31,12 +31,14 @@ platform_prepare() {
     export HDF5_DIR=/usr/lib/x86_64-linux-gnu/hdf5/serial
     export AUDIO_DB_HDF5=1
   fi
+  # One shared .venvs/semambapp is used on every lab host. A cubin built
+  # only for the machine running setup cannot load on the others:
+  # Turing 7.5, A100 8.0, RTX 3090 8.6.
+  export TORCH_CUDA_ARCH_LIST="${TORCH_CUDA_ARCH_LIST:-7.5;8.0;8.6}"
   if command -v nvidia-smi >/dev/null 2>&1; then
     local caps
     caps=$(nvidia-smi --query-gpu=compute_cap --format=csv,noheader 2>/dev/null | sort -u | paste -sd';' -)
-    if [[ -n "$caps" ]]; then
-      export TORCH_CUDA_ARCH_LIST="$caps"
-    else
+    if [[ -z "$caps" ]]; then
       echo "nvidia-smi did not report a CUDA architecture. Fused kernels will not be built." >&2
       export AUDIO_DB_SKIP_NATIVE=1
     fi

@@ -28,7 +28,7 @@
 
 ## サーバーと GPU
 
-- 研究室サーバーは ampere（RTX 3090 ×4）、tensor（A100 40GB ×7、80GB ×1）、turing（Quadro RTX 5000 ×4）、shannon（A100 80GB ×8）。役割別の `.venvs/se` を共通に使う。構築の入口は `make setup PLATFORM=shinoda_lab`。
+- 研究室サーバーは ampere（RTX 3090 ×4）、tensor（A100 40GB ×7、80GB ×1）、turing（Quadro RTX 5000 ×4）、shannon（A100 80GB ×8）。役割別の `.venvs/se` を共通に使う。構築の入口は `make setup PLATFORM=shinoda_lab`。融合カーネルの `TORCH_CUDA_ARCH_LIST` は共有環境向けに `7.5;8.0;8.6`（Turing、A100、RTX 3090）である。実行中のホストの compute capability だけに絞ると、他のホストで cubin をロードできない。再ビルドは `AUDIO_DB_REBUILD_MAMBA=1` を付けて `ROLES=semambapp` を実行する。共有 `.so` は一番古い glibc のホストで作る。2026-11-04 時点では shannon が glibc 2.31、turing が 2.35 で、turing で作った拡張は shannon で `GLIBC_2.32` 不足によりロードできない。
 - GPU は他のユーザーも使う。使う前に `nvidia-smi` で空きを確認し、使用メモリが 1024 MiB 未満の GPU だけを指定する。評価 CLI は、使用メモリが 1024 MiB 以上の CUDA GPU を拒否する。`runtime.allow_busy_gpu: true` は、その GPU が自分のジョブだと分かっているときだけ使う。
 - 学習の空き確認は、CUDA が認識した装置が MIG の場合、その MIG の空きメモリを使う。親 GPU の使用量は他の MIG を含み得るため判定に使わない。CUDA context 自身の使用分も含む。qsub での実機検証状況は `docs/training/JOB_CONTINUATION_AUDIT.md`。
 - `CUDA_VISIBLE_DEVICES` で隠すと、見える GPU の番号は 0 から振り直される。`device` の指定はその番号。

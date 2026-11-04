@@ -123,6 +123,10 @@ build_mamba() {
   export MAMBA_FORCE_BUILD=TRUE
   local site init
   site=$("$python" -c 'import site; print(site.getsitepackages()[0])') || return 1
+  if [[ "${AUDIO_DB_REBUILD_MAMBA:-}" == 1 ]]; then
+    uv pip uninstall --python "$python" causal-conv1d mamba-ssm >/dev/null 2>&1 || true
+    rm -f "${site}"/causal_conv1d_cuda*.so "${site}"/selective_scan_cuda*.so
+  fi
   init="${site}/mamba_ssm/__init__.py"
   if [[ -f "$init" ]] && grep -q 'clean-rebuild:' "$init" \
       && "$python" -c 'import causal_conv1d_cuda, selective_scan_cuda' >/dev/null 2>&1; then

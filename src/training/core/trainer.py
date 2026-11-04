@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import contextlib
 import json
+import signal
 import time
 from concurrent.futures import Future, ThreadPoolExecutor
 from pathlib import Path
@@ -37,6 +38,27 @@ from src.training.data.sampler import epoch_indices
 from src.training.errors import TrainingError
 
 FORMAT = "audio-db-training-v1"
+_STOP_REQUESTED = False
+
+
+def request_training_stop(signum, _frame) -> None:
+    """Ask the trainer to finish the current optimizer update and save."""
+    del signum, _frame
+    global _STOP_REQUESTED
+    _STOP_REQUESTED = True
+
+
+def install_training_stop() -> None:
+    signal.signal(signal.SIGTERM, request_training_stop)
+
+
+def reset_training_stop() -> None:
+    global _STOP_REQUESTED
+    _STOP_REQUESTED = False
+
+
+def training_stop_requested() -> bool:
+    return _STOP_REQUESTED
 
 
 def _inference_payload(task: Any) -> dict[str, Any] | None:
@@ -144,6 +166,14 @@ class Trainer:
             raise TrainingError("segment_steps must be positive")
         epoch = 0
         skip = 0
+        if self.process.rank == 0:
+            reset_training_stop()
+            install_training_stop()
+            if (self.checkpoint_dir / "complete.json").is_file():
+                raise TrainingError(
+                    f"training is already complete: {self.checkpoint_dir}. "
+                    "Refusing to resume a finished experiment."
+                )
         if resume is not None:
             payload = load_checkpoint(resume, self.process.device)
             self._check_resume(payload, dataset)
@@ -286,6 +316,7 @@ class Trainer:
         barrier(self.process)
         if self.stop_reason is None:
             self.stop_reason = "COMPLETED"
+            self._mark_complete()
 
     def _run_chunk_epochs(self, dataset, validation, skip, epoch, halt) -> None:
         """One epoch is one pass of the ESPnet chunk iterator, not a fixed update count."""
@@ -348,10 +379,21 @@ class Trainer:
             if self._managed and self.global_step >= self.max_steps and epoch < max_epochs and not halt:
                 raise TrainingError("chunk iterator reached max_steps before completing training")
             self.stop_reason = "COMPLETED"
+            self._mark_complete()
+
+    def _mark_complete(self) -> None:
+        if self.process.rank != 0:
+            return
+        write_json(self.checkpoint_dir / "complete.json", {
+            "status": "COMPLETED",
+            "global_step": self.global_step,
+            "checkpoint": self.last_checkpoint,
+        })
 
     def _stop_requested(self) -> bool:
         return ((self._deadline is not None and time.time() >= self._deadline)
-                or (self._segment_end is not None and self.global_step >= self._segment_end))
+                or (self._segment_end is not None and self.global_step >= self._segment_end)
+                or training_stop_requested())
 
     def _planned_chunks(self, dataset, espnet_epoch: int, *, train: bool):
         spec = self.config["chunk_iterator"]
@@ -693,7 +735,10 @@ class Trainer:
     def _reject_existing_checkpoints(self) -> None:
         if self.process.rank != 0 or not self.checkpoint_dir.exists():
             return
-        existing = [path for path in self.checkpoint_dir.iterdir() if path.name != ".gitkeep"]
+        existing = [
+            path for path in self.checkpoint_dir.iterdir()
+            if path.name != ".gitkeep" and not path.name.startswith(".")
+        ]
         if existing:
             raise TrainingError(
                 f"checkpoint directory is not empty: {self.checkpoint_dir}. "
