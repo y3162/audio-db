@@ -12,10 +12,25 @@ platform_prepare() {
   else
     export AUDIO_DB_CARGO=1
   fi
-  # The workstation CUDA toolkit under /usr/local/cuda is not used.
-  # nvcc for Numba comes from the nvidia-cuda-nvcc wheel inside the role env.
+  # Numba ptxas comes from the nvidia-cuda-nvcc wheel (ptxas only). Extension
+  # builds need a full toolkit; load a module when Environment Modules exist.
   export AUDIO_DB_CUDA_FROM=wheel
+  if ! command -v module >/dev/null 2>&1 && [[ -f /usr/share/Modules/init/bash ]]; then
+    # shellcheck disable=SC1091
+    source /usr/share/Modules/init/bash
+  fi
+  if command -v module >/dev/null 2>&1; then
+    if module load cuda/12.1 2>/dev/null || module load cuda/12.8 2>/dev/null; then
+      export AUDIO_DB_CUDA_FROM=module
+    else
+      echo "cuda/12.1 and cuda/12.8 did not load. Fused CUDA extensions will not be built." >&2
+    fi
+  fi
   export AUDIO_DB_HDF5=0
+  if [[ -f /usr/lib/x86_64-linux-gnu/hdf5/serial/include/hdf5.h ]]; then
+    export HDF5_DIR=/usr/lib/x86_64-linux-gnu/hdf5/serial
+    export AUDIO_DB_HDF5=1
+  fi
   if command -v nvidia-smi >/dev/null 2>&1; then
     local caps
     caps=$(nvidia-smi --query-gpu=compute_cap --format=csv,noheader 2>/dev/null | sort -u | paste -sd';' -)
@@ -30,6 +45,9 @@ platform_prepare() {
     export AUDIO_DB_SKIP_NATIVE=1
   fi
   if [[ "${AUDIO_DB_HDF5:-0}" != 1 ]]; then
-    echo "Official libdfdata needs HDF5 headers. Set HDF5_DIR and rerun ROLES=deepfilternet." >&2
+    echo "Official libdfdata needs HDF5 headers. Install libhdf5-dev or set HDF5_DIR, then rerun ROLES=deepfilternet." >&2
+  fi
+  if [[ "${AUDIO_DB_CUDA_FROM}" == wheel ]] && command -v nvidia-smi >/dev/null 2>&1; then
+    echo "Fused CUDA extensions need nvcc. Load cuda/12.1 (or cuda/12.8) via modules, then rerun ROLES=semambapp." >&2
   fi
 }

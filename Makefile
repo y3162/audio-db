@@ -62,6 +62,9 @@ test-setup:
 df-rfft:
 	cargo build --release --locked \
 		--manifest-path $(DF_RFFT_MANIFEST) \
+		--target-dir $(DF_RFFT_TARGET) \
+	|| cargo build --release \
+		--manifest-path $(DF_RFFT_MANIFEST) \
 		--target-dir $(DF_RFFT_TARGET)
 	@if [ -f $(DF_RFFT_SO) ] && ! cmp -s $(DF_RFFT_TARGET)/release/libdf_rfft.so $(DF_RFFT_SO); then \
 	  echo "built $(DF_RFFT_TARGET)/release/libdf_rfft.so differs from tracked $(DF_RFFT_SO); tracked file was not replaced"; \

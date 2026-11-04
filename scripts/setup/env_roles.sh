@@ -108,7 +108,12 @@ build_mamba() {
     cuda_home="${site}/nvidia/cuda_nvcc"
   fi
   if [[ -z "$cuda_home" || ! -x "${cuda_home}/bin/nvcc" ]]; then
-    echo "nvcc was not found. On TSUBAME run: module load cuda/12.3.2" >&2
+    if [[ -n "${CUDA_HOME:-}" && -x "${CUDA_HOME}/bin/nvcc" ]]; then
+      cuda_home="$CUDA_HOME"
+    fi
+  fi
+  if [[ -z "$cuda_home" || ! -x "${cuda_home}/bin/nvcc" ]]; then
+    echo "nvcc was not found. On TSUBAME: module load cuda/12.3.2. On SHINODA-LAB: module load cuda/12.1" >&2
     return 1
   fi
   export CUDA_HOME="$cuda_home"
@@ -224,9 +229,10 @@ build_df_rfft() {
     echo "cargo is missing. libdf_rfft.so was not rebuilt." >&2
     return 1
   fi
-  cargo build --release --locked \
-    --manifest-path src/se/models/deepfilternet3/rfft_kernel/Cargo.toml \
-    --target-dir build/df-rfft || return 1
+  local manifest="src/se/models/deepfilternet3/rfft_kernel/Cargo.toml"
+  if ! cargo build --release --locked --manifest-path "$manifest" --target-dir build/df-rfft; then
+    cargo build --release --manifest-path "$manifest" --target-dir build/df-rfft || return 1
+  fi
   local built="build/df-rfft/release/libdf_rfft.so"
   local tracked="src/se/models/deepfilternet3/libdf_rfft.so"
   if [[ -f "$tracked" ]] && ! cmp -s "$built" "$tracked"; then
