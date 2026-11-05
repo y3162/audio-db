@@ -312,12 +312,14 @@ class Trainer:
                     self.task.step_schedulers(self._scheduler_validation(validation_summary))
                     halt = bool(getattr(self.task, "stop_training", False)) or self._batch_schedule_should_stop(validation_summary)
                 timed_stop = not halt and self.global_step < self.max_steps and self._stop_requested()
-                checkpoint_path = None
-                if self._should_save(self.global_step) or timed_stop or ((self.steps_per_epoch or self.config.get("batch_schedule")) and epoch_done and self.process.rank == 0):
-                    checkpoint_path = self._save(dataset, epoch, cursor, usable_batches)
-                    self.last_checkpoint = checkpoint_path
+                save = self._should_save(self.global_step) or timed_stop or ((self.steps_per_epoch or self.config.get("batch_schedule")) and epoch_done and self.process.rank == 0)
+                checkpoint_path = str(self.checkpoint_dir / f"step_{self.global_step:08d}.pt") if save else None
                 if self.process.rank == 0:
                     self._log_train(logical_epoch, metrics, checkpoint_path, validation_summary, group)
+                    if save:
+                        if self._tb is not None:
+                            self._tb.flush()
+                        self.last_checkpoint = self._save(dataset, epoch, cursor, usable_batches)
                     if (
                         self.global_step == 1
                         or self.global_step % 10 == 0
@@ -385,12 +387,14 @@ class Trainer:
                         halt = True
                 complete = halt or (epoch_done and espnet_epoch >= max_epochs)
                 timed_stop = not complete and self.global_step < self.max_steps and self._stop_requested()
-                checkpoint_path = None
-                if self._should_save(self.global_step) or timed_stop or (epoch_done and self.process.rank == 0):
-                    checkpoint_path = self._save(dataset, epoch, cursor, usable)
-                    self.last_checkpoint = checkpoint_path
+                save = self._should_save(self.global_step) or timed_stop or (epoch_done and self.process.rank == 0)
+                checkpoint_path = str(self.checkpoint_dir / f"step_{self.global_step:08d}.pt") if save else None
                 if self.process.rank == 0:
                     self._log_train(espnet_epoch, metrics, checkpoint_path, validation_summary, group)
+                    if save:
+                        if self._tb is not None:
+                            self._tb.flush()
+                        self.last_checkpoint = self._save(dataset, epoch, cursor, usable)
                 barrier(self.process)
                 if timed_stop:
                     self.stop_reason = "CHECKPOINTED"

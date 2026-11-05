@@ -288,7 +288,7 @@ class StepTests(unittest.TestCase):
             wav = root / "wav"
             continuous = _train(root / "continuous", wav, max_steps=3, resume=None)
             interrupted_dir = root / "interrupted"
-            _train(interrupted_dir, wav, max_steps=1, resume=None)
+            _train(interrupted_dir, wav, max_steps=3, resume=None, segment_steps=1)
             resumed = _train(
                 interrupted_dir,
                 wav,
@@ -325,7 +325,7 @@ class StepTests(unittest.TestCase):
             _assert_equal_tensors(self, serial.generator.state_dict(), fast.generator.state_dict())
             _assert_equal_tensors(self, serial.optim_g.state_dict(), fast.optim_g.state_dict())
             interrupted = root / "fast-stop"
-            _train(interrupted, wav, max_steps=1, resume=None, load_workers=4, prefetch=True)
+            _train(interrupted, wav, max_steps=3, resume=None, load_workers=4, prefetch=True, segment_steps=1)
             resumed = _train(
                 interrupted,
                 wav,
@@ -433,14 +433,14 @@ class ValidationTests(unittest.TestCase):
                 task,
                 plan_batches(1, 1, 1),
                 cpu_process(),
-                max_steps=2,
+                max_steps=3,
                 seed=config["seed"],
                 checkpoint_dir=root / "ckpt",
                 checkpoint_interval=1,
                 validation_interval=1,
                 config=config,
             )
-            trainer.fit(dataset, validation)
+            trainer.fit(dataset, validation, segment_steps=2)
             best = json.loads((root / "ckpt" / "best_generator.json").read_text(encoding="utf-8"))
             self.assertEqual(best["pesq"], 2.5)
             self.assertEqual(best["global_step"], 1)
@@ -495,6 +495,7 @@ def _train(
     resume: Path | None,
     load_workers: int = 1,
     prefetch: bool = False,
+    segment_steps: int | None = None,
 ) -> MPSENetTask:
     config = tiny_config(checkpoint_dir, max_steps=max_steps)
     config["data"] = dict(config["data"])
@@ -513,7 +514,7 @@ def _train(
         validation_interval=0,
         config=config,
     )
-    trainer.fit(dataset, resume=resume)
+    trainer.fit(dataset, resume=resume, segment_steps=segment_steps)
     return task
 
 

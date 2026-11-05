@@ -46,6 +46,8 @@
 
 学習ログは `checkpoint_dir/metrics.jsonl` である。先頭は run レコード、その後に step と validation のレコードが続く。再開時は、checkpoint の global step より後の行を消してから続ける。DuckDB には書かない。
 
+checkpoint を公開する前に同じ step の JSONL を書き、TensorBoard が有効なら event を flush する。途中で中断したら、完成済みの直前 checkpoint を選び、再開時にそれより後の記録を巻き戻す。JSONL と event と checkpoint の間で電源断やストレージ障害に耐える原子的なコミットを保証するものではない。
+
 再開用 checkpoint は同じディレクトリの一時ファイルへ書き、flush と fsync の後に CPU へ読み戻して形式・位置・必須キーを確認し、成功時だけ正式名へ切り替える。読み戻しはモデルや optimizer への復元試験、障害後の自動回復、あるいはジョブ間の自動継続を意味しない。旧 checkpoint の選択や巻き戻しは自動化されていない。
 
 ## 未実装

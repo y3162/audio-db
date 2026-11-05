@@ -48,6 +48,8 @@ DuckDB は `data/db/resource.duckdb`（`src/data/constants.py`）。
 
 ## 学習に使うセット
 
+- 学習 checkpoint は、その step の JSONL 書き込みと TensorBoard 有効時の event flush の後に公開する。途中で停止した場合は、完成済み checkpoint より後の記録を再開時に巻き戻す。電源断やストレージ障害に対する複数ファイルの原子性は保証しない。
+
 学習は評価と同じ名前付きセットとレシピを読む。詳細は `docs/training/MP_SENET.md`。
 
 - 教師はレシピの `output.reference` だけである。`dry_clean` と `reverberant_clean` を取り違えない。`none` のケースは学習に入れず、エラーにする。
