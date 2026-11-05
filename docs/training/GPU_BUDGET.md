@@ -102,6 +102,24 @@ chunk 48,000、batch 4、seed 17 の 24 step で、定常中央値は 0.1916 秒
 
 2026-11-04 追加監査の時点では GPU 使用 0 秒、累計 15,889.17 秒だった。その後の本格学習前検証を下に足す。
 
+## shannon の 100-step 再計測（2026-11-05）
+
+`configs/training/trial100/` の5モデルを VoiceBank-DEMAND の `voicebank_28_train` で各100 optimizer step 実行した。shannon の A100 PCIe 80GB GPU 6 / 7 を使い、実行直前の使用量は各13 MiBだった。GPU 6 と 7 に分けて実行した。全試行は seed 17、FP32、AMP 無効、`allow_busy_gpu: false`、検証なし、50 step ごとの checkpoint 保存である。
+
+下表は各プロセスの起動から終了までの wall-clock。モデル初期化、データ準備、更新、checkpoint 保存を含み、本格学習時間への外挿値ではない。
+
+| モデル | shannon A100 80GB | 完了 step |
+|---|---:|---:|
+| MP-SENet | 62 秒 | 100 |
+| SEMamba++（micro 4 × 蓄積 2） | 188 秒 | 100 |
+| TF-GridNet（固定100更新の試験設定） | 40 秒 | 100 |
+| DeepFilterNet3（batch 16） | 163 秒 | 100 |
+| MossFormerGAN（micro 1 × 蓄積 2） | 98 秒 | 100 |
+
+再計測の結果とログは `data/results/training/trial100-20261105-shannon-rerun/` にある。各成功ディレクトリの `complete.json` は `COMPLETED` / `global_step: 100`。DeepFilterNet3 は共有 `src/se/models/deepfilternet3/libdf_rfft.so` が shannon の glibc 2.31 より新しい glibc を要求して最初の更新前に停止した。既存ファイルは置き換えず、shannon 上で `build/df-rfft-shannon-20261105/` にビルドし、`DF_RFFT_LIBRARY` で明示して再実行を完了した。初回の shannon 計測は `data/results/training/trial100-20261105-shannon/` に残す。ユーザー指示により tensor の同日結果ディレクトリは削除した。
+
+この100-step計測は初回epochの試験設定で、検証を含まず、フル学習の各batch schedule / epochを完走していない。したがって本格学習の完了時間は、この wall-clock を単純に step 数倍せず、上記「研究用本格学習の見積もり」を参照する。同見積もりは H100 MIG の step 実測を用いたもので、A100 の今回の計測結果ではない。
+
 ## 研究用本格学習の見積もり（2026-11-04）
 
 TF-GridNet の秒/step 0.1916 は、RMS ありの chunk 48,000・batch 4・24 step の定常中央値である。RMS なしでもテンソル形状は同じなので、同じ秒/step を形状等価の見積もりとして使う。新しい定常分布は取り直していない。VoiceBank train の実長は `data/results/training/go-20261104/tf-epoch-count.json`。seed 17、chunk 48,000、shift 0.5、batch 4、cache 1024。
