@@ -9,6 +9,7 @@
 CLAUDE.local.md
 AGENTS.override.md
 /PROMPT.md
+/OUTPUT.md
 .env
 .env.*
 !.env.example
