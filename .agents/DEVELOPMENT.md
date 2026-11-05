@@ -77,3 +77,5 @@
 - TF-Locoformer の `WarmupReduceLROnPlateau` を公式一致と言うときは、`src/se/official/espnet` の `espnet2/schedulers/warmup_reducelronplateau.py` を import して比べる。`90eed8e` と checkout の当該ファイルが同一であることを確認する。移植クラスを二つ並べた比較は公式一致ではない。checkout が無い SKIP は PASS に数えない。学習ログの `si_sdr` は SI-SDR 損失、validation の `si_snr` は SI-SDR（dB）で、`valid.si_snr.best.pt` は後者を最大化する。
 - ASR の「動作検証」は `docs/asr/MODELS.md` の表が正本。カタログに載っていることは検証済みを意味しない。
 - 検証を報告するときは、何を（モデル、入力、device、seed、環境）確認したかを書く。
+
+- TensorBoard は任意の監視機能で、`metrics.jsonl` が正本。設定・再生成・検証上の注意は [TENSORBOARD.md](../docs/training/TENSORBOARD.md) を参照する。監視設定は checkpoint の学習条件との比較から除く。

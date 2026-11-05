@@ -35,6 +35,11 @@ def digest(path: Path) -> str:
     return sha.hexdigest()
 
 
+def training_config_digest(config: dict) -> str:
+    training = {key: value for key, value in config.items() if key != 'logging'}
+    return hashlib.sha256(json.dumps(training, sort_keys=True, separators=(',', ':')).encode()).hexdigest()
+
+
 def source_identity() -> dict:
     commit = subprocess.check_output(['git', 'rev-parse', 'HEAD'], cwd=ROOT, text=True).strip()
     # Include untracked Python source; no assumption that working tree was committed.
@@ -70,6 +75,7 @@ def initialize(directory: Path, config_path: Path) -> None:
     normalized = load_training_config(config)
     database = Path(normalized['data']['database']).resolve()
     meta = {'format': 1, 'created': now(), 'config_sha256': digest(config),
+            'training_config_sha256': training_config_digest(normalized),
             'database_sha256': digest(database),
             'model': normalized['model']['name'], 'seed': normalized['seed'], **source_identity()}
     write_json(directory / 'experiment.json', meta)
@@ -121,9 +127,11 @@ def run(directory: Path, sequence: int, seconds: float, segment_steps: int | Non
         try:
             meta = json.loads((directory / 'experiment.json').read_text())
             config_path = directory / 'config.yaml'
-            if digest(config_path) != meta['config_sha256'] or source_identity() != {k: meta[k] for k in ('commit', 'source_sha256')}:
-                raise TrainingError('configuration, commit, or training source changed')
             config = load_training_config(config_path)
+            config_ok = (training_config_digest(config) == meta['training_config_sha256']
+                         if 'training_config_sha256' in meta else digest(config_path) == meta['config_sha256'])
+            if not config_ok or source_identity() != {k: meta[k] for k in ('commit', 'source_sha256')}:
+                raise TrainingError('configuration, commit, or training source changed')
             if digest(Path(config['data']['database']).resolve()) != meta['database_sha256']:
                 raise TrainingError('training database changed')
             env = environment()
@@ -147,7 +155,7 @@ def run(directory: Path, sequence: int, seconds: float, segment_steps: int | Non
                 if digest(resume) != previous['checkpoint_sha256']:
                     raise TrainingError('checkpoint checksum mismatch')
                 payload = load_checkpoint(resume, torch.device('cpu'))
-                if payload['config'] != config or payload['global_step'] != previous['end_step'] or payload['epoch'] != previous['end_epoch']:
+                if {k: v for k, v in payload['config'].items() if k != 'logging'} != {k: v for k, v in config.items() if k != 'logging'} or payload['global_step'] != previous['end_step'] or payload['epoch'] != previous['end_epoch']:
                     raise TrainingError('checkpoint configuration or progress mismatch')
                 state.update(start_step=payload['global_step'], start_epoch=payload['epoch'])
             write_json(state_path, state)

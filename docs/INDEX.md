@@ -8,6 +8,7 @@
 |---|---|
 | 5 モデルの公式学習との差、TF-GridNet の chunk iterator、SEMamba++ の蓄積 | [公式学習設定の監査](training/OFFICIAL_TRAINING_AUDIT.md) |
 | 学習・checkpoint 保存と再開、データ制約、コマンド | [MP-SENet と共通 Trainer](training/MP_SENET.md)、[その他のモデル](training/OTHER_MODELS.md)、[TF-Locoformer](training/TF_LOCOFORMER.md) |
+| TensorBoard の設定・比較・再生成 | [TensorBoard](training/TENSORBOARD.md) |
 | A100 のメモリ・更新時間と条件 | [A100 学習コスト](training/GPU_COST.md) |
 | H100 の更新時間、I/O、高速化、予算 | [性能](training/PERFORMANCE.md)、[GPU 予算](training/GPU_BUDGET.md) |
 | 比較した条件・数値・制限・結果の保存先、未解決事項 | [学習検証](training/VERIFICATION.md)、[短い再開と Whisper 評価](training/RESIDUAL_20261104.md) |

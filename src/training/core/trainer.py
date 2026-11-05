@@ -150,6 +150,7 @@ class Trainer:
         self.plateau_metric: float | None = None
         self.stop_reason: str | None = None
         self.last_checkpoint: str | None = None
+        self._tb = None
 
     def fit(
         self,
@@ -200,6 +201,14 @@ class Trainer:
             if self.process.rank == 0:
                 self.checkpoint_dir.mkdir(parents=True, exist_ok=True)
                 append_record(self._log_path(), _run_header(self))
+        if self.config.get("logging", {}).get("tensorboard", {}).get("enabled"):
+            state = capture_rng(cuda=self.process.uses_cuda)
+            try:
+                import tensorboard  # noqa: F401
+            except ImportError as exc:
+                raise TrainingError("TensorBoard is enabled but tensorboard is not installed") from exc
+            finally:
+                restore_rng(state, cuda=self.process.uses_cuda)
         self.task.distribute(self.process)
         self._deadline = deadline
         self._managed = deadline is not None or segment_steps is not None
@@ -212,6 +221,16 @@ class Trainer:
         halt = False
         loader = ThreadPoolExecutor(max_workers=1, thread_name_prefix="audio-db-prefetch") if prefetch else None
         try:
+            tb_config = self.config.get("logging", {}).get("tensorboard", {})
+            if self.process.rank == 0 and tb_config.get("enabled"):
+                from src.training.core.tensorboard import open_writer
+                state = capture_rng(cuda=self.process.uses_cuda)
+                try:
+                    self._tb = open_writer(self.checkpoint_dir / "tensorboard", self.global_step if resume else None)
+                    from src.training.core.tensorboard import write_run_info
+                    write_run_info(self._tb, self.config, self.process.world_size, self.global_step)
+                finally:
+                    restore_rng(state, cuda=self.process.uses_cuda)
             if self.config.get("chunk_iterator"):
                 self._run_chunk_epochs(dataset, validation, skip, epoch, halt)
             else:
@@ -219,6 +238,8 @@ class Trainer:
         finally:
             if loader is not None:
                 loader.shutdown(wait=True, cancel_futures=True)
+            if self._tb is not None:
+                self._tb.close()
 
     def _run_epochs(self, dataset, validation, skip, epoch, halt, loader, prefetch) -> None:
         while self.global_step < self.max_steps and not halt:
@@ -270,7 +291,9 @@ class Trainer:
                     pending = loader.submit(
                         _load_group, dataset, indices, cursor, micro, accumulation
                     )
+                update_started = time.perf_counter()
                 metrics = self.task.train_update(group, accumulation)
+                self._update_seconds = time.perf_counter() - update_started
                 self._require_finite(metrics)
                 self.global_step += 1
                 epoch_done = (self.global_step % self.steps_per_epoch == 0) if self.steps_per_epoch else cursor >= usable_batches
@@ -347,7 +370,9 @@ class Trainer:
             while cursor < usable and self.global_step < self.max_steps:
                 group = [dataset.collate_chunks(batches[cursor])]
                 cursor += 1
+                update_started = time.perf_counter()
                 metrics = self.task.train_update(group, accumulation)
+                self._update_seconds = time.perf_counter() - update_started
                 self._require_finite(metrics)
                 self.global_step += 1
                 epoch_done = cursor >= usable
@@ -423,6 +448,9 @@ class Trainer:
                 if not batches:
                     raise TrainingError("validation chunk iterator produced no batches")
                 reports = [self.task.validation_report(validation.collate_chunks(chunks)) for chunks in batches]
+                if self._tb is not None:
+                    from src.training.se.preview import write_preview
+                    write_preview(self._tb, self.task, validation, self.global_step, self.config["logging"]["tensorboard"], chunks=batches)
                 summary = _aggregate_validation(reports)
                 summary["best_checkpoint"] = self._retain_chunk_models(espnet_epoch, summary)
                 append_record(self._log_path(), {
@@ -455,7 +483,7 @@ class Trainer:
                 best = min(self.chunk_history, key=lambda row: (row["loss"], row["epoch"]))
                 stopped = espnet_epoch - int(best["epoch"]) > int(patience)
         if self.process.distributed:
-            flag = torch.tensor([1 if stopped else 0], dtype=torch.int64)
+            flag = torch.tensor([1 if stopped else 0], dtype=torch.int64, device=self.process.device)
             dist.broadcast(flag, src=0)
             stopped = bool(int(flag.item()))
         return stopped
@@ -542,7 +570,7 @@ class Trainer:
             if generator.get("status") == "ok" and value is not None:
                 metric = float(value)
         if self.process.distributed:
-            packed = torch.tensor([float("nan") if metric is None else metric], dtype=torch.float64)
+            packed = torch.tensor([float("nan") if metric is None else metric], dtype=torch.float64, device=self.process.device)
             dist.broadcast(packed, src=0)
             metric = None if torch.isnan(packed).item() else float(packed.item())
         if metric is None:
@@ -606,6 +634,9 @@ class Trainer:
                             "set": validation.name, "case_id": batch["case_id"][0],
                             **report,
                         })
+                if self._tb is not None:
+                    from src.training.se.preview import write_preview
+                    write_preview(self._tb, self.task, validation, self.global_step, self.config["logging"]["tensorboard"])
                 summary = _aggregate_validation(reports)
                 best_path = self._consider_best(epoch, summary)
                 summary["best_checkpoint"] = best_path
@@ -619,6 +650,7 @@ class Trainer:
                         "pesq": summary["pesq"],
                         "stoi": summary["stoi"],
                         "si_sdr": summary.get("si_sdr"),
+                        "si_snr": summary.get("si_snr"),
                         "best_checkpoint": best_path,
                         "seed": self.seed,
                     },
@@ -680,6 +712,23 @@ class Trainer:
         if group is not None:
             record["case_ids"] = [case_id for batch in group for case_id in batch["case_id"]]
         append_record(self._log_path(), record)
+        if self._tb is not None:
+            from src.training.core.tensorboard import write_scalars
+            interval = self.config["logging"]["tensorboard"]["scalar_interval"]
+            if self.global_step % interval == 0:
+                write_scalars(self._tb, record)
+                if validation_summary is not None:
+                    write_scalars(self._tb, {"type": "validation", "global_step": self.global_step, **validation_summary})
+                self._tb.add_scalar("progress/world_size", self.process.world_size, self.global_step)
+                self._tb.add_scalar("performance/update_seconds_host", self._update_seconds, self.global_step)
+                if group is not None and self._update_seconds > 0:
+                    self._tb.add_scalar("performance/utterances_per_second_rank0_host", sum(len(batch["case_id"]) for batch in group) / self._update_seconds, self.global_step)
+                if self.process.uses_cuda:
+                    self._tb.add_scalar("performance/cuda_allocated_bytes_rank0", torch.cuda.memory_allocated(self.process.device), self.global_step)
+                    self._tb.add_scalar("performance/cuda_reserved_bytes_rank0", torch.cuda.memory_reserved(self.process.device), self.global_step)
+                    self._tb.add_scalar("performance/cuda_peak_allocated_bytes_rank0", torch.cuda.max_memory_allocated(self.process.device), self.global_step)
+            elif validation_summary is not None:
+                write_scalars(self._tb, {"type": "validation", "global_step": self.global_step, **validation_summary})
 
     def _consider_best(self, epoch: int, summary: dict[str, Any]) -> str | None:
         """Save the generator when validation PESQ improves after the official start epoch."""

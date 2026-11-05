@@ -5,6 +5,7 @@ Unknown keys are rejected so a misspelled setting cannot be ignored.
 
 from __future__ import annotations
 
+import math
 from pathlib import Path
 from typing import Any
 
@@ -35,6 +36,7 @@ _TOP = {
     "model",
     "data",
     "runtime",
+    "logging",
 }
 _OPTIMIZER = {"name", "lr", "betas", "weight_decay", "amsgrad"}
 _SCHEDULER = {
@@ -111,6 +113,30 @@ def load_training_config(path: str | Path) -> dict[str, Any]:
         "data": _data(raw["data"]),
         "runtime": _runtime(raw["runtime"]),
     }
+    if "logging" in raw:
+        logging = raw["logging"]
+        if not isinstance(logging, dict):
+            raise TrainingError("logging must be a mapping")
+        _unknown(logging, {"tensorboard"}, "logging")
+        tb = logging.get("tensorboard", {})
+        if not isinstance(tb, dict):
+            raise TrainingError("logging.tensorboard must be a mapping")
+        _unknown(tb, {"enabled", "scalar_interval", "audio", "spectrogram"}, "logging.tensorboard")
+        audio = tb.get("audio", {})
+        if not isinstance(audio, dict):
+            raise TrainingError("logging.tensorboard.audio must be a mapping")
+        _unknown(audio, {"enabled", "max_cases", "max_seconds"}, "logging.tensorboard.audio")
+        seconds = audio.get("max_seconds", 5)
+        if isinstance(seconds, bool) or not isinstance(seconds, (int, float)) or not math.isfinite(seconds) or not 0 < seconds <= 3600:
+            raise TrainingError("logging.tensorboard.audio.max_seconds must be positive and at most 3600")
+        config["logging"] = {"tensorboard": {
+            "enabled": _bool(tb.get("enabled", False), "logging.tensorboard.enabled"),
+            "scalar_interval": _int(tb.get("scalar_interval", 10), "logging.tensorboard.scalar_interval"),
+            "audio": {"enabled": _bool(audio.get("enabled", False), "logging.tensorboard.audio.enabled"),
+                      "max_cases": _int(audio.get("max_cases", 3), "logging.tensorboard.audio.max_cases", minimum=0),
+                      "max_seconds": float(seconds)},
+            "spectrogram": _bool(tb.get("spectrogram", False), "logging.tensorboard.spectrogram"),
+        }}
     if "logical_steps_per_epoch" in raw:
         config["logical_steps_per_epoch"] = _int(raw["logical_steps_per_epoch"], "logical_steps_per_epoch")
         if not config["data"]["validation_set"]:

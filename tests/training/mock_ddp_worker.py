@@ -30,7 +30,7 @@ def main() -> None:
     os.environ["RANK"] = str(rank)
     os.environ["WORLD_SIZE"] = str(world)
     os.environ["LOCAL_RANK"] = str(rank)
-    process = setup_process("cpu")
+    process = setup_process(os.environ.get("AUDIO_DB_TB_DDP_DEVICE", "cpu"))
     config = tiny_config(
         root / f"ckpt-{rank}",
         max_steps=1,
@@ -39,8 +39,11 @@ def main() -> None:
         micro_batch_size_per_gpu=micro,
         loss="mock",
     )
+    if os.environ.get("AUDIO_DB_TB_DDP_TEST"):
+        config["logging"] = {"tensorboard": {"enabled": True, "scalar_interval": 1,
+            "audio": {"enabled": False, "max_cases": 1, "max_seconds": 1}, "spectrogram": False}}
     dataset = paired_dataset(root / "wav", 4, frames=320, segment_size=80, seed=7, rewrite=False)
-    task = LinearPairTask(config, torch.device("cpu"))
+    task = LinearPairTask(config, process.device)
     trainer = Trainer(
         task,
         plan_batches(4, micro, world),
@@ -53,6 +56,11 @@ def main() -> None:
         config=config,
     )
     trainer.fit(dataset)
+    if os.environ.get("AUDIO_DB_TB_DDP_TEST"):
+        trainer.config["chunk_iterator"] = {"early_stopping_patience": 1}
+        trainer.chunk_history = [{"loss": 1.0, "epoch": 1}]
+        summary = {"losses": {"generator": {"status": "ok", "value": 2.0}}} if rank == 0 else None
+        assert trainer._chunk_should_stop(3, summary)
     if rank == 0:
         torch.save(task.state_dict(), destination)
 

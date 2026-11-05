@@ -50,7 +50,7 @@
 
 ## 未実装
 
-- TensorBoard。
+- TensorBoard の設定と使い方は [TENSORBOARD.md](TENSORBOARD.md)。
 - VoiceBank-DEMAND 全件での学習と、論文のスコア比較。
 - 公式 Discriminator checkpoint の読み込み検証。
 - 複数ノード。

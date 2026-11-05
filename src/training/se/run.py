@@ -132,7 +132,7 @@ def execute(config_path: str | Path, *, resume: str | Path | None = None,
     if strict_resume and resume is not None:
         from src.training.core.checkpoint import load_checkpoint
         saved = load_checkpoint(Path(resume), process.device)
-        if saved.get("config") != config:
+        if {k: v for k, v in saved.get("config", {}).items() if k != "logging"} != {k: v for k, v in config.items() if k != "logging"}:
             raise TrainingError("checkpoint configuration does not match this experiment")
     lock = experiment_lock(Path(config["checkpoint_dir"])) if process.rank == 0 else None
     try:
