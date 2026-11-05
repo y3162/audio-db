@@ -147,8 +147,12 @@ class TensorBoardDDPIntegration(unittest.TestCase):
                 left = torch.load(root / 'parameters-0.pt', map_location='cpu', weights_only=True)
                 right = torch.load(root / 'parameters-1.pt', map_location='cpu', weights_only=True)
                 self.assertEqual(left.keys(), right.keys())
+                max_diff = 0.0
                 for key in left:
-                    self.assertTrue(torch.allclose(left[key], right[key], rtol=1e-6, atol=1e-7), (name, key, (left[key] - right[key]).abs().max().item()))
+                    diff = (left[key] - right[key]).abs().max().item()
+                    max_diff = max(max_diff, diff)
+                    self.assertTrue(torch.allclose(left[key], right[key], rtol=1e-6, atol=1e-7), (name, key, diff))
+                checkpoints = sorted(path.name for path in (root / 'ckpt').glob('step_*.pt'))
                 directory = root / 'ckpt' / 'tensorboard'
                 self.assertEqual(len(list(directory.glob('events.out.tfevents.*'))), 1)
                 events = EventAccumulator(str(directory)).Reload()
@@ -177,7 +181,17 @@ class TensorBoardDDPIntegration(unittest.TestCase):
                 self.assertEqual(len(events.Tags()['audio']), 3)
                 self.assertEqual(len(events.Tags()['images']), 1)
                 self.assertFalse([tag for tag in events.Tags()['tensors'] if tag.startswith('preview_errors/')])
-                print(f'PASS DDP {name} device={os.environ.get("AUDIO_DB_TB_DDP_DEVICE", "cpu")}', flush=True)
+                evidence = (root / 'ddp-backend.txt').read_text().replace('\n', ' | ')
+                print(
+                    f'PASS DDP {name} device={os.environ.get("AUDIO_DB_TB_DDP_DEVICE", "cpu")} '
+                    f'max_abs_diff={max_diff} rtol=1e-6 atol=1e-7 checkpoints={checkpoints} '
+                    f'train_steps={[r["global_step"] for r in train]} '
+                    f'batch={train[0]["global_batch_size"]}/{train[0]["micro_batch_size"]} '
+                    f'accum={train[0]["gradient_accumulation_steps"]} '
+                    f'losses={list(train[0]["losses"])} lrs={list(train[0]["learning_rate"])} '
+                    f'evidence={evidence}',
+                    flush=True,
+                )
 
     def test_real_gridnet_two_ranks_validation(self):
         import sys
@@ -190,15 +204,49 @@ class TensorBoardDDPIntegration(unittest.TestCase):
             code = 'import sys,runpy; sys.path.extend(' + repr(sys.path) + '); runpy.run_path(' + repr(str(root_dir / 'tests/training/tensorboard_gridnet_ddp_worker.py')) + ', run_name="__main__")'
             def arguments(port):
                 return [[sys.executable, '-c', code, str(rank), str(port), str(root)] for rank in range(2)]
-            run_distributed_workers(arguments, cwd=root_dir, timeout=120)
+            run_distributed_workers(arguments, cwd=root_dir, timeout=300)
+            steps = int(os.environ.get('AUDIO_DB_TB_GRID_STEPS', '1'))
+            max_diff = None
+            if os.environ.get('AUDIO_DB_TB_DDP_SAVE_PARAMETERS') == '1':
+                left = torch.load(root / 'parameters-0.pt', map_location='cpu', weights_only=True)
+                right = torch.load(root / 'parameters-1.pt', map_location='cpu', weights_only=True)
+                self.assertEqual(left.keys(), right.keys())
+                max_diff = 0.0
+                for key in left:
+                    diff = (left[key] - right[key]).abs().max().item()
+                    max_diff = max(max_diff, diff)
+                    self.assertTrue(torch.allclose(left[key], right[key], rtol=1e-6, atol=1e-7), (key, diff))
             directory = root / 'ckpt' / 'tensorboard'
             self.assertEqual(len(list(directory.glob('events.out.tfevents.*'))), 1)
             events = EventAccumulator(str(directory)).Reload()
-            for tag in ('train/loss/generator', 'validation/loss/generator', 'learning_rate/after_update/generator'):
-                self.assertEqual([e.step for e in events.Scalars(tag)], [1])
+            expected = list(range(1, steps + 1))
+            for tag in ('train/loss/generator', 'learning_rate/after_update/generator'):
+                self.assertEqual([e.step for e in events.Scalars(tag)], expected)
+            self.assertEqual([e.step for e in events.Scalars('validation/loss/generator')], [steps])
             self.assertEqual(len(events.Tags()['audio']), 3)
             self.assertEqual(len(events.Tags()['images']), 1)
             self.assertFalse([tag for tag in events.Tags()['tensors'] if tag.startswith('preview_errors/')])
+            records = [json.loads(line) for line in (root / 'ckpt' / 'metrics.jsonl').read_text().splitlines()]
+            train = [r for r in records if r['type'] == 'train']
+            valid = next(r for r in records if r['type'] == 'validation')
+            self.assertEqual([r['global_step'] for r in train], expected)
+            for record, event in zip(train, events.Scalars('train/loss/generator')):
+                self.assertAlmostEqual(event.value, record['losses']['generator'], delta=max(1e-7, abs(record['losses']['generator']) * 1e-6))
+            for record, event in zip(train, events.Scalars('learning_rate/after_update/generator')):
+                self.assertAlmostEqual(event.value, record['learning_rate']['generator'], delta=max(1e-8, abs(record['learning_rate']['generator']) * 1e-6))
+            metric = valid['losses']['generator']
+            self.assertEqual(metric['status'], 'ok')
+            self.assertAlmostEqual(events.Scalars('validation/loss/generator')[0].value, metric['value'], delta=max(1e-7, abs(metric['value']) * 1e-6))
+            evidence = (root / 'ddp-backend.txt').read_text().replace('\n', ' | ')
+            checkpoints = sorted(path.name for path in (root / 'ckpt').glob('step_*.pt'))
+            print(
+                f'PASS DDP tf_gridnet device={os.environ.get("AUDIO_DB_TB_DDP_DEVICE", "cpu")} '
+                f'max_abs_diff={max_diff} rtol=1e-6 atol=1e-7 checkpoints={checkpoints} '
+                f'train_steps={[r["global_step"] for r in train]} '
+                f'batch={train[0]["global_batch_size"]}/{train[0]["micro_batch_size"]} '
+                f'accum={train[0]["gradient_accumulation_steps"]} evidence={evidence}',
+                flush=True,
+            )
 
 
 if __name__ == '__main__':

@@ -45,6 +45,15 @@ def main():
     task = cls(config, process.device)
     trainer = Trainer(task, plan_batches(global_batch, 1, 2), process, max_steps=2, seed=7,
                       checkpoint_dir=root / 'ckpt', checkpoint_interval=0, validation_interval=2, config=config)
+    if rank == 0:
+        backend = dist.get_backend() if dist.is_initialized() else 'none'
+        scan = (config.get('model') or {}).get('architecture', {}).get('scan_backend', 'reference')
+        names = [torch.cuda.get_device_name(i) for i in range(torch.cuda.device_count())] if process.uses_cuda else []
+        (root / 'ddp-backend.txt').write_text(
+            f'backend={backend}\nworld={process.world_size}\ndevice={process.device}\n'
+            f'loss={config.get("loss")}\nscan_backend={scan}\nplan={trainer.plan.as_dict()}\n'
+            f'visible_devices={names}\n'
+        )
     try:
         trainer.fit(train, valid)
         modules = {key: value for key, value in vars(task).items()

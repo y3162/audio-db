@@ -26,11 +26,24 @@ def main():
         'audio': {'enabled': True, 'max_cases': 1, 'max_seconds': 1}, 'spectrogram': True}}
     train = paired_dataset(root / 'train', 4, frames=800, segment_size=800, seed=7, rewrite=False)
     valid = paired_dataset(root / 'valid', 1, frames=800, segment_size=800, seed=8, rewrite=False)
+    steps = int(os.environ.get('AUDIO_DB_TB_GRID_STEPS', '1'))
     task = TFGridNetTask(config, process.device)
-    trainer = Trainer(task, plan_batches(4, 1, 2), process, max_steps=1, seed=7,
-                      checkpoint_dir=root / 'ckpt', checkpoint_interval=0, validation_interval=1, config=config)
+    trainer = Trainer(task, plan_batches(4, 1, 2), process, max_steps=steps, seed=7,
+                      checkpoint_dir=root / 'ckpt', checkpoint_interval=0, validation_interval=steps, config=config)
+    if rank == 0:
+        backend = dist.get_backend() if dist.is_initialized() else 'none'
+        names = [torch.cuda.get_device_name(i) for i in range(torch.cuda.device_count())] if process.uses_cuda else []
+        (root / 'ddp-backend.txt').write_text(
+            f'backend={backend}\nworld={process.world_size}\ndevice={process.device}\n'
+            f'loss={config.get("loss")}\nplan={trainer.plan.as_dict()}\nmax_steps={steps}\n'
+            f'visible_devices={names}\n'
+        )
     try:
         trainer.fit(train, valid)
+        if os.environ.get('AUDIO_DB_TB_DDP_SAVE_PARAMETERS') == '1':
+            from src.training.core.distributed import unwrap
+            parameters = {key: parameter.detach().cpu() for key, parameter in unwrap(task.generator).named_parameters()}
+            torch.save(parameters, root / f'parameters-{rank}.pt')
     finally:
         if dist.is_initialized():
             dist.destroy_process_group()
