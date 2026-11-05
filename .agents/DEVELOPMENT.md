@@ -43,6 +43,8 @@
 .venvs/se/bin/python -m unittest discover -s tests/asr -v         # ASR。重みをダウンロードしない
 .venvs/se/bin/python -m unittest discover -s tests/evaluation -v  # 評価。一時 DB だけを書き、resource.duckdb は変更しない
 .venvs/se/bin/python -m unittest discover -s tests/training -v    # 学習。CPU。resource.duckdb は開かない
+.venvs/se/bin/python -m unittest discover -s tests/reproduction -v  # 再現 DB。合成データと一時 DB。resource.duckdb は開かない
+.venvs/deepfilternet/bin/python -c 'import src.reproduction.snapshot_reader'  # DuckDB の無い環境でスナップショット読み込み側を import する
 .venvs/se/bin/python -m src.evaluation.cli --config configs/evaluation/smoke.yaml --limit 2 --device cpu   # 合成音声 + mock
 .venvs/asr/bin/python -m tests.asr_smoke.run_smoke parakeet whisper wav2vec2   # 実 ASR のスモーク（GPU）
 ```

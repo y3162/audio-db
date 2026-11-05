@@ -45,6 +45,22 @@ SE の学習は `src.training` にある。`enhance()` は推論のままであ�
 python -m src.training.se.cli --config configs/training/mp_senet.yaml
 ```
 
+## 公式再現用 DB
+
+`data/db/reproduction.duckdb` は評価用の `resource.duckdb` とは別のファイルです。P1 では空の `repro` スキーマだけを作ります。実コーパスの Dataset はまだ登録しません。
+
+```bash
+make reproduction-doctor
+make reproduction-init-db
+make reproduction-verify DATASET=name@version HASH=1
+make reproduction-snapshot DATASET=name@version
+make reproduction-rebuild-db OUT=data/db/reproduction-rebuilt.duckdb
+```
+
+`DATASET` が無い snapshot、`OUT` が無い rebuild、`DATASET` と `BUILD` のどちらも無い verify は失敗します。同じスキーマへの `reproduction-init-db` は何もしません。違うスキーマや未完了のファイルは変更せず拒否します。再構築は `OUT` が既存なら拒否します。leakage 監査が `UNKNOWN` の Dataset を書き出すときだけ `ALLOW_UNKNOWN_LEAK_CHECK=1` を付けます。このフラグはスナップショットの来歴に残り、ハッシュには入りません。
+
+学習はまだこの DB もスナップショットも読みません。
+
 ## 評価データ
 
 評価の入力は DuckDB の名前付きセットです。Manifest は登録するときだけ読み、評価の実行時には使いません。`make db-init` は `eval` スキーマを作り、`configs/db/init.yaml` の対象を登録します。`corpora.audio_files` は削除も再作成もしません。

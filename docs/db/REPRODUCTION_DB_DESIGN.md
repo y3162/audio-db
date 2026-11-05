@@ -1,6 +1,8 @@
 # 再現用データ基盤の DB 設計
 
-状態: **設計のみ・未実装**（2026-11-06、`feature/reproduction`、HEAD `f0e76c7` の作業ツリーで作成）。この文書の作成でコード・設定・DB・実データは変更していない。`data/db/reproduction.duckdb` は存在しない。
+状態: **P1 の DB 基盤は実装済み**（2026-11-06）。`data/db/reproduction.duckdb` は空の ready な `repro` スキーマ。実コーパスの Dataset、事前生成の実行、学習からの読み込みは未実装。
+
+P1 で設計からずらした点: `rule_json` は `src/reproduction/ids.py` の閉じたアルゴリズム封筒（完全な Protocol dataclass は P3）。生成素材は `assets.npz` に入れず `generated.json` に書く。leak 監査は `--resource-db` を渡したときだけ `resource.duckdb` を開く。監査に時刻は無く、PASS が存在し FAIL が無いことを使用条件にする。`sha256` の NULL から値への更新だけを `asset_hashes/` 経由で許す。`integrity = sha256` は Python 側で `size_bytes` も要求する。`official_reproduction` は `declared_status = blocked` を拒否する（DFN3 の blocked 公式 Dataset は P8 でラベルを決める）。
 
 ## 0. この文書の位置づけ
 

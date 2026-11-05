@@ -10,7 +10,7 @@
 
 ## 必ず守る制約
 
-- `data/db/resource.duckdb`、`data/corpora/`（外部の実データへのシンボリックリンク）、`data/checkpoints/`、`data/results/`、`data/staging/` は Git 管理外で、再取得・再生成が重い。削除・上書き・再作成をしない。`make db-ingest` は `corpora.audio_files` を DROP して作り直す。ユーザーが明示したときだけ、DB を退避してから実行する。
+- `data/db/resource.duckdb`、`data/db/reproduction.duckdb`、`data/db/snapshots/`、`data/corpora/`（外部の実データへのシンボリックリンク）、`data/generated/`、`data/checkpoints/`、`data/results/`、`data/staging/`（`data/staging/reproduction/` を含む）は Git 管理外で、再取得・再生成が重い。削除・上書き・再作成をしない。`make db-ingest` は `corpora.audio_files` を DROP して作り直す。ユーザーが明示したときだけ、DB を退避してから実行する。`make reproduction-init-db` は `reproduction.duckdb` だけを作り、`resource.duckdb` には触れない。
 - 生成条件の正本はレシピ JSON。`case_id` は正規化したレシピの SHA-256 で、レシピ自身には含めない。操作ごとの列を `eval.cases` に足さない。
 - 登録用データは DuckDB へ書く前に `data/staging/` へ保存する。これは再構築元であり、登録後に消す一時ファイルではない。
 - `data/db/resource.duckdb` はレシピスキーマである。旧固定列のファイルは `data/db/backups/resource-legacy-20261031.duckdb` に残してある。`make db-init` は `recipe_json` の無い `eval.cases` を見つけると、変更せず拒否する。

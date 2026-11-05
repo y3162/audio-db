@@ -1,6 +1,6 @@
 # 再現用 Data Pipeline 設計
 
-状態: **設計のみ・未実装**（2026-11-06、`feature/reproduction`、HEAD `f0e76c7`）。この文書の作成でコード・設定・DB・実データは変更していない。
+状態: **Pipeline は未実装**（2026-11-06）。P1 の DB コマンド（`reproduction-doctor`、`reproduction-init-db`、`reproduction-verify`、`reproduction-snapshot`、`reproduction-rebuild-db`）だけが Makefile にある。prepare、生成、学習接続は未実装。
 
 ## 0. 位置づけと正本の分担
 
@@ -480,7 +480,7 @@ data:
 - `pipeline: legacy` のとき、現行のキー（`database`、`train_set`、`validation_set`、`rms_normalize`）だけを許す。`pipeline: reproduction` のとき、これらのキーを拒否し、`dataset` を必須にする。未知のキーは拒否する（現行の規則）。
 - epoch 数、batch、optimizer などは学習設定、**データの意味を決めるもの（正規化、窓、順序、チャンク、epoch の単位、validation の crop）は Protocol**。公式値と学習設定の global batch が違うときは、起動時に警告し、`data_state` に記録する（拒否はしない。leakage-safe の比較で変えるため）。
 
-### 12.2 コマンド（設計。Makefile は今回実装しない）
+### 12.2 コマンド（P1 の 5 コマンドは Makefile にある。prepare 以降は未実装）
 
 | コマンド | 引数 | 責務 | 冪等性 | 失敗条件 |
 |---|---|---|---|---|

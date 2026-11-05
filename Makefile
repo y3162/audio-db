@@ -1,5 +1,7 @@
 .PHONY: help setup setup-env assets assets-check doctor test-setup \
-	db-ingest db-init db-link db-bootstrap df-rfft
+	db-ingest db-init db-link db-bootstrap df-rfft \
+	reproduction-doctor reproduction-init-db reproduction-snapshot \
+	reproduction-rebuild-db reproduction-verify
 
 ROOT := $(abspath $(dir $(lastword $(MAKEFILE_LIST))))
 WITH_ENV := $(ROOT)/scripts/setup/with_env.sh
@@ -39,7 +41,14 @@ help:
 	  'DB init, ingest, and bootstrap are separate and are not run by make setup.' \
 	  '' \
 	  'Existing targets:' \
-	  '  make db-init | make db-ingest | make db-bootstrap | make df-rfft'
+	  '  make db-init | make db-ingest | make db-bootstrap | make df-rfft' \
+	  '' \
+	  'Reproduction database:' \
+	  '  make reproduction-doctor [MODELS=mp_senet]' \
+	  '  make reproduction-init-db' \
+	  '  make reproduction-verify DATASET=name@version [HASH=1]' \
+	  '  make reproduction-snapshot DATASET=name@version [ALLOW_UNKNOWN_LEAK_CHECK=1]' \
+	  '  make reproduction-rebuild-db OUT=path/to/new.duckdb'
 
 setup:
 	$(WITH_ENV) $(ROOT)/scripts/setup/setup.sh $(PLATFORM)
@@ -83,3 +92,28 @@ db-init:
 
 db-bootstrap:
 	$(WITH_ENV) $(PYTHON) -m src.data.bootstrap
+
+REPRO_DB ?= $(ROOT)/data/db/reproduction.duckdb
+REPRO_STAGING ?= $(ROOT)/data/staging/reproduction
+REPRO_SNAPSHOTS ?= $(ROOT)/data/db/snapshots
+REPRO_RESOURCE ?= $(ROOT)/data/db/resource.duckdb
+DATASET ?=
+OUT ?=
+BUILD ?=
+HASH ?=
+ALLOW_UNKNOWN_LEAK_CHECK ?=
+
+reproduction-doctor:
+	$(WITH_ENV) $(PYTHON) -m src.reproduction.cli doctor --database "$(REPRO_DB)" --resource-db "$(REPRO_RESOURCE)" --models "$(MODELS)"
+
+reproduction-init-db:
+	$(WITH_ENV) $(PYTHON) -m src.reproduction.cli init-db --database "$(REPRO_DB)"
+
+reproduction-snapshot:
+	$(WITH_ENV) $(PYTHON) -m src.reproduction.cli snapshot --database "$(REPRO_DB)" --dataset "$(DATASET)" --snapshots "$(REPRO_SNAPSHOTS)" $(if $(ALLOW_UNKNOWN_LEAK_CHECK),--allow-unknown-leak-check,)
+
+reproduction-rebuild-db:
+	$(WITH_ENV) $(PYTHON) -m src.reproduction.cli rebuild-db --database "$(REPRO_DB)" --staging "$(REPRO_STAGING)" --out "$(OUT)" --reference "$(REPRO_DB)"
+
+reproduction-verify:
+	$(WITH_ENV) $(PYTHON) -m src.reproduction.cli verify --database "$(REPRO_DB)" --staging "$(REPRO_STAGING)" --dataset "$(DATASET)" --build "$(BUILD)" $(if $(HASH),--hash,)

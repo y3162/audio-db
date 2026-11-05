@@ -1,6 +1,6 @@
 # 再現用 DB・Data Pipeline の実装計画
 
-状態: **計画のみ・未着手**（2026-11-06、`feature/reproduction`、HEAD `f0e76c7`）。この文書の作成でコード・設定・DB・実データは変更していない。次の実装者は、§1 の確認事項に答えが得られれば、フェーズ 1 に、設計の追加判断なしで着手できる。
+状態: **P1 は実装済み**（合成データの単体テスト。実コーパスは未使用）。**P2〜P10 は未着手。** フェーズ 2 以降は、この計画の受け入れ条件をそのまま使う。
 
 設計の正本: [REPRODUCTION_DB_DESIGN](../../db/REPRODUCTION_DB_DESIGN.md)（DB）、[DATA_PIPELINE_DESIGN](DATA_PIPELINE_DESIGN.md)（Pipeline）。再現対象の正本: [TARGETS](TARGETS.md)。採用決定: [DECISIONS](../../../.agents/DECISIONS.md) の D-01〜D-09。
 
