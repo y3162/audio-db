@@ -142,7 +142,8 @@ class DeepFilterNetTask:
         )
 
     def distribute(self, process: ProcessInfo) -> None:
-        self.generator = wrap_module(self.generator, process)
+        # df_fc_a is retained for checkpoint compatibility but is not used by the forward.
+        self.generator = wrap_module(self.generator, process, find_unused_parameters=True)
         self.stream.to(process.device)
 
     def train_mode(self) -> None:

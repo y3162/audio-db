@@ -64,7 +64,9 @@ def setup_process(device_name: str) -> ProcessInfo:
     return ProcessInfo(rank, world_size, local_rank, device, distributed)
 
 
-def wrap_module(module: torch.nn.Module, process: ProcessInfo) -> torch.nn.Module:
+def wrap_module(
+    module: torch.nn.Module, process: ProcessInfo, *, find_unused_parameters: bool = False, broadcast_buffers: bool = True
+) -> torch.nn.Module:
     if not process.distributed:
         return module
     if process.uses_cuda:
@@ -72,8 +74,10 @@ def wrap_module(module: torch.nn.Module, process: ProcessInfo) -> torch.nn.Modul
             module,
             device_ids=[process.local_rank],
             output_device=process.local_rank,
+            find_unused_parameters=find_unused_parameters,
+            broadcast_buffers=broadcast_buffers,
         )
-    return DistributedDataParallel(module)
+    return DistributedDataParallel(module, find_unused_parameters=find_unused_parameters, broadcast_buffers=broadcast_buffers)
 
 
 def unwrap(module: torch.nn.Module) -> torch.nn.Module:

@@ -246,7 +246,10 @@ class MPSENetTask:
         for index, batch in enumerate(batches):
             clean, noisy = self._waveforms(batch)
             last = index == len(batches) - 1
-            with accumulation_scope([self.generator], last=last):
+            # The generator graphs are retained until after the discriminator step.
+            # Reduce explicitly after all delayed backward calls: multiple DDP
+            # forwards before backward cannot safely select the last reduction.
+            with accumulation_scope([self.generator], last=False):
                 parts = self._generate(clean, noisy, generator=self.generator)
             stored.append((clean, parts))
             ones = torch.ones(clean.shape[0], device=self.device)
@@ -292,6 +295,12 @@ class MPSENetTask:
         finally:
             for parameter in frozen:
                 parameter.requires_grad_(True)
+        if isinstance(self.generator, DistributedDataParallel):
+            import torch.distributed as dist
+            for parameter in unwrap(self.generator).parameters():
+                if parameter.grad is not None:
+                    dist.all_reduce(parameter.grad, op=dist.ReduceOp.SUM)
+                    parameter.grad.div_(dist.get_world_size())
         self.optim_g.step()
         count = len(batches)
         return {

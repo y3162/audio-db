@@ -127,6 +127,58 @@ class TensorBoardDDPIntegration(unittest.TestCase):
                 self.assertGreater(events.Scalars('performance/cuda_allocated_bytes_rank0')[0].value, 0)
 
 
+    def test_other_real_models_two_ranks_validation(self):
+        import sys
+        from tests.training.support import run_distributed_workers
+        from tests.training.tensorboard_models_ddp_worker import case
+        root_dir = Path(__file__).resolve().parents[2]
+        names = os.environ.get('AUDIO_DB_TB_DDP_MODELS', 'mp_senet,mp_senet_official,tf_locoformer,semambapp,deepfilternet3,mossformergan').split(',')
+        for name in names:
+            with self.subTest(model=name), tempfile.TemporaryDirectory(prefix='audio-db-tb-model-ddp-') as tmp:
+                root = Path(tmp)
+                _, _, length = case(name, root)
+                global_batch = int(os.environ.get('AUDIO_DB_TB_DDP_GLOBAL_BATCH', '2'))
+                paired_dataset(root / 'train', 2 * global_batch, frames=length, segment_size=length, seed=7)
+                paired_dataset(root / 'valid', 1, frames=length, segment_size=length, seed=8)
+                code = 'import sys,runpy; sys.path.extend(' + repr(sys.path) + '); runpy.run_path(' + repr(str(root_dir / 'tests/training/tensorboard_models_ddp_worker.py')) + ', run_name="__main__")'
+                def arguments(port):
+                    return [[sys.executable, '-c', code, str(rank), str(port), str(root), name] for rank in range(2)]
+                run_distributed_workers(arguments, cwd=root_dir, timeout=300)
+                left = torch.load(root / 'parameters-0.pt', map_location='cpu', weights_only=True)
+                right = torch.load(root / 'parameters-1.pt', map_location='cpu', weights_only=True)
+                self.assertEqual(left.keys(), right.keys())
+                for key in left:
+                    self.assertTrue(torch.allclose(left[key], right[key], rtol=1e-6, atol=1e-7), (name, key, (left[key] - right[key]).abs().max().item()))
+                directory = root / 'ckpt' / 'tensorboard'
+                self.assertEqual(len(list(directory.glob('events.out.tfevents.*'))), 1)
+                events = EventAccumulator(str(directory)).Reload()
+                records = [json.loads(line) for line in (root / 'ckpt' / 'metrics.jsonl').read_text().splitlines()]
+                train = [r for r in records if r['type'] == 'train']
+                valid = next(r for r in records if r['type'] == 'validation')
+                self.assertEqual([r['global_step'] for r in train], [1, 2])
+                for key in train[0]['losses']:
+                    values = events.Scalars('train/loss/' + key)
+                    self.assertEqual([v.step for v in values], [1, 2], (name, key))
+                    for event, record in zip(values, train):
+                        self.assertAlmostEqual(event.value, record['losses'][key], delta=max(1e-7, abs(record['losses'][key])*1e-6))
+                for key, metric in valid['losses'].items():
+                    tag = 'validation/loss/' + key
+                    if metric['status'] == 'ok' and metric['value'] is not None and math.isfinite(metric['value']):
+                        values = events.Scalars(tag)
+                        self.assertEqual([v.step for v in values], [2])
+                        self.assertAlmostEqual(values[0].value, metric['value'], delta=max(1e-7, abs(metric['value'])*1e-6))
+                    else:
+                        self.assertNotIn(tag, events.Tags()['scalars'])
+                for key in train[0]['learning_rate']:
+                    values = events.Scalars('learning_rate/after_update/' + key)
+                    self.assertEqual([v.step for v in values], [1, 2])
+                    for event, record in zip(values, train):
+                        self.assertAlmostEqual(event.value, record['learning_rate'][key], delta=max(1e-8, abs(record['learning_rate'][key])*1e-6))
+                self.assertEqual(len(events.Tags()['audio']), 3)
+                self.assertEqual(len(events.Tags()['images']), 1)
+                self.assertFalse([tag for tag in events.Tags()['tensors'] if tag.startswith('preview_errors/')])
+                print(f'PASS DDP {name} device={os.environ.get("AUDIO_DB_TB_DDP_DEVICE", "cpu")}', flush=True)
+
     def test_real_gridnet_two_ranks_validation(self):
         import sys
         from tests.training.support import run_distributed_workers

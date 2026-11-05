@@ -104,7 +104,10 @@ class MossFormerGANTask:
 
     def distribute(self, process: ProcessInfo) -> None:
         self.generator = wrap_module(self.generator, process)
-        self.discriminator = wrap_module(self.discriminator, process)
+        # Three discriminator forwards share one autograd graph. DDP's per-forward
+        # buffer broadcast would mutate BatchNorm state saved for backward.
+        # Synchronize once before each micro-batch instead (see train_update).
+        self.discriminator = wrap_module(self.discriminator, process, broadcast_buffers=False)
 
     def train_mode(self) -> None:
         self.generator.train()
@@ -205,11 +208,18 @@ class MossFormerGANTask:
         disc_total = 0.0
         for index, batch in enumerate(batches):
             is_last = index == len(batches) - 1
+            if isinstance(self.discriminator, DistributedDataParallel):
+                import torch.distributed as dist
+                with torch.no_grad():
+                    for buffer in unwrap(self.discriminator).buffers():
+                        dist.broadcast(buffer, src=0)
             clean = batch["clean"].to(self.device)
             noisy = batch["noisy"].to(self.device)
             scale = torch.sqrt(noisy.shape[-1] / (noisy.square().sum(dim=-1) + 1e-6)).unsqueeze(-1)
             normalized = noisy * scale
-            with accumulation_scope([self.generator, self.discriminator], last=is_last):
+            # The discriminator participates in two backward calls per batch.
+            # Reduce its accumulated gradients once after both, on the final micro-batch.
+            with accumulation_scope([self.generator], last=is_last), accumulation_scope([self.discriminator], last=False):
                 real, imag, pred_mag, label_real, label_imag, label_mag = self._forward(
                     self.generator, normalized, clean * scale
                 )
@@ -239,6 +249,12 @@ class MossFormerGANTask:
                 (generator_loss / accumulation).backward()
                 clip_gradients(unwrap(self.generator), self.grad_clip)
                 (discriminator_loss / accumulation).backward()
+                if is_last and isinstance(self.discriminator, DistributedDataParallel):
+                    import torch.distributed as dist
+                    for parameter in unwrap(self.discriminator).parameters():
+                        if parameter.grad is not None:
+                            dist.all_reduce(parameter.grad, op=dist.ReduceOp.SUM)
+                            parameter.grad.div_(dist.get_world_size())
                 clip_gradients(unwrap(self.discriminator), self.grad_clip)
             gen_total += float(generator_loss.detach())
             disc_total += float(discriminator_loss.detach())
