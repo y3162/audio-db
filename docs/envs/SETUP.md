@@ -29,6 +29,8 @@ make setup PLATFORM=shinoda_lab
 
 依存の正本は `requirements/<role>.in` と、そこから作った `requirements/<role>.lock.txt` である。通常の `make setup` は lock を更新しない。lock を作り直すときだけ `scripts/setup/compile_locks.sh` を実行する。
 
+SE 学習ログを TensorBoard で確認できるよう、`.venvs/se` に `tensorboard==2.20.0` を含める。TSUBAME と SHINODA-LAB のどちらも `make setup PLATFORM=...` で構築される同じ lock を使う。
+
 ## 部分実行
 
 ```bash
