@@ -13,6 +13,10 @@ from torch import nn
 
 from .separator import TFLocoformerSeparator
 
+# Float32 variance of a constant such as 0.2 is a few ulps, not a true signal.
+# Ordinary speech is far above this floor. Below it, division is refused.
+_VARIANCE_EPS = 1e-6
+
 
 _DNS_SEPARATOR = dict(
     num_spk=1,
@@ -51,7 +55,15 @@ class TFLocoformer(nn.Module):
             raise ValueError("waveform must have shape (batch, samples)")
         if waveform.shape[-1] <= self.n_fft // 2:
             raise ValueError("input is too short for the configured STFT")
-        scale = torch.std(waveform, dim=1, keepdim=True) if self.normalize_variance else waveform.new_ones((waveform.shape[0], 1))
+        if self.normalize_variance:
+            scale = torch.std(waveform, dim=1, keepdim=True)
+            # A constant or all-zero chunk has unbiased std 0. Dividing would
+            # put NaN into the optimizer. Inference rejects the same inputs
+            # before forward and returns silence.
+            if not torch.isfinite(scale).all() or bool((scale < _VARIANCE_EPS).any().item()):
+                raise ValueError("mixture standard deviation is zero; refusing variance normalization")
+        else:
+            scale = waveform.new_ones((waveform.shape[0], 1))
         window = torch.hann_window(self.n_fft, device=waveform.device, dtype=waveform.dtype)
         spectrum = torch.stft(
             waveform / scale,

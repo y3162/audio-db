@@ -59,7 +59,7 @@
 - 独立 SE 実装は、公式コードに実行時依存しない。`tests/se/test_independence.py` は、`src/se/official/` を除いたコピーで MP-SENet と TF-GridNet が推論できることを確認する（ほかのモデルは範囲外）。`make db-init` も `official/` を読まない。
 - ESPnet 全体をコピーしない。TF-GridNet は、推論に要る GridNet ブロックと正規化層だけを、出典 commit とライセンスを付けて引用している。ライセンスが不明なソース（SEMamba++）はコピーしない。
 - 新しいモデルを足すときは、出典 commit とライセンスを `docs/se/MODELS.md` に記録し、公式出力との比較を行う。
-- MossFormerGAN の公式 Generator は `rotary-embedding-torch==0.8.3` を import する。2026-11-02 に `.venvs/lab` へ入れた。SEMamba++ の公式学習ステップは `.venvs/semamba` で実行する。その Triton RMSNorm は CPU tensor を拒否する。`.venvs/semamba` の DuckDB は 1.4.3 で、`voicebank.duckdb` は開けない。VoiceBank の準備は `.venvs/lab` が行い、worker だけ `FOUR_PROCESS_PYTHON` で semamba を指定する。
+- MossFormerGAN の公式 Generator と TF-Locoformer は `rotary-embedding-torch==0.8.3` を import する。`src.se` は TF-Locoformer を読み込むので、SE と ASR を同じプロセスで動かす `.venvs/asr` にも同じ版を入れる。2026-11-02 に `.venvs/lab` へ入れた。SEMamba++ の公式学習ステップは `.venvs/semamba` で実行する。その Triton RMSNorm は CPU tensor を拒否する。`.venvs/semamba` の DuckDB は 1.4.3 で、`voicebank.duckdb` は開けない。VoiceBank の準備は `.venvs/lab` が行い、worker だけ `FOUR_PROCESS_PYTHON` で semamba を指定する。
 - チェックポイントのパスをコードに固定しない。呼び出し側が渡す。
 - SEMamba++ の学習用 mel 損失は公式と同じ Slaney フィルタを `librosa.filters.mel` で CPU 上に作るため、学習環境に librosa が必要。推論 API はこの学習損失を import しない。公式 MP-SENet の import 用に空の `librosa` を `sys.modules` へ残さない。残すと、同じプロセスの SEMamba++ 公式 import が `librosa.filters` を読めなくなる。
 - SEMamba++ の公式と独立の generator はパラメータ名が一致しても登録順が異なる。optimizer state を別実装へ位置のままロードしない。共通 checkpoint の比較は名前で対応付ける。パラメータに属さない state がある対応は失敗させる。検証と診断手順は [学習検証記録](../docs/training/VERIFICATION.md) を参照。

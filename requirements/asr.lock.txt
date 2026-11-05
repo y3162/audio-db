@@ -466,6 +466,8 @@ resampy==0.4.3
     # via nemo-toolkit
 ruamel-yaml==0.19.1
     # via nemo-toolkit
+rotary-embedding-torch==0.8.3
+    # via audio-db (src.se TF-Locoformer)
 sacremoses==0.2.0
     # via nemo-toolkit
 safetensors==0.8.0

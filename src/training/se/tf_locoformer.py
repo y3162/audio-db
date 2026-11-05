@@ -18,7 +18,8 @@ from src.training.core.distributed import ProcessInfo, unwrap, wrap_module
 from src.training.core.rng import seed_model_init
 from src.training.core.trainer import accumulation_scope
 from src.training.errors import TrainingError
-from src.training.se.optim import build_optimizer, build_scheduler, clip_gradients, step_scheduler
+from src.training.se.initialization import apply_espnet_initialization
+from src.training.se.optim import WarmupReduceLROnPlateau, build_optimizer, build_scheduler, clip_gradients, step_scheduler
 from src.training.se.spectral import multi_resolution_l1, si_sdr_loss
 
 
@@ -39,7 +40,10 @@ class TFLocoformerTask:
         architecture = dict(model.get("architecture") or {})
         architecture.update(model.get("stft") or {})
         with seed_model_init(config["seed"]):
-            self.generator = build_model("tf_locoformer", architecture, variant=self.variant).to(device)
+            self.generator = build_model("tf_locoformer", architecture, variant=self.variant)
+            if model.get("init"):
+                apply_espnet_initialization(self.generator, model["init"])
+        self.generator = self.generator.to(device)
         self.optim_g = build_optimizer(self.generator.parameters(), config)
         self.sched_g = build_scheduler(self.optim_g, config)
 
@@ -92,7 +96,10 @@ class TFLocoformerTask:
             with accumulation_scope([self.generator], last=index == len(batches) - 1):
                 clean = batch["clean"].to(self.device)
                 noisy = batch["noisy"].to(self.device)
-                estimate = self.generator(noisy)
+                try:
+                    estimate = self.generator(noisy)
+                except ValueError as exc:
+                    raise TrainingError(str(exc)) from exc
                 loss = multi_resolution_l1(clean, estimate, _WINDOWS, time_domain_weight=0.5, normalize_variance=False)
                 _raise_if_nonfinite(loss, "mr_l1_tfd")
                 (loss / accumulation).backward()
@@ -101,6 +108,8 @@ class TFLocoformerTask:
                 monitor += float(si_sdr_loss(estimate, clean).detach())
         clip_gradients(unwrap(self.generator), self.grad_clip)
         self.optim_g.step()
+        if isinstance(self.sched_g, WarmupReduceLROnPlateau):
+            self.sched_g.step_batch()
         count = len(batches)
         return {"generator": total / count, "mr_l1_tfd": total / count, "si_sdr": monitor / count}
 
@@ -108,7 +117,10 @@ class TFLocoformerTask:
         clean = batch["clean"].to(self.device)
         noisy = batch["noisy"].to(self.device)
         with torch.no_grad():
-            estimate = unwrap(self.generator)(noisy)
+            try:
+                estimate = unwrap(self.generator)(noisy)
+            except ValueError as exc:
+                raise TrainingError(str(exc)) from exc
             value = float(
                 multi_resolution_l1(
                     clean, estimate, _WINDOWS, time_domain_weight=0.5, normalize_variance=False
@@ -123,7 +135,7 @@ class TFLocoformerTask:
             },
             "pesq": {"status": "na", "value": None, "reason": "not computed for mr_l1_tfd", "count": 0},
             "stoi": {"status": "na", "value": None, "reason": "not computed for mr_l1_tfd", "count": 0},
-            "si_snr": _negative_si_sdr(clean, estimate),
+            "si_snr": _positive_si_sdr(clean, estimate),
         }
 
 
@@ -138,6 +150,7 @@ def _metric(value: float | None = None, *, status: str = "ok", reason: str | Non
     return {"status": "na", "value": None, "reason": reason or "non-finite loss"}
 
 
-def _negative_si_sdr(clean: torch.Tensor, estimate: torch.Tensor) -> dict[str, Any]:
-    value = float(si_sdr_loss(estimate, clean).detach())
+def _positive_si_sdr(clean: torch.Tensor, estimate: torch.Tensor) -> dict[str, Any]:
+    """SI-SDR in dB. The shared chunk ranker maximizes this value."""
+    value = -float(si_sdr_loss(estimate, clean).detach())
     return _metric(value)

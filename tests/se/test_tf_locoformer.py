@@ -115,3 +115,95 @@ class TFLocoformerMatchTests(unittest.TestCase):
             self.assertEqual(float((enhanced - again).abs().max()), 0.0)
         finally:
             path.unlink(missing_ok=True)
+
+    def test_forward_rejects_zero_variance_and_keeps_quiet_inputs_finite(self):
+        torch.manual_seed(9)
+        model = build_model("tf_locoformer", TINY, variant="dns").eval()
+        with self.assertRaises(ValueError):
+            model(torch.zeros(2, 512))
+        with self.assertRaises(ValueError):
+            model(torch.ones(1, 512))
+        with self.assertRaises(ValueError):
+            model(torch.randn(1, 512) * 1e-12)
+        quiet = torch.randn(1, 512) * 1e-3
+        with torch.no_grad():
+            enhanced = model(quiet)
+        self.assertTrue(torch.isfinite(enhanced).all())
+        partial = torch.zeros(1, 512)
+        partial[:, 200:280] = 0.1
+        with torch.no_grad():
+            heard = model(partial)
+        self.assertTrue(torch.isfinite(heard).all())
+
+    def test_enhance_boundary_conditions(self):
+        torch.manual_seed(13)
+        model = build_model("tf_locoformer", dict(TINY), variant="dns").eval()
+        path = Path(self.id().replace(".", "_") + ".pt")
+        try:
+            payload = {"separator." + key: value.detach() for key, value in model.separator.state_dict().items()}
+            torch.save(payload, path)
+            enhancer = load_enhancer("tf_locoformer", {"model": str(path)}, device="cpu", config=TINY, variant="dns")
+            for rate in (8000, 16000, 48000):
+                waveform = torch.randn(rate // 2)
+                enhanced = enhancer.enhance(waveform, rate)
+                self.assertEqual(tuple(enhanced.shape), tuple(waveform.shape))
+                self.assertEqual(enhanced.dtype, waveform.dtype)
+                self.assertTrue(torch.isfinite(enhanced).all())
+            short = torch.randn(33)
+            enhanced = enhancer.enhance(short, 16000)
+            self.assertEqual(tuple(enhanced.shape), (33,))
+            with self.assertRaises(ValueError):
+                enhancer.enhance(torch.randn(32), 16000)
+            self.assertEqual(float(enhancer.enhance(torch.zeros(400), 16000).abs().max()), 0.0)
+            self.assertEqual(float(enhancer.enhance(torch.full((400,), 0.2), 16000).abs().max()), 0.0)
+            for bad in (float("nan"), float("inf")):
+                with self.assertRaises(ValueError):
+                    enhancer.enhance(torch.tensor([bad, 0.0, 1.0]), 16000)
+            doubled = torch.randn(400, dtype=torch.float64)
+            heard = enhancer.enhance(doubled, 16000)
+            self.assertEqual(heard.dtype, torch.float64)
+            batch = torch.randn(3, 300)
+            lengths = torch.tensor([300, 200, 80])
+            out, returned = enhancer.enhance_batch(batch, 16000, lengths)
+            self.assertEqual(tuple(out.shape), tuple(batch.shape))
+            self.assertTrue(torch.equal(returned, lengths))
+            self.assertTrue(torch.isfinite(out).all())
+            reloaded = load_enhancer("tf_locoformer", {"model": str(path)}, device="cpu", config=TINY, variant="dns")
+            left = enhancer.enhance(batch[0], 16000)
+            right = reloaded.enhance(batch[0], 16000)
+            self.assertEqual(float((left - right).abs().max()), 0.0)
+        finally:
+            path.unlink(missing_ok=True)
+
+    def test_cuda_enhance_when_a_gpu_is_free(self):
+        device = _free_cuda()
+        if device is None:
+            self.skipTest("no CUDA GPU under 1024 MiB")
+        torch.manual_seed(15)
+        model = build_model("tf_locoformer", TINY, variant="dns").eval()
+        path = Path(self.id().replace(".", "_") + ".pt")
+        try:
+            payload = {"separator." + key: value.detach() for key, value in model.separator.state_dict().items()}
+            torch.save(payload, path)
+            enhancer = load_enhancer(
+                "tf_locoformer", {"model": str(path)}, device=f"cuda:{device}", config=TINY, variant="dns"
+            )
+            waveform = torch.randn(1600)
+            enhanced = enhancer.enhance(waveform, 16000)
+            self.assertEqual(tuple(enhanced.shape), tuple(waveform.shape))
+            self.assertTrue(torch.isfinite(enhanced).all())
+            self.assertEqual(enhanced.device.type, "cpu")
+            again = enhancer.enhance(waveform, 16000)
+            self.assertEqual(float((enhanced - again).abs().max()), 0.0)
+        finally:
+            path.unlink(missing_ok=True)
+
+
+def _free_cuda():
+    if not torch.cuda.is_available():
+        return None
+    for index in range(torch.cuda.device_count()):
+        free, total = torch.cuda.mem_get_info(index)
+        if total - free < 1024 * 1024 * 1024:
+            return index
+    return None

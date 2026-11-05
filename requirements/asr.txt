@@ -17,3 +17,4 @@ pystoi==0.4.1
 pesq==0.0.4
 setuptools==78.1.0
 nvidia-cuda-nvcc-cu12==12.2.140
+rotary-embedding-torch==0.8.3

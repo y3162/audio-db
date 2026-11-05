@@ -1,7 +1,13 @@
-# TF-Locoformer DNS-Interspeech 2020. loss official is mr_l1_tfd
-# (windows 256/512/768/1024, time-domain weight 0.5). Variance normalization
-# is on the mixture, before the STFT, and is not inside the loss.
+# TF-Locoformer DNS smoke. Two CPU updates, 1 second, batch 1.
+# This is not the VoiceBank research run
+# (configs/training/tf_locoformer_voicebank.yaml) and not the DNS recipe.
+# loss official is mr_l1_tfd (windows 256/512/768/1024, time-domain weight 0.5).
+# Variance normalization is inside the network, before the STFT, and is not
+# inside the loss. data.rms_normalize is explicit: the shared loader default
+# is true, while the DNS recipe leaves speech_volume_normalize unset.
 # Published optimizer: AdamW, lr 1e-3, weight decay 1e-2, grad clip 5.
+# Initialization here is PyTorch's module default. The research file uses
+# ESPnet xavier_uniform.
 
 seed: 1234
 deterministic: true
@@ -38,6 +44,7 @@ data:
   validation_set: libri_demand_smoke_valid
   load_workers: 4
   prefetch: true
+  rms_normalize: true
 
 runtime:
   device: cpu

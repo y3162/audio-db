@@ -8,7 +8,7 @@ import torchaudio.functional as AF
 from ...core.audio import Enhancer
 from ...core.checkpoint import checkpoint_paths
 from ...core.config import load_config
-from .model import TFLocoformer
+from .model import TFLocoformer, _VARIANCE_EPS
 
 
 def build(config, variant=None):
@@ -39,7 +39,7 @@ class TFLocoformerEnhancer(Enhancer):
             x = AF.resample(x, sample_rate, 16000)
         if x.numel() <= self.model.n_fft // 2:
             raise ValueError("input too short for the configured STFT")
-        if not torch.any(x) or torch.std(x) == 0:
+        if not torch.any(x) or float(torch.std(x)) < _VARIANCE_EPS:
             return torch.zeros_like(waveform)
         with torch.inference_mode():
             out = self.model(x.unsqueeze(0)).squeeze(0)

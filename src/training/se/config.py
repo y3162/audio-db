@@ -49,6 +49,13 @@ _SCHEDULER = {
     "lr_warmup",
     "warmup_epochs",
     "weight_decay_end",
+    "warmup_steps",
+    "mode",
+    "threshold",
+    "threshold_mode",
+    "cooldown",
+    "min_lr",
+    "eps",
 }
 _LOSSES = {"official", "reconstruction", "waveform_l1"}
 _MODEL_NAMES = {
@@ -172,6 +179,28 @@ def _scheduler(raw: Any) -> dict[str, Any]:
         }
     if name == "none":
         return {"name": name}
+    if name == "warmup_reduce_on_plateau":
+        mode = raw.get("mode", "min")
+        threshold_mode = raw.get("threshold_mode", "rel")
+        if mode not in ("min", "max"):
+            raise TrainingError("scheduler.mode must be min or max")
+        if threshold_mode not in ("rel", "abs"):
+            raise TrainingError("scheduler.threshold_mode must be rel or abs")
+        factor = _float(raw["factor"], "scheduler.factor")
+        if factor >= 1.0:
+            raise TrainingError("scheduler.factor must be < 1")
+        return {
+            "name": name,
+            "warmup_steps": _int(raw["warmup_steps"], "scheduler.warmup_steps"),
+            "mode": mode,
+            "factor": factor,
+            "patience": _int(raw["patience"], "scheduler.patience", minimum=0),
+            "threshold": _float(raw.get("threshold", 1e-4), "scheduler.threshold", minimum=0.0),
+            "threshold_mode": threshold_mode,
+            "cooldown": _int(raw.get("cooldown", 0), "scheduler.cooldown", minimum=0),
+            "min_lr": _float(raw.get("min_lr", 0.0), "scheduler.min_lr", minimum=0.0),
+            "eps": _float(raw.get("eps", 1e-8), "scheduler.eps", minimum=0.0),
+        }
     if name == "deepfilter_cosine":
         return {
             "name": name,
@@ -183,7 +212,8 @@ def _scheduler(raw: Any) -> dict[str, Any]:
             "weight_decay_end": _float(raw["weight_decay_end"], "scheduler.weight_decay_end", minimum=0.0),
         }
     raise TrainingError(
-        "scheduler.name must be exponential, steplr, plateau, deepfilter_cosine, or none"
+        "scheduler.name must be exponential, steplr, plateau, warmup_reduce_on_plateau, "
+        "deepfilter_cosine, or none"
     )
 
 
@@ -202,7 +232,7 @@ def _model(raw: Any, loss: str) -> dict[str, Any]:
         raise TrainingError("tf_gridnet loss must be official or waveform_l1")
     if name != "tf_gridnet" and loss != "official":
         raise TrainingError(f"{name} training uses loss official")
-    allowed = {"name", "variant", "stage", "sampling_rate", "architecture", "stft", "components"}
+    allowed = {"name", "variant", "stage", "sampling_rate", "architecture", "stft", "components", "init"}
     _unknown(raw, allowed, "model")
     architecture = raw.get("architecture") or {}
     stft = raw.get("stft") or {}
@@ -220,7 +250,10 @@ def _model(raw: Any, loss: str) -> dict[str, Any]:
         raise TrainingError("model.stage must be a string")
     if "sampling_rate" not in raw:
         raise TrainingError("model.sampling_rate is required")
-    return {
+    init = raw.get("init")
+    if init is not None and init != "xavier_uniform":
+        raise TrainingError("model.init must be xavier_uniform or null")
+    parsed = {
         "name": name,
         "variant": variant,
         "stage": stage,
@@ -229,6 +262,9 @@ def _model(raw: Any, loss: str) -> dict[str, Any]:
         "stft": dict(stft),
         "components": dict(components),
     }
+    if init is not None:
+        parsed["init"] = init
+    return parsed
 
 
 def _mp_senet_model(raw: dict[str, Any]) -> dict[str, Any]:
