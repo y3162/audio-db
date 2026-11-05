@@ -21,9 +21,9 @@ class RemainingModelTests(unittest.TestCase):
     def setUpClass(cls):
         torch.set_num_threads(2)
 
-    def test_registry_lists_five_families(self):
+    def test_registry_lists_implemented_families(self):
         names = set(available_enhancers())
-        self.assertEqual({'mp_senet', 'tf_gridnet', 'deepfilternet3', 'mossformergan', 'semambapp'}, names)
+        self.assertEqual({'mp_senet', 'tf_gridnet', 'tf_locoformer', 'deepfilternet3', 'mossformergan', 'semambapp'}, names)
 
     @unittest.skipUnless((DFN / 'checkpoints/model_120.ckpt.best').exists(), 'checkpoint unavailable')
     def test_deepfilternet3(self):

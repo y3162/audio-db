@@ -40,10 +40,14 @@ class LinkAndBootstrapTests(unittest.TestCase):
         with patch.dict("os.environ", {}, clear=True), self.assertRaises(SystemExit):
             resolve_dataset_root(parser, None)
 
-    def test_catalog_is_the_twelve(self) -> None:
+    def test_catalog_is_the_indexed_set(self) -> None:
         names = {spec.source_name for spec in CATALOG}
         self.assertTrue(EXCLUDED.isdisjoint(names))
-        self.assertEqual(len(CATALOG), 12)
+        self.assertEqual(names, {
+            "CHiME3", "DEMAND", "DNS5", "DNS2020", "LibriSpeech", "LibriTTS",
+            "MS-SNSD", "OpenSLR26", "OpenSLR28", "URGENT2024", "VCTK",
+            "VoiceBank+DEMAND", "WHAM48", "musan",
+        })
 
     def test_link_create_existing_and_conflicts(self) -> None:
         with TemporaryDirectory() as tmp:

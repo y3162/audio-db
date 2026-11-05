@@ -22,6 +22,7 @@ from src.training.se.mossformergan import MossFormerGANTask
 from src.training.se.mp_senet import MPSENetTask
 from src.training.se.semambapp import SEMambaTask
 from src.training.se.tf_gridnet import TFGridNetTask
+from src.training.se.tf_locoformer import TFLocoformerTask
 from src.training.se.waveform import WaveformTask
 
 
@@ -40,6 +41,8 @@ def build_task(config: dict, device):
         return MossFormerGANTask(config, device)
     if name == "deepfilternet3":
         return DeepFilterNetTask(config, device)
+    if name == "tf_locoformer":
+        return TFLocoformerTask(config, device)
     raise TrainingError(f"no training task for {name}")
 
 

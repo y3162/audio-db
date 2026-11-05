@@ -16,6 +16,10 @@
 
 参照 commit `cd369c89a8106072c077b468417b765b227afd74`。ソースツリーにライセンスファイルはなく、重みカードは GPL-2.0 表示。ソースはコピーしていない。`src/se/models/semambapp/` は公開設定（hidden 48、4 bottleneck、圧縮 0.3）とチェックポイントのモジュール名に合わせた再実装で、Mamba の選択的スキャンは Apache-2.0 の Mamba 漸化式を PyTorch だけで計算する。`semambapp.pth` の `generator` を `strict=True` で読む。実チェックポイントでは missing も unexpected も 0。既定の scan は `mamba_ssm` を使わない。`scan_backend: fused` 指定時は CUDA 上で外部 `mamba-ssm` の `mamba_inner_fn` と Triton RMSNorm を使い、CPU では従来の PyTorch scan に戻る。公式 CUDA 融合カーネル（`mamba-ssm==2.3.2.post1`、`causal-conv1d==1.7.0`）との波形差は 20 秒で 1.80e-5。単一 mixer では融合カーネルと PyTorch 漸化式の差は 3.28e-7。
 
+## TF-Locoformer
+
+[論文](https://arxiv.org/abs/2409.16674)、[公式コード](https://github.com/merlresearch/tf-locoformer) tag `v1.1.0`、commit `7a615460d347ff7334a13dbb831d16280da72cdc`、Apache-2.0（`src/se/models/tf_locoformer/LICENSE`）。対応するのは DNS-Interspeech 2020 の単一話者強調（`dns`）である。standalone の separator を引用し、Hann STFT（`n_fft=256`、`hop=128`）と ESPnet の `normalize_variance`（入力を不偏標準偏差で割る）を独立構成した。ESPnet は実行時に import しない。2 話者分離の重みは読み込まない。
+
 ## 追記: 以前の未実装調査
 
 上の記述のうち、短音声だけを確認したという部分は `VALIDATION.md` の途中記録である。最終的な波形比較は同ファイルの末尾を参照する。公式 CLI のファイル名や PCM 16 書き出しは、波形が一致していても別項目のまま残している。

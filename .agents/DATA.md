@@ -8,7 +8,7 @@ DuckDB は `data/db/resource.duckdb`（`src/data/constants.py`）。
 
 - `corpora.audio_files`: `make db-ingest` が作る。`path` が主キーで、値は `data/corpora` からの相対パス（コーパス名を含む）。採番した ID は無い。
 - `eval.cases` / `eval.sets` / `eval.set_items` / `eval.runs` / `eval.results`: 新しいスキーマを `make db-init` が空の DB に作る。`eval.cases` の生成条件は `recipe_json` だけに置き、SNR や切り出し位置の列は持たない。`corpora.audio_files` への外部キーは無く、レシピ内の相対パスと metadata の `corpus_path` で対応する。`case_id` は正規化レシピの SHA-256 で、採番や rowid ではない。
-- `data/db/resource.duckdb` はこのレシピスキーマである。旧固定列のファイルは `data/db/backups/resource-legacy-20261031.duckdb`（SHA-256 `f3fdcd89b34cf44eda9853e71278806c1ecc4042f03173821805be054b61d156`）にある。`recipe_json` の無い `eval.cases` を見つけると、`make db-init` は何も変更せず拒否する。`data/db/rebuild-a.duckdb` と `data/db/rebuild-b.duckdb` は切り替え前の再構築コピーで、本番と同じ内容である。
+- `data/db/resource.duckdb` はこのレシピスキーマである。旧固定列のファイルは `data/db/backups/resource-legacy-20261031.duckdb`（SHA-256 `f3fdcd89b34cf44eda9853e71278806c1ecc4042f03173821805be054b61d156`）にある。DNS2020 と MS-SNSD をカタログに入れて索引を作り直す前のコピーは `data/db/backups/resource-before-dns-mssnsd-20261104.duckdb`（SHA-256 `3d43bd61135c5f4de73daa7bec7e488912bf46f64f4a2b1b6afa926f30c05c45`）である。`recipe_json` の無い `eval.cases` を見つけると、`make db-init` は何も変更せず拒否する。`data/db/rebuild-a.duckdb` と `data/db/rebuild-b.duckdb` は切り替え前の再構築コピーで、本番と同じ内容である。
 - DB ファイル名の stem を `eval` にしない。DuckDB のカタログ名と衝突して `eval.cases` が曖昧になる。
 
 ## `make db-init` と `make db-ingest`
@@ -73,7 +73,7 @@ DuckDB は `data/db/resource.duckdb`（`src/data/constants.py`）。
   - CH0 は近接マイクで、雑音環境の収録。clean 参照ではない。レシピの `output.reference` は `none` で、metadata の `clean_reference: false` も残る。CH1–CH6 はタブレット。
   - real と元 WSJ 音声は、時間整合したペアではない。`simu` は雑音付きの公式シミュレーションで、元 WSJ 波形とはペアにしていない。`tr05_org` は clean の元素材で、実録音の参照ではない。
 - VoiceBank-DEMAND: 実体は `VoiceBank+DEMAND` で、リンク名は `VoiceBank-DEMAND`。clean/noisy は `clean_testset_wav` と `noisy_testset_wav`（および 28/56 話者の trainset）。`configs/db/lists/voicebank_demand_test.txt` は公式 test 824 件。28 話者 train のうち p286 と p287（872 件）を validation、残り 10,700 件を train とする。test 話者とは重ならない。transcript は同梱 txt があるときだけ索引する。SNR はファイルから推定しない。
-- 標準リンクと索引対象は `src/data/corpora_catalog.py` の 12 コーパスだけである。索引は元の sample rate・フレーム数・チャンネルを保存し、学習用のリサンプリングや切り出しはしない。transcript が公式ファイルにあるコーパス（LibriSpeech、LibriTTS、VCTK、VoiceBank-DEMAND、CHiME3 の評価セット）は、学習で使うかどうかに関係なく原文を保存する。雑音と RIR に transcript は無い。
+- 標準リンクと索引対象は `src/data/corpora_catalog.py` の 14 コーパスだけである。MS-SNSD と DNS2020 を含む。索引は元の sample rate・フレーム数・チャンネルを保存し、学習用のリサンプリングや切り出しはしない。transcript が公式ファイルにあるコーパス（LibriSpeech、LibriTTS、VCTK、VoiceBank-DEMAND、CHiME3 の評価セット）は、学習で使うかどうかに関係なく原文を保存する。雑音と RIR に transcript は無い。
 - `make db-bootstrap` は空の別ファイルを作る。出力先が既にあるときは `--rebuild` と明示的な `--backup` が無いと拒否し、別ファイルで再構築する。本番 `resource.duckdb` への切り替えは `--replace` だけで、検証とバックアップのあと `os.replace` で行う。
 - 初期リンクと bootstrap は `--dataset-root` または `AUDIO_DB_DATASET_ROOT` を必須とし、引数が優先される。個別パスは `AUDIO_DB_CORPUS_<SOURCE>`（`src/data/corpora_catalog.py` の `corpus_env_var`）で、データセットルートより優先される。全リンクの事前検査後に作成し、競合する既存リンクは変更しない。`make db-link` の `--dry-run` は何も作らない。`--allow-partial` は欠けたコーパスを記録して残りをリンクする。既定は欠けたら一つも作らない。bootstrap の候補 DB は最終 DB と同じディレクトリで生成し、レシピの DB 相対パスを維持する。
 - 現在の bootstrap は staging を先に生成せず DB に直接登録するため、上記の staging 必須制約を満たす本番再構築手順としては未完成である。

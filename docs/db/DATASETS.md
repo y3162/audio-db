@@ -147,3 +147,30 @@
 |Australian English|2|
 |Welsh|1|
 |NewZealand English|1|
+
+---
+
+## DNS2020
+
+#### 概要
+
+> Interspeech 2020 DNS Challenge の素材。clean speech、noise、synthetic test、blind test を含む。
+> このリポジトリでは混合条件を索引せず、音声ファイルを汎用走査する。
+
+- [ ] 収録情報
+
+> 索引 132,150 ファイル。`subset` はリンク直下の `datasets`。
+> clean と noise は学習素材、`test_set/synthetic` は no_reverb と with_reverb の clean/noisy、`blind_test_set` は参照無し。
+
+---
+
+## MS-SNSD
+
+#### 概要
+
+> Microsoft Scalable Noisy Speech Dataset。16 kHz の clean と noise。
+> 混合済みの noisy 音声は同梱されていない。
+
+- [ ] 収録情報
+
+> 索引 24,374 ファイル。`clean_train` 23,075、`clean_test` 1,100、`noise_train` 128、`noise_test` 51、`hitapps` 20。

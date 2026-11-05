@@ -34,6 +34,14 @@ license = "unspecified"
 license_note = "The pinned tree has no license file. The weight card is marked GPL-2.0. This repository does not copy that source into src/se."
 
 [[source]]
+id = "tf_locoformer"
+url = "https://github.com/merlresearch/tf-locoformer.git"
+commit = "7a615460d347ff7334a13dbb831d16280da72cdc"
+dest = "src/se/official/tf-locoformer"
+license = "Apache-2.0"
+license_note = "Tag v1.1.0. Standalone separator is copied into src/se/models/tf_locoformer. Pretrained weights are Git LFS objects in the checkout."
+
+[[source]]
 id = "espnet"
 url = "https://github.com/espnet/espnet.git"
 commit = "0d136c5456d403cb2c0a4c13e76e8136e32e9b7a"
@@ -130,6 +138,17 @@ dest = "data/checkpoints/mossformergan/last_best_checkpoint.pt"
 sha256 = "04bf00db575389e1ea8b1fcca48d9efcf073e50ad170e6dd5230df3bac98be27"
 size = 38845593
 license_note = "https://huggingface.co/alibabasglab/MossFormerGAN_SE_16K documents Apache-2.0. SHA-256 is the published x-linked-etag and is checked against the downloaded bytes."
+
+[[weight]]
+id = "tf_locoformer_dns"
+model = "tf_locoformer"
+kind = "git-file"
+source = "tf_locoformer"
+path = "egs2/dns_ins20/enh1/exp/enh_train_enh_tflocoformer_raw/valid.loss.ave_5best.pth"
+dest = "data/checkpoints/tf-locoformer/dns/valid.loss.ave_5best.pth"
+sha256 = "6ffa518f2b73bed289e38349366eb777c94b9130acc32bf4c085cb049d9d1666"
+size = 59972116
+license_note = "Git LFS weight in merlresearch/tf-locoformer v1.1.0 for DNS-Interspeech 2020 enhancement. Apache-2.0 with the repository."
 
 [[weight]]
 id = "tf_gridnet_urgent24"

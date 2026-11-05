@@ -106,3 +106,7 @@ registry.register(ModelSpec('mossformergan', _build_moss, _load_moss, 16000,
 from .models.semambapp.inference import build as _build_semamba, load as _load_semamba
 registry.register(ModelSpec('semambapp', _build_semamba, _load_semamba, 16000,
                             aliases=('semamba++', 'se_mamba_pp'), variants=('semambapp',)))
+
+from .models.tf_locoformer.inference import build as _build_loco, load as _load_loco
+registry.register(ModelSpec('tf_locoformer', _build_loco, _load_loco, 16000,
+                            aliases=('tf-locoformer',), variants=('dns',)))

@@ -203,6 +203,7 @@ def check_models(report: Report) -> None:
          "data/checkpoints/deepfilternet3/DeepFilterNet3/config.ini", ""),
         ("mossformergan", "data/checkpoints/mossformergan/last_best_checkpoint.pt", "", ""),
         ("semambapp", "data/checkpoints/semambapp/semambapp.pth", "", ""),
+        ("tf_locoformer", "data/checkpoints/tf-locoformer/dns/valid.loss.ave_5best.pth", "", "dns"),
     ]
     code = (
         "import sys\n"

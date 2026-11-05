@@ -54,6 +54,7 @@ _LOSSES = {"official", "reconstruction", "waveform_l1"}
 _MODEL_NAMES = {
     "mp_senet",
     "tf_gridnet",
+    "tf_locoformer",
     "semambapp",
     "mossformergan",
     "deepfilternet3",
