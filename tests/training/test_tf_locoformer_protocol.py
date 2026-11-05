@@ -145,7 +145,9 @@ class TFLocoformerProtocolTests(unittest.TestCase):
         with seed_model_init(config["seed"]):
             task = TFLocoformerTask(config, torch.device("cpu"))
         official_opt = torch.optim.AdamW(official.parameters(), lr=1e-3, betas=(0.9, 0.999), weight_decay=0.01)
-        official_sched = WarmupReduceLROnPlateau(
+        # Same ported scheduler on both sides so the learning rate stays aligned.
+        # Agreement with ESPnet's class is tests/training/test_tf_locoformer_scheduler.py.
+        reference_sched = WarmupReduceLROnPlateau(
             official_opt, warmup_steps=3, factor=0.5, patience=3, mode="min"
         )
         with tempfile.TemporaryDirectory() as directory:
@@ -166,7 +168,7 @@ class TFLocoformerProtocolTests(unittest.TestCase):
                 torch.nn.utils.clip_grad_norm_(official.parameters(), 5.0)
                 metrics = task.train_update([batch], 1)
                 official_opt.step()
-                official_sched.step_batch()
+                reference_sched.step_batch()
                 self.assertEqual(float(abs(metrics["mr_l1_tfd"] - float(official_loss.detach()))), 0.0)
                 self.assertAlmostEqual(
                     task.optim_g.param_groups[0]["lr"], official_opt.param_groups[0]["lr"]

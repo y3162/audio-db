@@ -37,12 +37,15 @@ class WarmupReduceLROnPlateau:
 
     Each optimizer update calls :meth:`step_batch`. While
     ``step_num <= warmup_steps`` the learning rate is
-    ``initial_lr * step_num / warmup_steps``. After warmup, a finished
-    validation epoch calls :meth:`step_validation` and reduces the rate by
-    ``factor`` when the metric has failed to improve for more than
-    ``patience`` epochs. Batch steps after warmup do not change the rate.
-    The first optimizer update still uses the constructor learning rate,
-    because ESPnet steps this scheduler after ``optimizer.step``.
+    ``initial_lr * (warmup_steps ** -1) * step_num``. A finished validation
+    epoch calls :meth:`step_validation` on every epoch, including epochs that
+    are still inside warmup. That call updates ``best``, ``num_bad_epochs``,
+    ``cooldown_counter``, and ``last_epoch``. It is a separate path from the
+    warmup learning-rate assignment. If the plateau rule reduces the rate
+    during warmup, the next warmup batch step overwrites it with the warmup
+    formula. Batch steps after warmup do not change the rate. The first
+    optimizer update still uses the constructor learning rate, because ESPnet
+    steps this scheduler after ``optimizer.step``.
     """
 
     def __init__(
@@ -86,12 +89,11 @@ class WarmupReduceLROnPlateau:
     def step_batch(self) -> None:
         self.step_num += 1
         if self.step_num <= self.warmup_steps:
+            scale = self.warmup_steps ** -1
             for group, base in zip(self.optimizer.param_groups, self.base_lrs):
-                group["lr"] = base * (self.step_num / self.warmup_steps)
+                group["lr"] = base * scale * self.step_num
 
     def step_validation(self, metric: float) -> None:
-        if self.step_num <= self.warmup_steps:
-            return
         current = float(metric)
         epoch = self.last_epoch + 1
         self.last_epoch = epoch

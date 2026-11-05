@@ -4,6 +4,13 @@ The network normalizes mixture variance before the STFT. The objective is
 ESPnet ``mr_l1_tfd`` with windows 256/512/768/1024, time-domain weight 0.5,
 and variance normalization left off inside the loss. SI-SNR is monitored at
 weight 0 and is not added to the training loss. The optimizer is AdamW.
+
+``train_update`` reports ``si_sdr`` as the negative SI-SDR loss, the same
+sign as ESPnet ``SISNRLoss``. ``validation_report`` reports ``si_snr`` as
+SI-SDR in dB (the negation of that loss). The shared chunk ranker maximizes
+``si_snr``, so ``valid.si_snr.best.pt`` is the highest SI-SDR. That ranking
+is a research choice. The DNS recipe's ``best_model_criterion`` names
+``si_snr``, while the loss writes stats under ``si_snr_loss``.
 """
 
 from __future__ import annotations
@@ -111,6 +118,7 @@ class TFLocoformerTask:
         if isinstance(self.sched_g, WarmupReduceLROnPlateau):
             self.sched_g.step_batch()
         count = len(batches)
+        # si_sdr is the negative SI-SDR loss. validation si_snr is SI-SDR in dB.
         return {"generator": total / count, "mr_l1_tfd": total / count, "si_sdr": monitor / count}
 
     def validation_report(self, batch: dict[str, Any]) -> dict[str, Any]:
@@ -151,6 +159,11 @@ def _metric(value: float | None = None, *, status: str = "ok", reason: str | Non
 
 
 def _positive_si_sdr(clean: torch.Tensor, estimate: torch.Tensor) -> dict[str, Any]:
-    """SI-SDR in dB. The shared chunk ranker maximizes this value."""
+    """SI-SDR in dB, not the negative SI-SDR loss.
+
+    The shared chunk ranker maximizes this value when it writes
+    ``valid.si_snr.best.pt``. The training log's ``si_sdr`` is the loss
+    returned by :func:`si_sdr_loss` and has the opposite sign.
+    """
     value = -float(si_sdr_loss(estimate, clean).detach())
     return _metric(value)

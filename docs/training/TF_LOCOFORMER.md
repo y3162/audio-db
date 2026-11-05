@@ -35,7 +35,7 @@ GPU は空の Quadro RTX 5000（16 GB、使用メモリ 15 MiB の装置）。�
 | 損失 | `mr_l1_tfd`、時間重み 0.5、損失内の分散正規化なし、SI-SNR 重み 0 | 同じ | GO |
 | Optimizer | AdamW、lr 1e-3、betas `(0.9, 0.999)`、weight decay 1e-2、clip 5 | 同じ | GO |
 | 初期化 | `xavier_uniform` | `model.init: xavier_uniform`。省略時は PyTorch 既定で、スモーク YAML はこちら | GO。研究ファイルは明示 |
-| scheduler | warmup 4,000 step、その後 factor 0.5、patience 3 の plateau | `warmup_reduce_on_plateau`。更新ごとに線形 warmup、epoch 末の validation loss で plateau | GO。式は ESPnet `WarmupReduceLROnPlateau` |
+| scheduler | warmup 4,000 step、その後 factor 0.5、patience 3 の plateau。warmup 中の validation も best、bad epoch、cooldown、last epoch を更新する | 同じ。学習率は `initial_lr * (warmup_steps ** -1) * step_num`。warmup 中に plateau が学習率を下げても、次の warmup 更新がこの式で上書きする | GO。比較先は checkout の ESPnet クラス。下記 |
 | 最初の更新の lr | 構築時の 1e-3。scheduler は `optimizer.step` のあと | 同じ | GO |
 | チャンク | 64,000 サンプル、shift 0.5 | 32,000 サンプル | intentional。VoiceBank 16 kHz では 10,700 件中 1,205 件だけが 64,000 より長い |
 | バッチ | 4 GPU で各 forward batch 4、蓄積 1 | 1 GPU、forward batch 4、蓄積 1 | intentional。複数 GPU には分けない |
@@ -43,7 +43,7 @@ GPU は空の Quadro RTX 5000（16 GB、使用メモリ 15 MiB の装置）。�
 | 入力音量 | `speech_volume_normalize: null` | `data.rms_normalize: true` | intentional。他の VoiceBank 研究設定に合わせ、スモークも true を明示 |
 | モデル内正規化 | `normalize_variance: true` | true | GO。発話 RMS とは別 |
 | データ | DNS-Interspeech 2020 | `voicebank_28_train` / `voicebank_28_valid` | intentional |
-| best の SI-SNR | ESPnet は SI-SNR を最大化 | validation の `si_snr` は正の SI-SDR（高い方が良い） | GO。学習ログの `si_sdr` は負の損失のまま |
+| best の SI-SNR | DNS の `best_model_criterion` は `valid` / `si_snr` / `max`。`SISNRLoss(eps=1e-7)` が stats に書くキーは `si_snr_loss` で、値は SI-SDR 損失（SI-SDR の符号反転）。`si_snr` というキーは stats に無い | validation の `si_snr` は SI-SDR（dB）。`valid.si_snr.best.pt` はこれを最大化する。`valid.loss.best.pt` は validation loss を最小化する。学習ログの `si_sdr` は SI-SDR 損失 | INTENTIONAL。公式 stats の最大化ではない |
 | 決定性 | 保存された DNS 設定は `cudnn_deterministic: true` | 研究 YAML は `deterministic: false` | intentional。他の VoiceBank 長時間設定と同じ |
 
 スモークは `configs/training/tf_locoformer.yaml`（CPU、2 更新、1 秒、scheduler なし、PyTorch 既定初期化）。研究設定は `configs/training/tf_locoformer_voicebank.yaml`。150 epoch の投入はこの測定だけでは始めない。
@@ -53,9 +53,21 @@ GPU は空の Quadro RTX 5000（16 GB、使用メモリ 15 MiB の装置）。�
 縮小モデルの CPU 検証:
 
 - Xavier 初期化は、同じ seed で公式 separator に同じ手続きを適用した結果と差 0。
-- warmup の lr は step 1..4 で `base * step / 4`、step 5 で base、その後 patience を超えるまで据え置き、次の悪い validation で 0.5 倍。
+- warmup の lr は step 1..4 で `base * (4 ** -1) * step`、step 5 で base、その後 patience を超えるまで据え置き、次の悪い validation で 0.5 倍。
 - 同じ初期重み・同じ 5 バッチで、公式 separator と独立タスクの損失・lr・更新後重みの差は 0。
 - 連続 20 更新と、10 更新で保存して再開した 20 更新の重み・AdamW state・lr・scheduler step の差は 0。
+
+スケジューラの公式比較（2026-11-05、turing、CPU）は `.venvs/se` の Python 3.12.13、PyTorch `2.6.0+cu124`、torchaudio `2.6.0+cu124`。比較先は `src/se/official/espnet` の `espnet2.schedulers.warmup_reducelronplateau.WarmupReduceLROnPlateau`。当該ファイルの blob は commit `90eed8e53498e7af682bc6ff39d9067ae440d6a4` と checkout HEAD `0d136c5456d403cb2c0a4c13e76e8136e32e9b7a` で同一。移植クラスを二つ並べた比較ではない。学習率の許容絶対差は 0。一致した状態は `step_num`、`best`、`num_bad_epochs`、`last_epoch`、`cooldown_counter`、Optimizer の lr。seed は使わない。
+
+- `warmup_steps=4000` で 3,834 回更新したあとの validation は `last_epoch=1`、`best` がその validation loss。修正前は warmup 中の validation を捨て、`last_epoch` は 0 のままだった。
+- その後の改善と非改善で `num_bad_epochs` が一致する。`threshold=1e-4`、`threshold_mode=rel` では、同じ値の再提出は改善にならない。
+- step 3999 と 4000 の lr は warmup 式、step 4001 の lr は base のまま。
+- patience を超えた validation の epoch で lr が `factor` 倍になる。`min_lr` で床を打ち、`old - new <= eps` のときは lr を変えない。cooldown 中は bad epoch を 0 に戻し、その間は減衰しない。
+- 3,834 更新と validation のあと保存し、200 更新と 2 回の validation を再開した列は、中断しない列および公式クラスと、lr・`best`・`num_bad_epochs`・`step_num` が一致する。
+
+SI-SDR の符号は turing の `.venvs/official`（Python 3.12.13、PyTorch `2.6.0+cu124`）でピン留め ESPnet を import して確認した。`SISNRLoss(eps=1e-7)` は `name` が `si_snr_loss` で、`eps` から `clamp_db` を約 70 にする。参照 `[[1, -1, 0.5, -0.5]]` とその 0.5 倍を `FixedOrderSolver(weight=0)` に入れると、stats は `si_snr_loss` だけで、値は損失 `-69.23690032958984` である。倍率だけが違う信号の SI-SDR は clamp に当たる。DNS YAML の `best_model_criterion` が探す `si_snr` とは別キーである。研究側は SI-SDR（dB）を `si_snr` として最大化する。5 dB より 10 dB の epoch を `valid.si_snr.best.pt` に選ぶ。loss 最小の epoch が別なら `valid.loss.best.pt` はそちらを指す。`keep_nbest=5` は loss の下位 5 と SI-SDR の上位 5 の和集合を残す。
+
+ネットワーク、STFT、`mr_l1_tfd`、公開重みの推論経路は変えていない。公開重みの CPU/GPU 波形差は上の既存記録のままである。150 epoch の VoiceBank 学習は始めていない。
 
 公開幅の 1 更新は tensor の空いている A100 80GB（物理 GPU 4、測定開始時 13 MiB）で行った。合成波形、Xavier、AdamW、勾配クリップ 5。
 
