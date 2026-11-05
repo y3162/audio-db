@@ -93,14 +93,14 @@ DuckDB は `data/db/resource.duckdb`（`src/data/constants.py`）。
 | `data/checkpoints/` | 配布チェックポイント。取得が重い。削除・上書きをしない。ライブラリのコードにはパスを固定せず、呼び出し側が渡す。設定やテストにある `data/checkpoints/...` は例で、無ければテストは skip する |
 | `data/results/` | `se-evaluation/<run_id>/` は評価結果の一次記録（`config.json` と `results.jsonl`）。`se-repro/` は公式再現の記録とビルドキャッシュ。新しい実行は新しい `run_id`。既存の run ディレクトリは `--resume` なしでは使えない。DuckDB へ載せるときは、このディレクトリを `register_run` で登録する |
 | `data/staging/` | DB の再構築元。登録後も残す。Git 管理外 |
-| `data/db/` | `resource.duckdb` はレシピスキーマの本番ファイル。`reproduction.duckdb` は公式再現用の `repro` スキーマで、P1 完了時は空の ready なスキーマだけである。`snapshots/` はその DB から書き出した学習用スナップショット。`training.duckdb` は学習スモークセット。`backups/resource-legacy-20261031.duckdb` は切り替え前の固定列スキーマ。`rebuild-a.duckdb` と `rebuild-b.duckdb` は切り替え前に作った同じ内容の再構築コピー |
-| `data/generated/` | 事前生成の音声。P1 では本番ファイルを置かない。検証済み shard 以外は登録しない |
-| `data/derived/` | 派生素材の予定先。P1 では未使用 |
+| `data/db/` | `resource.duckdb` はレシピスキーマの本番ファイル。`reproduction.duckdb` は公式再現用の `repro` スキーマで、MP-SENet と MossFormerGAN の VoiceBank 固定ペア 4 Dataset が入っている。`snapshots/` はその DB から書き出した学習用スナップショット。`training.duckdb` は学習スモークセット。`backups/resource-legacy-20261031.duckdb` は切り替え前の固定列スキーマ。`rebuild-a.duckdb` と `rebuild-b.duckdb` は切り替え前に作った同じ内容の再構築コピー |
+| `data/generated/` | 事前生成の音声。検証済み shard 以外は登録しない。P2 では本番ファイルを置いていない |
+| `data/derived/` | 派生素材。VoiceBank-DEMAND の 16 kHz PCM_16 は `data/derived/VoiceBank-DEMAND/soxr_hq_16000/`。同じ変換条件の正常なファイルは再利用し、内容が違うファイルは上書きしない |
 
 ## DB の書き込みと保護
 
 - 書き込む操作は、`make db-init` と `EvaluationDB` の登録系（`import_manifest`、`create_set_from_corpus`、`register_samples`）が `eval` へ、`make db-ingest` が `corpora` へ。読み取りは `read_only=True` で開く。`src/evaluation/` から `corpora.audio_files` を変更しない。
 - DuckDB の書き込みは 1 プロセスだけ。ほかのプロセスが DB を開いている間は、書き込みを伴う操作をしない。
 - 実験とテストは一時 DB を使う。単体テストは `resource.duckdb` を開いて書き込まない。
-- `reproduction.duckdb` は `resource.duckdb` とは別ファイルである。登録は `data/staging/reproduction/` を再構築元にし、同じ ID で内容が違う行は拒否する。再構築は新しいファイルへ書き、全表のハッシュが一致したときだけ置き換える。`eval` スキーマが無い、または `--resource-db` を渡さない leakage 監査は `UNKNOWN` であり、`PASS` にしない。学習プロセスはまだこの DB を開かない。
+- `reproduction.duckdb` は `resource.duckdb` とは別ファイルである。登録は `data/staging/reproduction/` を再構築元にし、同じ ID で内容が違う行は拒否する。再構築は新しいファイルへ書き、全表のハッシュが一致したときだけ置き換える。`eval` スキーマが無い、または `--resource-db` を渡さない leakage 監査は `UNKNOWN` であり、`PASS` にしない。学習プロセスはまだこの DB を開かない。P2 で登録済みの Dataset は `mp_senet.vb28.official@1`、`mp_senet.vb28.safe@1`、`mossformergan.vb28.official@1`、`mossformergan.vb28.safe@1` である。音声は 48 kHz の VoiceBank-DEMAND 28 話者 train と公式 test から、soxr HQ で作った 16 kHz PCM_16 を指す。公式の 16 kHz 変換器は不明なままである。同じ 16 kHz ペアの `case_id` はモデル間で共有し、`cases.protocol_id` は `mp_senet.fixed_pair` を指す。学習時の正規化・窓・順序は Dataset の protocol を読む。
 - 破壊的な操作（`db-ingest`、DB の削除、スキーマの作り直し）の前に、`data/db/resource.duckdb` を退避する。

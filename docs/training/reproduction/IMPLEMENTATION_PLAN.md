@@ -1,6 +1,6 @@
 # 再現用 DB・Data Pipeline の実装計画
 
-状態: **P1 は実装済み**（合成データの単体テスト。実コーパスは未使用）。**P2〜P10 は未着手。** フェーズ 2 以降は、この計画の受け入れ条件をそのまま使う。
+状態: **P1 と P2 は実装済み。** P1 は合成データの単体テスト。P2 は VoiceBank-DEMAND の実ファイルで、MP-SENet と MossFormerGAN の 4 Dataset とスナップショットまで完了している。**P3〜P10 は未着手。** フェーズ 3 以降は、この計画の受け入れ条件をそのまま使う。
 
 設計の正本: [REPRODUCTION_DB_DESIGN](../../db/REPRODUCTION_DB_DESIGN.md)（DB）、[DATA_PIPELINE_DESIGN](DATA_PIPELINE_DESIGN.md)（Pipeline）。再現対象の正本: [TARGETS](TARGETS.md)。採用決定: [DECISIONS](../../../.agents/DECISIONS.md) の D-01〜D-09。
 
@@ -107,6 +107,14 @@ P1 DB 基盤 ──┬─► P2 固定ペアの準備（MP-SENet・MossFormerGAN
 | 完了条件 | 上記の通過。`mp_senet.vb28.official`、`mp_senet.vb28.safe`、`mossformergan.vb28.official`、`mossformergan.vb28.safe` のスナップショットが作れる |
 | 依存 | P1、Q3、Q4、Q6、Q7 |
 | 更新する正本 | `.agents/DATA.md`（新 DB の現状）、`DECISIONS.md` |
+
+P2 の実施結果（2026-11-06）:
+
+- 公式リストは `configs/data/lists/mp_senet/` と `configs/data/lists/mossformergan/` に、固定 commit のバイト列のまま置いた。両リストの発話 ID と順序は一致する。
+- 実ファイル 24,792 本（clean/noisy × train 11,572 と test 824）を `repro.assets` に写し、soxr 1.1.0 HQ の 16 kHz PCM_16 を同じ本数だけ `data/derived/VoiceBank-DEMAND/soxr_hq_16000/` に作った。容量は 2.3 GB。クリップしたサンプルは 0。
+- official は 11,572 / 824 / 824 で `selection_uses_test = true`。safe は 10,700 / 872 / 824 で `selection_uses_test = false`。safe の asset・話者・SHA-256 の分割間重複は PASS。`eval` が無いため `eval_sets` だけ `UNKNOWN` で、全体の `leak_check` も `UNKNOWN` である。PASS にはしていない。
+- インストール済み librosa 1.0.0 の `librosa.load(sr=16000)`（既定 `soxr_hq`）と、派生素材を 16 ファイル（最短・最長を含む clean/noisy）で比べた。長さの差は 0。soxr の float 出力との最大絶対誤差は 0。保存した PCM_16 との最大絶対誤差は 3.05e-5。公式 MP-SENet がピンする librosa 0.7.2 の既定 `kaiser_best` は、`resampy` が無いため実行していない。
+- スナップショットの再書き出しは同じ `snapshot_hash` になった。`resource.duckdb` の SHA-256 は作業前後で `bbd3fe040bf8da67888749cd6410058c742d43c3cf0c0b33d7921366c2da9029` のままである。
 
 ### 3.4 フェーズ 3: Pipeline 中核と Legacy アダプタ
 

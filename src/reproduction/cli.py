@@ -1,15 +1,16 @@
 """Command line for the reproduction database.
 
-``python -m src.reproduction.cli doctor|init-db|snapshot|rebuild-db|verify``
+``python -m src.reproduction.cli doctor|init-db|snapshot|rebuild-db|verify|prepare``
 """
 
 from __future__ import annotations
 
 import argparse
 import sys
+from pathlib import Path
 
 from src.reproduction.doctor import run_doctor
-from src.reproduction.errors import ReproductionError
+from src.reproduction.errors import PreparationBlocked, ReproductionError
 from src.reproduction.paths import (
     DEFAULT_CORPORA,
     DEFAULT_DB,
@@ -18,6 +19,7 @@ from src.reproduction.paths import (
     DEFAULT_RESOURCE_DB,
     DEFAULT_SNAPSHOTS,
     DEFAULT_STAGING,
+    ROOT,
 )
 
 
@@ -58,9 +60,23 @@ def main(argv: list[str] | None = None) -> int:
     verify.add_argument("--generated", default=str(DEFAULT_GENERATED))
     verify.add_argument("--derived", default=str(DEFAULT_DERIVED))
 
+    prepare = commands.add_parser("prepare", parents=[shared])
+    prepare.add_argument("--step", default="all")
+    prepare.add_argument("--staging", default=str(DEFAULT_STAGING))
+    prepare.add_argument("--snapshots", default=str(DEFAULT_SNAPSHOTS))
+    prepare.add_argument("--resource-db", default=str(DEFAULT_RESOURCE_DB))
+    prepare.add_argument("--corpora", default=str(DEFAULT_CORPORA))
+    prepare.add_argument("--derived", default=str(DEFAULT_DERIVED))
+    prepare.add_argument("--repo-root", default=str(ROOT))
+    prepare.add_argument("--config-root", default=str(ROOT / "configs" / "data"))
+    prepare.add_argument("--workers", type=int, default=8)
+
     args = parser.parse_args(argv)
     try:
         return _run(args)
+    except PreparationBlocked as exc:
+        print(f"BLOCKED\t{exc}", file=sys.stderr)
+        return 3
     except ReproductionError as exc:
         print(f"error: {exc}", file=sys.stderr)
         return 1
@@ -122,6 +138,25 @@ def _run(args: argparse.Namespace) -> int:
         )
         print("PASS" if ok else "FAIL")
         return 0 if ok else 1
+    if args.command == "prepare":
+        from src.reproduction.prepare.run import PreparePaths, execute
+
+        resource = args.resource_db.strip()
+        execute(
+            args.step,
+            PreparePaths(
+                database=Path(args.database),
+                staging=Path(args.staging),
+                snapshots=Path(args.snapshots),
+                resource_db=Path(resource) if resource else None,
+                corpora=Path(args.corpora),
+                derived=Path(args.derived),
+                repo_root=Path(args.repo_root),
+                config_root=Path(args.config_root),
+                workers=args.workers,
+            ),
+        )
+        return 0
     raise ReproductionError(f"unknown command: {args.command}")
 
 

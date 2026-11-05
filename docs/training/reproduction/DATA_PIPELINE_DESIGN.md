@@ -480,14 +480,14 @@ data:
 - `pipeline: legacy` のとき、現行のキー（`database`、`train_set`、`validation_set`、`rms_normalize`）だけを許す。`pipeline: reproduction` のとき、これらのキーを拒否し、`dataset` を必須にする。未知のキーは拒否する（現行の規則）。
 - epoch 数、batch、optimizer などは学習設定、**データの意味を決めるもの（正規化、窓、順序、チャンク、epoch の単位、validation の crop）は Protocol**。公式値と学習設定の global batch が違うときは、起動時に警告し、`data_state` に記録する（拒否はしない。leakage-safe の比較で変えるため）。
 
-### 12.2 コマンド（P1 の 5 コマンドは Makefile にある。prepare 以降は未実装）
+### 12.2 コマンド（P1 の 5 コマンドと、固定ペアの `reproduction-prepare` は Makefile にある。事前生成のコマンドは未実装）
 
 | コマンド | 引数 | 責務 | 冪等性 | 失敗条件 |
 |---|---|---|---|---|
 | `make setup PLATFORM=tsubame\|shinoda_lab` | 既存 | 環境（仮想環境、アセット）だけ。**データと DB を作らない**。既存の動作を変えない | 既存どおり | 既存どおり |
 | `make reproduction-doctor` | `MODELS=`（任意）| 読み取りのみ。DuckDB の版（環境ごと）、`data/corpora`、`resource.duckdb` の状態（`corpora` / `eval` の有無）、`data/generated` の空き容量、ライブラリの版（`soundfile`、`librosa`、`soxr`、`torch`）、公式リストの有無を表示 | 常に | 致命的な不足があれば非 0（変更はしない）|
 | `make reproduction-init-db` | — | `reproduction.duckdb` を作る（`repro` スキーマ）| 同じスキーマなら何もしない | 既存で違うスキーマなら**変更せず拒否**（現行の `db-init` と同じ規則）|
-| `make reproduction-prepare` | `MODELS=mp_senet,mossformergan`、`DATASETS=`、`DRY_RUN=1` | 素材・リスト・派生素材・Protocol・Dataset 定義を staging に書き、登録する。事前生成が要るモデルは計画（S0）まで | 同じ入力なら何もしない。同じ ID で内容が違えばエラー | 素材が無い場合は**偽の代替を作らず** `BLOCKED` として報告し、終了コード 3。DB の書き込みロックが取れない |
+| `make reproduction-prepare` | `STEP=diagnose\|lists\|resolve\|derive\|register\|snapshot\|verify\|all`、`WORKERS=` | MP-SENet と MossFormerGAN の VoiceBank 固定ペアを staging に書き、登録し、スナップショットを出す。事前生成はしない | 同じ派生ファイルと同じ ID は再利用する。内容が違えば上書きせずエラー | 素材が無い場合は `BLOCKED`（終了コード 3）で、派生・staging・DB を作らない |
 | `make reproduction-plan-build` | `BUILD=` | 事前生成の計画（`realization_v1` の列）を staging に書く。音声は作らない。件数、分布、容量の見積りを表示 | 同じ `build_id` で同じ計画なら何もしない | 同じ `build_id` で計画が違えばエラー |
 | `make reproduction-build` | `BUILD=`、`STAGE=`、`APPROVAL=`（30 分以上の場合）| shard 単位の生成。再開可能（DB 設計 §9.4）。空き容量を確認 | 完了した shard を飛ばす | 容量不足。既存の `build_id` と内容が違う。30 分以上のジョブで `APPROVAL` が無い。**既存のファイルを削除・上書きしない**|
 | `make reproduction-verify` | `BUILD=` または `DATASET=`、`HASH=1`（任意）| 検査（件数、サイズ、SHA-256、分布、leak）を `audits` に記録 | 常に（追記）| 不整合は `FAIL` を記録して非 0。自動で直さない |

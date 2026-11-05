@@ -1,0 +1,24 @@
+name: mossformergan_se_16k.fixed_pair
+version: 1
+kind: fixed_pair
+algorithm: fixed_pair.mossformergan_se_16k
+algorithm_version: 1
+deviation_class: official_effective
+rule:
+  sample_rate: 16000
+  teacher: dry_clean
+  normalize: independent_audio_norm_v1
+  window: 32000
+  order: rank_mod_fixed_v1
+  epoch_unit: utterance
+  global_batch: 4
+  validation:
+    crop: per_epoch_random
+    batch: 1
+    note: "train.sh defaults to 2 GPUs and an effective batch of 2 per GPU. Validation uses a 2 second crop."
+official_ref:
+  repo: https://github.com/modelscope/ClearerVoice-Studio
+  commit: 6b3774dc79c46ae8bed2a4fa5f706f0ac8c75c61
+  path: train/speech_enhancement/dataloader/dataloader.py
+  document: docs/training/reproduction/mossformergan.md
+deviations: []

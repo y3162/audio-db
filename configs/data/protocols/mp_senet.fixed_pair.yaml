@@ -1,0 +1,27 @@
+name: mp_senet.fixed_pair
+version: 1
+kind: fixed_pair
+algorithm: fixed_pair.mp_senet
+algorithm_version: 1
+deviation_class: official_effective
+rule:
+  sample_rate: 16000
+  teacher: dry_clean
+  normalize: noisy_rms_unit_v1
+  window: 32000
+  order:
+    - fixed_single_shuffle_v1
+    - torch_distributed_sampler_v1
+  epoch_unit: utterance
+  global_batch: 4
+  validation:
+    crop: full_length
+    batch: 1
+    interval: 5000
+    note: "1 GPU uses fixed_single_shuffle_v1. DDP uses torch_distributed_sampler_v1. Validation is the full utterance."
+official_ref:
+  repo: https://github.com/yxlu-0102/MP-SENet
+  commit: 89932cfe90d1dacb8e170e4a331d762462c21792
+  path: dataset.py
+  document: docs/training/reproduction/mp_senet.md
+deviations: []

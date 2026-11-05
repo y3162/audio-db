@@ -1,0 +1,11 @@
+corpus: VoiceBank-DEMAND
+train_clean_subset: clean_trainset_28spk_wav
+train_noisy_subset: noisy_trainset_28spk_wav
+test_clean_subset: clean_testset_wav
+test_noisy_subset: noisy_testset_wav
+train_text_subset: trainset_28spk_txt
+test_text_subset: testset_txt
+holdout_speakers: [p286, p287]
+derived_rel_root: VoiceBank-DEMAND/soxr_hq_16000
+source_rate: 48000
+target_rate: 16000

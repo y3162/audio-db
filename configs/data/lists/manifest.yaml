@@ -1,0 +1,26 @@
+mp_senet:
+  source: yxlu-0102/MP-SENet
+  repo: https://github.com/yxlu-0102/MP-SENet
+  commit: 89932cfe90d1dacb8e170e4a331d762462c21792
+  format: mp_senet
+  train:
+    path: VoiceBank+DEMAND/training.txt
+    file: configs/data/lists/mp_senet/training.txt
+    sha256: 00b32c062186df61fd980bde040be28d71bb3c3a1d0f25021b7fee49ff9ea363
+  test:
+    path: VoiceBank+DEMAND/test.txt
+    file: configs/data/lists/mp_senet/test.txt
+    sha256: f841bcb2680afca09881b6cce5c04042d802b31dad913e0346a8ef559a66d063
+mossformergan:
+  source: modelscope/ClearerVoice-Studio
+  repo: https://github.com/modelscope/ClearerVoice-Studio
+  commit: 6b3774dc79c46ae8bed2a4fa5f706f0ac8c75c61
+  format: mossformergan_scp
+  train:
+    path: train/speech_enhancement/data/tr_demand_28_spks_16k.scp
+    file: configs/data/lists/mossformergan/tr_demand_28_spks_16k.scp
+    sha256: 52e824ec9a44111e2d75333834ac99642f86a06cd2d6467ccdc6ad023d166e3f
+  test:
+    path: train/speech_enhancement/data/cv_demand_testset_16k.scp
+    file: configs/data/lists/mossformergan/cv_demand_testset_16k.scp
+    sha256: 4fc7acfe06a5b8f6cfafe2e0a975e04640db7f2a595b94669e4ac537e9c4d92b

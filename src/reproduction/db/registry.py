@@ -308,6 +308,41 @@ def _insert_missing(connection, existing, incoming) -> dict[str, int]:
 
 
 def _insert_rows(connection, spec: TableSpec, rows: list[dict[str, Any]]) -> None:
+    if spec.name == "assets":
+        for batch in _asset_batches(rows):
+            _copy_rows(connection, spec, batch)
+        return
+    _copy_rows(connection, spec, rows)
+
+
+def _asset_batches(rows: list[dict[str, Any]]) -> list[list[dict[str, Any]]]:
+    """Insert corpus parents before the derived rows that reference them.
+
+    DuckDB checks the foreign key as each row is copied. A derived asset and
+    its parent cannot share one INSERT.
+    """
+    pending = {row["asset_id"] for row in rows}
+    remaining = list(rows)
+    inserted: set[str] = set()
+    batches: list[list[dict[str, Any]]] = []
+    while remaining:
+        ready = []
+        rest = []
+        for row in remaining:
+            parent = row.get("derived_from")
+            if not parent or parent in inserted or parent not in pending:
+                ready.append(row)
+            else:
+                rest.append(row)
+        if not ready:
+            raise ReproductionError("derived assets do not form an insertable parent order")
+        batches.append(ready)
+        inserted.update(row["asset_id"] for row in ready)
+        remaining = rest
+    return batches
+
+
+def _copy_rows(connection, spec: TableSpec, rows: list[dict[str, Any]]) -> None:
     import tempfile
 
     with tempfile.TemporaryDirectory() as temporary:

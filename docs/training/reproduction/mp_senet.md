@@ -1,6 +1,6 @@
 # MP-SENet 公式再現プロトコル監査
 
-調査のみ。コード・設定・DB・既存 docs は変更していない。修正案は「提案」として書く。
+この文書の監査本文は調査記録である。P2 で、ここに書かれた公式リスト（train 11,572、test 824）を `reproduction.duckdb` の `mp_senet.vb28.official@1` と `mp_senet.vb28.safe@1` として登録した。16 kHz 化は soxr HQ で、公式の事前変換器とは別である。学習 Pipeline への接続はまだ無い。
 
 ## 0. 要約
 

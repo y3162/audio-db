@@ -1,7 +1,7 @@
 .PHONY: help setup setup-env assets assets-check doctor test-setup \
 	db-ingest db-init db-link db-bootstrap df-rfft \
 	reproduction-doctor reproduction-init-db reproduction-snapshot \
-	reproduction-rebuild-db reproduction-verify
+	reproduction-rebuild-db reproduction-verify reproduction-prepare
 
 ROOT := $(abspath $(dir $(lastword $(MAKEFILE_LIST))))
 WITH_ENV := $(ROOT)/scripts/setup/with_env.sh
@@ -48,7 +48,8 @@ help:
 	  '  make reproduction-init-db' \
 	  '  make reproduction-verify DATASET=name@version [HASH=1]' \
 	  '  make reproduction-snapshot DATASET=name@version [ALLOW_UNKNOWN_LEAK_CHECK=1]' \
-	  '  make reproduction-rebuild-db OUT=path/to/new.duckdb'
+	  '  make reproduction-rebuild-db OUT=path/to/new.duckdb' \
+	  '  make reproduction-prepare [STEP=all] [WORKERS=8]'
 
 setup:
 	$(WITH_ENV) $(ROOT)/scripts/setup/setup.sh $(PLATFORM)
@@ -102,6 +103,8 @@ OUT ?=
 BUILD ?=
 HASH ?=
 ALLOW_UNKNOWN_LEAK_CHECK ?=
+STEP ?= all
+WORKERS ?= 8
 
 reproduction-doctor:
 	$(WITH_ENV) $(PYTHON) -m src.reproduction.cli doctor --database "$(REPRO_DB)" --resource-db "$(REPRO_RESOURCE)" --models "$(MODELS)"
@@ -117,3 +120,6 @@ reproduction-rebuild-db:
 
 reproduction-verify:
 	$(WITH_ENV) $(PYTHON) -m src.reproduction.cli verify --database "$(REPRO_DB)" --staging "$(REPRO_STAGING)" --dataset "$(DATASET)" --build "$(BUILD)" $(if $(HASH),--hash,)
+
+reproduction-prepare:
+	$(WITH_ENV) $(PYTHON) -m src.reproduction.cli prepare --database "$(REPRO_DB)" --staging "$(REPRO_STAGING)" --snapshots "$(REPRO_SNAPSHOTS)" --resource-db "$(REPRO_RESOURCE)" --step "$(STEP)" --workers "$(WORKERS)"

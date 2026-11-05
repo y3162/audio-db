@@ -721,7 +721,7 @@ Build の ID は件数を含まないので、**小さい段階の生成物は�
 | TF-GridNet | `pregenerated.ms_snsd_tfgridnet` | 事前生成 | `tf_gridnet.ms_snsd.espnet_recipe`（`espnet_public_se_recipe_reproduction`。seed 固定は差として記録） | §9.7 |
 | TF-Locoformer | `pregenerated.dns_tflocoformer` | 事前生成 | `tf_locoformer.dns.s1`〜`s4`（`official_recipe_scaled_down`。S4 は生成規模が公式だが、検証集合 `cv_synthetic_small` が公式と同じと確認できる（UNKNOWN の解消）までこのラベルのまま） | §9.6 |
 
-16 kHz 化は MP-SENet と MossFormerGAN に共通の UNKNOWN（公式の事前変換の変換器）である。既定として `soxr_hq` 相当の変換を派生素材として作り、`deviations_json` に「公式の変換器は不明」と記録する案を採る。この条件で `official_reproduction` を名乗ってよいか（それとも `protocol_conformant_substitute_materials` に下げるか）は、実装フェーズ 1 の前にユーザーが確定する（IMPLEMENTATION_PLAN の確認事項 Q6）。なお、audio-db の既存実装は `torchaudio.functional.resample`（既定の sinc Hann）で、公式の `librosa` 系とは別の変換器である（確認: mp_senet.md 236、369 行）。
+16 kHz 化は P2 で実装した。公式の事前変換器は不明なままである。派生素材は soxr 1.1.0 の HQ、soundfile 0.14.0 の PCM_16 で、`data/derived/VoiceBank-DEMAND/soxr_hq_16000/` に置く。Q6 のとおり `official_reproduction` を名乗り、`deviations_json` に変換器が不明であることを書く。同じ 16 kHz ペアのレシピは 1 つの `case_id` になるため、MP-SENet と MossFormerGAN は case 行を共有する。`cases.protocol_id` は `mp_senet.fixed_pair` を指す。学習時の正規化・窓・順序は Dataset の protocol を読む。DuckDB は COPY 中に asset の外部キーを検査するので、親の corpora 素材を派生素材より先に挿入する。
 
 ---
 
@@ -733,7 +733,7 @@ Build の ID は件数を含まないので、**小さい段階の生成物は�
 |---|---|
 | U-DB-1 | `data/generated/` の実体の置き場所と容量の割り当て（TF-Locoformer S4 で約 1.04 TB） |
 | U-DB-2 | `cv_synthetic_small` の大きさと規則（D-08 で未確定のまま維持） |
-| U-DB-3 | MossFormerGAN の VoiceBank 16 kHz 版の変換法（公式 UNKNOWN）と、`claim_label` の最終形 |
+| U-DB-3 | MossFormerGAN の VoiceBank 16 kHz 版の変換法は公式 UNKNOWN のまま。`claim_label` は `official_reproduction` とし、変換器不明を `deviations_json` に書いた（P2） |
 | U-DB-4 | DFN3 の公式素材（`dataset.cfg`、DNS4、PTDB、RIR 集合）。入手できるまで `blocked` |
 | U-DB-5 | SEMamba++ の公式素材（VCTK 0.92、Arni RIR）と、VCTK-GSR の分割規則 |
 | U-DB-6 | `resource.duckdb` に `eval` スキーマが無い現状（§2.3）。leakage 監査が `UNKNOWN` になる |

@@ -1,0 +1,25 @@
+name: mp_senet.vb28.official
+version: 1
+protocol: mp_senet.fixed_pair
+profile: official_faithful
+material_origin: derived_from_official
+claim_label: official_reproduction
+list_model: mp_senet
+selection_note: "公式の validation と best 選択は test 824 件を使う。独立した汎化性能の Dataset ではない。"
+bindings:
+  train: official_train
+  valid: official_test
+  test: official_test
+expect:
+  train: 11572
+  valid: 824
+  test: 824
+deviations:
+  - id: vb28-16k-converter-unknown
+    class: official_effective
+    text: "公式の 16 kHz 事前変換の変換器は不明である。この Dataset は 48 kHz PCM_16 を soxr HQ で 16 kHz PCM_16 にした派生素材を使う。公式波形との一致は主張しない。"
+    ref: "UN-3"
+  - id: vb28-shared-recorded-pair
+    class: official_effective
+    text: "同一の 16 kHz ペアはレシピの case_id を MP-SENet と MossFormerGAN で共有する。cases.protocol_id は mp_senet.fixed_pair を指す。学習時の正規化、窓、順序は Dataset の protocol に従う。"
+    ref: "REPRODUCTION_DB_DESIGN"

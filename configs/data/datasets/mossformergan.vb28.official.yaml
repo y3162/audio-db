@@ -1,0 +1,29 @@
+name: mossformergan.vb28.official
+version: 1
+protocol: mossformergan_se_16k.fixed_pair
+profile: official_faithful
+material_origin: derived_from_official
+claim_label: official_reproduction
+list_model: mossformergan
+selection_note: "公式の validation は cv_demand_testset_16k.scp（公式 test 824 件）である。独立した汎化性能の Dataset ではない。公開 checkpoint の学習データ再現とは呼ばない。"
+bindings:
+  train: official_train
+  valid: official_test
+  test: official_test
+expect:
+  train: 11572
+  valid: 824
+  test: 824
+deviations:
+  - id: vb28-16k-converter-unknown
+    class: official_effective
+    text: "公式 scp の 16 kHz ファイルの変換器は不明である。この Dataset は 48 kHz PCM_16 を soxr HQ で 16 kHz PCM_16 にした派生素材を使う。公式波形との一致は主張しない。"
+    ref: "UN-3"
+  - id: vb28-shared-recorded-pair
+    class: official_effective
+    text: "同一の 16 kHz ペアはレシピの case_id を MP-SENet と MossFormerGAN で共有する。cases.protocol_id は mp_senet.fixed_pair を指す。学習時の正規化、窓、順序は Dataset の protocol に従う。"
+    ref: "REPRODUCTION_DB_DESIGN"
+  - id: vb28-not-released-checkpoint
+    class: official_effective
+    text: "この Dataset は公開学習コードの VoiceBank 固定ペアである。配布 checkpoint の大規模学習データの再現ではない。"
+    ref: "D-04"

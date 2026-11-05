@@ -1,6 +1,6 @@
 # MossFormerGAN 公式再現プロトコル監査
 
-調査のみ。コード・設定・DB は変更していない。修正案は「提案」として書くだけで、実装していない。
+この文書の監査本文は調査記録である。P2 で、公開学習コードの VoiceBank 固定ペアを `reproduction.duckdb` の `mossformergan.vb28.official@1` と `mossformergan.vb28.safe@1` として登録した。配布 checkpoint の学習データ再現ではない。16 kHz 化は soxr HQ で、公式 scp の事前変換器とは別である。学習 Pipeline への接続はまだ無い。
 
 表記:
 

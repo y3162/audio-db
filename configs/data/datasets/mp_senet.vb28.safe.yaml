@@ -1,0 +1,29 @@
+name: mp_senet.vb28.safe
+version: 1
+protocol: mp_senet.fixed_pair
+profile: leakage_safe
+material_origin: derived_from_official
+claim_label: leakage_safe_comparison
+list_model: mp_senet
+selection_note: "train は公式 training リストから p286 と p287 を除いた 10700。valid はその 872。test は公式 test 824。test は選択に使わない。分割に乱数は使わない。"
+bindings:
+  train: safe_train
+  valid: safe_valid
+  test: official_test
+expect:
+  train: 10700
+  valid: 872
+  test: 824
+deviations:
+  - id: vb28-16k-converter-unknown
+    class: official_effective
+    text: "公式の 16 kHz 事前変換の変換器は不明である。この Dataset は 48 kHz PCM_16 を soxr HQ で 16 kHz PCM_16 にした派生素材を使う。公式波形との一致は主張しない。"
+    ref: "UN-3"
+  - id: vb28-shared-recorded-pair
+    class: official_effective
+    text: "同一の 16 kHz ペアはレシピの case_id を MP-SENet と MossFormerGAN で共有する。cases.protocol_id は mp_senet.fixed_pair を指す。学習時の正規化、窓、順序は Dataset の protocol に従う。"
+    ref: "REPRODUCTION_DB_DESIGN"
+  - id: vb28-speaker-holdout
+    class: research_improvement
+    text: "公式 training リストの順を保ったまま p286 と p287 を validation にする。乱数 seed は使わない。test は選択に使わない。"
+    ref: "D-01"
