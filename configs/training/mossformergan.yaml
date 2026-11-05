@@ -1,24 +1,27 @@
-# MossFormerGAN SE 16 kHz. num_channel 64 is the released width.
-# Discriminator learning rate is twice the generator learning rate.
+# Research full run, seed 42. Same update as configs/training/trial100/mossformergan.yaml.
+# Global batch 2 is micro 1 times accumulation 2. 5,350 optimizer steps per epoch,
+# 120 epochs. The task keeps its own plateau counter in the checkpoint.
+# Validation PESQ is not computed; the interval checkpoint is the resume point.
+# Utterance RMS stays on.
 
-seed: 1234
-deterministic: true
-global_batch_size: 1
+seed: 42
+deterministic: false
+global_batch_size: 2
 micro_batch_size_per_gpu: 1
-max_steps: 1
-segment_size: 8000
+max_steps: 642000
+segment_size: 32000
 loss: official
 grad_clip: 10.0
-checkpoint_dir: data/results/training/mossformergan
-checkpoint_interval: 0
-validation_interval: 0
+checkpoint_dir: ./data/results/training/voicebank-seed42/mossformergan
+checkpoint_interval: 5350
+validation_interval: 5350
 best_checkpoint_start_epoch: 40
 
 optimizer:
   name: adamw
   lr: 0.0005
   betas: [0.9, 0.999]
-  weight_decay: 0.01  # effective AdamW default; the released constructor does not read the YAML 1e-5
+  weight_decay: 0.01
 
 scheduler:
   name: none
@@ -34,12 +37,12 @@ model:
     num_channel: 64
 
 data:
-  database: data/db/training.duckdb
-  train_set: libri_demand_smoke_train
-  validation_set: libri_demand_smoke_valid
+  database: data/db/voicebank.duckdb
+  train_set: voicebank_28_train
+  validation_set: voicebank_28_valid
   load_workers: 4
   prefetch: true
 
 runtime:
-  device: cpu
+  device: cuda
   allow_busy_gpu: false

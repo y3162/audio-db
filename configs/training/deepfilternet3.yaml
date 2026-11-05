@@ -1,24 +1,38 @@
-# DeepFilterNet3 smoke geometry. emb_num_layers must stay >= 2 or ErbDecoder
-# builds a GRU with zero layers. The loss is the shipped config.ini
-# (multi-resolution spectral 500/500, local SNR 1e-3). This YAML keeps a
-# smaller network than conv_ch=64. AdamW matches the ini: lr 0.001,
-# betas (0.9, 0.999), weight decay 1e-12, amsgrad. deepfilter_cosine is the
-# shipped per-step schedule. steps_per_epoch is 8 because this smoke set has
-# 8 training cases and global_batch_size is 1. A larger set needs a matching
-# steps_per_epoch. Do not point checkpoint_dir at data/checkpoints.
+# Official DeepFilterNet3 batch schedule on the shared VoiceBank-DEMAND split.
+# batch_size_limit 64 is config.ini batch_size. The schedule is
+# 0/16,2/24,5/32,10/64,20/128,40/9999, and each epoch uses
+# min(schedule, batch_size_limit). 9999 and 128 therefore run at 64.
+# The per-step cosine is rebuilt from the current loader length and indexed as
+# epoch * steps + step, matching df/train.py. early_stopping_patience 25 and
+# max_epochs 120 are the shipped config.ini values, not the Python default 10.
+# max_steps is the exact optimizer-step count of 120 epochs on 10,700
+# utterances: 2*floor(10700/16)+3*floor(10700/24)+5*floor(10700/32)
+# +110*floor(10700/64) = 22711. The next step would index past the cosine
+# table. Gradient accumulation is not substituted for a batch that does not fit.
+# Validation is one utterance at a time, then an unweighted mean. That is not
+# the official mean of padded eval batches. Online mixing is not used.
 
-seed: 1234
-deterministic: true
-global_batch_size: 1
-micro_batch_size_per_gpu: 1
-max_steps: 1
-segment_size: 1024
+seed: 42
+deterministic: false
+global_batch_size: 64
+micro_batch_size_per_gpu: 64
+batch_size_limit: 64
+batch_schedule:
+  - [0, 16]
+  - [2, 24]
+  - [5, 32]
+  - [10, 64]
+  - [20, 128]
+  - [40, 9999]
+max_steps: 22711
+segment_size: 144000
 loss: official
 grad_clip: 1.0
-checkpoint_dir: data/results/training/deepfilternet3
+checkpoint_dir: ./data/results/training/voicebank-seed42/deepfilternet3
 checkpoint_interval: 0
 validation_interval: 0
-best_checkpoint_start_epoch: 40
+best_checkpoint_start_epoch: 0
+early_stopping_patience: 25
 
 optimizer:
   name: adamw
@@ -29,7 +43,7 @@ optimizer:
 
 scheduler:
   name: deepfilter_cosine
-  steps_per_epoch: 8
+  steps_per_epoch: 668
   epochs: 120
   lr_min: 1.0e-6
   lr_warmup: 1.0e-4
@@ -38,31 +52,16 @@ scheduler:
 
 model:
   name: deepfilternet3
-  sampling_rate: 16000
-  architecture:
-    sr: 16000
-    fft_size: 128
-    hop_size: 64
-    nb_erb: 16
-    nb_df: 16
-    conv_ch: 16
-    emb_hidden_dim: 32
-    df_hidden_dim: 32
-    enc_lin_groups: 8
-    lin_groups: 8
-    emb_num_layers: 2
-    df_num_layers: 1
-    df_order: 5
-    conv_lookahead: 0
-    df_lookahead: 0
+  sampling_rate: 48000
+  architecture: {}
 
 data:
-  database: data/db/training.duckdb
-  train_set: libri_demand_smoke_train
-  validation_set: libri_demand_smoke_valid
+  database: data/db/voicebank.duckdb
+  train_set: voicebank_28_train
+  validation_set: voicebank_28_valid
   load_workers: 4
   prefetch: true
 
 runtime:
-  device: cpu
+  device: cuda
   allow_busy_gpu: false

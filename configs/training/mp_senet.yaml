@@ -1,23 +1,18 @@
-# MP-SENet training. Hyperparameters follow the official config.json at commit
-# 89932cfe (AdamW 5e-4, betas 0.8/0.99, weight decay 0.01, ExponentialLR 0.99).
-# ExponentialLR steps once per completed epoch, as in the official train.py.
-# Global step still counts optimizer updates. See docs/training/MP_SENET.md.
-#
-# data/db/training.duckdb holds libri_demand_smoke_train and
-# libri_demand_smoke_valid. Those are LibriSpeech train-clean-100 and
-# dev-clean mixed with disjoint DEMAND scenes. They are not VoiceBank-DEMAND.
-# LibriSpeech test-clean, CHiME3 et05, and resource.duckdb are refused.
+# Research full run, seed 42. Same update as configs/training/trial100/mp_senet.yaml.
+# 10,700 utterances, batch 4, 2,675 optimizer steps per epoch, 400 epochs.
+# ExponentialLR steps at the end of each data epoch. Best PESQ starts at epoch 40.
+# Utterance RMS stays on. This is not the 100-step trial directory.
 
-seed: 1234
-deterministic: true
+seed: 42
+deterministic: false
 global_batch_size: 4
 micro_batch_size_per_gpu: 4
-max_steps: 100000
+max_steps: 1070000
 segment_size: 32000
 loss: official
-checkpoint_dir: data/results/training/mp-senet
-checkpoint_interval: 5000
-validation_interval: 5000
+checkpoint_dir: ./data/results/training/voicebank-seed42/mp_senet
+checkpoint_interval: 2675
+validation_interval: 2675
 best_checkpoint_start_epoch: 40
 
 optimizer:
@@ -42,12 +37,12 @@ model:
   sampling_rate: 16000
 
 data:
-  database: data/db/training.duckdb
-  train_set: libri_demand_smoke_train
-  validation_set: libri_demand_smoke_valid
+  database: data/db/voicebank.duckdb
+  train_set: voicebank_28_train
+  validation_set: voicebank_28_valid
   load_workers: 4
   prefetch: true
 
 runtime:
-  device: cpu
+  device: cuda
   allow_busy_gpu: false

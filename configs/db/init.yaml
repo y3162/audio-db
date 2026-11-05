@@ -4,41 +4,7 @@
 database: data/db/resource.duckdb
 corpora_root: data/corpora
 
-manifests:
-  - path: examples/manifests/example.jsonl
-    set: example
-    required: false
-    description: Example manifest. Skipped when its audio files are not present.
-
 corpus_sets:
-  - name: libri_demand_snr0
-    required: false
-    description: Two LibriSpeech test-clean utterances mixed with DEMAND at 0 dB.
-    role: synthetic
-    filters:
-      corpus: LibriSpeech
-      subset: test-clean
-    limit: 2
-    noise_filters:
-      corpus: DEMAND
-    noise_limit: 1
-    snr_db: 0
-    seed: 0
-    protocol: rms_v1
-    max_seconds: 2.0
-    prevent_clip: true
-    hard_clip: false
-  - name: libri_testclean_full_smoke
-    required: false
-    description: >
-      Eight LibriSpeech test-clean utterances at full length, ordered by path.
-      No noise mix and no max_seconds crop. Transcripts come from the corpus rows.
-    role: clean
-    filters:
-      corpus: LibriSpeech
-      subset: test-clean
-    limit: 8
-
 annotation_sets:
   - importer: chime3
     set: chime3_et05_real_ch5

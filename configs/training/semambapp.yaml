@@ -1,16 +1,27 @@
-# SEMamba++. Losses, update order, and the CQT / multi-resolution discriminators
-# follow the published training setup. The reference tree is not imported.
+# Research full run, seed 42, on the shared VoiceBank-DEMAND split.
+# Official config.yaml is one forward of batch 8. This H100 MIG 4g.47gb
+# allocated 45.56 GiB and OOMed in the discriminator at 3 s.
+# Research setting: micro 4 x accumulation 2, global batch 8.
+# On fused CUDA at length 8000, batch 8 self-rerun audio max abs was 0.
+# Accumulation differed by audio max abs 0.001338273286819458, generator-grad
+# relative L2 0.02822, weight relative L2 2.01e-4. Grad norms stayed ~16.0,
+# so the accumulation divisor is in place. The gap is the fused kernel's
+# batch shape. This file does not claim one-forward batch 8.
+# 10,700 / 4 = 2,675 micro-batches, and accumulation 2 keeps 2,674, so one
+# epoch is 1,337 optimizer steps. 100 epochs. Official saves on an interval,
+# not a PESQ-best file; this trainer also skips best_generator for SEMamba++.
+# Utterance RMS stays on. Fused scan is the CUDA training path.
 
-seed: 1234
-deterministic: true
-global_batch_size: 2
-micro_batch_size_per_gpu: 1
-max_steps: 2
-segment_size: 16000
+seed: 42
+deterministic: false
+global_batch_size: 8
+micro_batch_size_per_gpu: 4
+max_steps: 133700
+segment_size: 48000
 loss: official
-checkpoint_dir: data/results/training/semambapp
-checkpoint_interval: 0
-validation_interval: 0
+checkpoint_dir: ./data/results/training/voicebank-seed42/semambapp
+checkpoint_interval: 1337
+validation_interval: 1337
 best_checkpoint_start_epoch: 40
 
 optimizer:
@@ -27,24 +38,27 @@ model:
   name: semambapp
   sampling_rate: 16000
   architecture:
-    hid_feature: 8
-    num_tfmamba: 1
-    d_state: 4
-    d_conv: 2
+    hid_feature: 48
+    num_tfmamba: 4
+    d_state: 16
+    d_conv: 4
     expand: 2
+    norm_epsilon: 1.0e-5
+    input_channel: 2
+    output_channel: 1
     n_fft: 400
+    scan_backend: fused
   stft:
     hop: 100
     win: 400
-    disc_windows: [256, 512]
 
 data:
-  database: data/db/training.duckdb
-  train_set: libri_demand_smoke_train
-  validation_set: libri_demand_smoke_valid
+  database: data/db/voicebank.duckdb
+  train_set: voicebank_28_train
+  validation_set: voicebank_28_valid
   load_workers: 4
   prefetch: true
 
 runtime:
-  device: cpu
+  device: cuda
   allow_busy_gpu: false
