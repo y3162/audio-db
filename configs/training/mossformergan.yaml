@@ -46,3 +46,7 @@ data:
 runtime:
   device: cuda
   allow_busy_gpu: false
+
+logging:
+  tensorboard:
+    enabled: true
