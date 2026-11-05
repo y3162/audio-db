@@ -2,7 +2,9 @@
 
 作成日: 2026-11-06。ブランチ `feature/reproduction`。調査と文書化だけの成果物で、コード・設定・DB・データ・checkpoint・結果は変更していない。
 
-この文書は、6 モデルの「何を再現するか」を、公式 GitHub の実効動作を最優先にして定めた**再現対象の正本**である。DB やデータパイプラインの設計・実装は含まない。先行する監査（[OVERVIEW](OVERVIEW.md)、[MP-SENet](mp_senet.md)、[DeepFilterNet3](deepfilternet3.md)、[MossFormerGAN](mossformergan.md)、[SEMamba++](semambapp.md)、[TF-GridNet](tf_gridnet.md)、[TF-Locoformer](tf_locoformer.md)）の詳細は、ここに写さずリンクで参照する。
+この文書は、6 モデルの「何を再現するか」を、公式 GitHub の実効動作を最優先にして定めた**再現対象の正本**である。DB やデータパイプラインの設計・実装は含まない（設計は [DB 設計](../../db/REPRODUCTION_DB_DESIGN.md)、[Pipeline 設計](DATA_PIPELINE_DESIGN.md)、[実装計画](IMPLEMENTATION_PLAN.md)）。先行する監査（[OVERVIEW](OVERVIEW.md)、[MP-SENet](mp_senet.md)、[DeepFilterNet3](deepfilternet3.md)、[MossFormerGAN](mossformergan.md)、[SEMamba++](semambapp.md)、[TF-GridNet](tf_gridnet.md)、[TF-Locoformer](tf_locoformer.md)）の詳細は、ここに写さずリンクで参照する。
+
+> **2026-11-06 追記（採用の記録）**: §6 の D-01〜D-09 を採用した。各項の末尾に「採用結果」を足し、§2.1 の状態を更新した。**根拠・選択肢・UNKNOWN は採用前の記録のまま残している。** 採用した決定は [`.agents/DECISIONS.md`](../../../.agents/DECISIONS.md) の「採用決定済み・未実装」にあり、**どれも未実装**である。PROVISIONAL・BLOCKED は、素材・公式資料が揃うまで上げない。D-10 は決定でなく前提で、変わらない。
 
 ---
 
@@ -71,12 +73,12 @@
 
 | モデル | 公式リポジトリ | 固定 commit / tag | variant | 学習レシピ | データ方式 | 状態 |
 |---|---|---|---|---|---|---|
-| MP-SENet | https://github.com/yxlu-0102/MP-SENet | `89932cf` | journal 版コードの HEAD ＋ VoiceBank+DEMAND（`best_ckpt/g_best_vb` に対応） | `train.py`、`config.json`（既定 400 epoch） | 固定ペア | **PENDING_DECISION**（D-01、D-03。他の実効条件は確定） |
-| MossFormerGAN | https://github.com/modelscope/ClearerVoice-Studio | `6b3774d` | `MossFormerGAN_SE_16K`。**公開学習コード `T/` ＋ VoiceBank+DEMAND 28 話者**（配布 checkpoint の学習ではない） | `T/train.py`、`T/solver.py`、`T/config/train/MossFormerGAN_SE_16K.yaml` | 固定ペア | **PENDING_DECISION**（D-01、D-04。他の実効条件は確定） |
-| DeepFilterNet3 | https://github.com/Rikorose/DeepFilterNet | 学習コード `v0.5.0`（`a76dbcb`）＋ 出荷 `config.ini`（`82b0c7a`） | 出荷 `DeepFilterNet3.zip`（48 kHz、非 low-latency） | `DeepFilterNet/df/train.py`、出荷 `config.ini`、Rust `libDF`/`pyDF-data` | オンライン混合 | **PROVISIONAL**（学習データの実体と `dataset.cfg` が UNKNOWN。D-06、D-09） |
-| SEMamba++ | https://github.com/Eddieyjlee/SEMambapp | `cd369c8` | **修正後の公開実装＋ HEAD の `config.yaml`**（公開重み `yongjoonlee/semambapp` に対応）。論文の重み（バグあり）ではない | `train.py`（引数は `main()` に直書き）、`config.yaml` | オンライン混合（GSR 劣化） | **PROVISIONAL**（出荷状態では学習が起動しない。素材とマニフェストが無い。D-05） |
-| TF-GridNet | https://github.com/espnet/espnet | ESPnet `0d136c5`（recipe は `466e8a89d4d7`、学習環境は `239f5166a`） | **ESPnet 公開 SE recipe `egs2/ms_snsd/enh1`**（v1 `tfgridnet`、2.55 M パラメータ）。**論文の実験の再現ではない** | `egs2/ms_snsd/enh1/run.sh`、`conf/tuning/train_enh_tfgridnet.yaml` | 事前生成（MS-SNSD 合成） | **PROVISIONAL**（生成は未シードで同一物を再現できない。D-07） |
-| TF-Locoformer | https://github.com/merlresearch/tf-locoformer | TFL `7a61546`（`v1.1.0`）＋ ESP90 | `dns_ins20`、Medium（B=6、15.0 M）、`train_enh_tflocoformer.yaml` | `egs2/dns_ins20/enh1` に注入して `run.sh` | 事前生成（DNS 2020 合成 3000 h） | **PROVISIONAL**（`cv_synthetic_small` が UNKNOWN。3000 h 生成の承認が要る。D-08） |
+| MP-SENet | https://github.com/yxlu-0102/MP-SENet | `89932cf` | journal 版コードの HEAD ＋ VoiceBank+DEMAND（`best_ckpt/g_best_vb` に対応） | `train.py`、`config.json`（既定 400 epoch） | 固定ペア | **PROVISIONAL**（D-01、D-03 採用済み。実効条件は確定。残る UNKNOWN は 16 kHz 版の公式の変換器と、実学習の epoch・GPU 数。変換器は派生素材として明示し、差を記録する）|
+| MossFormerGAN | https://github.com/modelscope/ClearerVoice-Studio | `6b3774d` | `MossFormerGAN_SE_16K`。**公開学習コード `T/` ＋ VoiceBank+DEMAND 28 話者**（配布 checkpoint の学習ではない） | `T/train.py`、`T/solver.py`、`T/config/train/MossFormerGAN_SE_16K.yaml` | 固定ペア | **PROVISIONAL**（D-01、D-04 採用済み。実効条件は確定。残る UNKNOWN は 16 kHz 版の公式の変換器）|
+| DeepFilterNet3 | https://github.com/Rikorose/DeepFilterNet | 学習コード `v0.5.0`（`a76dbcb`）＋ 出荷 `config.ini`（`82b0c7a`） | 出荷 `DeepFilterNet3.zip`（48 kHz、非 low-latency） | `DeepFilterNet/df/train.py`、出荷 `config.ini`、Rust `libDF`/`pyDF-data` | オンライン混合 | **PROVISIONAL**（学習データの実体と `dataset.cfg` が UNKNOWN。D-06、D-09 採用済み。公式素材の Dataset は BLOCKED として別管理し、代替素材は別プロトコル準拠）|
+| SEMamba++ | https://github.com/Eddieyjlee/SEMambapp | `cd369c8` | **修正後の公開実装＋ HEAD の `config.yaml`**（公開重み `yongjoonlee/semambapp` に対応）。論文の重み（バグあり）ではない | `train.py`（引数は `main()` に直書き）、`config.yaml` | オンライン混合（GSR 劣化） | **PROVISIONAL**（出荷状態では学習が起動しない。素材とマニフェストが無い。D-05 採用済み。最小補修は許すが未実装。代替素材は別プロトコル準拠）|
+| TF-GridNet | https://github.com/espnet/espnet | ESPnet `0d136c5`（recipe は `466e8a89d4d7`、学習環境は `239f5166a`） | **ESPnet 公開 SE recipe `egs2/ms_snsd/enh1`**（v1 `tfgridnet`、2.55 M パラメータ）。**論文の実験の再現ではない** | `egs2/ms_snsd/enh1/run.sh`、`conf/tuning/train_enh_tfgridnet.yaml` | 事前生成（MS-SNSD 合成） | **PROVISIONAL**（生成は未シードで同一物を再現できない。D-07 採用済み。「ESPnet 公開 SE レシピの再現」で、seed 固定は差として記録）|
+| TF-Locoformer | https://github.com/merlresearch/tf-locoformer | TFL `7a61546`（`v1.1.0`）＋ ESP90 | `dns_ins20`、Medium（B=6、15.0 M）、`train_enh_tflocoformer.yaml` | `egs2/dns_ins20/enh1` に注入して `run.sh` | 事前生成（DNS 2020 合成 3000 h） | **PROVISIONAL**（`cv_synthetic_small` が UNKNOWN のまま。3000 h 生成の承認が要る。D-08 採用済み。段階生成）|
 
 ### 2.2 副次ターゲットの状態
 
@@ -393,7 +395,7 @@
 
 ## 6. 実装前の未決定事項
 
-各項目に、理由、選択肢と長所・短所、推奨と根拠を書く。**推奨は提案であり、採用の決定ではない。**
+各項目に、理由、選択肢と長所・短所、推奨と根拠を書いた。**D-01〜D-09 は 2026-11-06 に採用した。各項の末尾の「採用結果」が決定で、本文（理由・選択肢・推奨・根拠）は採用前の記録である。** D-10 は決定でなく前提。
 
 ### D-01 検証集合にテスト集合を使うか
 
@@ -411,6 +413,8 @@
 
 **根拠**: GitHub 優先の原則（P-2）に従えば A が公式だが、A だけでは audio-db の中核規則に反する。両方持てば、規則を変えずに公式との距離を測れる。**どれを採るかはユーザーの判断で、今回は決めていない。**
 
+**採用結果（2026-11-06）**: **A+B 併走を採用**。A（公式忠実）は再現用 DB・プロトコルの中だけで、test を validation・選択に使う。`selection_uses_test = true` を記録し、独立した汎化性能として報告しない。B（leakage-safe）は独立な分割。評価用 DB と「test を学習・検証に使わない」既存規則は変えない。未実装。
+
 ### D-02 公式の欠陥・癖の扱い
 
 対象: 全モデル（MP-SENet の `batch_first`、MossFormerGAN の `time_loss`・plateau の上書き・独立 `audio_norm`、TF-GridNet/TF-Locoformer の無効な `valid si_snr`、MS-SNSD の SNR 半減、SEMamba++ の起動不能、など）。
@@ -423,6 +427,8 @@
 **推奨**: **再現する**。欠陥は §3 に列挙済みで、「公式の欠陥」として識別できるようにし、直した版は別 profile に分ける。**ただし SEMamba++ の起動不能は補修が必須**で、アルゴリズムに触れない範囲に限り、全て記録する。
 
 **根拠**: P-2。補修と欠陥修正を混ぜると、後から公式との差を説明できなくなる。
+
+**採用結果（2026-11-06）**: **公式の実効動作を欠陥も含めて再現する**。差は `official_effective` / `minimal_launch_repair` / `algorithm_change` / `research_improvement` に分け、直した版は別 Protocol にする。SEMamba++ の補修は許すが**今は実装しない**。未実装。
 
 ### D-03 MP-SENet の学習長と GPU 構成
 
@@ -438,6 +444,8 @@
 
 **根拠**: GitHub 優先。400 epoch の実行は 30 分を超えるので、投入前に明示の承認が必要（AGENTS.md）。
 
+**採用結果（2026-11-06）**: **400 epoch、README の 2 GPU・global batch 4 を再現対象**とし、段階的に実行する。実行の承認は含まない。1 プロセスで模す場合は逸脱として記録する。未実装。
+
 ### D-04 MossFormerGAN の開始点
 
 **理由**: `train.sh` の既定は、配布 checkpoint があれば finetune として始まる【R】。公開 `train.py` の scratch 学習（`init_checkpoint_path='None'`）を採るか。
@@ -445,6 +453,8 @@
 **推奨**: **scratch**。公式 YAML の `init_learning_rate` と整合し、「公開コードのプロトコル」の定義に合う。finetune は別の実験とする。
 
 **根拠**: finetune の既定は `MossFormer2_SE_48K`（別ネットワーク）向けで、MossFormerGAN の学習プロトコルではない。
+
+**採用結果（2026-11-06）**: **scratch**。結果に開始条件を明記する（公式では `init_checkpoint_path='None'` という文字列。`train.sh` の既定は finetune になる罠）。未実装。
 
 ### D-05 SEMamba++ の設定版・素材・補修範囲
 
@@ -455,6 +465,8 @@
 | 補修 | 起動に必要な最小限（config 名、import、マニフェスト）／それ以上 | **最小限のみ**。算法の変更は含めない |
 
 **根拠**: VCTK は 0.80 のみで、p315 が無く p280 の扱いも違う可能性がある【A】。マニフェストの件数は UNKNOWN のため、素材を決めるまで総 step も決まらない。
+
+**採用結果（2026-11-06）**: 公式 GitHub の固定 commit と HEAD の `config.yaml` を再現対象とする。代替素材は許すが、**公式素材の再現とは分け**、「公式プロトコル準拠・代替素材」と呼ぶ（「公式データセットの再現」と呼ばない）。最小補修は**許すが今は実装しない**。素材（VCTK 0.92、Arni RIR）は入手するまで `blocked` / `unknown`。未実装。
 
 ### D-06 DFN3 の素材と `dataset.cfg`
 
@@ -467,6 +479,8 @@
 
 **根拠**: 分布はコードから確定できる【R】が、素材の実体は非公開。DNS5 には clean 音声が無い【A】。
 
+**採用結果（2026-11-06）**: **公式素材を優先**し、`dataset.cfg`・DNS4・PTDB・RIR 集合が無い間は UNKNOWN / BLOCKED とする。代替素材は別プロトコル準拠として分け、「出荷モデルの学習データの再現」と呼ばない。未実装。
+
 ### D-07 TF-GridNet の範囲宣言と MS-SNSD の生成
 
 **理由**: 再現対象は ESPnet recipe であって論文ではない。生成は未シードで同一物を再現できない。
@@ -474,6 +488,8 @@
 **推奨**: **範囲宣言（§3.5）を採用**し、MS-SNSD（手元に在る）から、公式の生成式（名目 SNR [0, 10, 20, 30, 40]、実効は半分、−25 dBFS）で生成して**シードを固定して保存**する。30 h / 1 h の規模、cv は train の 20 %、は README に従う。
 
 **根拠**: 統計的に同等な生成が得られ、再実行できる。seed 固定は公式からの逸脱として記録する。
+
+**採用結果（2026-11-06）**: 範囲宣言を採用し、「**ESPnet 公開 SE レシピの再現**」と呼ぶ（論文の実験の再現ではない）。seed・生成条件・出力マニフェストを記録する。追加する決定性は文書化した差。未実装。
 
 ### D-08 TF-Locoformer の 3000 h 生成と `cv_synthetic_small`
 
@@ -489,6 +505,8 @@
 
 **推奨**: **段階**。3000 h の生成と学習（約 14,000 更新 / epoch × 最大 150 epoch）は、30 分を超えるジョブなので、投入前にユーザーの明示の承認が要る（AGENTS.md）。優先度は `-p -5`。
 
+**採用結果（2026-11-06）**: **段階実施**（小規模検証 → 公式の 3000 h）。今は生成しない。保存・I/O・時間・再開・失敗時の設計は [DB 設計 §9](../../db/REPRODUCTION_DB_DESIGN.md) にある。30 分以上のジョブは別の承認が要る。**`cv_synthetic_small` は未解決のまま**。未実装。
+
 ### D-09 再現の同等性基準
 
 **理由**: オンライン混合（DFN3、SEMamba++）、事前生成（TF-GridNet、TF-Locoformer）では、公式の乱数・スケジューリングまで再現するのは非現実的である。
@@ -500,6 +518,8 @@
 
 **推奨**: **統計的同等**。各サンプルの seed と抽選結果を記録して再実行できるようにする。公式のデータローダー（例: `libdfdata`）は、**テスト時の参照（オラクル）にだけ**使い、実行時の依存にしない（AGENTS.md の公式コード非依存の原則）。
 
+**採用結果（2026-11-06）**: **プロトコルと統計的同等性**（ビット一致ではない）。ただし次は**統計的同等性に任せず厳密に確認する**: 固定の clean / noisy ペア、train / valid / test の分割、サンプリングレート、教師波形の定義、損失、optimizer・scheduler の更新規則、checkpoint 選択の規則。独立実装は公式コードに実行時依存しない。未実装。
+
 ### D-10 実施フェーズの承認条件（決定ではなく前提）
 
 30 分以上の TSUBAME ジョブは、そのジョブを含むユーザーの明示の指示か承認が要る。優先度は `-p -5`（指定できないキューはその制約に従う）。GPU は共有資源のため、使用前に `nvidia-smi` で空きを確認する。**今回は何も投入していない。**
@@ -508,7 +528,7 @@
 
 ## 7. 次フェーズへの引き継ぎ（DB・データパイプラインの入力条件）
 
-スキーマや API は固定しない。**設計が満たすべき入力条件**だけを書く。
+スキーマや API は固定しない。**設計が満たすべき入力条件**だけを書く（2026-11-06: 設計は [DB 設計](../../db/REPRODUCTION_DB_DESIGN.md)、[Pipeline 設計](DATA_PIPELINE_DESIGN.md) に作成済み。実装は未着手）。
 
 ### 7.1 共通の条件
 
@@ -518,7 +538,7 @@
 | レシピ JSON v1 の限界 | v1 は 1 件の固定ケース（雑音 1 本・SNR 1 値・RIR 1 本）の実現値しか書けず、**確率分布・複数雑音・連結・VAD 基準 SNR・確率的選択を表せない**（[RECIPE.md](../../db/RECIPE.md)、先行監査）。オンライン混合は、レシピとは別の層（プロトコル）で持つ必要がある |
 | ケース層とプロトコル層の分離 | 「1 回の抽選結果（case）」と「抽選分布（protocol）」を分けて保存する |
 | 評価用 DB との分離 | 学習用の再現 DB は、評価用の `resource.duckdb` と別に置く案を推奨（例: `data/db/reproduction.duckdb`）。**検証にテストを使う profile（D-01 の A）を評価用 DB へ混ぜない** |
-| 現状 | `data/db/` は空で、`resource.duckdb` が作業ツリーに無い（先行監査の確認）。既存の DB を作り直さない（AGENTS.md） |
+| 現状 | 2026-11-06 の追補: `data/db/resource.duckdb` が存在する（`corpora.audio_files` 1,375,481 行、`eval` スキーマ無し。読み取り専用で確認、変更していない）。`data/staging/` は空。既存の DB を作り直さない（AGENTS.md）。上の「確認」時点（`data/db/` が空）とは状態が違う |
 | 再生成の保存先 | 事前生成データは DuckDB へ書く前に `data/staging/` へ保存する（AGENTS.md） |
 
 ### 7.2 モデル別の入力条件
@@ -555,7 +575,7 @@
 | 修正が要る | `.agents/DECISIONS.md` #26 などの TF-GridNet の best 基準は、`valid si_snr max` が有効と読める。ピン留め ESPnet では stats のキーが `si_snr_loss` のため**無効**で、実効は `valid.loss` のみ【R】。#31（TF-Locoformer）は正しく、矛盾している |
 | 修正が要る | `OFFICIAL_TRAINING_AUDIT.md` は、TF-GridNet を単一プロセス想定と書くが、公式は 2 rank の DDP【R】。MP-SENet の「GO」の根拠に、母数（11,572 と 10,700）、best 選択集合、公式の再開動作の違いが書かれていない |
 | 修正が要る | `docs/se/VALIDATION.md` の MP-SENet の commit（`d91b88c2…`）は、ピン `89932cf` と合わない |
-| 存在しない参照 | `configs/training/*_seed17.yaml`、`configs/training/trial100/`、`configs/evaluation/`、`.venvs/lab`、`data/db/*.duckdb`（`resource.duckdb` を含む）。作業ツリーに無い |
+| 存在しない参照 | `configs/training/*_seed17.yaml`、`configs/training/trial100/`、`configs/evaluation/`、`.venvs/lab`、`data/db/*.duckdb`（`resource.duckdb` を含む）。作業ツリーに無い。**2026-11-06 の追補**: `data/db/resource.duckdb` はその後に存在を確認した（`eval` スキーマは無い）。`.venvs/semamba`（`DEVELOPMENT.md` が DuckDB 1.4.3 と書く）も無く、現在は `.venvs/semambapp`（DuckDB 2.0.0）。`.venvs/deepfilternet` は DuckDB を持たない |
 | URL の不統一 | SEMamba++ の URL が、`requirements/official-assets.toml`（旧名）と `src/se/models/semambapp/NOTICE`（新名）で混在 |
 
 ---
@@ -564,5 +584,5 @@
 
 - **確認したこと**: 6 つの公式 repo の checkout を読み、ピン留め commit が upstream の HEAD と一致することを確認した（ESPnet を除く）。重要な実効値（optimizer の既定、チャンクの式、plateau の規則、best 基準の無効なキー、DFN3 の版の差、SEMamba++ の config の履歴と起動不能箇所、ESPnet の版の差）を、行番号付きで読んだ。
 - **確認していないこと**: GPU 学習・評価の実行、公式コードの実行、数値の一致検証、DuckDB の読み書き、データ生成。【A】の項目は先行監査の記述のままで、今回は一次資料を読み直していない（§1.5）。
-- **変更したファイル**: この `TARGETS.md` と、利用者の依頼で書いた `OUTPUT.md`（最終報告）だけ。`src/se/official/`、既存の監査文書、設定、DB、checkpoint、結果は変更していない。
-- **`.agents/` の更新**: 不要と判断した。この文書は監査・仕様の文書で、モジュールの責務、DB、実行方法、設計決定は変えていない。ただし D-01〜D-09 が決まった段階で、`DECISIONS.md` の「採用決定済み・未実装」へ移す必要がある。
+- **変更したファイル**: この `TARGETS.md` と、利用者の依頼で書いた `OUTPUT.md`（最終報告）だけ（作成時点）。2026-11-06 の採用の記録では、`TARGETS.md`、`.agents/DECISIONS.md`、新規の設計書 3 本、`docs/INDEX.md`、`OUTPUT.md` を更新した。`src/se/official/`、既存の監査文書、設定、DB、checkpoint、結果は変更していない。
+- **`.agents/` の更新**: 作成時点では不要と判断した。D-01〜D-09 の採用に伴い、2026-11-06 に `DECISIONS.md` の「採用決定済み・未実装」へ移した。`AGENTS.md`、`DATA.md`、`PROJECT.md`、`DEVELOPMENT.md` は、実装した時点で更新する（[実装計画 §4](IMPLEMENTATION_PLAN.md)）。

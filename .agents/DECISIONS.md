@@ -7,7 +7,29 @@
 
 ## 採用決定済み・未実装
 
-（なし）
+公式再現の方針 D-01〜D-09（2026-11-06 に採用）。**どれもコード・スキーマ・設定に無い。** 現状の記述（`PROJECT.md`、`DATA.md`、`DEVELOPMENT.md`）は変えていない。実装したら、該当項を「実装済み」へ移し、現状の記述を合わせる。再現対象の根拠は [TARGETS](../docs/training/reproduction/TARGETS.md)（§6 に各項の採用結果）。
+
+設計書（レビュー前の設計で、実装済みではない）:
+[DB 設計](../docs/db/REPRODUCTION_DB_DESIGN.md)（候補 `data/db/reproduction.duckdb`、スキーマ `repro`）、[Pipeline 設計](../docs/training/reproduction/DATA_PIPELINE_DESIGN.md)、[実装計画](../docs/training/reproduction/IMPLEMENTATION_PLAN.md)（着手前の確認 Q1〜Q11、未解決事項、フェーズ 1〜10）。
+
+- **D-01. 公式忠実（Official-faithful）と leakage-safe（Research）を並行して持つ。** 公式忠実では、公式が test を validation・モデル選択に使うなら使う。ただし `selection_uses_test = true` を Dataset に計算して記録し、**独立した汎化性能として扱わない**。leakage-safe は train / valid / test が独立で、test を選択に使わない。評価用 DB（`resource.duckdb`）の「test を学習・検証に使わない」規則は**維持**し、例外は再現用 DB（`reproduction.duckdb`）と再現プロトコルの中だけに置く。例外を使うには、Dataset 側の `selection_uses_test` と学習設定の `data.allow_test_selection` の両方が要る。**関係**: #18（評価用セットと test の学習・検証への使用を拒否）は評価用 DB と Legacy 経路で有効のまま。矛盾しない。
+- **D-02. 公式の実効動作を、欠陥も含めて再現する。** 公式との差は 4 つに分け、混ぜない: `official_effective`（公式の実効動作）、`minimal_launch_repair`（起動のための最小補修）、`algorithm_change`（結果を変える修正）、`research_improvement`（研究上の改良）。最初以外は別の Protocol（`parent_protocol_id` と `deviations`）として登録し、公式再現とは呼ばない。
+- **D-03. MP-SENet は公式の 400 epoch、README の 2 GPU・global batch 4 を再現対象とする。** 段階的に実行する（実行は 30 分以上のジョブで、投入前に承認が要る）。**関係**: #15・#16（Global batch を厳密に保つ）と整合する。
+- **D-04. MossFormerGAN は scratch 学習とする。** `T/train.sh` は既定で `init_checkpoint_path=…/last_best_checkpoint.pt` が存在すれば finetune として始まる（G の lr 1e-4）。scratch は初期 checkpoint を渡さない（公式では `init_checkpoint_path='None'` という**文字列**）。結果にこの開始条件を明記する。**関係**: #23（AdamW の weight decay 既定 0.01）は変えない。
+- **D-05. SEMamba++ は公式 GitHub の固定 commit と、HEAD の `config.yaml` を再現対象とする。** 素材が公式と違う場合（手元の VCTK、別の雑音・RIR）は、公式素材の再現と**分け**、「公式プロトコル準拠・代替素材」と呼ぶ。「公式データセットの再現」と呼ばない。出荷状態で起動しない 4 点の最小補修は**許すが、今は実装しない**。必要になった時点で `minimal_launch_repair` の別 Protocol として決める。
+- **D-06. DFN3 は公式素材を優先する。** `dataset.cfg`、DNS4、PTDB、RIR 集合が無い間は UNKNOWN / BLOCKED とし、公式素材の Dataset は `declared_status = blocked` にする。代替素材は別プロトコル準拠として別に登録し、「出荷モデルの学習データの再現」と呼ばない。**関係**: #27（DFN3 の公式学習は出荷 ini の batch schedule と 120 epoch）は変えない。データ側（オンライン混合）が未実装。
+- **D-07. TF-GridNet は ESPnet 公開 MS-SNSD SE recipe を再現対象とし、「ESPnet 公開 SE レシピの再現」と呼ぶ（論文の実験の再現ではない）。** 生成の seed、条件、出力マニフェストを記録する。公式は未シードで再現不能なので、audio-db が足す決定性は**文書化した差**（`deviations`）として残す。**関係**: #26（TF-GridNet の公式学習。**単一プロセスの chunk 分割**、VoiceBank を使う）は、MS-SNSD の事前生成と複数 rank の chunk 計画を足すことで拡張される。#26 と #31 の「best 5 は valid loss 最小と valid si_snr 最大」は、TARGETS が確認した実効（`si_snr` は stats に無く無効、実効は `valid.loss` のみ、TF-Locoformer は `ave_5best`）と食い違う。実装時に Trainer の選択規則を実効に合わせる（`ave_5best` は未実装。IMPLEMENTATION_PLAN フェーズ 7）。
+- **D-08. TF-Locoformer は段階的に実施する: 小規模な生成の検証（S1・S2）→ 公式の 3000 h（約 360,000 本、約 1.04 TB、S4）。** 今は生成しない。保存先、I/O、所要時間、再開、失敗時の扱いは設計済み（DB 設計 §9）。**30 分以上の TSUBAME ジョブは、投入前に別の承認が要る。** `cv_synthetic_small`（公式に作成スクリプトも件数も無い）は**未解決のまま**維持する。**関係**: #31（TF-Locoformer の研究設定は VoiceBank 比較。チャンク 32,000）は研究側として残り、公式 DNS の再現は別 Dataset・別 Protocol になる。
+- **D-09. 再現の基準はプロトコルと統計的同等性で、ビット一致ではない。** ただし次は統計的同等性に任せず**厳密に**確認する: 固定の clean / noisy ペア、train / valid / test の分割、サンプリングレート、教師波形の定義、損失、optimizer・scheduler の更新規則、checkpoint 選択の規則。確率的な混合と生成の結果は分布で受け入れる。独立実装は公式コードに実行時依存しない（#8 と同じ）。公式リストは `configs/data/lists/` へ複製して使う（`src/se/official/` は Git 管理外で将来削除される）。**関係**: #8（一致は最終波形の最大絶対誤差で判定）は推論の一致の規則で、矛盾しない。
+
+設計上の主な選択（上の決定を実装する方法。**未実装**）:
+
+- **データ定義は `reproduction.duckdb`（新規）に置く。`resource.duckdb` は変えない。** Protocol（混合の規則・分布）と Case / Realization（具体的な 1 サンプル）を分ける。固定ペアと v1 で表せる 1 ケースは**レシピ JSON v1 の `case_id`** を使い、v1 は拡張しない。v1 で表せないケースは `realization_v1` 文書（別の `doc_kind`）で表す。`corpora.audio_files` は準備時に使う行だけを `repro.assets` へ写す（ATTACH しない）。
+- **学習は DuckDB を開かない。** DB から書き出した不変のスナップショット（`numpy` の `.npz` と JSON）を読む。DuckDB の版差・不在（`.venvs/deepfilternet` は DuckDB を持たない）と書き込み・読み取りの競合を避けるため。
+- **データの計画は `(seed, epoch, world_size, rank, index)` の純関数にする。** 保存すべきデータ側の乱数状態は無く、再開と prefetch の破棄が安全になる。公式の sampler の癖（MP-SENet の 1 GPU 時の固定 shuffle、MossFormerGAN の rank 固定割り当て、SEMamba++ の rank ごとの別 shuffle）は `OrderPolicy` で個別に再現する。
+- **オンライン混合（DFN3、SEMamba++）は専用実装**とし、共通の混合エンジンを作らない。共有するのは Sampler、素材の索引、音声 I/O だけ。
+- **事前生成は計画 → 生成 → 検証の 3 段階。** shard のマニフェストがあることだけが完了の証拠で、`data/staging/reproduction/` のマニフェストが DB の再構築元になる。生成条件が変わると別のディレクトリになり、既存の生成物を上書き・削除しない。
+- 設計の前提確認: 現在の `data/db/resource.duckdb` には `eval` スキーマが無い（`corpora.audio_files` だけ。2026-11-06 に読み取り専用で確認）。`DATA.md` の記述と食い違うので、leakage 監査はこの状態では `UNKNOWN` になる。正本の整合は別途確認する。
 
 ## 実装済み
 

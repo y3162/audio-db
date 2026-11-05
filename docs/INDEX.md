@@ -14,9 +14,12 @@
 | 比較した条件・数値・制限・結果の保存先、未解決事項 | [学習検証](training/VERIFICATION.md)、[短い再開と Whisper 評価](training/RESIDUAL_20261104.md) |
 | ジョブ継続の実装・未検証範囲 | [ジョブ継続の検証](training/JOB_CONTINUATION_AUDIT.md) |
 | 実験案と評価順序 | [実験計画](training/EXPERIMENT_PLAN.md)（案と実装済み事項を区別） |
+| 6 モデルの公式再現: 再現対象、採用した方針 D-01〜D-09 | [TARGETS](training/reproduction/TARGETS.md)、[OVERVIEW](training/reproduction/OVERVIEW.md) |
+| 公式再現のデータ設計（**設計のみ・未実装**）: Pipeline、実装計画 | [Pipeline 設計](training/reproduction/DATA_PIPELINE_DESIGN.md)、[実装計画](training/reproduction/IMPLEMENTATION_PLAN.md) |
 
 ## データと評価
 
+- [再現用 DB の設計](db/REPRODUCTION_DB_DESIGN.md)（**設計のみ・未実装**。`reproduction.duckdb`）
 - [コーパスと VoiceBank の分割](db/CORPORA.md)、[対応データセット](db/DATASETS.md)、[音声ファイル表](db/tables/AUDIO_FILES.md)
 - [DB セットアップ](db/SETUP.md)、[音声生成レシピ](db/RECIPE.md)、[学習スモークセット](db/TRAINING_SETS.md)、[TSUBAME 初回構築の記録](db/TSUBAME_INITIAL.md)
 - [評価パイプライン](evaluation/PIPELINE.md)、[PESQ の長さ依存と欠損](evaluation/PESQ_LENGTH_INVESTIGATION.md)
