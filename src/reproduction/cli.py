@@ -74,6 +74,10 @@ def main(argv: list[str] | None = None) -> int:
     prepare.add_argument("--config-root", default=str(ROOT / "configs" / "data"))
     prepare.add_argument("--workers", type=int, default=8)
 
+    ms_snsd = commands.add_parser("ms-snsd")
+    ms_snsd.add_argument("--config", required=True)
+    ms_snsd.add_argument("--step", required=True, choices=("plan", "generate", "register"))
+
     register = commands.add_parser("register-run")
     register.add_argument("--database", required=True)
     register.add_argument("--provenance", required=True)
@@ -166,6 +170,14 @@ def _run(args: argparse.Namespace) -> int:
                 workers=args.workers,
             ),
         )
+        return 0
+    if args.command == "ms-snsd":
+        import json
+
+        from src.reproduction.prepare.ms_snsd_run import run_config
+
+        summary = run_config(Path(args.config), args.step)
+        print(json.dumps(summary, sort_keys=True))
         return 0
     if args.command == "register-run":
         import json

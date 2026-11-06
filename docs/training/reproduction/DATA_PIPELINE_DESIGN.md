@@ -1,6 +1,6 @@
 # 再現用 Data Pipeline 設計
 
-状態: **固定ペアの学習 Pipeline と ESPnet chunk の複数 rank は実装済み**（2026-11-06、P3 と P5）。P1 の DB コマンドと P2 の `make reproduction-prepare` に加え、`src/reproduction/pipeline/` が MP-SENet と MossFormerGAN のスナップショットを Trainer へ渡す。`espnet_chunk_v1` は `chunking.py` の `plan_chunk_epoch` で、world size 1・2・4 と `data.virtual_world_size` を計画する。事前生成の実行とオンライン混合は未実装。検証は [P3_VERIFICATION](P3_VERIFICATION.md) と [P5_VERIFICATION](P5_VERIFICATION.md)。
+状態: **固定ペアの学習 Pipeline、ESPnet chunk の複数 rank、MS-SNSD 事前生成の読み込みは実装済み**（2026-11-06、P3・P5・P6）。`src/reproduction/pipeline/` が MP-SENet と MossFormerGAN のスナップショットを Trainer へ渡す。`pipeline/pregenerated.py` は MS-SNSD の shape 順を `espnet_chunk_v1` に渡す。`espnet_chunk_v1` は `chunking.py` の `plan_chunk_epoch` で、world size 1・2・4 と `data.virtual_world_size` を計画する。オンライン混合は未実装。検証は [P3_VERIFICATION](P3_VERIFICATION.md)、[P5_VERIFICATION](P5_VERIFICATION.md)、[P6_VERIFICATION](P6_VERIFICATION.md)。
 
 ## 0. 位置づけと正本の分担
 

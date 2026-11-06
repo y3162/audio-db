@@ -104,7 +104,20 @@ def execute(config_path: str | Path, *, resume: str | Path | None = None,
         )
     task = build_task(config, process.device)
     sample_rate = int(config["model"]["sampling_rate"])
-    if data.get("pipeline") == "reproduction":
+    if data.get("pipeline") == "reproduction" and config.get("chunk_iterator"):
+        from src.reproduction.pipeline.pregenerated import open_chunk_datasets
+
+        train, validation = open_chunk_datasets(
+            dataset=data["dataset"],
+            load_workers=data["load_workers"],
+            verify_on_read=data["verify_on_read"],
+        )
+        if config["model"]["name"] != "tf_gridnet" or train.algorithm != "pregenerated.ms_snsd_tfgridnet":
+            train.close()
+            raise TrainingError(
+                f"model {config['model']['name']} does not match pregenerated dataset {train.algorithm}"
+            )
+    elif data.get("pipeline") == "reproduction":
         from src.reproduction.pipeline.training_data import open_training_data
 
         train = open_training_data(

@@ -1,0 +1,80 @@
+# One-epoch entry check for the scaled-down MS-SNSD snapshot.
+# Official recipe values that this smoke keeps: 16 kHz, chunk 48000, shift 0.5,
+# global batch 4, virtual world 2 so each rank sees batch 2, Adam 1e-3, grad clip 5.
+# num_samples_per_epoch is 1 here. The official rank budget of 5000 is covered
+# by tests/reproduction/test_p6_pipeline.py. This file does not run 30 h of data.
+
+seed: 17
+deterministic: false
+global_batch_size: 4
+micro_batch_size_per_gpu: 2
+max_steps: 20
+segment_size: 48000
+loss: official
+grad_clip: 5.0
+checkpoint_dir: data/results/se-repro/p6-tfgridnet-smoke
+checkpoint_interval: 1
+validation_interval: 0
+best_checkpoint_start_epoch: 0
+
+chunk_iterator:
+  num_samples_per_epoch: 1
+  chunk_length: 48000
+  chunk_shift_ratio: 0.5
+  num_cache_chunks: 1024
+  shuffle: true
+  max_epochs: 1
+  early_stopping_patience: 5
+  keep_nbest: 1
+
+optimizer:
+  name: adam
+  lr: 0.001
+  betas: [0.9, 0.999]
+  weight_decay: 0.0
+
+scheduler:
+  name: plateau
+  factor: 0.7
+  patience: 1
+
+model:
+  name: tf_gridnet
+  variant: ms-snsd
+  sampling_rate: 16000
+  architecture:
+    n_fft: 512
+    stride: 256
+    n_layers: 4
+    lstm_hidden_units: 128
+    attn_n_head: 4
+    attn_approx_qk_dim: 512
+    emb_dim: 32
+    emb_ks: 4
+    emb_hs: 4
+    activation: prelu
+    eps: 1.0e-5
+  stft: {}
+
+data:
+  pipeline: reproduction
+  dataset: tf_gridnet.ms_snsd.smoke@1
+  allow_test_selection: false
+  virtual_world_size: 2
+  load_workers: 1
+  prefetch: false
+  verify_on_read: false
+
+runtime:
+  device: cuda
+  allow_busy_gpu: false
+
+logging:
+  tensorboard:
+    enabled: false
+    scalar_interval: 10
+    audio:
+      enabled: false
+      max_cases: 0
+      max_seconds: 1
+    spectrogram: false

@@ -6,8 +6,8 @@ builds its own ``numpy.random.RandomState(epoch + seed)`` after the utterance
 shard is chosen, which is what separate ESPnet processes do.
 
 ESPnet's base order is the shape-file order from ``UnsortedBatchSampler``.
-That file does not exist until a corpus is generated, so this function keeps
-the caller's list order and does not sort it.
+This function keeps the caller's list order and does not sort it. The
+MS-SNSD dataset passes utterance ids in ``speech_mix_shape`` order.
 
 ``global_batch`` must be divisible by ``world_size``. The pinned ESPnet
 factory gives the remainder to the lowest ranks instead. The published

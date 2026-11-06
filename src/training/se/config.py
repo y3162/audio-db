@@ -155,12 +155,9 @@ def load_training_config(path: str | Path) -> dict[str, Any]:
             "spectrogram": _bool(tb.get("spectrogram", False), "logging.tensorboard.spectrogram"),
         }}
     reproduction = config["data"].get("pipeline") == "reproduction"
-    if reproduction and (
-        "logical_steps_per_epoch" in raw or "chunk_iterator" in raw or "batch_schedule" in raw
-    ):
+    if reproduction and ("logical_steps_per_epoch" in raw or "batch_schedule" in raw):
         raise TrainingError(
-            "reproduction data cannot be combined with logical_steps_per_epoch, "
-            "chunk_iterator, or batch_schedule"
+            "reproduction data cannot be combined with logical_steps_per_epoch or batch_schedule"
         )
     if "logical_steps_per_epoch" in raw:
         config["logical_steps_per_epoch"] = _int(raw["logical_steps_per_epoch"], "logical_steps_per_epoch")
@@ -168,7 +165,7 @@ def load_training_config(path: str | Path) -> dict[str, Any]:
             raise TrainingError("logical_steps_per_epoch requires validation_set")
     if "chunk_iterator" in raw:
         config["chunk_iterator"] = _chunk_iterator(raw["chunk_iterator"])
-        if not config["data"]["validation_set"]:
+        if not reproduction and not config["data"]["validation_set"]:
             raise TrainingError("chunk_iterator requires validation_set")
         if "logical_steps_per_epoch" in config:
             raise TrainingError("chunk_iterator cannot be combined with logical_steps_per_epoch")
@@ -425,16 +422,13 @@ def _legacy_data(raw: dict[str, Any]) -> dict[str, Any]:
 
 def _reproduction_data(raw: dict[str, Any]) -> dict[str, Any]:
     _unknown(raw, _REPRODUCTION_DATA, "data")
-    if raw.get("virtual_world_size") is not None:
-        raise TrainingError(
-            "data.virtual_world_size is implemented for the ESPnet chunk iterator, not for reproduction datasets"
-        )
     dataset = raw.get("dataset")
     if not isinstance(dataset, str):
         raise TrainingError("data.dataset must be name@version")
     name, separator, version = dataset.rpartition("@")
     if separator != "@" or not name or not version.isdigit() or int(version) < 1:
         raise TrainingError("data.dataset must be name@version")
+    virtual = raw.get("virtual_world_size")
     return {
         "pipeline": "reproduction",
         "dataset": dataset,
@@ -442,7 +436,7 @@ def _reproduction_data(raw: dict[str, Any]) -> dict[str, Any]:
             raw.get("allow_test_selection", False),
             "data.allow_test_selection",
         ),
-        "virtual_world_size": None,
+        "virtual_world_size": None if virtual is None else _int(virtual, "data.virtual_world_size", minimum=1),
         "load_workers": _int(raw.get("load_workers", 4), "data.load_workers", minimum=1),
         "prefetch": _bool(raw.get("prefetch", True), "data.prefetch"),
         "verify_on_read": _bool(raw.get("verify_on_read", False), "data.verify_on_read"),

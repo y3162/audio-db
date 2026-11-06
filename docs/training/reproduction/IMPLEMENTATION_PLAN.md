@@ -1,6 +1,6 @@
 # 再現用 DB・Data Pipeline の実装計画
 
-状態: **P1〜P5 は実装済み。** P1 は合成データの単体テスト。P2 は VoiceBank-DEMAND の実ファイルで、MP-SENet と MossFormerGAN の 4 Dataset とスナップショットまで完了している。P3 は固定ペアの Pipeline、Legacy アダプタ、Trainer 接続まで完了している。P4 は checkpoint の `data_provenance.json`、`repro.runs` への事後登録、評価結果の `independent` まで完了している。P5 は ESPnet chunk iterator の複数 rank と virtual rank で、合成データと短い DDP スモークまで完了している。検証は [P3_VERIFICATION](P3_VERIFICATION.md)、[P4_VERIFICATION](P4_VERIFICATION.md)、[P5_VERIFICATION](P5_VERIFICATION.md)。**P6 は生成式と 1 クリップの書き出しまでで、登録・全量生成・学習接続は未完了。P7〜P10 は未着手。** フェーズ 6 以降は、この計画の受け入れ条件をそのまま使う。
+状態: **P1〜P5 は実装済み。** P1 は合成データの単体テスト。P2 は VoiceBank-DEMAND の実ファイルで、MP-SENet と MossFormerGAN の 4 Dataset とスナップショットまで完了している。P3 は固定ペアの Pipeline、Legacy アダプタ、Trainer 接続まで完了している。P4 は checkpoint の `data_provenance.json`、`repro.runs` への事後登録、評価結果の `independent` まで完了している。P5 は ESPnet chunk iterator の複数 rank と virtual rank で、合成データと短い DDP スモークまで完了している。検証は [P3_VERIFICATION](P3_VERIFICATION.md)、[P4_VERIFICATION](P4_VERIFICATION.md)、[P5_VERIFICATION](P5_VERIFICATION.md)。**P6 は小規模 Dataset の登録・スナップショット・学習入口まで実装した。公式規模の 30 h / 1 h 生成は別 Build で、完了するまで ready にしない。P7〜P10 は未着手。** 検証は [P6_VERIFICATION](P6_VERIFICATION.md)。 フェーズ 6 以降は、この計画の受け入れ条件をそのまま使う。
 
 設計の正本: [REPRODUCTION_DB_DESIGN](../../db/REPRODUCTION_DB_DESIGN.md)（DB）、[DATA_PIPELINE_DESIGN](DATA_PIPELINE_DESIGN.md)（Pipeline）。再現対象の正本: [TARGETS](TARGETS.md)。採用決定: [DECISIONS](../../../.agents/DECISIONS.md) の D-01〜D-09。
 

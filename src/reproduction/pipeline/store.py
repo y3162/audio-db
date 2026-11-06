@@ -62,9 +62,22 @@ class AssetStore:
         corpora: str | Path = DEFAULT_CORPORA,
         generated: str | Path = DEFAULT_GENERATED,
     ) -> AssetStore:
+        assets = list(loaded.assets)
+        for row in loaded.generated:
+            assets.append(
+                {
+                    "asset_id": row["asset_id"],
+                    "rel_path": row["rel_path"],
+                    "sample_rate": int(row["sample_rate"]),
+                    "frames": int(row["frames"]),
+                    "channels": int(row["channels"]),
+                    "sha256": row.get("sha256"),
+                    "integrity": row["integrity"],
+                }
+            )
         return cls(
             loaded.dataset,
-            loaded.assets,
+            assets,
             loaded.cases,
             loaded.case_set_items,
             snapshot_hash=loaded.snapshot_hash,

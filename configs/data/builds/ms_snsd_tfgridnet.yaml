@@ -1,0 +1,19 @@
+# Official-scale MS-SNSD generation for the ESPnet public SE recipe.
+# Not a TF-GridNet paper experiment. Commit 0d136c5456d403cb2c0a4c13e76e8136e32e9b7a.
+# max_clips is null: generation stops at total_hours, counting every SNR copy.
+# Do not start the full render until its measured runtime is accepted.
+
+name: tf_gridnet.ms_snsd.espnet_recipe
+seed: 17
+shard_size: 1000
+claim_label: espnet_public_se_recipe_reproduction
+train:
+  total_hours: 30
+  max_clips: null
+  clean_limit: null
+  noise_limit: null
+test:
+  total_hours: 1
+  max_clips: null
+  clean_limit: null
+  noise_limit: null

@@ -312,7 +312,38 @@ def _insert_rows(connection, spec: TableSpec, rows: list[dict[str, Any]]) -> Non
         for batch in _asset_batches(rows):
             _copy_rows(connection, spec, batch)
         return
+    if spec.name == "protocols":
+        for batch in _protocol_batches(rows):
+            _copy_rows(connection, spec, batch)
+        return
     _copy_rows(connection, spec, rows)
+
+
+def _protocol_batches(rows: list[dict[str, Any]]) -> list[list[dict[str, Any]]]:
+    """Insert a parent protocol before the child that references it.
+
+    DuckDB checks the foreign key while copying a batch, so a child cannot
+    share an INSERT with its parent.
+    """
+    pending = {row["protocol_id"] for row in rows}
+    remaining = list(rows)
+    inserted: set[str] = set()
+    batches: list[list[dict[str, Any]]] = []
+    while remaining:
+        ready = []
+        rest = []
+        for row in remaining:
+            parent = row.get("parent_protocol_id")
+            if not parent or parent not in pending or parent in inserted:
+                ready.append(row)
+            else:
+                rest.append(row)
+        if not ready:
+            raise ReproductionError("protocol parent links do not form an insertable order")
+        batches.append(ready)
+        inserted.update(row["protocol_id"] for row in ready)
+        remaining = rest
+    return batches
 
 
 def _asset_batches(rows: list[dict[str, Any]]) -> list[list[dict[str, Any]]]:

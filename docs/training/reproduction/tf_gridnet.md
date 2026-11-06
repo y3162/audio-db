@@ -129,7 +129,7 @@ audio-db の `docs/se/MODELS.md:29` は論文 (b) を引用している。
 ### B-3 audio-db 側の学習データ（現状）
 
 - `configs/training/tf_gridnet.yaml` は VoiceBank-DEMAND の 28 話者分割（`voicebank_28_train` 10,700 件 / `voicebank_28_valid` 872 件）を使う [configs/training/tf_gridnet.yaml : L68-L70]。件数は既存 docs の値で、`data/db/voicebank.duckdb` が無いため再確認できない。【確認:設定】件数は【UNKNOWN】（再検証不能）
-- MS-SNSD はコーパス索引にあるが、**MS-SNSD を使う学習セットは無い**。生成も実装していない。
+- MS-SNSD の事前生成は `src/reproduction/build/ms_snsd.py` にある。登録済みの学習入口は小規模 Dataset `tf_gridnet.ms_snsd.smoke@1` で、公式規模の 30 h / 1 h とは別 Build である。状態は [P6_VERIFICATION](P6_VERIFICATION.md)。
 - **重複リスク**: MS-SNSD の clean に Edinburgh 56 speaker、noise に DEMAND が入っている。VoiceBank-DEMAND は同系の音声と雑音から作られた対だが、同一ファイルが含まれるかは、ファイル名が変わっているため不明。【UNKNOWN】（確認案: 16 kHz へ変換した波形の指紋照合）
 
 ---

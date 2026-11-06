@@ -1,7 +1,8 @@
 .PHONY: help setup setup-env assets assets-check doctor test-setup \
 	db-ingest db-init db-link db-bootstrap df-rfft \
 	reproduction-doctor reproduction-init-db reproduction-snapshot \
-	reproduction-rebuild-db reproduction-verify reproduction-prepare
+	reproduction-rebuild-db reproduction-verify reproduction-prepare \
+	reproduction-plan-build reproduction-build reproduction-register
 
 ROOT := $(abspath $(dir $(lastword $(MAKEFILE_LIST))))
 WITH_ENV := $(ROOT)/scripts/setup/with_env.sh
@@ -101,6 +102,7 @@ REPRO_RESOURCE ?= $(ROOT)/data/db/resource.duckdb
 DATASET ?=
 OUT ?=
 BUILD ?=
+MS_SNSD_CONFIG ?= configs/data/builds/ms_snsd_tfgridnet_smoke.yaml
 HASH ?=
 ALLOW_UNKNOWN_LEAK_CHECK ?=
 STEP ?= all
@@ -123,3 +125,12 @@ reproduction-verify:
 
 reproduction-prepare:
 	$(WITH_ENV) $(PYTHON) -m src.reproduction.cli prepare --database "$(REPRO_DB)" --staging "$(REPRO_STAGING)" --snapshots "$(REPRO_SNAPSHOTS)" --resource-db "$(REPRO_RESOURCE)" --step "$(STEP)" --workers "$(WORKERS)"
+
+reproduction-plan-build:
+	$(WITH_ENV) $(PYTHON) -m src.reproduction.cli ms-snsd --config "$(MS_SNSD_CONFIG)" --step plan
+
+reproduction-build:
+	$(WITH_ENV) $(PYTHON) -m src.reproduction.cli ms-snsd --config "$(MS_SNSD_CONFIG)" --step generate
+
+reproduction-register:
+	$(WITH_ENV) $(PYTHON) -m src.reproduction.cli ms-snsd --config "$(MS_SNSD_CONFIG)" --step register
