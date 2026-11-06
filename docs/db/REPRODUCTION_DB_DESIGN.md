@@ -1,6 +1,6 @@
 # 再現用データ基盤の DB 設計
 
-状態: **P1 の DB 基盤は実装済み**（2026-11-06）。`data/db/reproduction.duckdb` は空の ready な `repro` スキーマ。実コーパスの Dataset、事前生成の実行、学習からの読み込みは未実装。
+状態: **P1 の DB 基盤は実装済み**（2026-11-06）。`reproduction.duckdb` には VoiceBank 固定ペア 4 Dataset と、MS-SNSD の保存済み WAV Dataset、オンデマンド Dataset がある。学習はスナップショットを読み、生成済み WAV を必須にしない。詳細は [P6_VERIFICATION](../training/reproduction/P6_VERIFICATION.md)。
 
 P1 で設計からずらした点: `rule_json` は `src/reproduction/ids.py` の閉じたアルゴリズム封筒（完全な Protocol dataclass は P3）。生成素材は `assets.npz` に入れず `generated.json` に書く。leak 監査は `--resource-db` を渡したときだけ `resource.duckdb` を開く。監査に時刻は無く、PASS が存在し FAIL が無いことを使用条件にする。`sha256` の NULL から値への更新だけを `asset_hashes/` 経由で許す。`integrity = sha256` は Python 側で `size_bytes` も要求する。`official_reproduction` は `declared_status = blocked` を拒否する（DFN3 の blocked 公式 Dataset は P8 でラベルを決める）。
 
@@ -599,7 +599,11 @@ data/staging/reproduction/
 
 ## 9. 事前生成の保存・再開
 
-対象: TF-GridNet（MS-SNSD）、TF-Locoformer（DNS 2020 の合成 3000 時間）。**今回は生成しない。**
+対象: TF-GridNet（MS-SNSD）、TF-Locoformer（DNS 2020 の合成 3000 時間）。
+
+2026-11-06 の変更: 学習に必要なのは Build の計画（`realization_v1`）と元素材の参照である。`rule_json.delivery = on_demand` の Case は `clean_asset_id` と `noisy_asset_id` を空にし、スナップショットの `docs.jsonl` に文書を書く。生成 WAV は資産にしない。`build_verification` は条件の検査で、`wav_files = 0` と `shard_ids = ["conditions"]` を記録する。公式規模の全ファイルハッシュは、上限の無い走査になるため CLI が拒否する。
+
+下の WAV 保存の表は、保存済み WAV を読む旧 Dataset（`tf_gridnet.ms_snsd.smoke@1`）と、`write_build` の単体テストに残る経路である。新しい学習 Dataset は WAV を作らない。
 
 ### 9.1 保存の責務
 
@@ -722,7 +726,7 @@ Build の ID は件数を含まないので、**小さい段階の生成物は�
 | MossFormerGAN | `fixed_pair.mossformergan_se_16k` | 固定ペア | `mossformergan.vb28.official`（`official_reproduction`、`derived_from_official`。11,572 / 824、`selection_uses_test = true`。公式 scp は事前変換済み 16 kHz 版で変換法 UNKNOWN）、`mossformergan.vb28.safe`（`leakage_safe_comparison`） | scratch 開始（D-04）は学習設定側（初期 checkpoint を渡さない）。Dataset とは無関係 |
 | DeepFilterNet3 | `online.dfn3` | オンライン混合 | `dfn3.dns4_ptdb.official`（`declared_status = blocked`。`blocking_json`: DNS4、PTDB、`dataset.cfg`、RIR 集合、`sampling_factor`）。代替素材: `dfn3.substitute.<素材>`（`protocol_conformant_substitute_materials`） | 公式素材を入手するまで学習に使えない（D-06） |
 | SEMamba++ | `online.semambapp_gsr`（HEAD の `config.yaml`。起動不能の最小補修は `deviation_class = minimal_launch_repair` の別 Protocol） | オンライン混合 | 公式素材（VCTK 0.92 と Arni RIR など）: 入手まで `blocked` または `unknown`。代替素材（手元の VCTK、WHAM48 と DNS2020 の雑音、DNS5 と OpenSLR の RIR）: `protocol_conformant_substitute_materials` | 手元の VCTK は 108 話者・44,085 本（確認: §2.3）。公式の 0.92（p280、p315 除外）と同一かは UNKNOWN |
-| TF-GridNet | `pregenerated.ms_snsd_tfgridnet` | 事前生成 | `tf_gridnet.ms_snsd.espnet_recipe`（`espnet_public_se_recipe_reproduction`。seed 固定は差として記録） | §9.7 |
+| TF-GridNet | `pregenerated.ms_snsd_tfgridnet` | 事前生成。学習は `delivery: on_demand` で条件から再構築する。保存済み WAV の `tf_gridnet.ms_snsd.smoke@1` は旧経路 | `tf_gridnet.ms_snsd.ondemand`（`official_recipe_scaled_down`。公式規模は未登録） | §9 |
 | TF-Locoformer | `pregenerated.dns_tflocoformer` | 事前生成 | `tf_locoformer.dns.s1`〜`s4`（`official_recipe_scaled_down`。S4 は生成規模が公式だが、検証集合 `cv_synthetic_small` が公式と同じと確認できる（UNKNOWN の解消）までこのラベルのまま） | §9.6 |
 
 16 kHz 化は P2 で実装した。公式の事前変換器は不明なままである。派生素材は soxr 1.1.0 の HQ、soundfile 0.14.0 の PCM_16 で、`data/derived/VoiceBank-DEMAND/soxr_hq_16000/` に置く。Q6 のとおり `official_reproduction` を名乗り、`deviations_json` に変換器が不明であることを書く。同じ 16 kHz ペアのレシピは 1 つの `case_id` になるため、MP-SENet と MossFormerGAN は case 行を共有する。`cases.protocol_id` は `mp_senet.fixed_pair` を指す。学習時の正規化・窓・順序は Dataset の protocol を読む。DuckDB は COPY 中に asset の外部キーを検査するので、親の corpora 素材を派生素材より先に挿入する。

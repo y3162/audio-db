@@ -225,7 +225,8 @@ def _parts(graph: Graph, dataset: dict[str, Any]) -> tuple[dict[str, Any], list[
         for key in ("clean_asset_id", "noisy_asset_id", "noise_asset_id"):
             if case.get(key):
                 asset_ids.add(case[key])
-        if case["case_role"] != "generated":
+        delivery = (protocol.get("rule_json") or {}).get("delivery")
+        if case["case_role"] != "generated" or delivery == "on_demand":
             docs.append({"case_id": case["case_id"], "doc_json": case["doc_json"]})
     chosen_cases.sort(key=lambda row: row["case_id"])
     docs.sort(key=lambda row: row["case_id"])

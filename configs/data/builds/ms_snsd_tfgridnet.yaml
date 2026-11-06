@@ -1,7 +1,8 @@
-# Official-scale MS-SNSD generation for the ESPnet public SE recipe.
+# Official-scale MS-SNSD plan for the ESPnet public SE recipe.
 # Not a TF-GridNet paper experiment. Commit 0d136c5456d403cb2c0a4c13e76e8136e32e9b7a.
-# max_clips is null: generation stops at total_hours, counting every SNR copy.
-# Do not start the full render until its measured runtime is accepted.
+# The CLI refuses this file: clean_limit and noise_limit are unbounded, and
+# stored wav generation is disabled. Hashing the full source lists is a long
+# IO job and needs a separate approval. Do not remove the limits to start it.
 
 name: tf_gridnet.ms_snsd.espnet_recipe
 seed: 17

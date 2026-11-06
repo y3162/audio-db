@@ -167,10 +167,25 @@ def open_chunk_datasets(
     derived_root: str | Path | None = None,
     corpora_root: str | Path | None = None,
     generated_root: str | Path | None = None,
-) -> tuple[GeneratedChunkData, GeneratedChunkData]:
-    """Train and valid views of one snapshot. Both share the loaded files."""
+):
+    """Train and valid views of one snapshot.
+
+    ``delivery: on_demand`` reconstructs PCM from the realization document.
+    A snapshot without that key still reads stored generated wavs.
+    """
     root = Path(DEFAULT_SNAPSHOTS if snapshot_root is None else snapshot_root)
     loaded = load_snapshot(find_snapshot_dir(root, dataset))
+    if (loaded.dataset.get("rule_json") or {}).get("delivery") == "on_demand":
+        from src.reproduction.pipeline.ondemand import open_ondemand_datasets
+
+        return open_ondemand_datasets(
+            loaded,
+            load_workers=load_workers,
+            verify_on_read=verify_on_read,
+            derived_root=DEFAULT_DERIVED if derived_root is None else derived_root,
+            corpora_root=DEFAULT_CORPORA if corpora_root is None else corpora_root,
+            generated_root=DEFAULT_GENERATED if generated_root is None else generated_root,
+        )
     store = AssetStore.from_snapshot(
         loaded,
         derived=DEFAULT_DERIVED if derived_root is None else derived_root,

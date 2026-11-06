@@ -247,7 +247,7 @@ def plan_realizations(
 
 def render_realization(
     document: dict[str, Any],
-    directory_for: dict[str, Path],
+    directory_for: dict[str, Path | dict[str, Path]],
 ) -> dict[str, np.ndarray]:
     """Mix one planned realization. Draws are read from the document, not from a new RNG."""
     clean = _render_pieces(document["sources"]["speech"], directory_for["speech"])
@@ -404,13 +404,19 @@ def _realization(definition: dict[str, Any], clip: dict[str, Any], gen_index: in
     }
 
 
-def _render_pieces(pieces: Sequence[dict[str, Any]], directory: Path) -> np.ndarray:
+def _render_pieces(pieces: Sequence[dict[str, Any]], directory: Path | dict[str, Path]) -> np.ndarray:
     chunks: list[np.ndarray] = []
     for piece in pieces:
         if "silence" in piece:
             chunks.append(np.zeros(int(piece["silence"]), dtype=np.float64))
             continue
-        path = directory / str(piece["name"])
+        name = str(piece["name"])
+        if isinstance(directory, dict):
+            path = directory.get(name)
+            if path is None:
+                raise ReproductionError(f"realization source {name} is not in the material set")
+        else:
+            path = directory / name
         audio, rate = sf.read(path, dtype="float64", always_2d=False)
         if int(rate) != SAMPLE_RATE:
             raise ReproductionError(f"{path} is {rate} Hz; MS-SNSD generation does not resample")

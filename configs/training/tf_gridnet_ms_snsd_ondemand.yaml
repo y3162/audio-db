@@ -1,0 +1,78 @@
+# Data connection for tf_gridnet.ms_snsd.ondemand@1.
+# Mixes are reconstructed when a batch is collated. This file was not launched.
+# A GPU or long job still needs a separate approval.
+
+seed: 17
+deterministic: false
+global_batch_size: 4
+micro_batch_size_per_gpu: 2
+max_steps: 1
+segment_size: 48000
+loss: official
+grad_clip: 5.0
+checkpoint_dir: data/results/se-repro/p6-tfgridnet-ondemand
+checkpoint_interval: 1
+validation_interval: 0
+best_checkpoint_start_epoch: 0
+
+chunk_iterator:
+  num_samples_per_epoch: 4
+  chunk_length: 48000
+  chunk_shift_ratio: 0.5
+  num_cache_chunks: 4
+  shuffle: true
+  max_epochs: 1
+  early_stopping_patience: 5
+  keep_nbest: 1
+
+optimizer:
+  name: adam
+  lr: 0.001
+  betas: [0.9, 0.999]
+  weight_decay: 0.0
+
+scheduler:
+  name: plateau
+  factor: 0.7
+  patience: 1
+
+model:
+  name: tf_gridnet
+  variant: ms-snsd
+  sampling_rate: 16000
+  architecture:
+    n_fft: 512
+    stride: 256
+    n_layers: 4
+    lstm_hidden_units: 128
+    attn_n_head: 4
+    attn_approx_qk_dim: 512
+    emb_dim: 32
+    emb_ks: 4
+    emb_hs: 4
+    activation: prelu
+    eps: 1.0e-5
+  stft: {}
+
+data:
+  pipeline: reproduction
+  dataset: tf_gridnet.ms_snsd.ondemand@1
+  allow_test_selection: false
+  virtual_world_size: 2
+  load_workers: 1
+  prefetch: false
+  verify_on_read: false
+
+runtime:
+  device: cpu
+  allow_busy_gpu: false
+
+logging:
+  tensorboard:
+    enabled: false
+    scalar_interval: 10
+    audio:
+      enabled: false
+      max_cases: 0
+      max_seconds: 1
+    spectrogram: false

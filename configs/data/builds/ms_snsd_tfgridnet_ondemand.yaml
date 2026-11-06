@@ -1,0 +1,24 @@
+# On-demand MS-SNSD conditions for the ESPnet public SE recipe.
+# Not the 30 h / 1 h corpus, and not a stored-wav build.
+# ESPnet commit 0d136c5456d403cb2c0a4c13e76e8136e32e9b7a, recipe egs2/ms_snsd/enh1.
+# delivery on_demand: register the plan and the source files, then mix at train time.
+
+name: tf_gridnet.ms_snsd.ondemand
+seed: 17
+shard_size: 5
+claim_label: official_recipe_scaled_down
+delivery: on_demand
+train:
+  total_hours: 30
+  max_clips: 5
+  clean_limit: 40
+  clean_max_frames: 160000
+  noise_limit: 8
+  noise_min_frames: 192000
+test:
+  total_hours: 1
+  max_clips: 1
+  clean_limit: 8
+  clean_max_frames: 495999
+  noise_limit: 4
+  noise_min_frames: 192000

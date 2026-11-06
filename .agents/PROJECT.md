@@ -15,7 +15,7 @@
 | `src/asr/` | 独立した ASR モデルと共通 API。Parakeet、Whisper、Wav2Vec2、HuBERT、WavLM | `load_recognizer()` → `transcribe()` |
 | `src/evaluation/` | 評価パイプライン（入力 → レシピがあれば波形生成 → SE → ASR → 指標 → 結果保存）。SE と ASR は共通 API だけを呼ぶ | `python -m src.evaluation.cli` |
 | `src/data/` | コーパスの走査、レシピの検証とケース ID、永続ステージング、DuckDB（`corpora`・`eval` スキーマ）の管理 | `make db-ingest`、`make db-init` |
-| `src/reproduction/` | 公式再現用の DB（`repro` スキーマ）、staging、監査、スナップショット、VoiceBank 固定ペアの準備、MS-SNSD の事前生成。学習ループは持たない。固定ペアの学習時読み込みは `pipeline/` がスナップショットだけを読む。事前生成の chunk 読み込みは `pipeline/pregenerated.py`。ESPnet chunk の複数 rank 計画は `pipeline/chunking.py` が、呼び出し側の発話順（shape file 順）と長さの列から作り、DuckDB も音声も読まない | `python -m src.reproduction.cli` |
+| `src/reproduction/` | 公式再現用の DB（`repro` スキーマ）、staging、監査、スナップショット、VoiceBank 固定ペアの準備、MS-SNSD の混合計画。学習ループは持たない。固定ペアの学習時読み込みは `pipeline/` がスナップショットだけを読む。`delivery: on_demand` の MS-SNSD は `pipeline/ondemand.py` が条件と元素材から PCM_16 を再構築する。保存済み WAV は `pipeline/pregenerated.py` が読む。ESPnet chunk の複数 rank 計画は `pipeline/chunking.py` が、呼び出し側の発話順と長さの列から作り、DuckDB も音声も読まない | `python -m src.reproduction.cli` |
 | `src/training/` | SE の学習。共通の Trainer・バッチ計画・checkpoint。モデルごとの損失と更新順は `src/training/se/`。推論 API は呼ばない | `python -m src.training.se.cli` |
 
 モデルの一覧と検証状況は `docs/se/`、`docs/asr/MODELS.md`、評価の仕様は `docs/evaluation/PIPELINE.md`。

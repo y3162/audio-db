@@ -70,6 +70,7 @@ RULE_KEYS = {
     "epoch_unit",
     "global_batch",
     "validation",
+    "delivery",
 }
 VALIDATION_KEYS = {"crop", "batch", "interval", "note"}
 REALIZATION_KEYS = {
@@ -144,7 +145,7 @@ REQUIRED_SLOTS = {
 }
 ALLOWED_SLOTS = {
     "fixed_pair": CASE_SLOTS,
-    "pregenerated": CASE_SLOTS,
+    "pregenerated": CASE_SLOTS + MATERIAL_SLOTS,
     "online_mixing": MATERIAL_SLOTS + ("valid.cases", "test.cases"),
 }
 
@@ -440,6 +441,8 @@ def validate_rule(algorithm: str, rule: Any) -> dict[str, Any]:
         for key, value in extra.items():
             if not isinstance(value, (str, int)) or isinstance(value, bool):
                 raise ReproductionError(f"rule_json.validation.{key} must be a string or integer")
+    if "delivery" in body and body["delivery"] != "on_demand":
+        raise ReproductionError("rule_json.delivery must be on_demand")
     return body
 
 

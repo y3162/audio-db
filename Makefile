@@ -102,7 +102,7 @@ REPRO_RESOURCE ?= $(ROOT)/data/db/resource.duckdb
 DATASET ?=
 OUT ?=
 BUILD ?=
-MS_SNSD_CONFIG ?= configs/data/builds/ms_snsd_tfgridnet_smoke.yaml
+MS_SNSD_CONFIG ?= configs/data/builds/ms_snsd_tfgridnet_ondemand.yaml
 HASH ?=
 ALLOW_UNKNOWN_LEAK_CHECK ?=
 STEP ?= all
@@ -130,7 +130,8 @@ reproduction-plan-build:
 	$(WITH_ENV) $(PYTHON) -m src.reproduction.cli ms-snsd --config "$(MS_SNSD_CONFIG)" --step plan
 
 reproduction-build:
-	$(WITH_ENV) $(PYTHON) -m src.reproduction.cli ms-snsd --config "$(MS_SNSD_CONFIG)" --step generate
+	@echo "stored wav generation is disabled; use reproduction-register" >&2
+	@exit 1
 
 reproduction-register:
 	$(WITH_ENV) $(PYTHON) -m src.reproduction.cli ms-snsd --config "$(MS_SNSD_CONFIG)" --step register

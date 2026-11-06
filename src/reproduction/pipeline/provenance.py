@@ -64,6 +64,23 @@ def snapshot_provenance_parts(
                     continue
                 seen.add(token)
                 pending.append((role, slot, case_set_id, store.asset(asset_id)))
+    members: dict[str, list[str]] = {}
+    for row in getattr(store, "members", []):
+        members.setdefault(str(row["material_set_id"]), []).append(str(row["asset_id"]))
+    for binding in dataset.get("bindings") or []:
+        material_set_id = binding.get("material_set_id")
+        if not material_set_id:
+            continue
+        slot = str(binding["slot"])
+        role = slot.split(".", 1)[0]
+        if role == "valid":
+            role = "selection"
+        for asset_id in members.get(str(material_set_id), []):
+            token = (role, asset_id)
+            if token in seen:
+                continue
+            seen.add(token)
+            pending.append((role, slot, str(material_set_id), store.asset(asset_id)))
     lineages = _lineages(store, [item[3] for item in pending], cache, workers)
     counts = {"source": 0, "derived": 0, "unknown": 0}
     for (role, slot, case_set_id, asset), lineage in zip(pending, lineages, strict=True):

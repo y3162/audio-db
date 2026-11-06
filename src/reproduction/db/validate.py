@@ -462,7 +462,7 @@ def _cases(cases, assets, protocols, builds) -> None:
         if case["case_role"] == "recorded_pair":
             _recorded_sources(case, assets)
         elif case["case_role"] == "generated":
-            _generated_case(case, assets, builds)
+            _generated_case(case, assets, builds, protocol)
         elif case["case_role"] == "online_snapshot":
             if any(case.get(key) is not None for key in ("clean_asset_id", "noisy_asset_id", "noise_asset_id", "build_id", "gen_index")):
                 raise ReproductionError(f"online snapshot {case['case_id']} must not store audio columns")
@@ -490,9 +490,20 @@ def _recorded_sources(case, assets) -> None:
         raise ReproductionError(f"recorded case {case['case_id']} speaker does not match the clean asset")
 
 
-def _generated_case(case, assets, builds) -> None:
+def _generated_case(case, assets, builds, protocol) -> None:
     if case.get("build_id") not in builds or case.get("gen_index") is None:
         raise ReproductionError(f"generated case {case['case_id']} is missing build_id or gen_index")
+    delivery = (protocol.get("rule_json") or {}).get("delivery")
+    if delivery == "on_demand":
+        if any(case.get(key) for key in ("clean_asset_id", "noisy_asset_id", "noise_asset_id")):
+            raise ReproductionError(
+                f"on-demand case {case['case_id']} must not store a generated waveform"
+            )
+        if int(case["frames"]) != int(case["doc_json"]["output"]["length"]):
+            raise ReproductionError(f"on-demand case {case['case_id']} frames do not match the plan")
+        if int(case["gen_index"]) != int(case["doc_json"]["draws"]["gen_index"]):
+            raise ReproductionError(f"on-demand case {case['case_id']} gen_index does not match the plan")
+        return
     if not case.get("clean_asset_id") or not case.get("noisy_asset_id"):
         raise ReproductionError(f"generated case {case['case_id']} needs clean and noisy assets")
     for key in ("clean_asset_id", "noisy_asset_id", "noise_asset_id"):

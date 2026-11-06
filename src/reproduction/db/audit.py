@@ -44,20 +44,17 @@ def audits_for(graph: Graph, dataset_ids: list[str], resource_db: str | None) ->
         marker = graph.verified[build_id]
         asset_count = sum(1 for asset in assets.values() if asset.get("build_id") == build_id)
         case_count = sum(1 for case in cases.values() if case.get("build_id") == build_id and case["case_role"] == "generated")
-        rows.append(
-            _audit(
-                "build",
-                build_id,
-                "build_verification",
-                {
-                    "status": "PASS",
-                    "generator": builds[build_id]["generator"],
-                    "shard_ids": sorted(marker["shard_ids"]),
-                    "asset_count": asset_count,
-                    "case_count": case_count,
-                },
-            )
-        )
+        report = {
+            "status": "PASS",
+            "generator": builds[build_id]["generator"],
+            "shard_ids": sorted(marker["shard_ids"]),
+            "asset_count": asset_count,
+            "case_count": case_count,
+        }
+        if marker.get("delivery"):
+            report["delivery"] = marker["delivery"]
+            report["wav_files"] = int(marker.get("wav_files", 0))
+        rows.append(_audit("build", build_id, "build_verification", report))
     return rows
 
 

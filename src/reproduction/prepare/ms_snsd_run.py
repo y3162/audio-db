@@ -18,8 +18,6 @@ from src.reproduction.build.ms_snsd import (
     build_definition,
     ordered_paths,
     plan_realizations,
-    verify_build,
-    write_build,
 )
 from src.reproduction.db.registry import register_staging
 from src.reproduction.db.snapshot import export_snapshot
@@ -35,7 +33,8 @@ from src.reproduction.paths import (
     ROOT,
 )
 from src.reproduction.prepare.ms_snsd import (
-    assemble_smoke_graph,
+    assemble_ondemand_graph,
+    audit_conditions,
     collect_sources,
     material_set,
     write_shapes,
@@ -89,6 +88,18 @@ def run_config(
     claim = str(config.get("claim_label") or "official_recipe_scaled_down")
     if claim not in ("official_recipe_scaled_down", "espnet_public_se_recipe_reproduction"):
         raise ReproductionError(f"unsupported MS-SNSD claim_label: {claim}")
+    if config.get("delivery") != "on_demand":
+        raise ReproductionError(
+            "stored wav generation is disabled; set delivery: on_demand and register conditions"
+        )
+    if step == "generate":
+        raise ReproductionError("stored wav generation is disabled; use --step register")
+    for split in ("train", "test"):
+        side = config[split]
+        if side.get("clean_limit") is None or side.get("noise_limit") is None:
+            raise ReproductionError(
+                f"{split} has no clean_limit or noise_limit; refusing an unbounded source scan"
+            )
     started = time.perf_counter()
     train = _prepare_side(config, "train", corpus)
     test = _prepare_side(config, "test", corpus)
@@ -106,42 +117,30 @@ def run_config(
     _write_plan(workspace, test)
     if step == "plan":
         return summary
-    generated = time.perf_counter()
-    train_written = write_build(
+    checked = time.perf_counter()
+    train_report = audit_conditions(
         train["definition"], train["documents"],
-        audio_root=audio_root, staging_root=workspace,
         clean_dir=corpus / "clean_train", noise_dir=corpus / "noise_train",
     )
-    test_written = write_build(
+    test_report = audit_conditions(
         test["definition"], test["documents"],
-        audio_root=audio_root, staging_root=workspace,
         clean_dir=corpus / "clean_test", noise_dir=corpus / "noise_test",
     )
-    train_report = verify_build(
-        train["definition"], train["documents"],
-        audio_dir=train_written["audio_dir"], staging_dir=train_written["staging_dir"],
-        clean_dir=corpus / "clean_train", noise_dir=corpus / "noise_train",
-    )
-    test_report = verify_build(
-        test["definition"], test["documents"],
-        audio_dir=test_written["audio_dir"], staging_dir=test_written["staging_dir"],
-        clean_dir=corpus / "clean_test", noise_dir=corpus / "noise_test",
-    )
-    summary["generate_seconds"] = time.perf_counter() - generated
-    print(f"generated in {summary['generate_seconds']:.1f}s", flush=True)
-    summary["train_verify"] = {key: train_report[key] for key in ("files", "clipped_samples", "peak_abs", "status")}
-    summary["test_verify"] = {key: test_report[key] for key in ("files", "clipped_samples", "peak_abs", "status")}
-    if step == "generate":
-        return summary
-    graph = assemble_smoke_graph(
+    summary["render_seconds"] = time.perf_counter() - checked
+    print(f"checked conditions in {summary['render_seconds']:.1f}s", flush=True)
+    summary["train_verify"] = {
+        key: train_report[key] for key in ("files", "clipped_samples", "peak_abs", "status", "wav_files")
+    }
+    summary["test_verify"] = {
+        key: test_report[key] for key in ("files", "clipped_samples", "peak_abs", "status", "wav_files")
+    }
+    graph = assemble_ondemand_graph(
         train_definition=train["definition"],
         train_documents=train["documents"],
-        train_manifests=_manifests(train_written["staging_dir"]),
-        train_verify=train_report,
+        train_report=train_report,
         test_definition=test["definition"],
         test_documents=test["documents"],
-        test_manifests=_manifests(test_written["staging_dir"]),
-        test_verify=test_report,
+        test_report=test_report,
         source_assets=train["clean_assets"] + train["noise_assets"] + test["clean_assets"] + test["noise_assets"],
         train_clean=train["clean_set"],
         train_noise=train["noise_set"],
@@ -154,15 +153,16 @@ def run_config(
     write_graph(staging, graph)
     register_staging(staging, database, resource_db=str(resource_db) if resource_db.is_file() else None)
     dataset_id = graph.datasets[0]["dataset_id"]
+    corpora_root = corpus.parent if corpus.name == "MS-SNSD" else DEFAULT_CORPORA
     snapshot_hash = export_snapshot(
         database,
         f"{config['name']}@1",
         snapshots,
-        corpora=DEFAULT_CORPORA,
+        corpora=corpora_root,
         generated=audio_root,
         derived=ROOT / "data" / "derived",
     )
-    _write_split_shapes(workspace / "shapes", graph)
+    _write_split_shapes(workspace / "shapes-ondemand", graph)
     summary["dataset_id"] = dataset_id
     summary["snapshot_hash"] = snapshot_hash
     summary["selection_uses_test"] = graph.datasets[0]["selection_uses_test"]
@@ -240,21 +240,11 @@ def _write_plan(workspace: Path, side: dict[str, Any]) -> None:
     (directory / "plan.jsonl").write_text(lines, encoding="utf-8")
 
 
-def _manifests(staging_dir: Path) -> list[dict[str, Any]]:
-    return [
-        json.loads(path.read_text(encoding="utf-8"))
-        for path in sorted((staging_dir / "shards").glob("shard-*.json"))
-    ]
-
-
 def _write_split_shapes(root: Path, graph) -> None:
     cases = {row["case_id"]: row for row in graph.cases}
     for case_set in graph.case_sets:
         rows = [cases[item["case_id"]] for item in case_set["items"]]
-        paths = {}
-        for row in rows:
-            noisy = next(asset for asset in graph.assets if asset["asset_id"] == row["noisy_asset_id"])
-            paths[row["utterance_key"]] = noisy["rel_path"]
+        paths = {row["utterance_key"]: f"ondemand:{row['case_id']}" for row in rows}
         write_shapes(root / case_set["split_role"], rows, paths)
 
 

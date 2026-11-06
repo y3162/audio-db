@@ -1,6 +1,6 @@
 # 再現用 Data Pipeline 設計
 
-状態: **固定ペアの学習 Pipeline、ESPnet chunk の複数 rank、MS-SNSD 事前生成の読み込みは実装済み**（2026-11-06、P3・P5・P6）。`src/reproduction/pipeline/` が MP-SENet と MossFormerGAN のスナップショットを Trainer へ渡す。`pipeline/pregenerated.py` は MS-SNSD の shape 順を `espnet_chunk_v1` に渡す。`espnet_chunk_v1` は `chunking.py` の `plan_chunk_epoch` で、world size 1・2・4 と `data.virtual_world_size` を計画する。オンライン混合は未実装。検証は [P3_VERIFICATION](P3_VERIFICATION.md)、[P5_VERIFICATION](P5_VERIFICATION.md)、[P6_VERIFICATION](P6_VERIFICATION.md)。
+状態: **固定ペアの学習 Pipeline、ESPnet chunk の複数 rank、MS-SNSD のオンデマンド混合は実装済み**（2026-11-06、P3・P5・P6）。学習用の生成済み WAV は必須にしない。波形キャッシュは実装しない。`pipeline/pregenerated.py` は、`delivery: on_demand` のスナップショットを `pipeline/ondemand.py` へ渡し、それ以外の保存済み WAV は従来どおり読む。オンライン混合の実装は P8・P9 のまま。検証は [P3_VERIFICATION](P3_VERIFICATION.md)、[P5_VERIFICATION](P5_VERIFICATION.md)、[P6_VERIFICATION](P6_VERIFICATION.md)。
 
 ## 0. 位置づけと正本の分担
 
@@ -238,6 +238,14 @@ class EpochStream(Protocol):
 
 ## 6. 3 方式の扱い
 
+2026-11-06 以降の原則: 音声処理は学習時にオンデマンドで行う。DuckDB は素材、生成規則、Dataset、分割、来歴を持つ。学習は DuckDB を開かず、スナップショットを読む。生成済み WAV は学習の必須データではない。メモリキャッシュとディスクキャッシュは今回は作らない。
+
+固定データ（MP-SENet、MossFormerGAN、TF-GridNet、TF-Locoformer）は、生成条件を先に確定し、同じ条件から同じ音声を再構築する。公式が学習時にランダム化する Crop などは、そのランダム化のまま学習時の処理として残す。公式に seed が無い生成は、アルゴリズムの一致と生成ファイルのビット一致を分け、ビット一致は主張しない。
+
+オンライン混合（DeepFilterNet3、SEMamba++）は、公式の確率分布を Protocol に残し、学習時に抽選する。再開できるよう、seed と、`(seed, epoch, index)` から再計算できる抽選識別子を使う。共有 RNG の残状態には依存しない。この抽選の実装は P8・P9 であり、今回は仕様だけを更新した。
+
+P2 の VoiceBank 16 kHz 派生素材は、そのまま固定ペアの入力である。リサンプルを学習時へ移す変更はしておらず、移す場合は P2・P3 の再検証が要る。正規化と Crop は、これまでどおり学習時に Protocol を適用する。
+
 ### 6.1 共通の流れ
 
 ```
@@ -256,10 +264,12 @@ class EpochStream(Protocol):
 
 ### 6.3 事前生成（TF-GridNet、TF-Locoformer）
 
-- Dataset 定義: `train.cases`、`valid.cases`（`generated` の Case 集合）。素材は生成物のファイル（`storage_root = generated`）。
-- Planner: ESPnet の `ChunkIterFactory` の再現（§8.3）。epoch 内の発話選択（`num_iters_per_epoch`）、チャンク化、shuffle、バッチ化、`iterator_stop`（rank 間の最小）。
-- Renderer: `FileRenderer`（`chunk` で指定された区間だけを部分読み出し）。正規化なし（生成時のレベルのまま。TF-GridNet は分離器が内部で標準偏差正規化）。
-- **生成物の存在確認は準備時**（`verified`）に行い、学習時は大きさの検査だけ。
+- Dataset 定義: `train.cases`、`valid.cases`、`test.cases`。各 Case は `realization_v1` で、長さは計画の `output.length`。TF-GridNet の新しい Protocol は `rule_json.delivery = on_demand` で、Case は生成 WAV を指さない。素材リスト（`train.speech` など）が元素材の SHA-256 を持つ。
+- 旧い `tf_gridnet.ms_snsd.smoke@1` は `delivery` を持たず、生成 WAV を読む。新しい学習入口は `tf_gridnet.ms_snsd.ondemand@1`。
+- Planner: ESPnet の `ChunkIterFactory` の再現（§8.3）。長さは文書から取り、ファイルを開かない。
+- Renderer: `pipeline/ondemand.py` がバッチの切り出し時に `snr_mixer` を実行し、PCM_16 の読み戻しと同じ値を返す。正規化はしない。同じ文書は同じ波形になる。結果は保持しない。
+- TF-Locoformer の DNS 合成は同じ分離（条件を先に固定し、学習時に再構築する）だが、生成器は P7 で、今回は作っていない。
+- 保存済み WAV の shard 検証は `write_build` に残る。学習の登録経路はそれを呼ばない。
 
 ### 6.4 オンライン混合（DFN3、SEMamba++）
 
@@ -483,7 +493,7 @@ data:
 - `pipeline: legacy` のとき、現行のキー（`database`、`train_set`、`validation_set`、`rms_normalize`）だけを許す。`pipeline: reproduction` のとき、これらのキーを拒否し、`dataset` を必須にする。未知のキーは拒否する（現行の規則）。
 - epoch 数、batch、optimizer などは学習設定、**データの意味を決めるもの（正規化、窓、順序、チャンク、epoch の単位、validation の crop）は Protocol**。公式値と学習設定の global batch が違うときは、起動時に警告し、`data_state` に記録する（拒否はしない。leakage-safe の比較で変えるため）。
 
-### 12.2 コマンド（P1 の 5 コマンドと、固定ペアの `reproduction-prepare` は Makefile にある。事前生成のコマンドは未実装）
+### 12.2 コマンド（P1 の 5 コマンドと、固定ペアの `reproduction-prepare`、MS-SNSD のオンデマンド登録は Makefile にある）
 
 | コマンド | 引数 | 責務 | 冪等性 | 失敗条件 |
 |---|---|---|---|---|
@@ -491,14 +501,14 @@ data:
 | `make reproduction-doctor` | `MODELS=`（任意）| 読み取りのみ。DuckDB の版（環境ごと）、`data/corpora`、`resource.duckdb` の状態（`corpora` / `eval` の有無）、`data/generated` の空き容量、ライブラリの版（`soundfile`、`librosa`、`soxr`、`torch`）、公式リストの有無を表示 | 常に | 致命的な不足があれば非 0（変更はしない）|
 | `make reproduction-init-db` | — | `reproduction.duckdb` を作る（`repro` スキーマ）| 同じスキーマなら何もしない | 既存で違うスキーマなら**変更せず拒否**（現行の `db-init` と同じ規則）|
 | `make reproduction-prepare` | `STEP=diagnose\|lists\|resolve\|derive\|register\|snapshot\|verify\|all`、`WORKERS=` | MP-SENet と MossFormerGAN の VoiceBank 固定ペアを staging に書き、登録し、スナップショットを出す。事前生成はしない | 同じ派生ファイルと同じ ID は再利用する。内容が違えば上書きせずエラー | 素材が無い場合は `BLOCKED`（終了コード 3）で、派生・staging・DB を作らない |
-| `make reproduction-plan-build` | `BUILD=` | 事前生成の計画（`realization_v1` の列）を staging に書く。音声は作らない。件数、分布、容量の見積りを表示 | 同じ `build_id` で同じ計画なら何もしない | 同じ `build_id` で計画が違えばエラー |
-| `make reproduction-build` | `BUILD=`、`STAGE=`、`APPROVAL=`（30 分以上の場合）| shard 単位の生成。再開可能（DB 設計 §9.4）。空き容量を確認 | 完了した shard を飛ばす | 容量不足。既存の `build_id` と内容が違う。30 分以上のジョブで `APPROVAL` が無い。**既存のファイルを削除・上書きしない**|
+| `make reproduction-plan-build` | `MS_SNSD_CONFIG=` | MS-SNSD の計画だけを書く。混合 WAV は作らない。既定は `ms_snsd_tfgridnet_ondemand.yaml` | 同じ計画を再度書ける | `delivery: on_demand` が無い。`clean_limit` または `noise_limit` が無い |
+| `make reproduction-build` | — | 保存済み WAV の生成は無効。終了コード 1 | — | 常に拒否する |
 | `make reproduction-verify` | `BUILD=` または `DATASET=`、`HASH=1`（任意）| 検査（件数、サイズ、SHA-256、分布、leak）を `audits` に記録 | 常に（追記）| 不整合は `FAIL` を記録して非 0。自動で直さない |
-| `make reproduction-register` | `BUILD=` | 検証済みの shard を `assets`・`cases` に登録 | 同じ内容なら何もしない | 検証が無い shard は登録しない |
+| `make reproduction-register` | `MS_SNSD_CONFIG=` | オンデマンドの条件と元素材を登録し、スナップショットを書く。混合 WAV は作らない | 同じ内容なら何もしない | 条件検査が PASS でない。上限の無い素材走査 |
 | `make reproduction-snapshot` | `DATASET=` | スナップショットを書き出す（DB 設計 §10）| 同じ内容なら何もしない。内容が違えばエラー | `declared_status` が `ready` でない。監査が `PASS` でない。素材の大きさが違う |
 | `make reproduction-rebuild-db` | `OUT=` | staging から**新しい** DB ファイルを作り、全表のハッシュを比較 | `OUT` が既存ならエラー | ハッシュの不一致 |
 
-- 30 分以上のジョブ（`reproduction-build` の S3・S4 など）は、TSUBAME へ投入する前に、ユーザーの明示の指示または追加承認が要る。優先度は `-p -5`。`h_rt` を 29 分にして回避しない（AGENTS.md）。
+- 30 分以上のジョブ（公式規模の素材ハッシュ、P7 以降の生成）は、TSUBAME へ投入する前に、ユーザーの明示の指示または追加承認が要る。優先度は `-p -5`。`h_rt` を 29 分にして回避しない（AGENTS.md）。`reproduction-build` は保存済み WAV を作らない。
 - どのコマンドも、`data/db/resource.duckdb`、`data/corpora/`、`data/checkpoints/`、`data/results/`、`data/staging/` の既存の内容を削除・上書きしない。`make db-ingest` を呼ばない。
 - 学習の起動は、既存の学習 CLI（`configs/training/<model>.yaml` を渡す）を使う。新しいコマンドは足さない。
 

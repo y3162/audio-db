@@ -31,6 +31,8 @@ class AssetStore:
         derived: Path,
         corpora: Path,
         generated: Path,
+        docs: list[dict[str, Any]] | None = None,
+        members: list[dict[str, Any]] | None = None,
     ) -> None:
         self.dataset = dataset
         self.snapshot_hash = snapshot_hash
@@ -52,6 +54,13 @@ class AssetStore:
                 raise ReproductionError(f"case set {case_set_id} positions are not 0..n-1")
             self.items[case_set_id] = ordered
         self.bindings = {row["slot"]: row["case_set_id"] for row in dataset["bindings"]}
+        self.docs = {}
+        for row in docs or []:
+            case_id = row["case_id"]
+            if case_id in self.docs:
+                raise ReproductionError(f"snapshot repeats a realization for {case_id}")
+            self.docs[case_id] = row["doc_json"]
+        self.members = list(members or [])
 
     @classmethod
     def from_snapshot(
@@ -84,6 +93,8 @@ class AssetStore:
             derived=Path(derived),
             corpora=Path(corpora),
             generated=Path(generated),
+            docs=loaded.docs,
+            members=loaded.material_set_members,
         )
 
     def case_ids(self, slot: str) -> list[str]:

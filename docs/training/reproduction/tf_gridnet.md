@@ -1,6 +1,6 @@
 # TF-GridNet 公式再現プロトコル監査
 
-P5（2026-11-06）で複数 rank の chunk 計画は実装した。下の「DDP は未実装」という行は、この監査時点の記録であり、現行の計画は [P5_VERIFICATION](P5_VERIFICATION.md) を見る。本格的な MS-SNSD 生成と学習は P6 のままである。
+P5（2026-11-06）で複数 rank の chunk 計画は実装した。下の「DDP は未実装」という行は、この監査時点の記録であり、現行の計画は [P5_VERIFICATION](P5_VERIFICATION.md) を見る。MS-SNSD の学習入口はオンデマンド再構築で、記録は [P6_VERIFICATION](P6_VERIFICATION.md)。全量 WAV は作らない。
 
 監査日 2026-11-06。対象リポジトリ `audio-db`、ブランチ `feature/reproduction`、HEAD `3bee9ad`。この文書は調査と記録だけで、コード・設定・DB は変更していない。修正案は提案として書く。
 

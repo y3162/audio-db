@@ -95,8 +95,8 @@ DuckDB は `data/db/resource.duckdb`（`src/data/constants.py`）。
 | `data/checkpoints/` | 配布チェックポイント。取得が重い。削除・上書きをしない。ライブラリのコードにはパスを固定せず、呼び出し側が渡す。設定やテストにある `data/checkpoints/...` は例で、無ければテストは skip する |
 | `data/results/` | `se-evaluation/<run_id>/` は評価結果の一次記録（`config.json` と `results.jsonl`）。`se-repro/` は公式再現の記録とビルドキャッシュ。新しい実行は新しい `run_id`。既存の run ディレクトリは `--resume` なしでは使えない。DuckDB へ載せるときは、このディレクトリを `register_run` で登録する |
 | `data/staging/` | DB の再構築元。登録後も残す。Git 管理外 |
-| `data/db/` | `resource.duckdb` はレシピスキーマの本番ファイル。`reproduction.duckdb` は公式再現用の `repro` スキーマで、MP-SENet と MossFormerGAN の VoiceBank 固定ペア 4 Dataset が入っている。`snapshots/` はその DB から書き出した学習用スナップショット。`training.duckdb` は学習スモークセット。`backups/resource-legacy-20261031.duckdb` は切り替え前の固定列スキーマ。`rebuild-a.duckdb` と `rebuild-b.duckdb` は切り替え前に作った同じ内容の再構築コピー |
-| `data/generated/` | 事前生成の音声。検証済み shard 以外は登録しない。MS-SNSD の混合は `ms_snsd_synth/<build_id 先頭16桁>/<stream>/sNNNN/fidNNNNNNN.wav` の PCM_16。ディレクトリ番号は `gen_index // shard_size`。検証済みの小規模 Dataset `tf_gridnet.ms_snsd.smoke@1` は `reproduction.duckdb` に入っている。公式規模（train 30 h・test 1 h）は別 Build で、完了前の Dataset にはしない |
+| `data/db/` | `resource.duckdb` はレシピスキーマの本番ファイル。`reproduction.duckdb` は公式再現用の `repro` スキーマで、VoiceBank 固定ペア 4 Dataset と、MS-SNSD の `tf_gridnet.ms_snsd.smoke@1`（保存済み WAV）および `tf_gridnet.ms_snsd.ondemand@1`（条件から再構築）が入っている。`snapshots/` はその DB から書き出した学習用スナップショット。`training.duckdb` は学習スモークセット。`backups/resource-legacy-20261031.duckdb` は切り替え前の固定列スキーマ。`rebuild-a.duckdb` と `rebuild-b.duckdb` は切り替え前に作った同じ内容の再構築コピー |
+| `data/generated/` | 保存済みの事前生成 WAV。学習の必須データではない。`tf_gridnet.ms_snsd.smoke@1` が参照する `ms_snsd_synth/<build_id 先頭16桁>/` の PCM_16 だけを残す。オンデマンド Dataset はここへ混合 WAV を書かない。公式規模の途中 WAV は登録前に削除した |
 | `data/derived/` | 派生素材。VoiceBank-DEMAND の 16 kHz PCM_16 は `data/derived/VoiceBank-DEMAND/soxr_hq_16000/`。同じ変換条件の正常なファイルは再利用し、内容が違うファイルは上書きしない |
 
 ## DB の書き込みと保護
