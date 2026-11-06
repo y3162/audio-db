@@ -3,10 +3,10 @@
 ESPnet ``espnet2/main_funcs/average_nbest_models.py`` sorts epochs by the
 criterion value with a stable sort, sums the state dictionaries, divides
 floating tensors by n, and leaves integer tensors (``num_batches_tracked``)
-as the sum. The DNS recipe asks for ``valid.loss.ave_5best``. When fewer than
-n checkpoints exist, that file is not an average of the shorter list: ESPnet
-falls back to an ``ave_1best`` symlink. This module only averages when at
-least n files are supplied. The saved suffix is ``.pt``.
+as the sum. The DNS recipe asks for ``valid.loss.ave_5best``. When fewer
+than n checkpoints exist, ESPnet does not average the shorter list: it
+symlinks ``ave_1best`` to the current best epoch file. The suffix here is
+``.pt``; pinned ESPnet writes ``.pth``.
 """
 
 from __future__ import annotations
@@ -16,6 +16,13 @@ from pathlib import Path
 import torch
 
 from src.training.errors import TrainingError
+
+
+def replace_symlink(link: Path, target_name: str) -> None:
+    """Point ``link`` at a file name in the same directory. The target is kept."""
+    if link.is_symlink() or link.exists():
+        link.unlink()
+    link.symlink_to(target_name)
 
 
 def average_state_dicts(states: list[dict[str, torch.Tensor]]) -> dict[str, torch.Tensor]:

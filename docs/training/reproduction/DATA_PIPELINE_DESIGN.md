@@ -1,6 +1,6 @@
 # 再現用 Data Pipeline 設計
 
-状態: **固定ペアの学習 Pipeline、ESPnet chunk の複数 rank、MS-SNSD のオンデマンド混合、VoiceBank の学習時リサンプルは実装済み**（2026-11-06、P3・P5・P6）。学習用の生成済み WAV は必須にしない。波形キャッシュは実装しない。`pipeline/pregenerated.py` は `delivery: on_demand` 以外を拒否し、オンデマンドは `pipeline/ondemand.py` が再構築する。履歴の固定ペアスナップショットは `open_training_data` が読む。新しい学習の `execute` は `on_demand` を必須にする。オンライン混合の実装は P8・P9 のまま。検証は [P3_VERIFICATION](P3_VERIFICATION.md)、[P5_VERIFICATION](P5_VERIFICATION.md)、[P6_VERIFICATION](P6_VERIFICATION.md)。
+状態: **固定ペアの学習 Pipeline、ESPnet chunk の複数 rank、MS-SNSD のオンデマンド混合、VoiceBank の学習時リサンプルは実装済み**（2026-11-06、P3・P5・P6）。学習用の生成済み WAV は必須にしない。波形キャッシュは実装しない。`pipeline/pregenerated.py` は `delivery: on_demand` 以外を拒否し、オンデマンドは `pipeline/ondemand.py` が再構築する。履歴の固定ペアスナップショットは `open_training_data` が読む。新しい学習の `execute` は `on_demand` を必須にする。オンライン混合の実装は P8・P9 のまま。検証は [P3_VERIFICATION](P3_VERIFICATION.md)、[P5_VERIFICATION](P5_VERIFICATION.md)、[P6_VERIFICATION](P6_VERIFICATION.md)。DNS の受理レンダラは [P7_1_VERIFICATION](P7_1_VERIFICATION.md)。
 
 ## 0. 位置づけと正本の分担
 
@@ -270,7 +270,7 @@ P2 の VoiceBank 16 kHz 派生素材は、そのまま固定ペアの入力で�
 - 旧い `tf_gridnet.ms_snsd.smoke@1` は `delivery` を持たず、生成 WAV を読む。新しい学習入口は `tf_gridnet.ms_snsd.ondemand@1`。
 - Planner: ESPnet の `ChunkIterFactory` の再現（§8.3）。長さは文書から取り、ファイルを開かない。
 - Renderer: `pipeline/ondemand.py` がバッチの切り出し時に `snr_mixer` を実行し、PCM_16 の読み戻しと同じ値を返す。正規化はしない。同じ文書は同じ波形になる。結果は保持しない。
-- TF-Locoformer の DNS 合成も同じ分離である。生成器は `src/reproduction/build/dns2020.py` で、学習時の再構築は `pipeline/dns_ondemand.py` が行う。混合 WAV は書かない。検証は [P7_VERIFICATION](P7_VERIFICATION.md)。
+- TF-Locoformer の DNS 合成も同じ分離である。生成器は `src/reproduction/build/dns2020.py` で、学習時の再構築は `pipeline/dns_ondemand.py` が行う。混合 WAV は書かない。P7 の規則は 16 kHz の区間読みで再試行しない。P7.1 は別規則で、受理した区間を保存し、16 kHz でない雑音だけを描画時にリサンプルする。検証は [P7_VERIFICATION](P7_VERIFICATION.md) と [P7_1_VERIFICATION](P7_1_VERIFICATION.md)。
 - 混合 WAV を書く経路は無い。登録は条件と元素材だけを書き、学習時に `render_realization` が PCM_16 を作る。
 
 ### 6.4 オンライン混合（DFN3、SEMamba++）

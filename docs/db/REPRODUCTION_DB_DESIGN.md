@@ -647,7 +647,7 @@ data/staging/reproduction/
 
 ### 9.6 段階（D-08）
 
-現行の段階名は S0（条件の計画）、S1（メモリ上の式比較。WAV は残さない）、S2（3000 h 相当の条件登録）、S3（小さい Dataset の Trainer）である。実装は混合 WAV を書かない。登録済み Dataset は `tf_locoformer.dns.recipe@1` と `tf_locoformer.dns.smoke@1`。検証は [P7_VERIFICATION](../training/reproduction/P7_VERIFICATION.md)。`cv_synthetic_small` は UNKNOWN のまま。検証に使うのは sorted uttid の末尾 1/10 である。
+現行の段階名は S0（条件の計画）、S1（メモリ上の式比較。WAV は残さない）、S2（3000 h 相当の条件登録）、S3（小さい Dataset の Trainer）である。実装は混合 WAV を書かない。`reproduction.duckdb` の登録済み Dataset は `tf_locoformer.dns.recipe@1` と `tf_locoformer.dns.smoke@1`。P7.1 の `tf_locoformer.dns.accept_smoke@1` は別スナップショットで、本番 DB には入れていない。検証は [P7_VERIFICATION](../training/reproduction/P7_VERIFICATION.md) と [P7_1_VERIFICATION](../training/reproduction/P7_1_VERIFICATION.md)。`cv_synthetic_small` は UNKNOWN のまま。検証に使うのは sorted uttid の末尾 1/10 である。
 
 下の表は、WAV を段階的に書く旧設計である。現行の実装はこの表を使わない。容量の見積りだけが、作らなかったファイルの大きさとして残る。
 
@@ -731,7 +731,7 @@ Build の ID は件数を含まないので、**小さい段階の生成物は�
 | DeepFilterNet3 | `online.dfn3` | オンライン混合 | `dfn3.dns4_ptdb.official`（`declared_status = blocked`。`blocking_json`: DNS4、PTDB、`dataset.cfg`、RIR 集合、`sampling_factor`）。代替素材: `dfn3.substitute.<素材>`（`protocol_conformant_substitute_materials`） | 公式素材を入手するまで学習に使えない（D-06） |
 | SEMamba++ | `online.semambapp_gsr`（HEAD の `config.yaml`。起動不能の最小補修は `deviation_class = minimal_launch_repair` の別 Protocol） | オンライン混合 | 公式素材（VCTK 0.92 と Arni RIR など）: 入手まで `blocked` または `unknown`。代替素材（手元の VCTK、WHAM48 と DNS2020 の雑音、DNS5 と OpenSLR の RIR）: `protocol_conformant_substitute_materials` | 手元の VCTK は 108 話者・44,085 本（確認: §2.3）。公式の 0.92（p280、p315 除外）と同一かは UNKNOWN |
 | TF-GridNet | `pregenerated.ms_snsd_tfgridnet` | 事前生成の条件を先に確定し、学習は `delivery: on_demand` で元素材から再構築する。保存済み WAV の `tf_gridnet.ms_snsd.smoke@1` は旧経路 | `tf_gridnet.ms_snsd.espnet_recipe`（公式規模。train 7,345 / valid 1,835 / test 305）と `tf_gridnet.ms_snsd.ondemand`（`official_recipe_scaled_down`） | §9 |
-| TF-Locoformer | `pregenerated.dns_tflocoformer` | 事前生成 | `tf_locoformer.dns.s1`〜`s4`（`official_recipe_scaled_down`。S4 は生成規模が公式だが、検証集合 `cv_synthetic_small` が公式と同じと確認できる（UNKNOWN の解消）までこのラベルのまま） | §9.6 |
+| TF-Locoformer | `pregenerated.dns_tflocoformer` | 条件を先に確定し、`delivery: on_demand` で再構築する | `tf_locoformer.dns.recipe`（`espnet_public_se_recipe_reproduction`。360,000 件）と `tf_locoformer.dns.smoke`（`official_recipe_scaled_down`）。P7.1 の `tf_locoformer.dns.accept_smoke` は別スナップショット | §9.6 |
 
 16 kHz 化は P2 で実装した。公式の事前変換器は不明なままである。派生素材は soxr 1.1.0 の HQ、soundfile 0.14.0 の PCM_16 で、`data/derived/VoiceBank-DEMAND/soxr_hq_16000/` に置く。Q6 のとおり `official_reproduction` を名乗り、`deviations_json` に変換器が不明であることを書く。同じ 16 kHz ペアのレシピは 1 つの `case_id` になるため、MP-SENet と MossFormerGAN は case 行を共有する。`cases.protocol_id` は `mp_senet.fixed_pair` を指す。学習時の正規化・窓・順序は Dataset の protocol を読む。DuckDB は COPY 中に asset の外部キーを検査するので、親の corpora 素材を派生素材より先に挿入する。
 

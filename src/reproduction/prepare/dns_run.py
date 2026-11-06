@@ -28,6 +28,7 @@ from src.reproduction.build.dns2020 import (
     build_definition,
     num_files_for_hours,
     order_sha256,
+    plan_accepted_realizations,
     plan_realizations,
     reader_id,
     shuffle_pools,
@@ -48,6 +49,8 @@ from src.reproduction.paths import (
     ROOT,
 )
 from src.reproduction.prepare.dns2020 import (
+    accept_protocol_pair,
+    assemble_accept_graph,
     assemble_graph,
     asset_row,
     audit_sample,
@@ -82,6 +85,17 @@ def run_config(
     if step not in ("plan", "register"):
         raise ReproductionError("step must be plan or register; stored wav generation is disabled")
     config = load_build_config(config_path)
+    if config.get("acceptance"):
+        return run_accept_config(
+            config,
+            step,
+            corpus=corpus,
+            staging=staging,
+            database=database,
+            snapshots=snapshots,
+            resource_db=resource_db,
+            generated=generated,
+        )
     _check_config(config)
     if config.get("delivery") != "on_demand":
         raise ReproductionError("stored wav generation is disabled; set delivery: on_demand")
@@ -254,6 +268,263 @@ def run_config(
     summary["selection_uses_test"] = {dataset["name"]: dataset["selection_uses_test"] for dataset in graph.datasets}
     (workspace / "register-stats.json").write_text(json.dumps(summary, sort_keys=True, indent=2) + "\n", encoding="utf-8")
     return summary
+
+
+def run_accept_config(
+    config: dict[str, Any],
+    step: str,
+    *,
+    corpus: Path,
+    staging: Path,
+    database: Path,
+    snapshots: Path,
+    resource_db: Path,
+    generated: Path,
+) -> dict[str, Any]:
+    """Register one small accepted dataset. The P7 datasets are not rebuilt."""
+    if step not in ("plan", "register"):
+        raise ReproductionError("step must be plan or register; stored wav generation is disabled")
+    _check_accept_config(config)
+    if config.get("delivery") != "on_demand":
+        raise ReproductionError("stored wav generation is disabled; set delivery: on_demand")
+    listed = _list_accept_sources(config, corpus, resource_db)
+    cache_path = staging / "workspaces" / "dns2020-accept" / "hashes.jsonl"
+    digest_of = _hashes(
+        [row["path"] for row in listed["clean"] + listed["noise"] + listed["test_clean"] + listed["test_noisy"]],
+        cache=cache_path,
+        workers=int(config.get("workers") or 4),
+    )
+    _spot_check(listed["clean"] + listed["noise"] + listed["test_clean"] + listed["test_noisy"])
+    clean_names, noise_names = shuffle_pools(
+        [row["name"] for row in listed["clean"]],
+        [row["name"] for row in listed["noise"]],
+        int(config["seed"]),
+    )
+    clean_by_name = {row["name"]: row for row in listed["clean"]}
+    noise_by_name = {row["name"]: row for row in listed["noise"]}
+    clean_assets = [_asset(clean_by_name[name], corpus, digest_of, speaker=reader_id(name)) for name in clean_names]
+    noise_assets = [_asset(noise_by_name[name], corpus, digest_of, speaker=None) for name in noise_names]
+    test_clean = [_asset(row, corpus, digest_of, speaker=None) for row in listed["test_clean"]]
+    test_noisy = [_asset(row, corpus, digest_of, speaker=None) for row in listed["test_noisy"]]
+    speech = material_set(
+        clean_assets,
+        name="dns.tflocoformer.accept.speech",
+        role="speech",
+        note="16 kHz clean files used by the P7.1 acceptance sample",
+    )
+    noise = material_set(
+        noise_assets,
+        name="dns.tflocoformer.accept.noise",
+        role="noise",
+        note="16 kHz noise plus non-16 kHz files that are resampled while rendering. Source files are not rewritten.",
+    )
+    definition = build_definition(
+        seed=int(config["seed"]),
+        num_files=int(listed["num_files"]),
+        clean_count=len(clean_names),
+        noise_count=len(noise_names),
+        order_sha256=order_sha256(clean_names, noise_names),
+        inputs={"speech": speech["material_set_id"], "noise": noise["material_set_id"]},
+        shard_size=int(config["shard_size"]),
+        audio_seconds=float(config["audio_seconds"]),
+        total_hours=None,
+        excluded_non_16k_noise=int(listed["excluded_noise"]),
+        acceptance=str(config["acceptance"]),
+    )
+    clean_paths = {row["name"]: row["path"] for row in listed["clean"]}
+    noise_paths = {row["name"]: row["path"] for row in listed["noise"]}
+    started = time.perf_counter()
+    documents, totals = plan_accepted_realizations(
+        definition, clean_names, clean_paths, noise_names, noise_paths, cache={}
+    )
+    plan_seconds = time.perf_counter() - started
+    parent, child = accept_protocol_pair()
+    summary = {
+        "recipe_name": config["name"],
+        "recipe_files": len(documents),
+        "recipe_build_id": definition["build_id"],
+        "clean_files": len(clean_names),
+        "noise_files": len(noise_names),
+        "non_16k_noise": int(listed["non_16k_noise"]),
+        "excluded_noise": int(listed["excluded_noise"]),
+        "protocol_id": child["protocol_id"],
+        "parent_protocol_id": parent["protocol_id"],
+        "renderer": child["rule_json"]["renderer"],
+        "retry_policy": child["rule_json"]["retry_policy"],
+        "plan_seconds": plan_seconds,
+        "acceptance": _attempt_summary(totals),
+        "wav_files": 0,
+        "validation": "sorted_uttid_tail_tenth_not_cv_synthetic_small",
+    }
+    workspace = staging / "workspaces" / "dns2020-accept"
+    workspace.mkdir(parents=True, exist_ok=True)
+    (workspace / "plan-stats.json").write_text(json.dumps(summary, sort_keys=True, indent=2) + "\n", encoding="utf-8")
+    if step == "plan":
+        return summary
+    speech_paths = paths_by_name(clean_assets, corpus)
+    noise_path_map = paths_by_name(noise_assets, corpus)
+    report = audit_sample(
+        definition,
+        documents,
+        speech=speech_paths,
+        noise=noise_path_map,
+        render_limit=min(int(config.get("audit_realizations") or len(documents)), len(documents)),
+    )
+    if report["clean_activity_rejected"] or report["post_mix_clipped"] or report["source_clipped_pieces"]:
+        raise ReproductionError(f"accepted DNS sample still fails an official check: {report}")
+    test_cases = [
+        recorded_pair(clean, noisy, child["protocol_id"])
+        for clean, noisy in pair_test_files(test_clean, test_noisy)
+    ]
+    resource = str(resource_db) if resource_db.is_file() else None
+    graph = assemble_accept_graph(
+        name=str(config["name"]),
+        claim=str(config["claim_label"]),
+        definition=definition,
+        documents=documents,
+        report=report,
+        speech=speech,
+        noise=noise,
+        source_assets=clean_assets + noise_assets + test_clean + test_noisy,
+        test_cases=test_cases,
+        resource_db=resource,
+    )
+    summary["dataset_id"] = graph.datasets[0]["dataset_id"]
+    summary["selection_uses_test"] = graph.datasets[0]["selection_uses_test"]
+    summary["audit"] = _audit_public(report)
+    write_graph(staging, graph)
+    register_staging(staging, database, resource_db=resource)
+    from src.reproduction.db.snapshot import export_snapshot
+
+    summary["snapshot_hash"] = export_snapshot(
+        database,
+        f"{config['name']}@1",
+        snapshots,
+        allow_unknown_leak_check=True,
+        corpora=corpus,
+        generated=generated,
+        derived=ROOT / "data" / "derived",
+    )
+    return summary
+
+
+def _check_accept_config(config: dict[str, Any]) -> None:
+    for key in ("name", "seed", "shard_size", "num_files", "clean_limit", "noise_limit", "audio_seconds"):
+        if key not in config:
+            raise ReproductionError(f"DNS acceptance config needs {key}")
+    if str(config.get("acceptance")) != "deterministic_case_stream_v1":
+        raise ReproductionError("acceptance must be deterministic_case_stream_v1")
+    if config.get("source_scan") not in ("limited", "catalog"):
+        raise ReproductionError("acceptance source_scan must be limited or catalog")
+    if int(config["num_files"]) < 2 or int(config["clean_limit"]) < 1 or int(config["noise_limit"]) < 1:
+        raise ReproductionError("acceptance needs at least two mixtures and one clean and noise file")
+    if float(config["audio_seconds"]) <= 0.1 or float(config["audio_seconds"]) >= 31:
+        raise ReproductionError("acceptance audio_seconds must survive the 0.1 s to 31 s duration filter")
+    if str(config.get("claim_label") or "") != "official_recipe_scaled_down":
+        raise ReproductionError("the acceptance sample uses official_recipe_scaled_down")
+    if not config.get("include_test", True):
+        raise ReproductionError("DNS datasets require the official no_reverb test slot")
+    if int(config.get("include_non_16k_noise") or 0) < 0:
+        raise ReproductionError("include_non_16k_noise must be non-negative")
+
+
+def _list_accept_sources(config: dict[str, Any], corpus: Path, resource_db: Path) -> dict[str, Any]:
+    clean_limit = int(config["clean_limit"])
+    noise_limit = int(config["noise_limit"])
+    extra = int(config.get("include_non_16k_noise") or 0)
+    if config.get("source_scan") == "catalog":
+        rows, _other = _catalog_rows(resource_db, corpus)
+        clean = sorted((row for row in rows if row["subset"] == "clean"), key=lambda row: row["name"])[:clean_limit]
+        noise = sorted((row for row in rows if row["subset"] == "noise"), key=lambda row: row["name"])[:noise_limit]
+        non16 = []
+        excluded = 0
+        excluded_rows = sorted((row for row in rows if row["subset"] == "noise_excluded"), key=lambda row: row["name"])
+        for row in excluded_rows:
+            if int(row["channels"]) != 1:
+                excluded += 1
+                continue
+            if len(non16) < extra:
+                kept = dict(row)
+                kept["subset"] = "noise"
+                non16.append(kept)
+            else:
+                excluded += 1
+        test_clean = [row for row in rows if row["subset"] == "test_no_reverb_clean"]
+        test_noisy = [row for row in rows if row["subset"] == "test_no_reverb_noisy"]
+    else:
+        clean, noise, non16, excluded, test_clean, test_noisy = _accept_directory(
+            corpus, clean_limit, noise_limit, extra
+        )
+    if len(clean) < clean_limit or len(noise) < noise_limit:
+        raise ReproductionError("acceptance scan did not find the requested clean and 16 kHz noise files")
+    if extra and len(non16) < extra:
+        raise ReproductionError(f"acceptance scan found {len(non16)} non-16 kHz noise files, needed {extra}")
+    return {
+        "clean": clean,
+        "noise": noise + non16,
+        "excluded_noise": excluded,
+        "non_16k_noise": len(non16),
+        "test_clean": test_clean,
+        "test_noisy": test_noisy,
+        "num_files": int(config["num_files"]),
+    }
+
+
+def _accept_directory(
+    corpus: Path, clean_limit: int, noise_limit: int, extra: int
+) -> tuple[list[dict[str, Any]], list[dict[str, Any]], list[dict[str, Any]], int, list[dict[str, Any]], list[dict[str, Any]]]:
+    root = corpus / "DNS2020" / "datasets"
+    clean = _take_rate(root / "clean", "clean", clean_limit, 16000)
+    noise = _take_rate(root / "noise", "noise", noise_limit, 16000)
+    non16: list[dict[str, Any]] = []
+    excluded = 0
+    for path in sorted(item for item in (root / "noise").glob("*.wav") if item.is_file()):
+        info = sf.info(path)
+        if int(info.channels) != 1:
+            excluded += 1
+            continue
+        if int(info.samplerate) == SAMPLE_RATE:
+            continue
+        if len(non16) >= extra:
+            excluded += 1
+            continue
+        non16.append(_record(path, "noise", info))
+    test_clean = _take(root / "test_set" / "synthetic" / "no_reverb" / "clean", "test_no_reverb_clean", None)
+    test_noisy = _take(root / "test_set" / "synthetic" / "no_reverb" / "noisy", "test_no_reverb_noisy", None)
+    return clean, noise, non16, excluded, test_clean, test_noisy
+
+
+def _take_rate(directory: Path, subset: str, limit: int, rate: int) -> list[dict[str, Any]]:
+    if not directory.is_dir():
+        raise ReproductionError(f"DNS directory is missing: {directory}")
+    rows = []
+    for path in sorted(item for item in directory.glob("*.wav") if item.is_file()):
+        info = sf.info(path)
+        if int(info.samplerate) != rate or int(info.channels) != 1:
+            continue
+        rows.append(_record(path, subset, info))
+        if len(rows) >= limit:
+            break
+    return rows
+
+
+def _attempt_summary(totals: dict[str, Any]) -> dict[str, Any]:
+    attempts = [int(value) for value in totals["outer_attempts"]]
+    histogram: dict[str, int] = {}
+    for value in attempts:
+        histogram[str(value)] = histogram.get(str(value), 0) + 1
+    return {
+        "cases": int(totals["cases"]),
+        "failed_cases": int(totals["failed_cases"]),
+        "activity_rejects": int(totals["activity_rejects"]),
+        "post_clip_rejects": int(totals["post_clip_rejects"]),
+        "short_rejects": int(totals["short_rejects"]),
+        "clean_clip_skips": int(totals["clean_clip_skips"]),
+        "noise_clip_skips": int(totals["noise_clip_skips"]),
+        "resampled_noise_pieces": int(totals["resampled_noise_pieces"]),
+        "attempt_histogram": histogram,
+        "max_attempts": max(attempts) if attempts else 0,
+    }
 
 
 def _check_config(config: dict[str, Any]) -> None:

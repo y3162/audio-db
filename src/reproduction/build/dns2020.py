@@ -45,6 +45,13 @@ LEVEL_UPPER = -15
 CLEAN_ACTIVITY = 0.6
 NOISE_ACTIVITY = 0.0
 CLIP_THRESHOLD = 0.99
+MAX_PIECE_TRIES = 50
+MAX_CASE_ATTEMPTS = 50
+RETRY_NONE = "length_plan_no_sample_retry"
+RETRY_ACCEPT = "deterministic_case_stream_v1"
+RENDERER_V1 = "dns_pcm16_v1"
+RENDERER_ACCEPT = "dns_pcm16_accept_v2"
+RESAMPLE_ID = "librosa_1.0.0_soxr_hq"
 MAX_NAME = 100
 EPS = float(np.finfo(float).eps)
 DNS_COMMIT = "70f19285c36cca4df2338f9248775ddc50980c6b"
@@ -201,6 +208,7 @@ def build_definition(
     audio_seconds: float = AUDIO_SECONDS,
     total_hours: float | None = None,
     excluded_non_16k_noise: int = 0,
+    acceptance: str | None = None,
 ) -> dict[str, Any]:
     if num_files < 2:
         raise ReproductionError("DNS plan needs at least two mixtures so train and valid are both non-empty")
@@ -223,6 +231,14 @@ def build_definition(
         "order_sha256": order_sha256,
         "file_selection": "per_case_cycle",
     }
+    if acceptance is not None:
+        if acceptance != RETRY_ACCEPT:
+            raise ReproductionError(f"unsupported DNS acceptance policy: {acceptance}")
+        params["retry_policy"] = RETRY_ACCEPT
+        params["renderer"] = RENDERER_ACCEPT
+        params["resample"] = RESAMPLE_ID
+        params["max_piece_tries"] = MAX_PIECE_TRIES
+        params["max_case_attempts"] = MAX_CASE_ATTEMPTS
     build_id = build_id_for(
         generator=GENERATOR,
         generator_version=GENERATOR_VERSION,
@@ -250,7 +266,14 @@ def build_definition(
                     "that stream. Names are sorted, shuffled once with random.Random(seed), "
                     "and each gen_index walks that list from gen_index % count. Crops, SNR, "
                     "and level come from Generator(PCG64(mix_seed('dns', seed, gen_index))). "
-                    "Sample-dependent retries are not applied."
+                    + (
+                        "Sample-dependent retries are not applied."
+                        if acceptance is None
+                        else (
+                            "Each case then applies the official activity and clipping predicates "
+                            "on one private stream. A shared multiprocessing counter is not replayed."
+                        )
+                    )
                 ),
             }
         ],
@@ -265,6 +288,236 @@ def num_files_for_hours(total_hours: float, audio_seconds: float = AUDIO_SECONDS
     if count < 2:
         raise ReproductionError("the requested duration does not produce two mixtures")
     return count
+
+
+def resample_to_16k(audio: np.ndarray, source_rate: int) -> np.ndarray:
+    """Full-file resample used by official ``build_audio`` before the crop.
+
+    DNS-Challenge ``70f19285`` calls ``librosa.resample(audio, fs_input, 16000)``.
+    That positional form does not run on librosa 1.0.0. The librosa release used
+    for the published mixtures is not recorded. This function calls librosa
+    1.0.0 with ``res_type='soxr_hq'``, which is that release's default. 16 kHz
+    input is returned unchanged and is not passed through the resampler.
+    """
+    wave = np.asarray(audio, dtype=np.float64)
+    rate = int(source_rate)
+    if rate == SAMPLE_RATE:
+        return wave
+    if rate < 1 or wave.size < 1:
+        raise ReproductionError(f"cannot resample {wave.size} samples at {rate} Hz")
+    import librosa
+
+    converted = librosa.resample(wave, orig_sr=rate, target_sr=SAMPLE_RATE, res_type="soxr_hq")
+    out = np.asarray(converted, dtype=np.float64).reshape(-1)
+    if out.size < 1 or not np.isfinite(out).all():
+        raise ReproductionError(f"resample from {rate} Hz produced no finite 16 kHz samples")
+    return out
+
+
+def read_mono(path: Path) -> tuple[np.ndarray, int]:
+    """``audioread`` without its optional RMS normalize: soundfile, then channel mean."""
+    audio, rate = sf.read(path, dtype="float64", always_2d=True)
+    mono = np.asarray(audio, dtype=np.float64).mean(axis=1)
+    return mono, int(rate)
+
+
+def load_16k(path: Path, cache: dict[str, tuple[np.ndarray, int]] | None = None) -> tuple[np.ndarray, int]:
+    """Native mono audio converted to 16 kHz. ``cache`` is discarded with the planner."""
+    key = str(path)
+    if cache is not None and key in cache:
+        return cache[key]
+    mono, rate = read_mono(path)
+    converted = mono if rate == SAMPLE_RATE else resample_to_16k(mono, rate)
+    loaded = (converted, rate)
+    if cache is not None:
+        cache[key] = loaded
+    return loaded
+
+
+def plan_accepted_realizations(
+    definition: dict[str, Any],
+    clean_names: Sequence[str],
+    clean_paths: dict[str, Path],
+    noise_names: Sequence[str],
+    noise_paths: dict[str, Path],
+    *,
+    cache: dict[str, tuple[np.ndarray, int]] | None = None,
+) -> tuple[list[dict[str, Any]], dict[str, Any]]:
+    """Accepted realizations. Audio is read. Unaccepted candidates are not stored."""
+    params = definition["params"]
+    if params.get("retry_policy") != RETRY_ACCEPT:
+        raise ReproductionError("accepted DNS plans require deterministic_case_stream_v1")
+    count = int(params["num_files"])
+    if digest({"clean": list(clean_names), "noise": list(noise_names)}) != params["order_sha256"]:
+        raise ReproductionError("file order does not match the build order_sha256")
+    documents = []
+    totals = {
+        "cases": 0,
+        "activity_rejects": 0,
+        "post_clip_rejects": 0,
+        "short_rejects": 0,
+        "clean_clip_skips": 0,
+        "noise_clip_skips": 0,
+        "outer_attempts": [],
+        "resampled_noise_pieces": 0,
+    }
+    for gen_index in range(count):
+        document, stats = plan_accepted_case(
+            definition,
+            gen_index,
+            clean_names,
+            clean_paths,
+            noise_names,
+            noise_paths,
+            cache=cache,
+        )
+        validate_realization(_stored(document))
+        documents.append(document)
+        totals["cases"] += 1
+        for key in ("activity_rejects", "post_clip_rejects", "short_rejects", "clean_clip_skips", "noise_clip_skips"):
+            totals[key] += int(stats[key])
+        totals["outer_attempts"].append(int(stats["retries"]))
+        totals["resampled_noise_pieces"] += int(stats["resampled_noise_pieces"])
+    totals["failed_cases"] = 0
+    return documents, totals
+
+
+def plan_accepted_case(
+    definition: dict[str, Any],
+    gen_index: int,
+    clean_names: Sequence[str],
+    clean_paths: dict[str, Path],
+    noise_names: Sequence[str],
+    noise_paths: dict[str, Path],
+    *,
+    cache: dict[str, tuple[np.ndarray, int]] | None = None,
+) -> tuple[dict[str, Any], dict[str, int]]:
+    """One case. The stream continues across rejects and does not depend on other cases."""
+    params = definition["params"]
+    target = int(round(float(params["audio_seconds"]) * SAMPLE_RATE))
+    silence = int(round(float(params["silence_seconds"]) * SAMPLE_RATE))
+    if target < 2 or silence < 0:
+        raise ReproductionError("DNS target length must be positive")
+    if not clean_names or not noise_names:
+        raise ReproductionError("accepted DNS plan needs clean and noise files")
+    rng = np.random.Generator(np.random.PCG64(mix_seed("dns", int(definition["seed"]), gen_index)))
+    clean_cursor = int(gen_index) % len(clean_names)
+    noise_cursor = int(gen_index) % len(noise_names)
+    stats = {
+        "retries": 0,
+        "activity_rejects": 0,
+        "post_clip_rejects": 0,
+        "short_rejects": 0,
+        "clean_clip_skips": 0,
+        "noise_clip_skips": 0,
+        "resampled_noise_pieces": 0,
+    }
+    limit = int(params.get("max_case_attempts") or MAX_CASE_ATTEMPTS)
+    clean_threshold = float(params.get("clean_activity_threshold", CLEAN_ACTIVITY))
+    noise_threshold = float(params.get("noise_activity_threshold", NOISE_ACTIVITY))
+    for _attempt in range(limit):
+        clean, clean_cursor, clean_skips, clean_ok = _build_signal(
+            clean_names,
+            clean_paths,
+            clean_cursor,
+            target,
+            silence,
+            rng,
+            is_clean=True,
+            is_test_set=bool(params.get("is_test_set", False)),
+            cache=cache,
+        )
+        stats["clean_clip_skips"] += clean_skips
+        if not clean_ok:
+            stats["short_rejects"] += 1
+            stats["retries"] += 1
+            continue
+        clean_wave = _pieces_to_wave(clean, clean_paths, cache=cache)
+        if clean_threshold == 0.0:
+            activity = None
+        else:
+            activity = float(activitydetector(clean_wave))
+            if not activity > clean_threshold:
+                stats["activity_rejects"] += 1
+                stats["retries"] += 1
+                continue
+        noise, noise_cursor, noise_skips, noise_ok = _build_signal(
+            noise_names,
+            noise_paths,
+            noise_cursor,
+            int(clean_wave.shape[0]),
+            silence,
+            rng,
+            is_clean=False,
+            is_test_set=False,
+            cache=cache,
+        )
+        stats["noise_clip_skips"] += noise_skips
+        if not noise_ok:
+            stats["short_rejects"] += 1
+            stats["retries"] += 1
+            continue
+        if noise_threshold != 0.0:
+            noise_wave = _pieces_to_wave(noise, noise_paths, cache=cache)
+            if not float(activitydetector(noise_wave)) > noise_threshold:
+                stats["activity_rejects"] += 1
+                stats["retries"] += 1
+                continue
+        snr = int(rng.integers(int(params["snr_lower"]), int(params["snr_upper"])))
+        level = int(rng.integers(int(params["target_level_lower"]), int(params["target_level_upper"])))
+        noise_wave = _pieces_to_wave(noise, noise_paths, cache=cache)
+        mixed_clean, mixed_noise, noisy, _applied = snr_mixer(clean_wave, noise_wave, snr, level)
+        if is_clipped(mixed_clean) or is_clipped(mixed_noise) or is_clipped(noisy):
+            stats["post_clip_rejects"] += 1
+            stats["retries"] += 1
+            continue
+        stats["resampled_noise_pieces"] = sum(
+            1 for piece in noise if int(piece.get("source_rate", SAMPLE_RATE)) != SAMPLE_RATE
+        )
+        uttid = official_uttid(clean, noise, snr, gen_index)
+        document = {
+            "realization_version": 1,
+            "algorithm": ALGORITHM,
+            "algorithm_version": 1,
+            "sample_rate": SAMPLE_RATE,
+            "sources": {"speech": clean, "noise": noise},
+            "draws": {
+                "gen_index": gen_index,
+                "build_id": definition["build_id"],
+                "snr_db": snr,
+                "target_level_dbfs": level,
+                "utt_id": uttid,
+                "retries": int(stats["retries"]),
+                "retry_policy": RETRY_ACCEPT,
+                "renderer": RENDERER_ACCEPT,
+                "resample": RESAMPLE_ID,
+                "clean_activity": None if activity is None else activity,
+                "clean_clip_skips": int(stats["clean_clip_skips"]),
+                "noise_clip_skips": int(stats["noise_clip_skips"]),
+                "activity_rejects": int(stats["activity_rejects"]),
+                "post_clip_rejects": int(stats["post_clip_rejects"]),
+                "short_rejects": int(stats["short_rejects"]),
+            },
+            "steps": [
+                "resample_16k",
+                "concat_silence",
+                "activity_accept",
+                "peak_normalize",
+                "rms_-25dbfs",
+                "snr_scale",
+                "target_level",
+                "clip_guard",
+                "post_mix_accept",
+                "pcm16",
+            ],
+            "output": {"length": target, "teacher": "dry_clean"},
+        }
+        if int(clean_wave.shape[0]) != target:
+            raise ReproductionError(f"gen_index {gen_index} accepted clean length {clean_wave.shape[0]}, plan says {target}")
+        return document, stats
+    raise ReproductionError(
+        f"gen_index {gen_index} had no accepted mixture after {limit} attempts: {stats}"
+    )
 
 
 def plan_realizations(
@@ -344,9 +597,21 @@ def plan_case(
 
 
 def render_realization(document: dict[str, Any], directory_for: dict[str, Path | dict[str, Path]]) -> dict[str, np.ndarray]:
-    """Mix one stored plan. The RNG is not drawn again."""
-    clean = _render_pieces(document["sources"]["speech"], directory_for["speech"])
-    noise = _render_pieces(document["sources"]["noise"], directory_for["noise"])
+    """Mix one stored plan. The RNG is not drawn again.
+
+    ``length_plan_no_sample_retry`` reads stored 16 kHz spans. An accepted plan
+    may resample a non-16 kHz source before the stored crop. Neither path
+    searches again, and neither writes a waveform.
+    """
+    policy = str(document["draws"].get("retry_policy") or RETRY_NONE)
+    if policy == RETRY_NONE:
+        allow_resample = False
+    elif policy == RETRY_ACCEPT:
+        allow_resample = True
+    else:
+        raise ReproductionError(f"unknown DNS retry policy: {policy}")
+    clean = _render_pieces(document["sources"]["speech"], directory_for["speech"], allow_resample=allow_resample)
+    noise = _render_pieces(document["sources"]["noise"], directory_for["noise"], allow_resample=allow_resample)
     length = int(document["output"]["length"])
     if clean.shape[0] != length or noise.shape[0] != length:
         raise ReproductionError(
@@ -461,7 +726,92 @@ def _assemble(
     return pieces
 
 
-def _render_pieces(pieces: Sequence[dict[str, Any]], root: Path | dict[str, Path]) -> np.ndarray:
+def _build_signal(
+    names: Sequence[str],
+    paths: dict[str, Path],
+    cursor: int,
+    target: int,
+    silence: int,
+    rng: np.random.Generator,
+    *,
+    is_clean: bool,
+    is_test_set: bool,
+    cache: dict[str, tuple[np.ndarray, int]] | None,
+) -> tuple[list[dict[str, Any]], int, int, bool]:
+    """Official ``build_audio`` on one case-local cursor.
+
+    A clipped crop consumes one of ``MAX_PIECE_TRIES`` and the random offset,
+    then the next file is used. The already concatenated prefix stays. The
+    cursor advances for every read, including rejects.
+    """
+    if not names:
+        raise ReproductionError("cannot assemble an empty file list")
+    remaining = int(target)
+    pieces: list[dict[str, Any]] = []
+    tries_left = MAX_PIECE_TRIES
+    skips = 0
+    count = len(names)
+    position = int(cursor)
+    while remaining > 0 and tries_left > 0:
+        name = names[position % count]
+        position += 1
+        path = paths[name]
+        audio, rate = load_16k(path, cache)
+        source_rate = int(rate)
+        if len(audio) > remaining and (not is_clean or not is_test_set):
+            offset = int(rng.integers(0, len(audio) - remaining))
+            use = remaining
+        else:
+            offset = 0
+            use = len(audio)
+        if use < 1:
+            skips += 1
+            tries_left -= 1
+            continue
+        crop = audio[offset:offset + use]
+        if is_clipped(crop):
+            skips += 1
+            tries_left -= 1
+            continue
+        pieces.append({"name": name, "start": offset, "length": use, "source_rate": source_rate})
+        remaining -= use
+        if remaining > 0:
+            gap = min(remaining, silence)
+            if gap:
+                pieces.append({"silence": gap})
+                remaining -= gap
+    return pieces, position, skips, remaining == 0
+
+
+def _pieces_to_wave(
+    pieces: Sequence[dict[str, Any]],
+    paths: dict[str, Path],
+    *,
+    cache: dict[str, tuple[np.ndarray, int]] | None,
+) -> np.ndarray:
+    chunks: list[np.ndarray] = []
+    for piece in pieces:
+        if "silence" in piece:
+            chunks.append(np.zeros(int(piece["silence"]), dtype=np.float64))
+            continue
+        audio, _rate = load_16k(paths[str(piece["name"])], cache)
+        start = int(piece["start"])
+        length = int(piece["length"])
+        crop = audio[start:start + length]
+        if crop.shape[0] != length:
+            raise ReproductionError(f"{piece['name']} span {start}:{start + length} is outside the 16 kHz signal")
+        chunks.append(crop)
+    if not chunks:
+        raise ReproductionError("realization has no samples")
+    return np.concatenate(chunks)
+
+
+def _render_pieces(
+    pieces: Sequence[dict[str, Any]],
+    root: Path | dict[str, Path],
+    *,
+    allow_resample: bool = False,
+) -> np.ndarray:
     chunks: list[np.ndarray] = []
     for piece in pieces:
         if "silence" in piece:
@@ -471,13 +821,23 @@ def _render_pieces(pieces: Sequence[dict[str, Any]], root: Path | dict[str, Path
         path = root[name] if isinstance(root, dict) else Path(root) / name
         start = int(piece["start"])
         length = int(piece["length"])
-        audio, rate = sf.read(path, start=start, stop=start + length, dtype="float64", always_2d=True)
-        if int(rate) != SAMPLE_RATE:
-            raise ReproductionError(f"{path} is {rate} Hz; the plan only stores 16 kHz spans")
-        mono = np.asarray(audio, dtype=np.float64).mean(axis=1)
+        source_rate = piece.get("source_rate")
+        if source_rate is not None and int(source_rate) != SAMPLE_RATE:
+            if not allow_resample:
+                raise ReproductionError(f"{path} is {source_rate} Hz; this plan does not resample")
+            mono, rate = read_mono(path)
+            if int(rate) != int(source_rate):
+                raise ReproductionError(f"{path} is {rate} Hz; the plan stored {source_rate} Hz")
+            converted = resample_to_16k(mono, rate)
+            mono = converted[start:start + length]
+        else:
+            audio, rate = sf.read(path, start=start, stop=start + length, dtype="float64", always_2d=True)
+            if int(rate) != SAMPLE_RATE:
+                raise ReproductionError(f"{path} is {rate} Hz; the plan only stores 16 kHz spans")
+            mono = np.asarray(audio, dtype=np.float64).mean(axis=1)
         if mono.shape[0] != length:
             raise ReproductionError(f"{path} span {start}:{start + length} returned {mono.shape[0]} samples")
-        chunks.append(mono)
+        chunks.append(np.asarray(mono, dtype=np.float64))
     if not chunks:
         raise ReproductionError("realization has no samples")
     return np.concatenate(chunks)
@@ -492,11 +852,13 @@ def measure_realization(document: dict[str, Any], directory_for: dict[str, Path 
     """
     speech = directory_for["speech"]
     noise_root = directory_for["noise"]
+    policy = str(document["draws"].get("retry_policy") or RETRY_NONE)
+    allow_resample = policy == RETRY_ACCEPT
     source_clipped = _clipped_pieces(document["sources"]["speech"], speech) + _clipped_pieces(
         document["sources"]["noise"], noise_root
     )
-    clean = _render_pieces(document["sources"]["speech"], speech)
-    noise = _render_pieces(document["sources"]["noise"], noise_root)
+    clean = _render_pieces(document["sources"]["speech"], speech, allow_resample=allow_resample)
+    noise = _render_pieces(document["sources"]["noise"], noise_root, allow_resample=allow_resample)
     activity = float(activitydetector(clean))
     mixed_clean, mixed_noise, noisy, _applied = snr_mixer(
         clean,
@@ -531,7 +893,13 @@ def _clipped_pieces(pieces: Sequence[dict[str, Any]], root: Path | dict[str, Pat
         path = root[name] if isinstance(root, dict) else Path(root) / name
         start = int(piece["start"])
         length = int(piece["length"])
-        audio, _rate = sf.read(path, start=start, stop=start + length, dtype="float64", always_2d=True)
-        if is_clipped(np.asarray(audio, dtype=np.float64).mean(axis=1)):
+        source_rate = piece.get("source_rate")
+        if source_rate is not None and int(source_rate) != SAMPLE_RATE:
+            mono, rate = read_mono(path)
+            crop = resample_to_16k(mono, rate)[start:start + length]
+        else:
+            audio, _rate = sf.read(path, start=start, stop=start + length, dtype="float64", always_2d=True)
+            crop = np.asarray(audio, dtype=np.float64).mean(axis=1)
+        if is_clipped(crop):
             found += 1
     return found

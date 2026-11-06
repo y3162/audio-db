@@ -14,7 +14,14 @@ from typing import Any
 import numpy as np
 import torch
 
-from src.reproduction.build.dns2020 import ALGORITHM, render_realization
+from src.reproduction.build.dns2020 import (
+    ALGORITHM,
+    RENDERER_ACCEPT,
+    RENDERER_V1,
+    RETRY_ACCEPT,
+    RETRY_NONE,
+    render_realization,
+)
 from src.reproduction.errors import ReproductionError
 from src.reproduction.ids import digest
 from src.reproduction.pipeline.provenance import snapshot_provenance_parts
@@ -37,6 +44,14 @@ class DnsOnDemandChunkData:
             raise ReproductionError(f"dataset {dataset.get('name')} is not ready")
         if rule.get("normalize") is not None:
             raise ReproductionError("DNS audio is not RMS-normalized at load time")
+        self.renderer = str(rule.get("renderer") or RENDERER_V1)
+        self.retry_policy = str(rule.get("retry_policy") or RETRY_NONE)
+        if self.renderer == RENDERER_V1 and self.retry_policy != RETRY_NONE:
+            raise ReproductionError(f"slot {slot} renderer {self.renderer} does not match {self.retry_policy}")
+        if self.renderer == RENDERER_ACCEPT and self.retry_policy != RETRY_ACCEPT:
+            raise ReproductionError(f"slot {slot} renderer {self.renderer} does not match {self.retry_policy}")
+        if self.renderer not in {RENDERER_V1, RENDERER_ACCEPT}:
+            raise ReproductionError(f"slot {slot} has unknown DNS renderer {self.renderer}")
         self.store = store
         self.slot = slot
         self.ids = store.case_ids(slot)
@@ -63,7 +78,7 @@ class DnsOnDemandChunkData:
 
     def identity(self) -> dict[str, Any]:
         dataset = self.store.dataset
-        return {
+        recorded = {
             "pipeline": "espnet_chunk_v1",
             "source": "ondemand_conditions",
             "delivery": "on_demand",
@@ -83,6 +98,12 @@ class DnsOnDemandChunkData:
             "normalize": None,
             "order": "shape_file",
         }
+        rule = dataset.get("rule_json") or {}
+        if rule.get("renderer"):
+            recorded["renderer"] = self.renderer
+        if rule.get("retry_policy"):
+            recorded["retry_policy"] = self.retry_policy
+        return recorded
 
     def provenance(self) -> dict[str, Any]:
         recorded = self.identity()
@@ -129,6 +150,11 @@ class DnsOnDemandChunkData:
         document = self.store.docs.get(case_id)
         if document is None:
             raise ReproductionError(f"case {case_id} has no realization document")
+        policy = str(document["draws"].get("retry_policy") or RETRY_NONE)
+        if policy != self.retry_policy:
+            raise ReproductionError(
+                f"case {case_id} retry policy {policy} does not match renderer {self.renderer}"
+            )
         if self.verify_on_read:
             _check_source_hashes(self.store, document, self.speech, self.noise)
         rendered = render_realization(document, {"speech": self.speech, "noise": self.noise})

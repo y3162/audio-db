@@ -18,6 +18,9 @@ from src.reproduction.build.dns2020 import (
     ESPNET_COMMIT,
     GENERATOR,
     GENERATOR_VERSION,
+    RENDERER_ACCEPT,
+    RESAMPLE_ID,
+    RETRY_ACCEPT,
     SAMPLE_RATE,
     measure_realization,
     split_train_valid,
@@ -145,6 +148,93 @@ def protocol_pair() -> tuple[dict[str, Any], dict[str, Any]]:
         "deviation_class": "algorithm_change",
         "parent_protocol_id": parent_id,
         "deviations_json": [SEED_DEVIATION, ONDEMAND_DEVIATION, RETRY_DEVIATION, EXCLUDE_DEVIATION],
+    }
+    return parent, child
+
+
+ACCEPT_NOTE = (
+    "cv_synthetic is the tail after count*9/10 of sorted uttids. "
+    "This is not cv_synthetic_small. The pinned TF-Locoformer config names "
+    "dump/raw/cv_synthetic_small. The pinned tree and the pinned ESPnet espnet2 "
+    "checkout contain no script, seed, or count for that subset. "
+    "cv_synthetic_small stays UNKNOWN."
+)
+
+
+def accept_protocol_pair() -> tuple[dict[str, Any], dict[str, Any]]:
+    """P7 formula parent, plus the acceptance child. The P7 on-demand child is unchanged."""
+    parent, _child = protocol_pair()
+    rule = dict(RULE)
+    rule["delivery"] = "on_demand"
+    rule["retry_policy"] = RETRY_ACCEPT
+    rule["renderer"] = RENDERER_ACCEPT
+    validation = dict(RULE["validation"])
+    validation["note"] = ACCEPT_NOTE
+    rule["validation"] = validation
+    child_id = protocol_id_for(
+        algorithm=ALGORITHM,
+        algorithm_version=1,
+        kind="pregenerated",
+        rule=rule,
+        deviation_class="algorithm_change",
+        parent=parent["protocol_id"],
+    )
+    child = {
+        "protocol_id": child_id,
+        "name": "dns.tflocoformer.ondemand.accept",
+        "version": 1,
+        "kind": "pregenerated",
+        "algorithm": ALGORITHM,
+        "algorithm_version": 1,
+        "rule_json": rule,
+        "official_ref_json": OFFICIAL_REF,
+        "deviation_class": "algorithm_change",
+        "parent_protocol_id": parent["protocol_id"],
+        "deviations_json": [
+            {
+                "id": "seeded_case_stream",
+                "class": "algorithm_change",
+                "text": (
+                    "Official DNS generation uses one shared multiprocessing counter, starting "
+                    "at 0 and incrementing before the modulo, plus one unseeded NumPy stream. "
+                    "File assignment depends on process scheduling. audio-db gives each "
+                    "gen_index a private Generator(PCG64(mix_seed('dns', seed, gen_index))) "
+                    "and a cursor that starts at gen_index % count. Retries continue that "
+                    "cursor and stream. They do not replay the official shared counter, so "
+                    "the accepted file is not a bit match to an official dump."
+                ),
+            },
+            dict(ONDEMAND_DEVIATION),
+            {
+                "id": "official_acceptance",
+                "class": "official_effective",
+                "text": (
+                    "build_audio skips a cropped source whose peak is greater than 0.99, up to "
+                    "50 reads, and keeps the prefix. gen_audio rebuilds clean speech until "
+                    "activitydetector is greater than 0.6. Noise activity 0.0 skips the "
+                    "detector. After snr_mixer, a mix is rebuilt when clean, noise, or noisy "
+                    "still has a sample above 0.99. Equality at 0.6 or 0.99 is not a reject. "
+                    "The outer official loops are unbounded. This protocol stops at 50 outer "
+                    "attempts and raises instead of keeping a rejected candidate."
+                ),
+            },
+            {
+                "id": "librosa_resample_unpinned",
+                "class": "algorithm_change",
+                "text": (
+                    "Official build_audio calls librosa.resample(audio, fs_input, 16000) on the "
+                    "whole file before the crop. The librosa release is not recorded. librosa "
+                    f"1.0.0 rejects that positional call. Rendering uses {RESAMPLE_ID}, which is "
+                    "librosa 1.0.0's default, and only for files that are not already 16 kHz. "
+                    "Source bytes are not rewritten."
+                ),
+            },
+            {
+                "id": "validation_not_cv_synthetic_small",
+                "class": "algorithm_change",
+                "text": ACCEPT_NOTE,
+            },
+        ],
     }
     return parent, child
 
@@ -555,6 +645,112 @@ def assemble_graph(
             recipe_definition["build_id"]: dict(recipe_report),
             smoke_definition["build_id"]: dict(smoke_report),
         },
+    )
+    validate_graph(graph, resource_db=resource_db)
+    return graph
+
+
+def assemble_accept_graph(
+    *,
+    name: str,
+    claim: str,
+    definition: dict[str, Any],
+    documents: Sequence[dict[str, Any]],
+    report: dict[str, Any],
+    speech: dict[str, Any],
+    noise: dict[str, Any],
+    source_assets: Sequence[dict[str, Any]],
+    test_cases: Sequence[dict[str, Any]],
+    resource_db: str | None,
+) -> Graph:
+    """One acceptance dataset. It does not rewrite the P7 protocol or datasets."""
+    if report.get("status") != "PASS" or report.get("delivery") != "on_demand" or int(report.get("wav_files", 0)) != 0:
+        raise ReproductionError("refusing to register a DNS build that was not checked on demand")
+    parent, child = accept_protocol_pair()
+    catalog, catalog_rows = _catalog(list(source_assets))
+    for asset in source_assets:
+        asset["catalog_id"] = catalog["catalog_id"]
+    train_docs, valid_docs, stats = split_train_valid(documents)
+    protocol_id = child["protocol_id"]
+    train_cases = [condition_case(item, protocol_id=protocol_id) for item in train_docs]
+    valid_cases = [condition_case(item, protocol_id=protocol_id) for item in valid_docs]
+    test_set = case_set_for(
+        "dns.tflocoformer.accept.no_reverb",
+        "test",
+        test_cases,
+        {"rule": "explicit"},
+        "official synthetic no_reverb pairs by fileid. Not used for selection. Not cv_synthetic_small.",
+    )
+    sets = [
+        case_set_for(
+            f"{name}.train",
+            "train",
+            train_cases,
+            {"rule": "sorted_ratio", "key": "utt_id", "ratio": 0.9, "part": "head"},
+            f"dns_data_prep count*9/10 head of sorted uttids; {stats}",
+        ),
+        case_set_for(
+            f"{name}.valid",
+            "valid",
+            valid_cases,
+            {"rule": "sorted_ratio", "key": "utt_id", "ratio": 0.9, "part": "tail"},
+            f"{ACCEPT_NOTE} {stats}",
+        ),
+        test_set,
+    ]
+    deviations = list(child["deviations_json"])
+    deviations.append(
+        {
+            "id": "scaled_down",
+            "class": "research_improvement",
+            "text": (
+                "The mixture count is a P7.1 sample, not the 3000 h recipe. "
+                "The 9/10 split is recomputed on this count. Validation is the sorted-uttid "
+                "tail and is not cv_synthetic_small."
+            ),
+        }
+    )
+    dataset = _dataset(
+        name,
+        protocol_id,
+        claim,
+        sets[0],
+        sets[1],
+        test_set,
+        speech,
+        noise,
+        deviations,
+        ACCEPT_NOTE + " This is a short accepted DNS plan, not the 3000 h recipe.",
+    )
+    case_sets = {row["case_set_id"]: row for row in sets}
+    cases = {row["case_id"]: row for row in train_cases + valid_cases + list(test_cases)}
+    uses_test = compute_selection_uses_test(
+        dataset,
+        case_sets,
+        {speech["material_set_id"]: speech, noise["material_set_id"]: noise},
+        cases,
+    )
+    dataset["selection_uses_test"] = uses_test
+    dataset["dataset_id"] = dataset_id_for(
+        protocol_id=protocol_id,
+        bindings=dataset["bindings"],
+        profile=dataset["profile"],
+        material_origin=dataset["material_origin"],
+        claim_label=dataset["claim_label"],
+        selection_uses_test=uses_test,
+        declared_status="ready",
+    )
+    graph = Graph(
+        catalogs=[catalog],
+        catalog_rows={catalog["catalog_id"]: catalog_rows},
+        assets=list(source_assets),
+        materials=[speech, noise],
+        protocols=[parent, child],
+        cases=list(cases.values()),
+        case_sets=sets,
+        datasets=[dataset],
+        builds=[build_row(definition)],
+        verified={definition["build_id"]: dict(report)},
     )
     validate_graph(graph, resource_db=resource_db)
     return graph

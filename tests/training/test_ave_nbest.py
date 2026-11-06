@@ -59,7 +59,7 @@ class AverageNBestTests(unittest.TestCase):
         trainer.global_step = epoch * 10
         trainer._retain_chunk_models(epoch, _summary(loss))
 
-    def test_fewer_than_five_does_not_write_an_average(self):
+    def test_fewer_than_five_links_the_best_epoch(self):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
             trainer, task = self._trainer(root)
@@ -67,6 +67,29 @@ class AverageNBestTests(unittest.TestCase):
                 self._retain(trainer, task, epoch, float(epoch))
             self.assertFalse((root / "valid.loss.ave_5best.pt").exists())
             self.assertEqual(len(trainer.chunk_history), 4)
+            link = root / "valid.loss.ave_1best.pt"
+            self.assertTrue(link.is_symlink())
+            self.assertEqual(link.readlink().as_posix(), "1epoch.pt")
+            self.assertEqual((root / "valid.loss.ave.pt").readlink().as_posix(), "valid.loss.ave_1best.pt")
+            loaded = torch.load(link, weights_only=True)
+            self.assertTrue(torch.equal(loaded["weight"], torch.tensor([1.0])))
+
+    def test_histories_from_one_through_six(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            trainer, task = self._trainer(root)
+            for epoch in range(1, 7):
+                self._retain(trainer, task, epoch, float(epoch))
+                average = root / "valid.loss.ave_5best.pt"
+                best = root / "valid.loss.ave_1best.pt"
+                if epoch < 5:
+                    self.assertFalse(average.exists())
+                    self.assertTrue(best.is_symlink())
+                    self.assertEqual(best.readlink().as_posix(), "1epoch.pt")
+                else:
+                    self.assertTrue(average.is_file())
+                    self.assertFalse(average.is_symlink())
+                    self.assertEqual((root / "valid.loss.ave.pt").readlink().as_posix(), average.name)
 
     def test_top_five_mean_excludes_a_worse_epoch_and_sums_integers(self):
         with tempfile.TemporaryDirectory() as directory:

@@ -1,6 +1,6 @@
 # 再現用 DB・Data Pipeline の実装計画
 
-状態: **P1〜P5 は実装済み。** P1 は合成データの単体テスト。P2 は VoiceBank-DEMAND の実ファイルで、MP-SENet と MossFormerGAN の 4 Dataset とスナップショットまで完了している。P3 は固定ペアの Pipeline、Legacy アダプタ、Trainer 接続まで完了している。P4 は checkpoint の `data_provenance.json`、`repro.runs` への事後登録、評価結果の `independent` まで完了している。P5 は ESPnet chunk iterator の複数 rank と virtual rank で、合成データと短い DDP スモークまで完了している。検証は [P3_VERIFICATION](P3_VERIFICATION.md)、[P4_VERIFICATION](P4_VERIFICATION.md)、[P5_VERIFICATION](P5_VERIFICATION.md)。**P6 はオンデマンドで完了した。** VoiceBank は 48 kHz から学習時に 16 kHz PCM_16 を作る 4 Dataset を登録した。MS-SNSD の公式規模は `tf_gridnet.ms_snsd.espnet_recipe@1`（train 7,345 / valid 1,835 / test 305）で、混合 WAV は作っていない。全量 WAV の事前生成は撤去した。P7 はオンデマンドで完了した。DNS の 3000 h 相当は条件だけを登録し、混合 WAV は作っていない。検証は [P6_VERIFICATION](P6_VERIFICATION.md) と [P7_VERIFICATION](P7_VERIFICATION.md)。P8〜P10 は未着手。オンライン混合の実装は P8・P9 のまま。 フェーズ 6 以降は、この計画の受け入れ条件をそのまま使う。
+状態: **P1〜P5 は実装済み。** P1 は合成データの単体テスト。P2 は VoiceBank-DEMAND の実ファイルで、MP-SENet と MossFormerGAN の 4 Dataset とスナップショットまで完了している。P3 は固定ペアの Pipeline、Legacy アダプタ、Trainer 接続まで完了している。P4 は checkpoint の `data_provenance.json`、`repro.runs` への事後登録、評価結果の `independent` まで完了している。P5 は ESPnet chunk iterator の複数 rank と virtual rank で、合成データと短い DDP スモークまで完了している。検証は [P3_VERIFICATION](P3_VERIFICATION.md)、[P4_VERIFICATION](P4_VERIFICATION.md)、[P5_VERIFICATION](P5_VERIFICATION.md)。**P6 はオンデマンドで完了した。** VoiceBank は 48 kHz から学習時に 16 kHz PCM_16 を作る 4 Dataset を登録した。MS-SNSD の公式規模は `tf_gridnet.ms_snsd.espnet_recipe@1`（train 7,345 / valid 1,835 / test 305）で、混合 WAV は作っていない。全量 WAV の事前生成は撤去した。P7 はオンデマンドで完了した。DNS の 3000 h 相当は条件だけを登録し、混合 WAV は作っていない。P7.1 は別 Protocol で受理と非 16 kHz リサンプルを足した。全量の再登録はしていない。検証は [P6_VERIFICATION](P6_VERIFICATION.md)、[P7_VERIFICATION](P7_VERIFICATION.md)、[P7_1_VERIFICATION](P7_1_VERIFICATION.md)。P8〜P10 は未着手。オンライン混合の実装は P8・P9 のまま。 フェーズ 6 以降は、この計画の受け入れ条件をそのまま使う。
 
 設計の正本: [REPRODUCTION_DB_DESIGN](../../db/REPRODUCTION_DB_DESIGN.md)（DB）、[DATA_PIPELINE_DESIGN](DATA_PIPELINE_DESIGN.md)（Pipeline）。再現対象の正本: [TARGETS](TARGETS.md)。採用決定: [DECISIONS](../../../.agents/DECISIONS.md) の D-01〜D-09。
 
@@ -190,7 +190,7 @@ P2 の実施結果（2026-11-06）:
 | 変更するモジュール | `src/reproduction/build/dns2020.py`、`prepare/dns2020.py`、`prepare/dns_run.py`、`pipeline/dns_ondemand.py`、`configs/data/builds/dns_tflocoformer_ondemand.yaml`、`configs/training/tf_locoformer_dns_ondemand.yaml`、`Trainer` の `valid.loss.ave_5best` |
 | 機能 | S0〜S3。`ave_5best` は検証損失の上位 5 epoch の平均。最後の 5 epoch ではない |
 | 受け入れ | 360,000 件の SNR は整数 −5…14、レベルは −35…−16 dBFS。小さい Dataset は大きい Dataset の接頭辞ではない。`ave_5best` は合成履歴で上位 5 つの重みの平均になる。5 件未満では平均ファイルを書かない |
-| 状態 | **実装済み**（2026-11-06）。検証は [P7_VERIFICATION](P7_VERIFICATION.md)。`cv_synthetic_small` は UNKNOWN のまま。P8 には進まない |
+| 状態 | **実装済み**（2026-11-06）。検証は [P7_VERIFICATION](P7_VERIFICATION.md)。P7.1 の受理は別 Dataset で、[P7_1_VERIFICATION](P7_1_VERIFICATION.md)。`cv_synthetic_small` は UNKNOWN のまま。P8 には進まない |
 | 承認の扱い | 登録はログインノードの CPU 作業で、TSUBAME の `qsub` は使っていない。30 分以上の GPU ジョブは、投入前に別の承認が要る |
 
 ### 3.9 フェーズ 8: DFN3 のオンライン混合

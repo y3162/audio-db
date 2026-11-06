@@ -6,7 +6,7 @@ TF-Locoformer の DNS-Challenge（`interspeech2020/master` @ `70f19285c36cca4df2
 
 ## 総合
 
-判定は CONDITIONAL GO。条件の登録、スナップショット、式の照合、chunk 計画、CPU の実モデルスモーク、再開、合成 checkpoint の `ave_5best` は通った。公式生成は activity と clip で標本を捨ててやり直す。その再試行は計画に入れておらず、256 件の監査では clean activity が閾値以下のものが 60 件、混合後に clip したものが 13 件あった。公式 WAV とのビット一致は主張しない。
+判定は CONDITIONAL GO。条件の登録、スナップショット、式の照合、chunk 計画、CPU の実モデルスモーク、再開、合成 checkpoint の `ave_5best` は通った。公式生成は activity と clip で標本を捨ててやり直す。その再試行は計画に入れておらず、256 件の監査では clean activity が閾値以下のものが 60 件、混合後に clip したものが 13 件あった。公式 WAV とのビット一致は主張しない。このファイルは P7 の Dataset の記録である。受理と非 16 kHz のリサンプルは別 Protocol で、[P7_1_VERIFICATION](P7_1_VERIFICATION.md) を見る。
 
 ## 素材
 

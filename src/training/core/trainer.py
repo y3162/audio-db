@@ -30,7 +30,7 @@ from src.training.core.batch import BatchPlan, plan_batches
 from src.training.core.batch_schedule import scheduled_batch_size
 from src.reproduction.pipeline.chunking import plan_chunk_epoch
 from src.training.data.chunk_plan import epoch_chunk_batches
-from src.training.core.average import average_checkpoint_files
+from src.training.core.average import average_checkpoint_files, replace_symlink
 from src.training.core.checkpoint import load_checkpoint, save_atomic
 from src.training.core.distributed import ProcessInfo, barrier, unwrap
 from src.training.core.metrics_log import append_record, truncate_after, write_json
@@ -875,23 +875,33 @@ class Trainer:
         for old in self.checkpoint_dir.glob("*epoch.pt"):
             if old.name[0].isdigit() and int(old.name.split("epoch")[0]) not in kept:
                 old.unlink()
-        if exported is not None and keep > 1 and len(by_loss) >= keep:
-            epochs = [int(row["epoch"]) for row in by_loss]
-            averaged = average_checkpoint_files(
-                [self.checkpoint_dir / f"{epoch}epoch.pt" for epoch in epochs]
-            )
-            average_path = self.checkpoint_dir / f"valid.loss.ave_{keep}best.pt"
-            save_atomic(average_path, averaged)
-            self._attach_provenance(average_path)
-            write_json(self.checkpoint_dir / f"{average_path.name}.json", {
-                "metric": "loss",
-                "criterion": "valid.loss.min",
-                "epochs": epochs,
-                "values": [row["loss"] for row in by_loss],
-                "files": [f"{epoch}epoch.pt" for epoch in epochs],
-                "global_step": self.global_step,
-                "average": "espnet_nbest_float_mean_int_sum",
-            })
+        if exported is not None and by_loss:
+            best_name = f"{int(by_loss[0]['epoch'])}epoch.pt"
+            if keep > 1 and len(by_loss) >= keep:
+                epochs = [int(row["epoch"]) for row in by_loss]
+                averaged = average_checkpoint_files(
+                    [self.checkpoint_dir / f"{epoch}epoch.pt" for epoch in epochs]
+                )
+                average_path = self.checkpoint_dir / f"valid.loss.ave_{keep}best.pt"
+                save_atomic(average_path, averaged)
+                self._attach_provenance(average_path)
+                write_json(self.checkpoint_dir / f"{average_path.name}.json", {
+                    "metric": "loss",
+                    "criterion": "valid.loss.min",
+                    "epochs": epochs,
+                    "values": [row["loss"] for row in by_loss],
+                    "files": [f"{epoch}epoch.pt" for epoch in epochs],
+                    "global_step": self.global_step,
+                    "average": "espnet_nbest_float_mean_int_sum",
+                })
+                replace_symlink(self.checkpoint_dir / "valid.loss.ave.pt", average_path.name)
+            else:
+                # Pinned ESPnet average_nbest_models: n larger than the history
+                # writes valid.loss.ave_1best as a symlink to the best epoch,
+                # not an average of the shorter list. ave_1best is left in place
+                # once a real average exists.
+                replace_symlink(self.checkpoint_dir / "valid.loss.ave_1best.pt", best_name)
+                replace_symlink(self.checkpoint_dir / "valid.loss.ave.pt", "valid.loss.ave_1best.pt")
         return None if path is None else str(path)
 
     def _batch_schedule_should_stop(self, summary: dict[str, Any] | None) -> bool:

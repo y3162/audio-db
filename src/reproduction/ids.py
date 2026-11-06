@@ -72,6 +72,8 @@ RULE_KEYS = {
     "validation",
     "delivery",
     "resample",
+    "retry_policy",
+    "renderer",
 }
 RESAMPLE_KEYS = {
     "tool",
@@ -461,6 +463,17 @@ def validate_rule(algorithm: str, rule: Any) -> dict[str, Any]:
                 raise ReproductionError(f"rule_json.validation.{key} must be a string or integer")
     if "delivery" in body and body["delivery"] != "on_demand":
         raise ReproductionError("rule_json.delivery must be on_demand")
+    if "retry_policy" in body and body["retry_policy"] not in {
+        "length_plan_no_sample_retry",
+        "deterministic_case_stream_v1",
+    }:
+        raise ReproductionError("rule_json.retry_policy is unknown")
+    if "renderer" in body and body["renderer"] not in {"dns_pcm16_v1", "dns_pcm16_accept_v2"}:
+        raise ReproductionError("rule_json.renderer is unknown")
+    if body.get("renderer") == "dns_pcm16_accept_v2" and body.get("retry_policy") != "deterministic_case_stream_v1":
+        raise ReproductionError("dns_pcm16_accept_v2 requires deterministic_case_stream_v1")
+    if body.get("retry_policy") == "deterministic_case_stream_v1" and body.get("renderer") != "dns_pcm16_accept_v2":
+        raise ReproductionError("deterministic_case_stream_v1 requires dns_pcm16_accept_v2")
     if "resample" in body:
         if not algorithm.startswith("fixed_pair."):
             raise ReproductionError(f"{algorithm} does not take resample")

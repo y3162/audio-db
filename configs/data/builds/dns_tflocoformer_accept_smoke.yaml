@@ -1,0 +1,19 @@
+# P7.1 acceptance sample. Not the 3000 h recipe and not cv_synthetic_small.
+# Non-16 kHz noise is resampled at render time. Mixture wavs are not written.
+# Register this into a new database. Do not point it at the P7 datasets.
+
+name: tf_locoformer.dns.accept_smoke
+seed: 17
+shard_size: 64
+delivery: on_demand
+source_scan: catalog
+acceptance: deterministic_case_stream_v1
+claim_label: official_recipe_scaled_down
+clean_limit: 48
+noise_limit: 48
+include_non_16k_noise: 4
+num_files: 256
+audio_seconds: 30
+include_test: true
+audit_realizations: 32
+workers: 4
