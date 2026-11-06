@@ -73,8 +73,20 @@ POLICY_NOTES: dict[str, dict[str, str]] = {
         ),
     },
     "espnet_chunk_v1": {
-        "matches": "unimplemented",
-        "detail": "Chunk-iterator ranks are a later phase and are not planned here.",
+        "matches": "algorithm",
+        "detail": (
+            "Implemented by plan_chunk_epoch, not by a flat index list. "
+            "The caller list is the base order (ESPnet's shape-file order is "
+            "not available until generation). Shard with [rank::world], select "
+            "num_samples utterances per rank with RandomState(cycle + seed), "
+            "then chunk with a fresh RandomState(epoch + seed) on each rank. "
+            "Cache is max(num_cache_chunks // world, per-rank batch). "
+            "iterator_stop keeps min(rank batch counts). "
+            "global_batch must divide by world_size. "
+            "TF-GridNet at 0d136c5 and TF-Locoformer at 90eed8e use this "
+            "iterator; the 90eed8e differences that remain at the DNS defaults "
+            "do not change the split."
+        ),
     },
 }
 
@@ -132,7 +144,9 @@ def rank_order(
     if policy == "per_rank_independent_v1":
         return _per_rank_independent(size, seed, epoch, world_size, rank)
     if policy == "espnet_chunk_v1":
-        raise ReproductionError("espnet_chunk_v1 is not implemented")
+        raise ReproductionError(
+            "espnet_chunk_v1 is planned by plan_chunk_epoch; a flat rank index list does not describe chunks"
+        )
     raise ReproductionError(f"unknown order policy: {policy}")
 
 
@@ -148,6 +162,14 @@ def order_params(policy: str, seed: int) -> dict[str, int | bool | str]:
         return {"sampler_seed": 0, "epoch_added": True, "pad": "repeat_front", "training_seed_used": False}
     if policy == "per_rank_independent_v1":
         return {"training_seed": seed, "sampler_seed": 0, "list": "mix_seed per_rank"}
+    if policy == "espnet_chunk_v1":
+        return {
+            "rng": "numpy.RandomState(epoch + seed) per rank",
+            "sampler": "RawSampler cycle + seed",
+            "shard": "rank::world",
+            "iterator_stop": "min_rank_batches",
+            "training_seed": seed,
+        }
     raise ReproductionError(f"unknown order policy: {policy}")
 
 

@@ -1,6 +1,6 @@
 # 再現用 Data Pipeline 設計
 
-状態: **固定ペアの学習 Pipeline は実装済み**（2026-11-06、P3）。P1 の DB コマンドと P2 の `make reproduction-prepare` に加え、`src/reproduction/pipeline/` が MP-SENet と MossFormerGAN のスナップショットを Trainer へ渡す。事前生成の実行、オンライン混合、`espnet_chunk_v1` の複数 rank、`data.virtual_world_size` は未実装。検証は [P3_VERIFICATION](P3_VERIFICATION.md)。
+状態: **固定ペアの学習 Pipeline と ESPnet chunk の複数 rank は実装済み**（2026-11-06、P3 と P5）。P1 の DB コマンドと P2 の `make reproduction-prepare` に加え、`src/reproduction/pipeline/` が MP-SENet と MossFormerGAN のスナップショットを Trainer へ渡す。`espnet_chunk_v1` は `chunking.py` の `plan_chunk_epoch` で、world size 1・2・4 と `data.virtual_world_size` を計画する。事前生成の実行とオンライン混合は未実装。検証は [P3_VERIFICATION](P3_VERIFICATION.md) と [P5_VERIFICATION](P5_VERIFICATION.md)。
 
 ## 0. 位置づけと正本の分担
 
@@ -340,7 +340,8 @@ plan_chunk_epoch(snapshot, spec, epoch, world):
 - epoch 境界: `num_samples_per_epoch`（rank あたりの元発話数）が 1 epoch。選択の位置は `num_samples * (epoch − 1)` を `N_rank` で割った余りから進む（現行の `select_utterances` と同じ式を rank の shard に適用）。**捨てたチャンクバッチは epoch をまたいで繰り越さない**（ESPnet と同じ。`stats` に捨てた数を記録）。
 - 更新数: TF-Locoformer の 1 epoch は約 14,000 更新（1,000 発話 × 14 チャンク / rank あたり batch 1）。TF-GridNet は発話の長さに依存し、実測で決まる。
 - 勾配蓄積: TF-GridNet / TF-Locoformer は `accum_grad 1`。更新グループは 1 micro-batch。MossFormerGAN（蓄積 2）は、rank あたり 2 micro-batch が 1 グループ。
-- validation: `valid` も同じ shard 規則 `[rank::world]` で、shuffle なしのチャンクを rank あたり batch で回す。全 rank の損失の合計と件数を all-reduce して平均する（重みはバッチの大きさ）。**validation でも、`iterator_stop` と同様に rank 間の長さの差を最小に揃えるか**は、実装時に ESPnet の `trainer.py` で確認する（**UNKNOWN**）。揃えない場合は、全バッチを処理し、件数の重みで平均する。
+- validation: `valid` も同じ shard 規則 `[rank::world]` で、shuffle なしのチャンクを rank あたり batch で回す。ESPnet の `validate_one_epoch` は学習と同じ `iterator_stop` なので、最短 rank に揃えてから、残したバッチの損失合計と件数を all-reduce し、件数で割る。揃えたあとの平均は、同じバッチを 1 プロセスで重み付き平均した結果と一致する。捨てた尾は 1 プロセスで全件を評価した結果には入らない。
+- `global_batch % world_size != 0` は拒否する。ESPnet は `rank < batch_size % world_size` の rank に 1 件多く渡す。公開の TF-GridNet（4/2）と TF-Locoformer（4/4）は割り切れる。
 - 再開位置: epoch 開始から**コミット済みの更新数**。各 rank は同じ `update_in_epoch` から始める（§9.3）。
 
 ### 8.4 rank 数・割り当ての扱いの一覧
@@ -540,9 +541,9 @@ IMPLEMENTATION_PLAN の「未解決事項」にも集約する。
 | ID | 内容 |
 |---|---|
 | O-3 | スナップショットの `.npz` の列構成と文字列の格納の詳細（形式は `numpy` + JSON と決定済み。列の詳細は実装時）|
-| O-4 | ESPnet の基底の発話順（shape file の順）と、`num_samples_per_epoch` の発話選択の厳密な式 |
-| O-5 | validation の `iterator_stop` 相当の扱い（ESPnet `trainer.py` で確認）|
-| O-6 | ESPnet が DDP の各 rank で、モデル側の乱数（dropout）の seed をどう扱うか |
+| O-4 | **確認済み（2026-11-06）。** 基底順は `UnsortedBatchSampler` が読む shape file の順。ファイル自体は事前生成の前には無い。`plan_chunk_epoch` はそのリストを並べ替えず、呼び出し側の順を基底にする。発話選択は `SequenceIterFactory` と同じ `num_samples * (epoch - 1)` からの窓で、`0d136c5` と `90eed8e` で同じ式 |
+| O-5 | **確認済み（2026-11-06）。** `0d136c5` と `90eed8e` の `validate_one_epoch` は学習と同じ `iterator_stop`（いずれかの rank が尽きたら残りを捨てる）。実装はその最短長に揃えてから、残したバッチの損失合計と件数を集約する |
+| O-6 | **確認済み（2026-11-06）。** 両版とも epoch 開始時に `set_all_random_seed(seed + epoch)` を各プロセスで同じ引数で呼ぶ。rank ごとの seed は足さない。TF-GridNet と TF-Locoformer DNS の dropout は 0 で、この seed は強調の forward を変えない |
 | O-7 | 公式の乱数列（torch `randperm`、Python `random.shuffle`）が、公式と audio-db の torch の版の違いで一致するか |
 | O-8 | スレッド並列で、オンライン混合の処理が足りるか（プロセス並列の要否）。測定が要る |
 | O-9 | 実機の複数 GPU の台数と利用可否 |

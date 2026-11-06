@@ -68,6 +68,15 @@ def execute(config_path: str | Path, *, resume: str | Path | None = None,
         assert_gpu_idle(local_rank, allow_busy=config["runtime"]["allow_busy_gpu"])
     set_determinism(config["deterministic"], cuda=device_name == "cuda")
     process = setup_process(device_name)
+    data = config["data"]
+    plan_world = process.world_size
+    virtual = data.get("virtual_world_size")
+    if virtual is not None:
+        if process.world_size != 1:
+            raise TrainingError("data.virtual_world_size cannot be combined with a distributed process")
+        if not config.get("chunk_iterator"):
+            raise TrainingError("data.virtual_world_size requires chunk_iterator")
+        plan_world = int(virtual)
     if config.get("batch_schedule"):
         first = scheduled_batch_size(
             0,
@@ -79,12 +88,12 @@ def execute(config_path: str | Path, *, resume: str | Path | None = None,
                 f"scheduled batch {first} exceeds micro_batch_size_per_gpu "
                 f"{config['micro_batch_size_per_gpu']}"
             )
-        plan = plan_batches(first, first, process.world_size)
+        plan = plan_batches(first, first, plan_world)
     else:
         plan = plan_batches(
             config["global_batch_size"],
             config["micro_batch_size_per_gpu"],
-            process.world_size,
+            plan_world,
         )
     if process.rank == 0:
         print(
@@ -94,7 +103,6 @@ def execute(config_path: str | Path, *, resume: str | Path | None = None,
             flush=True,
         )
     task = build_task(config, process.device)
-    data = config["data"]
     sample_rate = int(config["model"]["sampling_rate"])
     if data.get("pipeline") == "reproduction":
         from src.reproduction.pipeline.training_data import open_training_data

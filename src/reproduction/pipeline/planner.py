@@ -12,10 +12,39 @@ import torch
 
 from src.reproduction.errors import ReproductionError
 from src.reproduction.ids import digest
+from src.reproduction.pipeline.chunking import ChunkEpochPlan, plan_chunk_epoch
 from src.reproduction.pipeline.order import order_params, rank_order, resolve_order_policy
 from src.reproduction.pipeline.seeds import mix_seed
 from src.reproduction.pipeline.store import AssetStore
 from src.reproduction.pipeline.types import CropSpec, EpochPlan, MicroBatchPlan, SampleRef, UpdateGroup
+
+
+def plan_espnet_chunk(
+    samples,
+    *,
+    espnet_epoch: int,
+    seed: int,
+    world_size: int,
+    num_samples: int | None,
+    chunk_length: int,
+    global_batch: int,
+    num_cache_chunks: int,
+    shuffle: bool,
+    shift_ratio: float = 0.5,
+) -> ChunkEpochPlan:
+    """TF-GridNet and TF-Locoformer chunk plan. Fixed-pair planning does not call this."""
+    return plan_chunk_epoch(
+        samples,
+        espnet_epoch=espnet_epoch,
+        seed=seed,
+        world_size=world_size,
+        num_samples=num_samples,
+        chunk_length=chunk_length,
+        global_batch=global_batch,
+        num_cache_chunks=num_cache_chunks,
+        shuffle=shuffle,
+        shift_ratio=shift_ratio,
+    )
 
 
 def plan_fixed_pair(

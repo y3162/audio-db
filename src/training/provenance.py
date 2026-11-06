@@ -45,20 +45,23 @@ def build_provenance(dataset: Any, config: dict[str, Any], process: Any) -> dict
     if not isinstance(model_name, str) or not model_name:
         model_name = "unknown"
     world_size = int(process.world_size)
-    ddp_mode = "single" if world_size <= 1 else "real"
+    data_cfg = config.get("data") if isinstance(config.get("data"), dict) else {}
+    virtual = data_cfg.get("virtual_world_size")
+    ddp_mode = "virtual" if virtual else ("single" if world_size <= 1 else "real")
     git_commit = git_metadata().get("commit") or "unknown"
     identity = _json_object(dataset.identity(), "dataset identity")
     parts = _parts(dataset)
-    config_hash = content_sha256(
-        {
-            "model_name": model_name,
-            "seed": config.get("seed"),
-            "loss": config.get("loss"),
-            "world_size": world_size,
-            "ddp_mode": ddp_mode,
-            "identity": identity,
-        }
-    )
+    hashed = {
+        "model_name": model_name,
+        "seed": config.get("seed"),
+        "loss": config.get("loss"),
+        "world_size": world_size,
+        "ddp_mode": ddp_mode,
+        "identity": identity,
+    }
+    if virtual:
+        hashed["virtual_world_size"] = int(virtual)
+    config_hash = content_sha256(hashed)
     pipeline = parts.get("pipeline") or identity.get("pipeline") or "legacy"
     run_id = content_sha256(
         {
@@ -75,7 +78,13 @@ def build_provenance(dataset: Any, config: dict[str, Any], process: Any) -> dict
         }
     )
     data_sha256 = content_sha256({"materials": parts["materials"], "sets": parts["sets"]})
-    return {
+    limitations = list(parts.get("limitations") or [])
+    if virtual:
+        limitations.append(
+            "virtual_world_size reproduces the rank data plan in one process; "
+            "it is not a distributed gradient all-reduce"
+        )
+    document = {
         "schema_version": SCHEMA_VERSION,
         "format": FORMAT,
         "run_id": run_id,
@@ -97,10 +106,13 @@ def build_provenance(dataset: Any, config: dict[str, Any], process: Any) -> dict
         "sets": parts["sets"],
         "materials": parts["materials"],
         "lineage_counts": parts.get("lineage_counts") or {},
-        "limitations": list(parts.get("limitations") or []),
+        "limitations": limitations,
         "data_sha256": data_sha256,
         "dataset_identity": identity,
     }
+    if virtual:
+        document["virtual_world_size"] = int(virtual)
+    return document
 
 
 def publish_provenance(directory: Path, document: dict[str, Any], *, rank: int) -> bytes:

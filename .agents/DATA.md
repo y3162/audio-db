@@ -48,6 +48,7 @@ DuckDB は `data/db/resource.duckdb`（`src/data/constants.py`）。
 
 ## 学習に使うセット
 
+- ESPnet chunk の複数 rank では、checkpoint の `data_state.pipeline` が `espnet_chunk_v1` である。計画は `(seed, epoch, world_size)` から再計算し、`plan_hash` が違えば再開しない。world size または `virtual_world_size` が違う再開は拒否する。先読みした未使用バッチは位置に数えない。来歴 JSON は run に 1 つで、rank 0 だけが書く。rank ごとの消費位置は `data_state` に置き、来歴と混ぜない。
 - 学習 checkpoint は、その step の JSONL 書き込みと TensorBoard 有効時の event flush の後に公開する。途中で停止した場合は、完成済み checkpoint より後の記録を再開時に巻き戻す。電源断やストレージ障害に対する複数ファイルの原子性は保証しない。再現学習の rank 0 は、同じディレクトリに `data_provenance.json` を一度だけ排他作成する。`data_state` は再開位置で、来歴 JSON は Dataset・snapshot・使用集合の内容ハッシュと派生元である。`provenance_sha256` を持つ checkpoint は、横の JSON が欠けるかハッシュが違うと再開しない。来歴の無い古い checkpoint は再開できるが、評価の `independent` は `UNKNOWN` である。`UNKNOWN` は独立評価ではない。
 - 評価結果の `independent` は true / false / `UNKNOWN` である。`checkpoint_selection_overlap` は、選択に使った素材と内容または既知の派生元が重なった評価セット名である。情報が足りないときは null で、空リストは重なりが無いと確認できたときだけ使う。`selection_uses_test` は独立性とは別に残す。判定は checkpoint 横の JSON と評価レシピの SHA-256 だけで、`reproduction.duckdb` は開かない。
 
@@ -95,7 +96,7 @@ DuckDB は `data/db/resource.duckdb`（`src/data/constants.py`）。
 | `data/results/` | `se-evaluation/<run_id>/` は評価結果の一次記録（`config.json` と `results.jsonl`）。`se-repro/` は公式再現の記録とビルドキャッシュ。新しい実行は新しい `run_id`。既存の run ディレクトリは `--resume` なしでは使えない。DuckDB へ載せるときは、このディレクトリを `register_run` で登録する |
 | `data/staging/` | DB の再構築元。登録後も残す。Git 管理外 |
 | `data/db/` | `resource.duckdb` はレシピスキーマの本番ファイル。`reproduction.duckdb` は公式再現用の `repro` スキーマで、MP-SENet と MossFormerGAN の VoiceBank 固定ペア 4 Dataset が入っている。`snapshots/` はその DB から書き出した学習用スナップショット。`training.duckdb` は学習スモークセット。`backups/resource-legacy-20261031.duckdb` は切り替え前の固定列スキーマ。`rebuild-a.duckdb` と `rebuild-b.duckdb` は切り替え前に作った同じ内容の再構築コピー |
-| `data/generated/` | 事前生成の音声。検証済み shard 以外は登録しない。P2 では本番ファイルを置いていない |
+| `data/generated/` | 事前生成の音声。検証済み shard 以外は登録しない。P2 では本番ファイルを置いていない。MS-SNSD の混合は `ms_snsd_synth/<build_id 先頭16桁>/` に PCM_16 で書く。全量の 30 時間生成と `reproduction.duckdb` への登録はまだ行っていない |
 | `data/derived/` | 派生素材。VoiceBank-DEMAND の 16 kHz PCM_16 は `data/derived/VoiceBank-DEMAND/soxr_hq_16000/`。同じ変換条件の正常なファイルは再利用し、内容が違うファイルは上書きしない |
 
 ## DB の書き込みと保護

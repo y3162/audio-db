@@ -1,6 +1,6 @@
 # 再現用 DB・Data Pipeline の実装計画
 
-状態: **P1〜P4 は実装済み。** P1 は合成データの単体テスト。P2 は VoiceBank-DEMAND の実ファイルで、MP-SENet と MossFormerGAN の 4 Dataset とスナップショットまで完了している。P3 は固定ペアの Pipeline、Legacy アダプタ、Trainer 接続まで完了している。P4 は checkpoint の `data_provenance.json`、`repro.runs` への事後登録、評価結果の `independent` まで完了している。検証は [P3_VERIFICATION](P3_VERIFICATION.md) と [P4_VERIFICATION](P4_VERIFICATION.md)。**P5〜P10 は未着手。** フェーズ 5 以降は、この計画の受け入れ条件をそのまま使う。
+状態: **P1〜P5 は実装済み。** P1 は合成データの単体テスト。P2 は VoiceBank-DEMAND の実ファイルで、MP-SENet と MossFormerGAN の 4 Dataset とスナップショットまで完了している。P3 は固定ペアの Pipeline、Legacy アダプタ、Trainer 接続まで完了している。P4 は checkpoint の `data_provenance.json`、`repro.runs` への事後登録、評価結果の `independent` まで完了している。P5 は ESPnet chunk iterator の複数 rank と virtual rank で、合成データと短い DDP スモークまで完了している。検証は [P3_VERIFICATION](P3_VERIFICATION.md)、[P4_VERIFICATION](P4_VERIFICATION.md)、[P5_VERIFICATION](P5_VERIFICATION.md)。**P6 は生成式と 1 クリップの書き出しまでで、登録・全量生成・学習接続は未完了。P7〜P10 は未着手。** フェーズ 6 以降は、この計画の受け入れ条件をそのまま使う。
 
 設計の正本: [REPRODUCTION_DB_DESIGN](../../db/REPRODUCTION_DB_DESIGN.md)（DB）、[DATA_PIPELINE_DESIGN](DATA_PIPELINE_DESIGN.md)（Pipeline）。再現対象の正本: [TARGETS](TARGETS.md)。採用決定: [DECISIONS](../../../.agents/DECISIONS.md) の D-01〜D-09。
 
@@ -50,7 +50,7 @@ GPU を使うテストは、`nvidia-smi` で空きを確認してから行う。
 | UN-4 | TF-GridNet の公式生成物（未シード、再現不能）| seed 固定は公式との差として記録（D-07）|
 | UN-5 | TF-Locoformer の `cv_synthetic_small`、実学習の所要時間・停止理由 | Q5 |
 | UN-6 | MS-SNSD の `sf.write` のクリップ時の挙動 | 生成時に実測し、`audits` に記録 |
-| UN-7 | ESPnet の validation の `iterator_stop` 相当、DDP の dropout の seed、基底の発話順（shape file）| ESPnet のコードを実装時に確認（DATA_PIPELINE_DESIGN O-4〜O-6）|
+| UN-7 | ESPnet の validation の `iterator_stop`、DDP の dropout の seed、基底の発話順（shape file）| **P5 で確認。** validation も `iterator_stop`。seed は `seed + epoch` で rank を足さない。基底順は shape file で、ファイルが無い間は呼び出し側の順。詳細は DATA_PIPELINE_DESIGN O-4〜O-6 |
 | UN-8 | 公式と audio-db の torch / librosa / soundfile / soxr の版差（公式は librosa 0.7.2 など）| `meta` に記録。差の大きさは測れる範囲で測る |
 
 **まだ決めない（実装時・測定後）**
@@ -152,8 +152,9 @@ P2 の実施結果（2026-11-06）:
 | 受け入れ（単体）| (1) `world = 1` で現行の `epoch_chunk_batches` と一致する（黄金）。(2) `world = 2, 4` で、shard が `[rank::world]`、rank あたりの batch が `global_batch // world`、`updates = min(...)`、余りを捨てる、が ESPnet の式を再実装した参照と一致する。(3) epoch 間で発話の消費位置が進む。(4) virtual rank と、`world` 個のプロセスを模した逐次実行で、各 rank のバッチ列が一致する。(5) validation の合計・件数の集約が、1 プロセスで全体を処理した結果と一致する。(6) `plan_hash` が全 rank で一致する |
 | 受け入れ（実データ smoke）| 実 DDP（GPU が確保できる場合）で 2 rank の 1 epoch を完走し、virtual rank の計画と一致する。**GPU 確保は `nvidia-smi` で確認し、Q10 の結果に従う** |
 | 受け入れ（公式一致）| ESPnet のチャンク iterator の出力（バッチ列）と、同じ入力・seed での照合。可能な範囲（ESPnet の import が可能なら。公式コードへの**実行時依存は作らず、テスト内だけ**）。不可なら、式のコード読みの一致を「公式一致」ではなく「コード読み」と書く |
-| 完了条件 | 通過。UN-7 の 3 項目が ESPnet のコードで確認され、結果が DATA_PIPELINE_DESIGN に反映される |
+| 完了条件 | 通過。UN-7 の 3 項目は ESPnet `0d136c5` と `90eed8e` のコードで確認し、結果を DATA_PIPELINE_DESIGN と [P5_VERIFICATION](P5_VERIFICATION.md) に書いた |
 | 依存 | P3、Q10 |
+| 状態 | **実装済み**（2026-11-06）。`valid.loss.ave_5best` は P7 のまま未実装 |
 | 更新する正本 | `.agents/DECISIONS.md`（#26 の単一プロセス記述を更新）、DATA_PIPELINE_DESIGN |
 
 ### 3.7 フェーズ 6: TF-GridNet（生成 + 学習）

@@ -1,0 +1,77 @@
+# Official ESPnet chunk-iterator protocol on the shared VoiceBank-DEMAND split.
+# This is not the fixed 5000-update research schedule
+# (configs/training/tf_gridnet_fixed5000_seed17.yaml).
+# num_samples_per_epoch is the number of source utterances, not optimizer steps.
+# 1 logical epoch ends when that chunk iterator ends. max_epochs 35 and
+# early_stopping_patience 5 match egs2/ms_snsd enh1 train_enh_tfgridnet.yaml.
+# max_steps is only a safety cap. Best models follow valid loss (min) and
+# valid si_snr (max). The logged si_snr is the negative SI-SDR loss, so
+# maximizing it ranks the lower SI-SDR first, as the pinned ESPnet trainer does.
+# Do not resume a fixed-5000 checkpoint into this directory.
+# data.rms_normalize is false: the pinned ESPnet enh task leaves
+# speech_volume_normalize at its default None. The shared research
+# configs keep utterance RMS (the dataset default).
+
+seed: 17
+deterministic: false
+global_batch_size: 4
+micro_batch_size_per_gpu: 4
+max_steps: 2000000
+segment_size: 48000
+loss: official
+grad_clip: 5.0
+checkpoint_dir: data/results/training/tf-gridnet-chunk-seed17
+checkpoint_interval: 0
+validation_interval: 0
+best_checkpoint_start_epoch: 0
+
+chunk_iterator:
+  num_samples_per_epoch: 5000
+  chunk_length: 48000
+  chunk_shift_ratio: 0.5
+  num_cache_chunks: 1024
+  shuffle: true
+  max_epochs: 35
+  early_stopping_patience: 5
+  keep_nbest: 5
+
+optimizer:
+  name: adam
+  lr: 0.001
+  betas: [0.9, 0.999]
+  weight_decay: 0.0
+
+scheduler:
+  name: plateau
+  factor: 0.7
+  patience: 1
+
+model:
+  name: tf_gridnet
+  variant: ms-snsd
+  sampling_rate: 16000
+  architecture:
+    n_fft: 512
+    stride: 256
+    n_layers: 4
+    lstm_hidden_units: 128
+    attn_n_head: 4
+    attn_approx_qk_dim: 512
+    emb_dim: 32
+    emb_ks: 4
+    emb_hs: 4
+    activation: prelu
+    eps: 1.0e-5
+  stft: {}
+
+data:
+  database: data/db/voicebank.duckdb
+  train_set: voicebank_28_train
+  validation_set: voicebank_28_valid
+  load_workers: 4
+  prefetch: true
+  rms_normalize: false
+
+runtime:
+  device: cuda
+  allow_busy_gpu: false

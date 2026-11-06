@@ -79,7 +79,15 @@ _MODEL = {
     "beta",
     "sampling_rate",
 }
-_LEGACY_DATA = {"database", "train_set", "validation_set", "load_workers", "prefetch", "rms_normalize"}
+_LEGACY_DATA = {
+    "database",
+    "train_set",
+    "validation_set",
+    "load_workers",
+    "prefetch",
+    "rms_normalize",
+    "virtual_world_size",
+}
 _REPRODUCTION_DATA = {
     "pipeline",
     "dataset",
@@ -164,6 +172,8 @@ def load_training_config(path: str | Path) -> dict[str, Any]:
             raise TrainingError("chunk_iterator requires validation_set")
         if "logical_steps_per_epoch" in config:
             raise TrainingError("chunk_iterator cannot be combined with logical_steps_per_epoch")
+    if config["data"].get("virtual_world_size") is not None and "chunk_iterator" not in config:
+        raise TrainingError("data.virtual_world_size requires chunk_iterator")
     if "batch_schedule" in raw:
         config["batch_schedule"] = _batch_schedule(raw["batch_schedule"])
         config["batch_size_limit"] = _int(
@@ -400,7 +410,7 @@ def _legacy_data(raw: dict[str, Any]) -> dict[str, Any]:
     if not isinstance(database, str) or not database:
         raise TrainingError("data.database must be a path")
     workers = _int(raw.get("load_workers", 4), "data.load_workers", minimum=1)
-    return {
+    parsed = {
         "database": database,
         "train_set": train_set,
         "validation_set": validation,
@@ -408,12 +418,17 @@ def _legacy_data(raw: dict[str, Any]) -> dict[str, Any]:
         "prefetch": _bool(raw.get("prefetch", True), "data.prefetch"),
         "rms_normalize": _bool(raw.get("rms_normalize", True), "data.rms_normalize"),
     }
+    if raw.get("virtual_world_size") is not None:
+        parsed["virtual_world_size"] = _int(raw["virtual_world_size"], "data.virtual_world_size", minimum=1)
+    return parsed
 
 
 def _reproduction_data(raw: dict[str, Any]) -> dict[str, Any]:
     _unknown(raw, _REPRODUCTION_DATA, "data")
     if raw.get("virtual_world_size") is not None:
-        raise TrainingError("data.virtual_world_size is not implemented")
+        raise TrainingError(
+            "data.virtual_world_size is implemented for the ESPnet chunk iterator, not for reproduction datasets"
+        )
     dataset = raw.get("dataset")
     if not isinstance(dataset, str):
         raise TrainingError("data.dataset must be name@version")

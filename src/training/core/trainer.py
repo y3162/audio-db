@@ -28,6 +28,7 @@ from torch.nn.parallel import DistributedDataParallel
 from src.evaluation.envinfo import capture_environment
 from src.training.core.batch import BatchPlan, plan_batches
 from src.training.core.batch_schedule import scheduled_batch_size
+from src.reproduction.pipeline.chunking import plan_chunk_epoch
 from src.training.data.chunk_plan import epoch_chunk_batches
 from src.training.core.checkpoint import load_checkpoint, save_atomic
 from src.training.core.distributed import ProcessInfo, barrier, unwrap
@@ -468,6 +469,10 @@ class Trainer:
 
     def _run_chunk_epochs(self, dataset, validation, skip, epoch, halt) -> None:
         """One epoch is one pass of the ESPnet chunk iterator, not a fixed update count."""
+        world, mode = self._chunk_alignment()
+        if mode != "single":
+            self._run_aligned_chunk_epochs(dataset, validation, skip, epoch, halt, world, mode)
+            return
         if self.process.world_size != 1:
             raise TrainingError("the chunk iterator is implemented for one process")
         spec = self.config["chunk_iterator"]
@@ -562,6 +567,220 @@ class Trainer:
             shuffle=bool(spec["shuffle"]) if train else False,
             shift_ratio=float(spec["chunk_shift_ratio"]),
         )
+
+    def _chunk_alignment(self) -> tuple[int, str]:
+        virtual = (self.config.get("data") or {}).get("virtual_world_size")
+        if virtual is not None:
+            if self.process.world_size != 1:
+                raise TrainingError("data.virtual_world_size cannot be combined with a distributed process")
+            world = int(virtual)
+            if world < 1:
+                raise TrainingError("data.virtual_world_size must be positive")
+            return world, "virtual"
+        if self.process.world_size != 1:
+            return self.process.world_size, "real"
+        return 1, "single"
+
+    def _run_aligned_chunk_epochs(self, dataset, validation, skip, epoch, halt, world: int, mode: str) -> None:
+        """DDP or virtual-rank chunk epochs. Every rank takes the same number of updates."""
+        if self.plan.accumulation_steps != 1:
+            raise TrainingError("chunk iterator updates use one official batch and no gradient accumulation")
+        if self.plan.global_batch_size % world != 0:
+            raise TrainingError(
+                f"global_batch_size {self.plan.global_batch_size} is not divisible by chunk world {world}"
+            )
+        if self.plan.micro_batch_size != self.plan.global_batch_size // world:
+            raise TrainingError("chunk iterator requires micro_batch_size == global_batch_size / world")
+        spec = self.config["chunk_iterator"]
+        max_epochs = int(spec["max_epochs"])
+        while epoch < max_epochs and self.global_step < self.max_steps and not halt:
+            plan = self._aligned_chunk_plan(dataset, epoch + 1, train=True, world=world)
+            self._broadcast_plan_hash(plan.plan_hash)
+            usable = plan.updates
+            if usable < 1:
+                raise TrainingError(f"chunk epoch {epoch + 1} produced no batches")
+            if skip > usable:
+                raise TrainingError(
+                    f"checkpoint chunk position {skip} is past the {usable} batches in epoch {epoch + 1}"
+                )
+            if skip == usable:
+                epoch += 1
+                skip = 0
+                continue
+            dataset.set_epoch(epoch)
+            cursor = skip
+            skip = 0
+            while cursor < usable and self.global_step < self.max_steps:
+                update_started = time.perf_counter()
+                if mode == "virtual":
+                    group = [
+                        dataset.collate_chunks(plan.rank_batches[rank][cursor]) for rank in range(world)
+                    ]
+                    # Sequential 1/N average of the rank batches. This is not a DDP all-reduce.
+                    metrics = self.task.train_update(group, len(group))
+                else:
+                    group = [dataset.collate_chunks(plan.rank_batches[self.process.rank][cursor])]
+                    metrics = self.task.train_update(group, 1)
+                self._update_seconds = time.perf_counter() - update_started
+                cursor += 1
+                self._require_finite(metrics)
+                self.global_step += 1
+                epoch_done = cursor >= usable
+                espnet_epoch = epoch + 1
+                validation_summary = None
+                if epoch_done:
+                    validation_summary = self._validate_aligned_chunks(validation, espnet_epoch, world, mode)
+                    self.task.step_schedulers(self._scheduler_validation(validation_summary))
+                    if self._chunk_should_stop(espnet_epoch, validation_summary):
+                        halt = True
+                complete = halt or (epoch_done and espnet_epoch >= max_epochs)
+                timed_stop = not complete and self.global_step < self.max_steps and self._stop_requested()
+                save = self._should_save(self.global_step) or timed_stop or (epoch_done and self.process.rank == 0)
+                checkpoint_path = str(self.checkpoint_dir / f"step_{self.global_step:08d}.pt") if save else None
+                if self.process.rank == 0:
+                    self._log_train(espnet_epoch, metrics, checkpoint_path, validation_summary, group)
+                    if save:
+                        if self._tb is not None:
+                            self._tb.flush()
+                        state = self._chunk_state(
+                            dataset,
+                            epoch if cursor < usable else epoch + 1,
+                            0 if cursor >= usable else cursor,
+                            world,
+                            mode,
+                        )
+                        self.last_checkpoint = self._save(dataset, epoch, cursor, usable, state)
+                barrier(self.process)
+                if timed_stop:
+                    self.stop_reason = "CHECKPOINTED"
+                    halt = True
+                    break
+            if halt or self.global_step >= self.max_steps:
+                break
+            epoch += 1
+        barrier(self.process)
+        if self.stop_reason is None:
+            if self._managed and self.global_step >= self.max_steps and epoch < max_epochs and not halt:
+                raise TrainingError("chunk iterator reached max_steps before completing training")
+            self.stop_reason = "COMPLETED"
+            self._mark_complete()
+
+    def _aligned_chunk_plan(self, dataset, espnet_epoch: int, *, train: bool, world: int):
+        spec = self.config["chunk_iterator"]
+        samples = list(zip(dataset.case_ids(), (int(length) for length in dataset.waveform_lengths())))
+        from src.reproduction.errors import ReproductionError
+
+        try:
+            return plan_chunk_epoch(
+                samples,
+                espnet_epoch=espnet_epoch,
+                seed=self.seed,
+                world_size=world,
+                num_samples=int(spec["num_samples_per_epoch"]) if train else None,
+                chunk_length=int(spec["chunk_length"]),
+                global_batch=self.plan.global_batch_size,
+                num_cache_chunks=int(spec["num_cache_chunks"]),
+                shuffle=bool(spec["shuffle"]) if train else False,
+                shift_ratio=float(spec["chunk_shift_ratio"]),
+            )
+        except ReproductionError as exc:
+            raise TrainingError(str(exc)) from exc
+
+    def _chunk_state(self, dataset, epoch: int, update: int, world: int, mode: str) -> dict[str, Any]:
+        plan = self._aligned_chunk_plan(dataset, epoch + 1, train=True, world=world)
+        if update < 0 or update > plan.updates:
+            raise TrainingError(
+                f"chunk update {update} is outside epoch {epoch + 1} ({plan.updates} updates)"
+            )
+        spec = self.config["chunk_iterator"]
+        return {
+            "pipeline": "espnet_chunk_v1",
+            "order_policy": "espnet_chunk_v1",
+            "seed": self.seed,
+            "epoch": epoch,
+            "update_in_epoch": update,
+            "world_size": world,
+            "process_world_size": self.process.world_size,
+            "virtual_world_size": world if mode == "virtual" else None,
+            "ddp_mode": mode,
+            "ranks": list(range(world)),
+            "plan_hash": plan.plan_hash,
+            "global_batch": self.plan.global_batch_size,
+            "micro_batch": self.plan.micro_batch_size,
+            "accumulation": 1,
+            "per_rank_batch": plan.per_rank_batch,
+            "per_rank_cache": plan.per_rank_cache,
+            "num_samples_per_epoch": int(spec["num_samples_per_epoch"]),
+            "chunk_length": int(spec["chunk_length"]),
+            "chunk_shift_ratio": float(spec["chunk_shift_ratio"]),
+            "num_cache_chunks": int(spec["num_cache_chunks"]),
+            "shuffle": bool(spec["shuffle"]),
+            "iterator_stop": "min_rank_batches",
+            "dataset": dataset.identity(),
+        }
+
+    def _check_chunk_state(self, saved: dict[str, Any], dataset) -> None:
+        world, mode = self._chunk_alignment()
+        current = self._chunk_state(dataset, int(saved["epoch"]), int(saved["update_in_epoch"]), world, mode)
+        if saved != current:
+            keys = sorted(set(saved) | set(current))
+            changed = [key for key in keys if saved.get(key) != current.get(key)]
+            raise TrainingError(
+                "checkpoint chunk plan does not match this run: " + ", ".join(changed)
+            )
+
+    def _validate_aligned_chunks(self, validation, espnet_epoch: int, world: int, mode: str) -> dict[str, Any] | None:
+        if validation is None:
+            raise TrainingError("chunk_iterator requires a validation set")
+        rng_state = capture_rng(cuda=self.process.uses_cuda)
+        summary = None
+        try:
+            self.task.eval_mode()
+            plan = self._aligned_chunk_plan(validation, espnet_epoch, train=False, world=world)
+            self._broadcast_plan_hash(plan.plan_hash)
+            if plan.updates < 1:
+                raise TrainingError("validation chunk iterator produced no batches")
+            if mode == "virtual":
+                ranks = range(world)
+            else:
+                ranks = (self.process.rank,)
+            reports = []
+            weights = []
+            for rank in ranks:
+                for chunks in plan.rank_batches[rank]:
+                    batch = validation.collate_chunks(chunks)
+                    reports.append(self.task.validation_report(batch))
+                    weights.append(len(batch["case_id"]))
+            summary = _reduce_weighted_reports(reports, weights, self.process)
+            if self.process.rank == 0 and summary is not None:
+                if self._tb is not None:
+                    from src.training.se.preview import write_preview
+                    write_preview(
+                        self._tb,
+                        self.task,
+                        validation,
+                        self.global_step,
+                        self.config["logging"]["tensorboard"],
+                        chunks=plan.rank_batches[0],
+                    )
+                summary["best_checkpoint"] = self._retain_chunk_models(espnet_epoch, summary)
+                append_record(self._log_path(), {
+                    "type": "validation",
+                    "global_step": self.global_step,
+                    "epoch": espnet_epoch,
+                    "losses": summary["losses"],
+                    "pesq": summary["pesq"],
+                    "stoi": summary["stoi"],
+                    "si_snr": summary.get("si_snr"),
+                    "best_checkpoint": summary["best_checkpoint"],
+                    "seed": self.seed,
+                    "weight": summary.get("weight"),
+                })
+        finally:
+            restore_rng(rng_state, cuda=self.process.uses_cuda)
+            self.task.train_mode()
+        barrier(self.process)
+        return summary if self.process.rank == 0 else None
 
     def _validate_chunks(self, validation, espnet_epoch: int) -> dict[str, Any] | None:
         if validation is None:
@@ -920,6 +1139,9 @@ class Trainer:
         saved_state = payload.get("data_state")
         checker = getattr(dataset, "check_resume", None)
         if checker is None:
+            if isinstance(saved_state, dict) and saved_state.get("pipeline") == "espnet_chunk_v1":
+                self._check_chunk_state(saved_state, dataset)
+                return
             if saved_state is not None:
                 raise TrainingError("checkpoint data_state does not match this dataset")
             return
@@ -1145,6 +1367,101 @@ def _stored_best_pesq(payload: dict[str, Any], directory: Path) -> float | None:
     stored = json.loads(meta.read_text(encoding="utf-8"))
     value = stored.get("pesq")
     return None if value is None else float(value)
+
+
+_WEIGHT_SLOTS = (
+    ("losses", "generator"),
+    ("losses", "mr_l1_tfd"),
+    ("losses", "discriminator"),
+    ("pesq", None),
+    ("stoi", None),
+    ("si_sdr", None),
+    ("si_snr", None),
+)
+
+
+def _reduce_weighted_reports(reports: list[dict[str, Any]], weights: list[int], process: ProcessInfo) -> dict[str, Any]:
+    """Weighted mean of batch-mean metrics. Distributed ranks contribute sums and counts."""
+    sums: list[float] = []
+    counts: list[float] = []
+    unavailable: list[int] = []
+    present: list[int] = []
+    reasons: list[str | None] = []
+    for group, name in _WEIGHT_SLOTS:
+        total = 0.0
+        count = 0.0
+        bad = 0
+        seen = 0
+        reason = None
+        for report, weight in zip(reports, weights):
+            item = report.get(group) if name is None else (report.get(group) or {}).get(name)
+            if not isinstance(item, dict):
+                continue
+            seen = 1
+            if item.get("status") == "unavailable":
+                bad = 1
+                reason = item.get("reason")
+            elif item.get("status") == "ok" and item.get("value") is not None:
+                total += float(item["value"]) * float(weight)
+                count += float(weight)
+            elif reason is None:
+                reason = item.get("reason")
+        sums.append(total)
+        counts.append(count)
+        unavailable.append(bad)
+        present.append(seen)
+        reasons.append(reason)
+    sample_weight = float(sum(weights))
+    if process.distributed and dist.is_initialized():
+        device = process.device
+        sum_t = torch.tensor(sums, dtype=torch.float64, device=device)
+        count_t = torch.tensor(counts, dtype=torch.float64, device=device)
+        bad_t = torch.tensor(unavailable, dtype=torch.int64, device=device)
+        present_t = torch.tensor(present, dtype=torch.int64, device=device)
+        weight_t = torch.tensor([sample_weight], dtype=torch.float64, device=device)
+        dist.all_reduce(sum_t, op=dist.ReduceOp.SUM)
+        dist.all_reduce(count_t, op=dist.ReduceOp.SUM)
+        dist.all_reduce(bad_t, op=dist.ReduceOp.SUM)
+        dist.all_reduce(present_t, op=dist.ReduceOp.SUM)
+        dist.all_reduce(weight_t, op=dist.ReduceOp.SUM)
+        sums = [float(value) for value in sum_t.tolist()]
+        counts = [float(value) for value in count_t.tolist()]
+        unavailable = [int(value) for value in bad_t.tolist()]
+        present = [int(value) for value in present_t.tolist()]
+        sample_weight = float(weight_t.item())
+
+    def metric(index: int) -> dict[str, Any] | None:
+        if present[index] == 0:
+            return None
+        if unavailable[index]:
+            return {"status": "unavailable", "value": None, "reason": reasons[index], "count": 0}
+        if counts[index] > 0:
+            return {
+                "status": "ok",
+                "value": sums[index] / counts[index],
+                "reason": None,
+                "count": counts[index],
+            }
+        return {"status": "na", "value": None, "reason": reasons[index] or "no score", "count": 0}
+
+    losses = {}
+    for index, (group, name) in enumerate(_WEIGHT_SLOTS):
+        if group != "losses" or name is None:
+            continue
+        item = metric(index)
+        if item is not None:
+            losses[name] = item
+    result: dict[str, Any] = {
+        "losses": losses,
+        "pesq": metric(3) or {"status": "na", "value": None, "reason": "no score", "count": 0},
+        "stoi": metric(4) or {"status": "na", "value": None, "reason": "no score", "count": 0},
+        "weight": sample_weight,
+    }
+    for index, key in ((5, "si_sdr"), (6, "si_snr")):
+        item = metric(index)
+        if item is not None:
+            result[key] = item
+    return result
 
 
 def _aggregate_validation(reports: list[dict[str, Any]]) -> dict[str, Any]:
