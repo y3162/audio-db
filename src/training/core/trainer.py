@@ -367,6 +367,7 @@ class Trainer:
         accumulation = self.plan.accumulation_steps
         while self.global_step < self.max_steps and not halt:
             self._apply_batch_schedule(epoch)
+            self._bind_dataset_batch(dataset)
             stream = dataset.epoch(
                 epoch,
                 rank=self.process.rank,
@@ -936,6 +937,11 @@ class Trainer:
             )
         self.plan = plan_batches(size, size, self.process.world_size)
 
+    def _bind_dataset_batch(self, dataset) -> None:
+        setter = getattr(dataset, "set_batch", None)
+        if callable(setter):
+            setter(self.plan.global_batch_size, self.plan.micro_batch_size, self.plan.accumulation_steps)
+
     def _retarget_schedule(self, steps_per_epoch: int) -> None:
         retarget = getattr(self.task, "retarget_deepfilter_schedule", None)
         if retarget is not None and self.config.get("batch_schedule"):
@@ -1190,6 +1196,9 @@ class Trainer:
             raise TrainingError("checkpoint update_in_epoch does not match micro_batches_consumed")
         if int(saved_state["epoch"]) != int(payload["epoch"]):
             raise TrainingError("checkpoint data_state epoch does not match")
+        if self.config.get("batch_schedule"):
+            self._apply_batch_schedule(int(payload["epoch"]))
+        self._bind_dataset_batch(dataset)
         from src.reproduction.errors import ReproductionError
 
         try:

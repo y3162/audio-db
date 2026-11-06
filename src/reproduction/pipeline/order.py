@@ -72,6 +72,19 @@ POLICY_NOTES: dict[str, dict[str, str]] = {
             "and is not an official random sequence."
         ),
     },
+    "dfn3_online_ceil_v1": {
+        "matches": "distribution",
+        "detail": (
+            "DeepFilterNet3 is one process. audio-db shuffles sample indices with "
+            "mix_seed('dfn3-order', protocol, snapshot, seed, split, epoch), then "
+            "pads the list so every rank has the same length when world_size > 1 "
+            "(torch DistributedSampler drop_last=False). The last batch is kept. "
+            "world_size 1 does not pad, so the update count is ceil(N / batch), "
+            "which is the official drop_last=false loader. Sample audio does not "
+            "depend on rank or world size. This is not the official main-thread "
+            "Rng that is seeded once with 42 and then consumed across epochs."
+        ),
+    },
     "espnet_chunk_v1": {
         "matches": "algorithm",
         "detail": (

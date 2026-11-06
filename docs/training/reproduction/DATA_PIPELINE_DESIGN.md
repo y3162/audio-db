@@ -1,6 +1,6 @@
 # 再現用 Data Pipeline 設計
 
-状態: **固定ペアの学習 Pipeline、ESPnet chunk の複数 rank、MS-SNSD のオンデマンド混合、VoiceBank の学習時リサンプルは実装済み**（2026-11-06、P3・P5・P6）。学習用の生成済み WAV は必須にしない。波形キャッシュは実装しない。`pipeline/pregenerated.py` は `delivery: on_demand` 以外を拒否し、オンデマンドは `pipeline/ondemand.py` が再構築する。履歴の固定ペアスナップショットは `open_training_data` が読む。新しい学習の `execute` は `on_demand` を必須にする。オンライン混合の実装は P8・P9 のまま。検証は [P3_VERIFICATION](P3_VERIFICATION.md)、[P5_VERIFICATION](P5_VERIFICATION.md)、[P6_VERIFICATION](P6_VERIFICATION.md)。DNS の受理レンダラは [P7_1_VERIFICATION](P7_1_VERIFICATION.md)。
+状態: **固定ペアの学習 Pipeline、ESPnet chunk の複数 rank、MS-SNSD のオンデマンド混合、VoiceBank の学習時リサンプルは実装済み**（2026-11-06、P3・P5・P6）。学習用の生成済み WAV は必須にしない。波形キャッシュは実装しない。`pipeline/pregenerated.py` は `delivery: on_demand` 以外を拒否し、オンデマンドは `pipeline/ondemand.py` が再構築する。履歴の固定ペアスナップショットは `open_training_data` が読む。新しい学習の `execute` は `on_demand` を必須にする。DeepFilterNet3 のオンライン混合は実装済み。SEMamba++ は未実装。検証は [P3_VERIFICATION](P3_VERIFICATION.md)、[P5_VERIFICATION](P5_VERIFICATION.md)、[P6_VERIFICATION](P6_VERIFICATION.md)、[P8_VERIFICATION](P8_VERIFICATION.md)。DNS の受理レンダラは [P7_1_VERIFICATION](P7_1_VERIFICATION.md)。
 
 ## 0. 位置づけと正本の分担
 
@@ -244,7 +244,7 @@ class EpochStream(Protocol):
 
 固定データ（MP-SENet、MossFormerGAN、TF-GridNet、TF-Locoformer）は、生成条件を先に確定し、同じ条件から同じ音声を再構築する。公式が学習時にランダム化する Crop などは、そのランダム化のまま学習時の処理として残す。公式に seed が無い生成は、アルゴリズムの一致と生成ファイルのビット一致を分け、ビット一致は主張しない。
 
-オンライン混合（DeepFilterNet3、SEMamba++）は、公式の確率分布を Protocol に残し、学習時に抽選する。再開できるよう、seed と、`(seed, epoch, index)` から再計算できる抽選識別子を使う。共有 RNG の残状態には依存しない。この抽選の実装は P8・P9 であり、今回は仕様だけを更新した。
+オンライン混合（DeepFilterNet3、SEMamba++）は、公式の確率分布を Protocol に残し、学習時に抽選する。再開できるよう、seed とサンプル index から再計算する。共有 RNG の残状態には依存しない。DeepFilterNet3 の抽選は実装済み。SEMamba++ は未実装。
 
 P2 の VoiceBank 16 kHz 派生素材は、そのまま固定ペアの入力である。リサンプルを学習時へ移す変更はしておらず、移す場合は P2・P3 の再検証が要る。正規化と Crop は、これまでどおり学習時に Protocol を適用する。
 
@@ -277,10 +277,11 @@ P2 の VoiceBank 16 kHz 派生素材は、そのまま固定ペアの入力で�
 
 - Dataset 定義: `train.speech`、`train.noise`、`train.rir`（素材リスト）、`valid.cases`（`online_snapshot`）。
 - Planner: 順序は `OrderPolicy`。各サンプルの `draw = ("train", epoch, index)` を `SampleRef` に入れる。
-- Renderer（専用）: `realize(protocol, store, draw)` が、`mix_seed("online", dataset_seed, split, epoch, index)` から作った `Generator` で、素材の選択、SNR、gain、雑音の本数、切り出し位置、劣化の有無を抽選して実現値の文書にする。次に文書の `steps` を実行する。**実現値は `(seed, epoch, index)` の関数で、共有 RNG の状態に依存しない。**
-- 共有する部品: `OrderPolicy`、`AssetStore`（素材リストの索引）、音声 I/O（`soundfile`）、`SampleTransform` の一部（crop、RMS）、`BatchAssembler`、`loader`。**共有しない部品**: 混合そのもの（DFN3 の雑音合成と clip ガード、SEMamba++ の VAD 基準の SNR と劣化の順序）は、それぞれ `online_dfn3.py`、`online_semamba.py` に専用実装する。共通の「混合エンジン」は作らない（D-02: 公式の癖を汎用化で失わないため）。
-- 公式との seed の対応: DFN3 の公式は `seed_from_u64(seed + sample_idx)` で発話ごとに RNG を作る（TARGETS 3.1）ので、構造が同じ（発話ごとの決定性）。乱数の列そのもの（Rust の `StdRng`）は再現しない（D-09。統計的同等性）。
-- validation: 実現値の文書を固定した `online_snapshot` の Case 集合（DFN3: 公式の「valid も `sample_idx` のみで seed 固定」に対応）。epoch が変わっても同じサンプルを使う。
+- Renderer（専用）: DeepFilterNet3 は `protocols/online_dfn3.py` の `render_mixture`。種は `mix_seed("dfn3-online", protocol_id, snapshot_hash, seed, split, epoch, index)` で、NumPy PCG64 を使う。valid と test は epoch を種に入れない。設計時の `mix_seed("online", dataset_seed, split, epoch, index)` より、protocol と snapshot を種に足した。同じ index は world size に依存しない。SEMamba++ の `online_semamba.py` は未実装。
+- 共有する部品: `AssetStore`（素材リストの索引）、音声 I/O（`soundfile`）、`assemble`、`loader`。**共有しない部品**: 混合そのもの（DFN3 の雑音合成と clip ガード、SEMamba++ の VAD 基準の SNR と劣化の順序）。共通の「混合エンジン」は作らない（D-02）。
+- 公式との seed の対応: DFN3 の公式は `seed_from_u64(config_seed + epoch_seed + sample_idx)` で発話ごとに RNG を作る。構造は発話ごとの決定性で同じ。乱数の列（Rust の `StdRng`）は再現しない。公式のメインスレッド RNG（seed 42、epoch で再開しない）には依存しない。順序は `mix_seed("dfn3-order", ...)`。
+- validation: `valid.cases` は `online_snapshot` の論理 index である。波形は保存しない。epoch が変わっても同じ index は同じ波形になる。学習の world size が 2 以上でも、検証は rank 0 が valid 全体を 1 プロセスで描画する。
+- 登録: `data/db/reproduction-p8.duckdb`。`dfn3.online.substitute@1` と `dfn3.online.smoke@1` は代替素材。`dfn3.online.official@1` は blocked。詳細は [P8_VERIFICATION](P8_VERIFICATION.md)。
 
 ---
 
@@ -395,11 +396,11 @@ virtual rank は、計画（割り当て、チャンク、バッチ構成、epoc
 | 順序 | `("order", seed, epoch)`（現行互換）| 方針ごとの専用の seed は §8.2 |
 | crop | `("crop", seed, epoch, case_id)`（現行の `crop_start`）| 黄金テストで固定 |
 | チャンク | `("chunk", seed, epoch, rank)` から `RandomState` | ESPnet は `RandomState(epoch + seed)`。公式の再現が必要なら公式式を `espnet_chunk_v1` が持つ |
-| オンライン混合 | `("online", seed, split, epoch, index)` | `index` は epoch 内の全体の通し番号。rank に依存しない（world_size を変えても同じサンプルが作られる）|
+| オンライン混合（DFN3） | `("dfn3-online", protocol_id, snapshot_hash, seed, split, epoch, index)` | valid / test の epoch は 0。`index` はデータセット全体の通し番号。rank に依存しない。SEMamba++ は未実装 |
 | 事前生成 | `("gen", build_seed, gen_index)` | DB 設計 §9.2 |
 | モデル初期化・学習中の乱数 | 現行の `seed_model_init`、`seed_training_stream` | 変更しない |
 
-データ側の乱数は、すべて**キーから毎回導く**。共有の `Generator` を持たないので、**保存すべき乱数状態が無い**。これが、オンライン混合の「RNG 状態」の再現の答えである: 記録するのは `seed`、`epoch`、`index` だけ。
+データ側の乱数は、すべて**キーから毎回導く**。共有の `Generator` を持たないので、**保存すべき乱数状態が無い**。これが、オンライン混合の「RNG 状態」の再現の答えである。DeepFilterNet3 が記録するのは `protocol_id`、`snapshot_hash`、`seed`、`epoch`、`index` で、乱数器の内部状態は保存しない。
 
 ### 9.2 再現性の記録
 

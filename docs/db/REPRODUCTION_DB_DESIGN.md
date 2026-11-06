@@ -2,7 +2,7 @@
 
 状態: **P1 の DB 基盤は実装済み**（2026-11-06）。`reproduction.duckdb` には VoiceBank 固定ペア 4 Dataset と、MS-SNSD の保存済み WAV Dataset、オンデマンド Dataset がある。学習はスナップショットを読み、生成済み WAV を必須にしない。詳細は [P6_VERIFICATION](../training/reproduction/P6_VERIFICATION.md)。
 
-P1 で設計からずらした点: `rule_json` は `src/reproduction/ids.py` の閉じたアルゴリズム封筒（完全な Protocol dataclass は P3）。生成素材は `assets.npz` に入れず `generated.json` に書く。leak 監査は `--resource-db` を渡したときだけ `resource.duckdb` を開く。監査に時刻は無く、PASS が存在し FAIL が無いことを使用条件にする。`sha256` の NULL から値への更新だけを `asset_hashes/` 経由で許す。`integrity = sha256` は Python 側で `size_bytes` も要求する。`official_reproduction` は `declared_status = blocked` を拒否する（DFN3 の blocked 公式 Dataset は P8 でラベルを決める）。
+P1 で設計からずらした点: `rule_json` は `src/reproduction/ids.py` の閉じたアルゴリズム封筒（完全な Protocol dataclass は P3）。生成素材は `assets.npz` に入れず `generated.json` に書く。leak 監査は `--resource-db` を渡したときだけ `resource.duckdb` を開く。監査に時刻は無く、PASS が存在し FAIL が無いことを使用条件にする。`sha256` の NULL から値への更新だけを `asset_hashes/` 経由で許す。`integrity = sha256` は Python 側で `size_bytes` も要求する。`official_reproduction` は ready のとき全素材 SHA-256 を要求する。blocked または unknown でバインドが空なら登録できる（P8 の `dfn3.online.official@1`）。ready な公式再現がバインド無しになることは無い。
 
 ## 0. この文書の位置づけ
 
@@ -386,7 +386,7 @@ DuckDB のスキーマ名は `repro`。型は DuckDB の型。CHECK は同じ行
   1. Protocol の `kind` に必要なスロットが揃う（`fixed_pair` / `pregenerated`: `train.cases`、`valid.cases`、`test.cases`。`online_mixing`: `train.speech` など素材スロットと `valid.cases`）。
   2. `profile = leakage_safe` なら `selection_uses_test = false`（SQL の CHECK でも持つ）。かつ train / valid / test の素材・話者・内容 SHA-256 が重ならない（§7.3）。
   3. `selection_uses_test` は、`valid.cases` と `test.cases` の `case_id` に共通部分があるとき、または `valid` が `test` 由来の素材のとき真。登録関数が計算し、列の値と一致しなければ拒否。
-  4. `claim_label = official_reproduction` なら、`material_origin` が `official` または `derived_from_official`（後者は、派生の `derivations` を `deviations_json` に項目として列挙し、公式の変換器が UNKNOWN の間はその旨を書く）、Protocol の `deviation_class = official_effective`、全素材リストが `integrity_min = sha256`、`declared_status = ready`。
+  4. `claim_label = official_reproduction` なら、`material_origin` が `official` または `derived_from_official`（後者は、派生の `derivations` を `deviations_json` に項目として列挙し、公式の変換器が UNKNOWN の間はその旨を書く）、Protocol の `deviation_class = official_effective`。ready のときは全素材リストが `integrity_min = sha256`。blocked または unknown はバインドを持たず、`blocking_json` に欠けているものを書く。スナップショットは作らない。
   5. `declared_status = blocked | unknown` の Dataset はバインドを持たず、学習に使えない（スナップショットを作らない）。
 - 登録元: `configs/data/datasets/*.yaml`。更新なし。
 
@@ -728,7 +728,7 @@ Build の ID は件数を含まないので、**小さい段階の生成物は�
 |---|---|---|---|---|
 | MP-SENet | `fixed_pair.mp_senet` | 固定ペア | 学習入口は `mp_senet.vb28.ondemand.official`（`official_reproduction`。train 11,572、valid = test 824、`selection_uses_test = true`）と `mp_senet.vb28.ondemand.safe`（`leakage_safe_comparison`。10,700 / 872 / test 824）。履歴の `mp_senet.vb28.official` と `mp_senet.vb28.safe` は 16 kHz 派生素材を指す | 学習入口の case は 48 kHz コーパスを指す。16 kHz PCM_16 は学習時の soxr HQ。公式の事前変換器は UNKNOWN。公式リストは `configs/data/lists/mp_senet/` |
 | MossFormerGAN | `fixed_pair.mossformergan_se_16k` | 固定ペア | 学習入口は `mossformergan.vb28.ondemand.official` と `mossformergan.vb28.ondemand.safe`。件数は MP-SENet と同じ。履歴の `mossformergan.vb28.official` と `mossformergan.vb28.safe` は派生素材を指す | scratch 開始（D-04）は学習設定側。case は MP-SENet オンデマンドと共有し、`cases.protocol_id` は `mp_senet.fixed_pair.ondemand` |
-| DeepFilterNet3 | `online.dfn3` | オンライン混合 | `dfn3.dns4_ptdb.official`（`declared_status = blocked`。`blocking_json`: DNS4、PTDB、`dataset.cfg`、RIR 集合、`sampling_factor`）。代替素材: `dfn3.substitute.<素材>`（`protocol_conformant_substitute_materials`） | 公式素材を入手するまで学習に使えない（D-06） |
+| DeepFilterNet3 | `online.dfn3` | オンライン混合 | `dfn3.online.official@1` は `data/db/reproduction-p8.duckdb` で `blocked`（DNS4、PTDB、`dataset.cfg`、公式 RIR、VCTK の factor）。代替は `dfn3.online.substitute@1` と `dfn3.online.smoke@1`（`protocol_conformant_substitute_materials`）。`reproduction.duckdb` には入れていない | 公式素材を入手するまで公式 Dataset は学習に使えない（D-06、決定 42） |
 | SEMamba++ | `online.semambapp_gsr`（HEAD の `config.yaml`。起動不能の最小補修は `deviation_class = minimal_launch_repair` の別 Protocol） | オンライン混合 | 公式素材（VCTK 0.92 と Arni RIR など）: 入手まで `blocked` または `unknown`。代替素材（手元の VCTK、WHAM48 と DNS2020 の雑音、DNS5 と OpenSLR の RIR）: `protocol_conformant_substitute_materials` | 手元の VCTK は 108 話者・44,085 本（確認: §2.3）。公式の 0.92（p280、p315 除外）と同一かは UNKNOWN |
 | TF-GridNet | `pregenerated.ms_snsd_tfgridnet` | 事前生成の条件を先に確定し、学習は `delivery: on_demand` で元素材から再構築する。保存済み WAV の `tf_gridnet.ms_snsd.smoke@1` は旧経路 | `tf_gridnet.ms_snsd.espnet_recipe`（公式規模。train 7,345 / valid 1,835 / test 305）と `tf_gridnet.ms_snsd.ondemand`（`official_recipe_scaled_down`） | §9 |
 | TF-Locoformer | `pregenerated.dns_tflocoformer` | 条件を先に確定し、`delivery: on_demand` で再構築する | `tf_locoformer.dns.recipe`（`espnet_public_se_recipe_reproduction`。360,000 件）と `tf_locoformer.dns.smoke`（`official_recipe_scaled_down`）。P7.1 の `tf_locoformer.dns.accept_smoke` は別スナップショット | §9.6 |

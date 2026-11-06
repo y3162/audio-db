@@ -50,6 +50,7 @@ ORDER_POLICIES = (
     "rank_mod_fixed_v1",
     "per_rank_independent_v1",
     "espnet_chunk_v1",
+    "dfn3_online_ceil_v1",
 )
 SELECTION_RULES = {
     "explicit": set(),
@@ -74,6 +75,56 @@ RULE_KEYS = {
     "resample",
     "retry_policy",
     "renderer",
+    "online",
+}
+# Shipped DeepFilterNet3 online-mixing distributions. The protocol id hashes
+# this object. audio-db does not reproduce Rust StdRng bits.
+DFN3_ONLINE_V1 = {
+    "sampling_factor": 1,
+    "snrs": [-100, -5, 0, 5, 10, 20, 40],
+    "gains": [-6, 0, 6],
+    "noise_count_low": 2,
+    "noise_count_high_exclusive": 6,
+    "p_synthetic_noise_train": 0.05,
+    "synthetic_decay": [-2.0, 2.0],
+    "synthetic_gains": [-24, -12, -6, 0],
+    "p_reverb": 0.1,
+    "drr": 0.3,
+    "rt60": 0.5,
+    "offset_late_ms": 20,
+    "p_decay_floor": 0.5,
+    "rir_resample": [0.8, 1.2],
+    "rir_max_samples": 1440000,
+    "speech_aug": {
+        "p_remove_dc": 0.25,
+        "p_lfilt": 0.25,
+        "lfilt_ab": [-0.375, 0.375],
+        "p_biquad": 0.0,
+        "p_resample": 0.1,
+        "resample_ratio": [0.9, 1.1],
+        "resample_step_hz": 500,
+    },
+    "noise_aug": {
+        "p_lfilt": 0.25,
+        "p_biquad": 0.0,
+        "p_resample": 0.1,
+        "p_clip_train": 0.1,
+        "clip_c": [0.01, 0.5],
+    },
+    "disabled": {
+        "p_clipping_speech": 0.0,
+        "p_zeroing": 0.0,
+        "p_air_absorption": 0.0,
+        "p_bandwidth_ext": 0.0,
+        "p_interfer_sp": 0.0,
+    },
+    "renderer_version": "dfn3_online_v1",
+    "official_commit": "d375b2d8309e0935d165700c91da9de862a99c31",
+    "seed_rule": "protocol_snapshot_seed_split_epoch_index",
+    "batch_schedule": [[0, 16], [2, 24], [5, 32], [10, 64], [20, 128], [40, 9999]],
+    "batch_size_limit": 64,
+    "keep_remainder": True,
+    "official_seed": 43,
 }
 RESAMPLE_KEYS = {
     "tool",
@@ -474,6 +525,19 @@ def validate_rule(algorithm: str, rule: Any) -> dict[str, Any]:
         raise ReproductionError("dns_pcm16_accept_v2 requires deterministic_case_stream_v1")
     if body.get("retry_policy") == "deterministic_case_stream_v1" and body.get("renderer") != "dns_pcm16_accept_v2":
         raise ReproductionError("deterministic_case_stream_v1 requires dns_pcm16_accept_v2")
+    if algorithm == "online.dfn3":
+        if body.get("online") != DFN3_ONLINE_V1:
+            raise ReproductionError("online.dfn3 rule_json.online is not the shipped distribution")
+        if body.get("order") != "dfn3_online_ceil_v1":
+            raise ReproductionError("online.dfn3 order must be dfn3_online_ceil_v1")
+        if body.get("window") != 144000:
+            raise ReproductionError("online.dfn3 window must be 144000")
+        if body.get("global_batch") != 64:
+            raise ReproductionError("online.dfn3 global_batch must be the shipped cap 64")
+        if body.get("delivery") != "on_demand":
+            raise ReproductionError("online.dfn3 delivery must be on_demand")
+    elif "online" in body:
+        raise ReproductionError(f"{algorithm} does not take online")
     if "resample" in body:
         if not algorithm.startswith("fixed_pair."):
             raise ReproductionError(f"{algorithm} does not take resample")

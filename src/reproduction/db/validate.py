@@ -278,8 +278,13 @@ def _claim(dataset, protocol, materials, case_sets, cases, assets) -> None:
             raise ReproductionError("official_reproduction requires official material_origin")
         if deviation != "official_effective":
             raise ReproductionError("official_reproduction requires deviation_class official_effective")
-        if dataset["declared_status"] != "ready":
-            raise ReproductionError("official_reproduction requires declared_status ready")
+        if dataset["declared_status"] == "ready":
+            pass
+        elif dataset["declared_status"] in ("blocked", "unknown"):
+            if dataset["bindings"]:
+                raise ReproductionError("blocked official_reproduction cannot bind materials")
+        else:
+            raise ReproductionError("official_reproduction status is unknown")
         for asset_id in _bound_assets(dataset, case_sets, materials, cases):
             asset = assets[asset_id]
             if asset["integrity"] != "sha256" or not asset["sha256"]:

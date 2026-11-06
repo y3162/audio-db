@@ -89,7 +89,7 @@
 | MossFormerGAN | 配布 checkpoint（`alibabasglab/MossFormerGAN_SE_16K`）の学習 | **BLOCKED** | 社内データを含み、生成コードが無い。D の lr と LR scheduler が公開コードと食い違う【R】 |
 | MossFormerGAN | README の PESQ 3.47 | 目標にしない | 大規模データ学習の checkpoint の値である【R】 |
 | DeepFilterNet3 | 公式データ（DNS4 ＋ PTDB/VCTK ×10）での学習 | **BLOCKED**（素材とリストが不足） | `dataset.cfg`・件数・RIR 集合が非公開【A】。DNS4・PTDB は手元に無い |
-| DeepFilterNet3 | 「プロトコルの再現」（代替素材で同じ混合分布を作る） | PROVISIONAL | オンライン混合の分布は公式コードから確定できる【R】 |
+| DeepFilterNet3 | 「プロトコルの再現」（代替素材で同じ混合分布を作る） | 代替素材で実装済み。公式データセットの再現は BLOCKED | 分布は `DFN3_ONLINE_V1`。登録は `dfn3.online.substitute@1`。ビット一致は主張しない。検証は [P8_VERIFICATION](P8_VERIFICATION.md) |
 | SEMamba++ | 論文の重み（バグあり）の再現 | **BLOCKED** | バグ入りコードの版が特定できない |
 | SEMamba++ | 論文の学習データ（VCTK 0.92 ＋ GSR 素材） | PROVISIONAL | VCTK は 0.80 のみ、Arni の RIR が無い【A】 |
 | TF-GridNet | 論文（arXiv:2211.12433）の各タスク | 対象外 | 本書は「ESPnet 公開 recipe の再現」と明記する |
@@ -479,7 +479,7 @@
 
 **根拠**: 分布はコードから確定できる【R】が、素材の実体は非公開。DNS5 には clean 音声が無い【A】。
 
-**採用結果（2026-11-06）**: **公式素材を優先**し、`dataset.cfg`・DNS4・PTDB・RIR 集合が無い間は UNKNOWN / BLOCKED とする。代替素材は別プロトコル準拠として分け、「出荷モデルの学習データの再現」と呼ばない。未実装。
+**採用結果（2026-11-06）**: **公式素材を優先**し、`dataset.cfg`・DNS4・PTDB・RIR 集合が無い間は UNKNOWN / BLOCKED とする。代替素材は別プロトコル準拠として分け、「出荷モデルの学習データの再現」と呼ばない。代替素材の混合は [P8_VERIFICATION](P8_VERIFICATION.md)。公式素材の `dfn3.online.official@1` は blocked のまま。
 
 ### D-07 TF-GridNet の範囲宣言と MS-SNSD の生成
 

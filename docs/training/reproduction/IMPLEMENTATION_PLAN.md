@@ -1,6 +1,6 @@
 # 再現用 DB・Data Pipeline の実装計画
 
-状態: **P1〜P5 は実装済み。** P1 は合成データの単体テスト。P2 は VoiceBank-DEMAND の実ファイルで、MP-SENet と MossFormerGAN の 4 Dataset とスナップショットまで完了している。P3 は固定ペアの Pipeline、Legacy アダプタ、Trainer 接続まで完了している。P4 は checkpoint の `data_provenance.json`、`repro.runs` への事後登録、評価結果の `independent` まで完了している。P5 は ESPnet chunk iterator の複数 rank と virtual rank で、合成データと短い DDP スモークまで完了している。検証は [P3_VERIFICATION](P3_VERIFICATION.md)、[P4_VERIFICATION](P4_VERIFICATION.md)、[P5_VERIFICATION](P5_VERIFICATION.md)。**P6 はオンデマンドで完了した。** VoiceBank は 48 kHz から学習時に 16 kHz PCM_16 を作る 4 Dataset を登録した。MS-SNSD の公式規模は `tf_gridnet.ms_snsd.espnet_recipe@1`（train 7,345 / valid 1,835 / test 305）で、混合 WAV は作っていない。全量 WAV の事前生成は撤去した。P7 はオンデマンドで完了した。DNS の 3000 h 相当は条件だけを登録し、混合 WAV は作っていない。P7.1 は別 Protocol で受理と非 16 kHz リサンプルを足した。全量の再登録はしていない。検証は [P6_VERIFICATION](P6_VERIFICATION.md)、[P7_VERIFICATION](P7_VERIFICATION.md)、[P7_1_VERIFICATION](P7_1_VERIFICATION.md)。P8〜P10 は未着手。オンライン混合の実装は P8・P9 のまま。 フェーズ 6 以降は、この計画の受け入れ条件をそのまま使う。
+状態: **P1〜P5 は実装済み。** P1 は合成データの単体テスト。P2 は VoiceBank-DEMAND の実ファイルで、MP-SENet と MossFormerGAN の 4 Dataset とスナップショットまで完了している。P3 は固定ペアの Pipeline、Legacy アダプタ、Trainer 接続まで完了している。P4 は checkpoint の `data_provenance.json`、`repro.runs` への事後登録、評価結果の `independent` まで完了している。P5 は ESPnet chunk iterator の複数 rank と virtual rank で、合成データと短い DDP スモークまで完了している。検証は [P3_VERIFICATION](P3_VERIFICATION.md)、[P4_VERIFICATION](P4_VERIFICATION.md)、[P5_VERIFICATION](P5_VERIFICATION.md)。**P6 はオンデマンドで完了した。** VoiceBank は 48 kHz から学習時に 16 kHz PCM_16 を作る 4 Dataset を登録した。MS-SNSD の公式規模は `tf_gridnet.ms_snsd.espnet_recipe@1`（train 7,345 / valid 1,835 / test 305）で、混合 WAV は作っていない。全量 WAV の事前生成は撤去した。P7 はオンデマンドで完了した。DNS の 3000 h 相当は条件だけを登録し、混合 WAV は作っていない。P7.1 は別 Protocol で受理と非 16 kHz リサンプルを足した。全量の再登録はしていない。検証は [P6_VERIFICATION](P6_VERIFICATION.md)、[P7_VERIFICATION](P7_VERIFICATION.md)、[P7_1_VERIFICATION](P7_1_VERIFICATION.md)。P8 は代替素材で完了した。検証は [P8_VERIFICATION](P8_VERIFICATION.md)。公式素材の Dataset は blocked のまま。P9・P10 は未着手。SEMamba++ のオンライン混合は未実装。 フェーズ 6 以降は、この計画の受け入れ条件をそのまま使う。
 
 設計の正本: [REPRODUCTION_DB_DESIGN](../../db/REPRODUCTION_DB_DESIGN.md)（DB）、[DATA_PIPELINE_DESIGN](DATA_PIPELINE_DESIGN.md)（Pipeline）。再現対象の正本: [TARGETS](TARGETS.md)。採用決定: [DECISIONS](../../../.agents/DECISIONS.md) の D-01〜D-09。
 
@@ -198,11 +198,12 @@ P2 の実施結果（2026-11-06）:
 | 項目 | 内容 |
 |---|---|
 | 目的 | DFN3 のオンライン混合を専用実装し、代替素材で動かす。公式素材は入手後 |
-| 変更するモジュール | `src/reproduction/protocols/online_dfn3.py`、`pipeline/renderer.py`（オンライン用の接続）、`configs/data/{protocols,datasets}/dfn3.*`、`src/training/se/deepfilternet.py`（データの接続のみ）|
-| 機能 | `realize`（SNR、gain、雑音 2〜5 本、合成雑音 5 %、残響 `p_reverb = 0.1`、clip ガード、教師 `official_mixed_target`）、窓 3 秒（短い素材は別発話の連結）、固定 validation（`online_snapshot`）、代替素材の素材リスト |
+| 変更するモジュール | `src/reproduction/protocols/online_dfn3.py`、`pipeline/online_dfn3.py`、`prepare/dfn3_online.py`、`src/training/se/run.py` と Trainer の `set_batch`。損失は変えていない。数値の正本は `DFN3_ONLINE_V1` で、YAML は登録名の記録だけ |
+| 機能 | `render_mixture`（SNR、gain、雑音 2〜5 本、合成雑音 5 %、残響 `p_reverb = 0.1`、clip ガード、教師 `official_mixed_target`）、窓 3 秒（短い素材は別発話の連結）、固定 validation（`online_snapshot`）、代替素材の素材リスト |
 | 受け入れ（単体）| (1) `realize` が `(seed, epoch, index)` の純関数。world_size を変えても同じサンプル。(2) 抽選した SNR・gain・雑音の本数の分布が、公式の分布（一様、`uniform(2,6)` の整数化など）に統計的に同等（固定 seed の十分な標本、有意水準を固定したテスト）。(3) 混合後の実 SNR の誤差が許容内。clip ガードの不変条件。(4) 教師が `0.3 · dry + 0.7 · 後期減衰` の定義と一致（**厳密**）。(5) validation の実現値が毎回同じ |
 | 受け入れ（公式一致）| 公式 Rust の `libDF` を実行できる環境があれば、固定入力・固定 seed の混合出力と比べる（できない場合は、式の読み合わせとし、「公式一致」と書かない）|
 | 完了条件 | 代替素材の Dataset が `protocol_conformant_substitute_materials` として登録・スナップショットまで作れる。公式素材の Dataset は `blocked` のまま、欠けているものが `blocking_json` に列挙される |
+| 状態 | **実装済み**（2026-11-06、代替素材）。公式素材の再現は未達で `dfn3.online.official@1` は blocked。検証は [P8_VERIFICATION](P8_VERIFICATION.md)。P9 には進まない |
 | 依存 | P3、Q8、素材（UN-1）|
 
 ### 3.10 フェーズ 9: SEMamba++ のオンライン混合

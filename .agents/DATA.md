@@ -84,6 +84,7 @@ DuckDB は `data/db/resource.duckdb`（`src/data/constants.py`）。
 - 現行の本番再構築元は `data/staging/resource-current`。`data/staging/` 直下、`data/staging/resource-full`、`data/staging/voicebank`、`data/staging/training` は過去の再構築元であり、現行の本番には使わない。VoiceBank 学習セットの現行再構築元は `data/staging/voicebank-current`。
 - TSUBAME の初回 `resource.duckdb` は 2026-11-02 にコーパスから新規作成した。今回だけの staging 先行省略を含む条件と検証範囲は `docs/db/TSUBAME_INITIAL.md`。研究室側 DB のコピーや同一性の確認ではない。
 - 学習セット `voicebank_28_train` / `voicebank_28_valid` は `data/db/voicebank.duckdb`（現行の再構築元 `data/staging/voicebank-current/`）。`data/db/training.duckdb` の LibriSpeech+DEMAND スモークとは別ファイルである。
+- DeepFilterNet3 のオンライン混合は `data/db/reproduction-p8.duckdb`（staging は `data/staging/reproduction-p8/`）に置く。`reproduction.duckdb` と `resource.duckdb` には入れない。ready な代替 Dataset は `dfn3.online.substitute@1` と `dfn3.online.smoke@1`。公式素材の `dfn3.online.official@1` は `blocked` で、バインドもスナップショットも無い。分布の正本は `DFN3_ONLINE_V1`。混合 WAV は作らない。`official_reproduction` は ready なら全素材 SHA-256 が要る。blocked または unknown でバインドが空なら、欠けているものを `blocking_json` に書いて登録できる。
 
 ## `data/` の扱い
 

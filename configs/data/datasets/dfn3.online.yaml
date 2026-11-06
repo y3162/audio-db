@@ -1,0 +1,23 @@
+# Registration record. The mixer does not read this file.
+# Numeric distributions live in src/reproduction/ids.py DFN3_ONLINE_V1.
+name: dfn3.online
+database: data/db/reproduction-p8.duckdb
+staging: data/staging/reproduction-p8
+datasets:
+  - name: dfn3.online.substitute
+    version: 1
+    claim_label: protocol_conformant_substitute_materials
+    declared_status: ready
+  - name: dfn3.online.smoke
+    version: 1
+    claim_label: protocol_conformant_substitute_materials
+    declared_status: ready
+  - name: dfn3.online.official
+    version: 1
+    claim_label: official_reproduction
+    declared_status: blocked
+materials:
+  speech: LibriSpeech train-clean-100 / dev-clean / test-clean
+  noise: DEMAND scenes, disjoint across splits
+  rir: OpenSLR28 simulated_rirs smallroom / mediumroom / largeroom
+wav_files: 0
