@@ -270,7 +270,7 @@ P2 の VoiceBank 16 kHz 派生素材は、そのまま固定ペアの入力で�
 - 旧い `tf_gridnet.ms_snsd.smoke@1` は `delivery` を持たず、生成 WAV を読む。新しい学習入口は `tf_gridnet.ms_snsd.ondemand@1`。
 - Planner: ESPnet の `ChunkIterFactory` の再現（§8.3）。長さは文書から取り、ファイルを開かない。
 - Renderer: `pipeline/ondemand.py` がバッチの切り出し時に `snr_mixer` を実行し、PCM_16 の読み戻しと同じ値を返す。正規化はしない。同じ文書は同じ波形になる。結果は保持しない。
-- TF-Locoformer の DNS 合成は同じ分離（条件を先に固定し、学習時に再構築する）だが、生成器は P7 で、今回は作っていない。
+- TF-Locoformer の DNS 合成も同じ分離である。生成器は `src/reproduction/build/dns2020.py` で、学習時の再構築は `pipeline/dns_ondemand.py` が行う。混合 WAV は書かない。検証は [P7_VERIFICATION](P7_VERIFICATION.md)。
 - 混合 WAV を書く経路は無い。登録は条件と元素材だけを書き、学習時に `render_realization` が PCM_16 を作る。
 
 ### 6.4 オンライン混合（DFN3、SEMamba++）
@@ -301,7 +301,7 @@ P2 の VoiceBank 16 kHz 派生素材は、そのまま固定ペアの入力で�
 | 教師 | `dry_clean`（正規化後）| `dry_clean`（正規化後）| `official_mixed_target` | `dry_clean`（劣化前。reverb の扱いは `semambapp.md` の規則）| `dry_clean`（`clnspN.wav`）| `dry_clean` |
 | checkpoint 選択（Trainer の規則）| `best_pesq`、`epoch >= 40`、検証 PESQ 平均が最大（G のみ）| 「直前より小さい」（真の best ではない）、halving 規則 | `valid loss` 最小 | 選択なし（5000 step ごと）| `valid.loss.best`（`si_snr` は無効）| `valid.loss.ave_5best`（上位 5 epoch の平均）|
 
-- 上の「checkpoint 選択」は Pipeline ではなく Trainer の規則だが、D-09 で厳密に検証するので、ここに並べた（IMPLEMENTATION_PLAN の受け入れテスト）。**現行の `Trainer` は `ave_5best` を持たない**（確認: `_retain_chunk_models` は `si_snr` best）ので、TF-Locoformer の再現には Trainer の変更が要る。
+- 上の「checkpoint 選択」は Pipeline ではなく Trainer の規則だが、D-09 で厳密に検証するので、ここに並べた。chunk 学習の `Trainer` は、有限な `valid.loss` が `keep_nbest` 件以上あるとき `valid.loss.ave_{n}best.pt` を書く。浮動小数は平均し、整数は累積する。件数が足りないときは書かない。TF-GridNet の `valid.loss.best` と `valid.si_snr.best` は残す。
 - DFN3 の epoch ごとの batch 上限（`batch_size_scheduling`）は、現行の `scheduled_batch_size`（`src/training/core/batch_schedule.py`）が解決する（確認）。新 Pipeline の `EpochPlanner` は、epoch ごとに `global_batch` を `EpochSpec` へ渡す。
 - 公式の癖の例外処理（D-02）: MP-SENet の `batch_first=False` はモデル側の欠陥で、データ側ではない。データ側の癖は、MP-SENet の 1 GPU 時の固定 shuffle、MossFormerGAN の rank 固定割り当て、SEMamba++ の rank ごとの別 shuffle、MS-SNSD の実 SNR（名目の半分）で、いずれも §8.2 と DB 設計 §9 に入れた。
 
@@ -540,7 +540,7 @@ data:
 | `data_state` の保存・照合 | `dataset.identity()` を `data_state` に拡張し、再開時に `plan_hash` などを照合 | 再現性 |
 | チャンク epoch の DDP | `_run_chunk_epochs` の `world_size != 1` の拒否を、`TrainingData` 経由で `world_size ≥ 1` を許す。DDP のラッパは既存の `distributed.py` | TF 系の 2〜4 rank |
 | validation の集約 | 合計と件数の `all_reduce`。virtual rank は 1 プロセスで合計 | §8.3、§8.4 |
-| checkpoint 選択の追加 | `valid.loss.ave_5best`（TF-Locoformer）、MossFormerGAN の halving 規則など、公式の選択規則（IMPLEMENTATION_PLAN で個別に）| D-09（厳密に検証する項目）|
+| checkpoint 選択の追加 | TF-Locoformer の `valid.loss.ave_5best` は chunk Trainer に実装済み（[P7_VERIFICATION](P7_VERIFICATION.md)）。MossFormerGAN の halving 規則は未実装 | D-09 |
 | 変更しないもの | モデル、損失、optimizer、scheduler、AMP、`save_atomic`、metrics ログ | 既に検証済みの部分を壊さない |
 
 ---

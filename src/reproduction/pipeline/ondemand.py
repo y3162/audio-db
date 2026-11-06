@@ -148,6 +148,20 @@ def open_ondemand_datasets(
     corpora_root: str | Path,
     generated_root: str | Path,
 ) -> tuple[OnDemandChunkData, OnDemandChunkData]:
+    algorithm = loaded.dataset.get("algorithm")
+    if algorithm == "pregenerated.dns_tflocoformer":
+        from src.reproduction.pipeline.dns_ondemand import open_dns_datasets
+
+        return open_dns_datasets(
+            loaded,
+            load_workers=load_workers,
+            verify_on_read=verify_on_read,
+            derived_root=derived_root,
+            corpora_root=corpora_root,
+            generated_root=generated_root,
+        )
+    if algorithm != "pregenerated.ms_snsd_tfgridnet":
+        raise ReproductionError(f"no on-demand reader for {algorithm}")
     store = AssetStore.from_snapshot(
         loaded,
         derived=derived_root,

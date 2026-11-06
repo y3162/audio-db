@@ -49,6 +49,8 @@
 make reproduction-prepare STEP=all WORKERS=8  # VoiceBank オンデマンド固定ペアの登録とスナップショット。48 kHz を読み、16 kHz WAV は書かない。resource.duckdb は読み取り専用
 make reproduction-plan-build   # MS-SNSD の計画だけ。既定は configs/data/builds/ms_snsd_tfgridnet_ondemand.yaml。音声は作らない。source_scan: full が無い上限なし設定は拒否する
 make reproduction-register     # オンデマンドの条件を reproduction.duckdb に足してスナップショットを書く。混合 WAV は作らない
+make reproduction-plan-dns     # DNS の計画だけ。既定は configs/data/builds/dns_tflocoformer_ondemand.yaml。音声は作らない
+make reproduction-register-dns # DNS の 3000 h 相当の条件と smoke を同じグラフで登録し、スナップショットを書く。混合 WAV は作らない。resource.duckdb は読み取り専用
 .venvs/deepfilternet/bin/python -c 'import src.reproduction.snapshot_reader'  # DuckDB の無い環境でスナップショット読み込み側を import する
 .venvs/se/bin/python -m src.evaluation.cli --config configs/evaluation/smoke.yaml --limit 2 --device cpu   # 合成音声 + mock
 .venvs/asr/bin/python -m tests.asr_smoke.run_smoke parakeet whisper wav2vec2   # 実 ASR のスモーク（GPU）

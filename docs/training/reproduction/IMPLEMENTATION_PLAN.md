@@ -1,6 +1,6 @@
 # 再現用 DB・Data Pipeline の実装計画
 
-状態: **P1〜P5 は実装済み。** P1 は合成データの単体テスト。P2 は VoiceBank-DEMAND の実ファイルで、MP-SENet と MossFormerGAN の 4 Dataset とスナップショットまで完了している。P3 は固定ペアの Pipeline、Legacy アダプタ、Trainer 接続まで完了している。P4 は checkpoint の `data_provenance.json`、`repro.runs` への事後登録、評価結果の `independent` まで完了している。P5 は ESPnet chunk iterator の複数 rank と virtual rank で、合成データと短い DDP スモークまで完了している。検証は [P3_VERIFICATION](P3_VERIFICATION.md)、[P4_VERIFICATION](P4_VERIFICATION.md)、[P5_VERIFICATION](P5_VERIFICATION.md)。**P6 はオンデマンドで完了した。** VoiceBank は 48 kHz から学習時に 16 kHz PCM_16 を作る 4 Dataset を登録した。MS-SNSD の公式規模は `tf_gridnet.ms_snsd.espnet_recipe@1`（train 7,345 / valid 1,835 / test 305）で、混合 WAV は作っていない。全量 WAV の事前生成は撤去した。P7〜P10 は未着手。検証は [P6_VERIFICATION](P6_VERIFICATION.md)。オンライン混合の実装は P8・P9 のまま。 フェーズ 6 以降は、この計画の受け入れ条件をそのまま使う。
+状態: **P1〜P5 は実装済み。** P1 は合成データの単体テスト。P2 は VoiceBank-DEMAND の実ファイルで、MP-SENet と MossFormerGAN の 4 Dataset とスナップショットまで完了している。P3 は固定ペアの Pipeline、Legacy アダプタ、Trainer 接続まで完了している。P4 は checkpoint の `data_provenance.json`、`repro.runs` への事後登録、評価結果の `independent` まで完了している。P5 は ESPnet chunk iterator の複数 rank と virtual rank で、合成データと短い DDP スモークまで完了している。検証は [P3_VERIFICATION](P3_VERIFICATION.md)、[P4_VERIFICATION](P4_VERIFICATION.md)、[P5_VERIFICATION](P5_VERIFICATION.md)。**P6 はオンデマンドで完了した。** VoiceBank は 48 kHz から学習時に 16 kHz PCM_16 を作る 4 Dataset を登録した。MS-SNSD の公式規模は `tf_gridnet.ms_snsd.espnet_recipe@1`（train 7,345 / valid 1,835 / test 305）で、混合 WAV は作っていない。全量 WAV の事前生成は撤去した。P7 はオンデマンドで完了した。DNS の 3000 h 相当は条件だけを登録し、混合 WAV は作っていない。検証は [P6_VERIFICATION](P6_VERIFICATION.md) と [P7_VERIFICATION](P7_VERIFICATION.md)。P8〜P10 は未着手。オンライン混合の実装は P8・P9 のまま。 フェーズ 6 以降は、この計画の受け入れ条件をそのまま使う。
 
 設計の正本: [REPRODUCTION_DB_DESIGN](../../db/REPRODUCTION_DB_DESIGN.md)（DB）、[DATA_PIPELINE_DESIGN](DATA_PIPELINE_DESIGN.md)（Pipeline）。再現対象の正本: [TARGETS](TARGETS.md)。採用決定: [DECISIONS](../../../.agents/DECISIONS.md) の D-01〜D-09。
 
@@ -171,20 +171,27 @@ P2 の実施結果（2026-11-06）:
 | 依存 | P1、P3、P5（学習入口の検証）|
 | 更新する正本 | `.agents/DATA.md`、`DECISIONS.md`、`docs/training/`（TF-GridNet の記録）|
 
-2026-11-06 の実施: 全量 WAV は作らない。`write_build` は削除した。登録経路は `delivery: on_demand` である。`tf_gridnet.ms_snsd.ondemand@1`（`official_recipe_scaled_down`）に加え、公式規模の `tf_gridnet.ms_snsd.espnet_recipe@1`（train 7,345 / valid 1,835 / test 305）を登録した。`source_scan: full` のときだけ上限なしの走査を許す。P7 には進まない。
+2026-11-06 の実施: 全量 WAV は作らない。`write_build` は削除した。登録経路は `delivery: on_demand` である。`tf_gridnet.ms_snsd.ondemand@1`（`official_recipe_scaled_down`）に加え、公式規模の `tf_gridnet.ms_snsd.espnet_recipe@1`（train 7,345 / valid 1,835 / test 305）を登録した。`source_scan: full` のときだけ上限なしの走査を許す。この段落は P6 完了時の記録である。P7 は §3.8 で完了している。
 
-### 3.8 フェーズ 7: TF-Locoformer（段階生成）
+### 3.8 フェーズ 7: TF-Locoformer（オンデマンド）
+
+旧稿の S0〜S4 は、約 1.04 TB の混合 WAV を段階的に書く計画だった。現行の段階名は次のとおりで、実装もこの名前を使う。WAV は書かない。
+
+| 段階 | 内容 |
+|---|---|
+| S0 | 生成条件の計画。音声ファイルは作らない |
+| S1 | 数百〜数千件をメモリ上で再構築し、公式の式（SNR、振幅、長さ、量子化）と比べる。WAV は残さない |
+| S2 | 3000 h 相当の固定条件を DuckDB とスナップショットへ登録し、存在と整合を確認する。WAV は無い |
+| S3 | 小さい Dataset で Trainer を通す。実モデルの forward / backward、optimizer、validation、scheduler、checkpoint、再開、`data_state`、`data_provenance.json`、plan hash、平均 checkpoint を分ける |
 
 | 項目 | 内容 |
 |---|---|
-| 目的 | DNS 2020 の合成 3000 h を、段階的に生成・検証する。**今回の設計では生成しない** |
-| 変更するモジュール | `build/generators/dns_synth.py`、`configs/data/builds/tf_locoformer_dns.yaml`、`Trainer`（`valid.loss.ave_5best` の実装）|
-| 機能 | S0〜S4（DB 設計 §9.6）。生成の並列度の調整。`ave_5best`（上位 5 epoch の平均）の保存と、各 checkpoint の epoch の記録 |
-| 受け入れ（単体）| (1) S0 の計画（360,000 件）の決定性、SNR（整数 −5…14）とレベル（−35…−16 dBFS）の分布が公式の式に一致する。(2) 小さい段階の shard が大きい段階の先頭と同一（`build_id` が件数を含まない）。(3) `ave_5best` が、合成の検証履歴で、上位 5 epoch の重みの平均になる（D-09: 厳密に検証する項目）。(4) 容量の見積り（計画から）が 345.6 GB × 3 に一致する |
-| 受け入れ（実データ smoke）| S1（約 1 h = 120 本）の生成・検証・登録・学習入口の通し。S2 以降は承認後 |
-| 完了条件 | S1 の通過。S2〜S4 は、**ユーザーが承認したものだけ**実施し、実測（所要時間、I/O）を `audits` と文書に記録する |
-| 依存 | P6、Q2、Q5、Q11、S2 以降は TSUBAME の承認 |
-| 承認の扱い | S2（30 分以上の見込み）・S3・S4 は、そのジョブを含む明示の指示か追加承認が要る。`-p -5`。`h_rt` を 30 分未満にして回避しない |
+| 目的 | DNS 2020 の合成 3000 h 相当を、条件として登録し、学習時に PCM_16 を再構築する |
+| 変更するモジュール | `src/reproduction/build/dns2020.py`、`prepare/dns2020.py`、`prepare/dns_run.py`、`pipeline/dns_ondemand.py`、`configs/data/builds/dns_tflocoformer_ondemand.yaml`、`configs/training/tf_locoformer_dns_ondemand.yaml`、`Trainer` の `valid.loss.ave_5best` |
+| 機能 | S0〜S3。`ave_5best` は検証損失の上位 5 epoch の平均。最後の 5 epoch ではない |
+| 受け入れ | 360,000 件の SNR は整数 −5…14、レベルは −35…−16 dBFS。小さい Dataset は大きい Dataset の接頭辞ではない。`ave_5best` は合成履歴で上位 5 つの重みの平均になる。5 件未満では平均ファイルを書かない |
+| 状態 | **実装済み**（2026-11-06）。検証は [P7_VERIFICATION](P7_VERIFICATION.md)。`cv_synthetic_small` は UNKNOWN のまま。P8 には進まない |
+| 承認の扱い | 登録はログインノードの CPU 作業で、TSUBAME の `qsub` は使っていない。30 分以上の GPU ジョブは、投入前に別の承認が要る |
 
 ### 3.9 フェーズ 8: DFN3 のオンライン混合
 

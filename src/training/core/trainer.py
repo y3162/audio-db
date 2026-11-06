@@ -30,6 +30,7 @@ from src.training.core.batch import BatchPlan, plan_batches
 from src.training.core.batch_schedule import scheduled_batch_size
 from src.reproduction.pipeline.chunking import plan_chunk_epoch
 from src.training.data.chunk_plan import epoch_chunk_batches
+from src.training.core.average import average_checkpoint_files
 from src.training.core.checkpoint import load_checkpoint, save_atomic
 from src.training.core.distributed import ProcessInfo, barrier, unwrap
 from src.training.core.metrics_log import append_record, truncate_after, write_json
@@ -522,7 +523,14 @@ class Trainer:
                     if save:
                         if self._tb is not None:
                             self._tb.flush()
-                        self.last_checkpoint = self._save(dataset, epoch, cursor, usable)
+                        state = self._chunk_state(
+                            dataset,
+                            epoch if cursor < usable else epoch + 1,
+                            0 if cursor >= usable else cursor,
+                            1,
+                            "single",
+                        )
+                        self.last_checkpoint = self._save(dataset, epoch, cursor, usable, state)
                 barrier(self.process)
                 if timed_stop:
                     self.stop_reason = "CHECKPOINTED"
@@ -838,7 +846,7 @@ class Trainer:
         loss = _loss_value(summary)
         si = summary.get("si_snr") or {}
         si_value = float(si["value"]) if si.get("status") == "ok" and si.get("value") is not None else None
-        if loss is None:
+        if loss is None or loss != loss or loss in (float("inf"), float("-inf")):
             return None
         self.chunk_history.append({"epoch": espnet_epoch, "loss": loss, "si_snr": si_value})
         keep = int(self.config["chunk_iterator"]["keep_nbest"])
@@ -867,6 +875,23 @@ class Trainer:
         for old in self.checkpoint_dir.glob("*epoch.pt"):
             if old.name[0].isdigit() and int(old.name.split("epoch")[0]) not in kept:
                 old.unlink()
+        if exported is not None and keep > 1 and len(by_loss) >= keep:
+            epochs = [int(row["epoch"]) for row in by_loss]
+            averaged = average_checkpoint_files(
+                [self.checkpoint_dir / f"{epoch}epoch.pt" for epoch in epochs]
+            )
+            average_path = self.checkpoint_dir / f"valid.loss.ave_{keep}best.pt"
+            save_atomic(average_path, averaged)
+            self._attach_provenance(average_path)
+            write_json(self.checkpoint_dir / f"{average_path.name}.json", {
+                "metric": "loss",
+                "criterion": "valid.loss.min",
+                "epochs": epochs,
+                "values": [row["loss"] for row in by_loss],
+                "files": [f"{epoch}epoch.pt" for epoch in epochs],
+                "global_step": self.global_step,
+                "average": "espnet_nbest_float_mean_int_sum",
+            })
         return None if path is None else str(path)
 
     def _batch_schedule_should_stop(self, summary: dict[str, Any] | None) -> bool:

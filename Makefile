@@ -2,7 +2,8 @@
 	db-ingest db-init db-link db-bootstrap df-rfft \
 	reproduction-doctor reproduction-init-db reproduction-snapshot \
 	reproduction-rebuild-db reproduction-verify reproduction-prepare \
-	reproduction-plan-build reproduction-register
+	reproduction-plan-build reproduction-register \
+	reproduction-plan-dns reproduction-register-dns
 
 ROOT := $(abspath $(dir $(lastword $(MAKEFILE_LIST))))
 WITH_ENV := $(ROOT)/scripts/setup/with_env.sh
@@ -103,6 +104,7 @@ DATASET ?=
 OUT ?=
 BUILD ?=
 MS_SNSD_CONFIG ?= configs/data/builds/ms_snsd_tfgridnet_ondemand.yaml
+DNS_CONFIG ?= configs/data/builds/dns_tflocoformer_ondemand.yaml
 HASH ?=
 ALLOW_UNKNOWN_LEAK_CHECK ?=
 STEP ?= all
@@ -131,3 +133,9 @@ reproduction-plan-build:
 
 reproduction-register:
 	$(WITH_ENV) $(PYTHON) -m src.reproduction.cli ms-snsd --config "$(MS_SNSD_CONFIG)" --step register
+
+reproduction-plan-dns:
+	$(WITH_ENV) $(PYTHON) -m src.reproduction.cli dns --config "$(DNS_CONFIG)" --step plan
+
+reproduction-register-dns:
+	$(WITH_ENV) $(PYTHON) -m src.reproduction.cli dns --config "$(DNS_CONFIG)" --step register

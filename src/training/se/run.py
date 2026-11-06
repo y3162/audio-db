@@ -124,7 +124,11 @@ def execute(config_path: str | Path, *, resume: str | Path | None = None,
             verify_on_read=data["verify_on_read"],
         )
         require_on_demand(train.store.dataset)
-        if config["model"]["name"] != "tf_gridnet" or train.algorithm != "pregenerated.ms_snsd_tfgridnet":
+        allowed = {
+            ("tf_gridnet", "pregenerated.ms_snsd_tfgridnet"),
+            ("tf_locoformer", "pregenerated.dns_tflocoformer"),
+        }
+        if (config["model"]["name"], train.algorithm) not in allowed:
             train.close()
             raise TrainingError(
                 f"model {config['model']['name']} does not match pregenerated dataset {train.algorithm}"

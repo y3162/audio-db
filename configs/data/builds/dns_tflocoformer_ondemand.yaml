@@ -1,0 +1,24 @@
+# DNS-Challenge conditions for TF-Locoformer. No mixture wavs are written.
+# tf_locoformer.dns.recipe is the 3000 h plan (324000 train / 36000 valid).
+# tf_locoformer.dns.smoke is eight mixtures from the same pool and seed.
+# Validation is the 9/10 tail (cv_synthetic), not cv_synthetic_small.
+
+name: tf_locoformer.dns.recipe
+smoke_name: tf_locoformer.dns.smoke
+smoke_num_files: 8
+seed: 17
+shard_size: 1000
+delivery: on_demand
+source_scan: full
+claim_label: espnet_public_se_recipe_reproduction
+smoke_claim_label: official_recipe_scaled_down
+total_hours: 3000
+audio_seconds: 30
+silence_seconds: 0.2
+snr_lower: -5
+snr_upper: 15
+target_level_lower: -35
+target_level_upper: -15
+audit_realizations: 256
+include_test: true
+workers: 8

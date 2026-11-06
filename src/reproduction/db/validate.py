@@ -291,8 +291,13 @@ def _claim(dataset, protocol, materials, case_sets, cases, assets) -> None:
     if label == "protocol_conformant_substitute_materials" and origin not in ("substitute", "mixed"):
         raise ReproductionError("substitute-material claim requires substitute or mixed origin")
     if label == "espnet_public_se_recipe_reproduction":
-        if protocol["algorithm"] != "pregenerated.ms_snsd_tfgridnet":
-            raise ReproductionError("espnet_public_se_recipe_reproduction requires the MS-SNSD protocol")
+        if protocol["algorithm"] not in (
+            "pregenerated.ms_snsd_tfgridnet",
+            "pregenerated.dns_tflocoformer",
+        ):
+            raise ReproductionError(
+                "espnet_public_se_recipe_reproduction requires the MS-SNSD or DNS TF-Locoformer protocol"
+            )
     if label == "official_recipe_scaled_down" and protocol["kind"] != "pregenerated":
         raise ReproductionError("official_recipe_scaled_down requires a pregenerated protocol")
     if label not in {

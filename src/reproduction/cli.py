@@ -78,6 +78,10 @@ def main(argv: list[str] | None = None) -> int:
     ms_snsd.add_argument("--config", required=True)
     ms_snsd.add_argument("--step", required=True, choices=("plan", "register"))
 
+    dns = commands.add_parser("dns")
+    dns.add_argument("--config", required=True)
+    dns.add_argument("--step", required=True, choices=("plan", "register"))
+
     register = commands.add_parser("register-run")
     register.add_argument("--database", required=True)
     register.add_argument("--provenance", required=True)
@@ -175,6 +179,14 @@ def _run(args: argparse.Namespace) -> int:
         import json
 
         from src.reproduction.prepare.ms_snsd_run import run_config
+
+        summary = run_config(Path(args.config), args.step)
+        print(json.dumps(summary, sort_keys=True))
+        return 0
+    if args.command == "dns":
+        import json
+
+        from src.reproduction.prepare.dns_run import run_config
 
         summary = run_config(Path(args.config), args.step)
         print(json.dumps(summary, sort_keys=True))
