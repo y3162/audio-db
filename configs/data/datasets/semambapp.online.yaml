@@ -1,0 +1,24 @@
+# Registration record. The renderer does not read this file.
+# Numeric distributions live in src/reproduction/ids.py SEMAMBA_GSR_V1.
+# The target config is HEAD config.yaml, not config_orig.yaml and not the paper's 24000-sample setting.
+name: semambapp.gsr
+database: data/db/reproduction-p9.duckdb
+staging: data/staging/reproduction-p9
+datasets:
+  - name: semambapp.gsr.substitute
+    version: 1
+    claim_label: protocol_conformant_substitute_materials
+    declared_status: ready
+  - name: semambapp.gsr.smoke
+    version: 1
+    claim_label: protocol_conformant_substitute_materials
+    declared_status: ready
+  - name: semambapp.gsr.official
+    version: 1
+    claim_label: official_reproduction
+    declared_status: blocked
+materials:
+  speech: VCTK 0.80, disjoint speakers, not VCTK 0.92
+  noise: DNS2020 noise files, disjoint, not an official subset and not DNS5
+  rir: OpenSLR28 simulated_rirs smallroom / mediumroom / largeroom, not Arni
+wav_files: 0

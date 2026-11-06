@@ -85,6 +85,7 @@ DuckDB は `data/db/resource.duckdb`（`src/data/constants.py`）。
 - TSUBAME の初回 `resource.duckdb` は 2026-11-02 にコーパスから新規作成した。今回だけの staging 先行省略を含む条件と検証範囲は `docs/db/TSUBAME_INITIAL.md`。研究室側 DB のコピーや同一性の確認ではない。
 - 学習セット `voicebank_28_train` / `voicebank_28_valid` は `data/db/voicebank.duckdb`（現行の再構築元 `data/staging/voicebank-current/`）。`data/db/training.duckdb` の LibriSpeech+DEMAND スモークとは別ファイルである。
 - DeepFilterNet3 のオンライン混合は `data/db/reproduction-p8.duckdb`（staging は `data/staging/reproduction-p8/`）に置く。`reproduction.duckdb` と `resource.duckdb` には入れない。ready な代替 Dataset は `dfn3.online.substitute@1` と `dfn3.online.smoke@1`。公式素材の `dfn3.online.official@1` は `blocked` で、バインドもスナップショットも無い。分布の正本は `DFN3_ONLINE_V1`。混合 WAV は作らない。`official_reproduction` は ready なら全素材 SHA-256 が要る。blocked または unknown でバインドが空なら、欠けているものを `blocking_json` に書いて登録できる。
+- SEMamba++ のオンライン劣化は `data/db/reproduction-p9.duckdb`（staging は `data/staging/reproduction-p9/`）に置く。`reproduction.duckdb` と `resource.duckdb` には入れない。ready な代替 Dataset は `semambapp.gsr.substitute@1` と `semambapp.gsr.smoke@1`。公式素材の `semambapp.gsr.official@1` は `blocked` で、バインドもスナップショットも無い。分布の正本は `SEMAMBA_GSR_V1`（HEAD `config.yaml`、16 kHz、窓 48,000）。劣化 WAV は作らない。代替素材を公式データセットの再現と呼ばない。`.venvs/se` には `resampy` が無く、`kaiser_best` と `kaiser_fast` は検証時だけ `.venvs/asr` の `resampy==0.4.3` を読んだ。
 
 ## `data/` の扱い
 

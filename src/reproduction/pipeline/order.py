@@ -69,7 +69,11 @@ POLICY_NOTES: dict[str, dict[str, str]] = {
             "training_seed, rank). Epoch order follows torch_distributed_sampler_v1 "
             "and indexes L_r, so ranks can overlap or omit samples. Official "
             "SEMamba++ shuffling is unseeded; the seed is audio-db determinism "
-            "and is not an official random sequence."
+            "and is not an official random sequence. Official DistributedSampler "
+            "uses drop_last=False and the DataLoader then uses drop_last=True. "
+            "This policy truncates with drop_last=True before batching, so the "
+            "official sampler's padded tail is not reproduced. world_size 1 still "
+            "reshuffles every epoch; the official 1-GPU loader does not."
         ),
     },
     "dfn3_online_ceil_v1": {

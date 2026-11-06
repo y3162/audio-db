@@ -1,6 +1,6 @@
 # 再現用 DB・Data Pipeline の実装計画
 
-状態: **P1〜P5 は実装済み。** P1 は合成データの単体テスト。P2 は VoiceBank-DEMAND の実ファイルで、MP-SENet と MossFormerGAN の 4 Dataset とスナップショットまで完了している。P3 は固定ペアの Pipeline、Legacy アダプタ、Trainer 接続まで完了している。P4 は checkpoint の `data_provenance.json`、`repro.runs` への事後登録、評価結果の `independent` まで完了している。P5 は ESPnet chunk iterator の複数 rank と virtual rank で、合成データと短い DDP スモークまで完了している。検証は [P3_VERIFICATION](P3_VERIFICATION.md)、[P4_VERIFICATION](P4_VERIFICATION.md)、[P5_VERIFICATION](P5_VERIFICATION.md)。**P6 はオンデマンドで完了した。** VoiceBank は 48 kHz から学習時に 16 kHz PCM_16 を作る 4 Dataset を登録した。MS-SNSD の公式規模は `tf_gridnet.ms_snsd.espnet_recipe@1`（train 7,345 / valid 1,835 / test 305）で、混合 WAV は作っていない。全量 WAV の事前生成は撤去した。P7 はオンデマンドで完了した。DNS の 3000 h 相当は条件だけを登録し、混合 WAV は作っていない。P7.1 は別 Protocol で受理と非 16 kHz リサンプルを足した。全量の再登録はしていない。検証は [P6_VERIFICATION](P6_VERIFICATION.md)、[P7_VERIFICATION](P7_VERIFICATION.md)、[P7_1_VERIFICATION](P7_1_VERIFICATION.md)。P8 は代替素材で完了した。検証は [P8_VERIFICATION](P8_VERIFICATION.md)。公式素材の Dataset は blocked のまま。P9・P10 は未着手。SEMamba++ のオンライン混合は未実装。 フェーズ 6 以降は、この計画の受け入れ条件をそのまま使う。
+状態: **P1〜P5 は実装済み。** P1 は合成データの単体テスト。P2 は VoiceBank-DEMAND の実ファイルで、MP-SENet と MossFormerGAN の 4 Dataset とスナップショットまで完了している。P3 は固定ペアの Pipeline、Legacy アダプタ、Trainer 接続まで完了している。P4 は checkpoint の `data_provenance.json`、`repro.runs` への事後登録、評価結果の `independent` まで完了している。P5 は ESPnet chunk iterator の複数 rank と virtual rank で、合成データと短い DDP スモークまで完了している。検証は [P3_VERIFICATION](P3_VERIFICATION.md)、[P4_VERIFICATION](P4_VERIFICATION.md)、[P5_VERIFICATION](P5_VERIFICATION.md)。**P6 はオンデマンドで完了した。** VoiceBank は 48 kHz から学習時に 16 kHz PCM_16 を作る 4 Dataset を登録した。MS-SNSD の公式規模は `tf_gridnet.ms_snsd.espnet_recipe@1`（train 7,345 / valid 1,835 / test 305）で、混合 WAV は作っていない。全量 WAV の事前生成は撤去した。P7 はオンデマンドで完了した。DNS の 3000 h 相当は条件だけを登録し、混合 WAV は作っていない。P7.1 は別 Protocol で受理と非 16 kHz リサンプルを足した。全量の再登録はしていない。検証は [P6_VERIFICATION](P6_VERIFICATION.md)、[P7_VERIFICATION](P7_VERIFICATION.md)、[P7_1_VERIFICATION](P7_1_VERIFICATION.md)。P8 は代替素材で完了した。検証は [P8_VERIFICATION](P8_VERIFICATION.md)。公式素材の Dataset は blocked のまま。P9 は代替素材で完了した。検証は [P9_VERIFICATION](P9_VERIFICATION.md)。公式素材の Dataset は blocked のまま。P10 は未着手。 フェーズ 6 以降は、この計画の受け入れ条件をそのまま使う。
 
 設計の正本: [REPRODUCTION_DB_DESIGN](../../db/REPRODUCTION_DB_DESIGN.md)（DB）、[DATA_PIPELINE_DESIGN](DATA_PIPELINE_DESIGN.md)（Pipeline）。再現対象の正本: [TARGETS](TARGETS.md)。採用決定: [DECISIONS](../../../.agents/DECISIONS.md) の D-01〜D-09。
 
@@ -203,7 +203,7 @@ P2 の実施結果（2026-11-06）:
 | 受け入れ（単体）| (1) `realize` が `(seed, epoch, index)` の純関数。world_size を変えても同じサンプル。(2) 抽選した SNR・gain・雑音の本数の分布が、公式の分布（一様、`uniform(2,6)` の整数化など）に統計的に同等（固定 seed の十分な標本、有意水準を固定したテスト）。(3) 混合後の実 SNR の誤差が許容内。clip ガードの不変条件。(4) 教師が `0.3 · dry + 0.7 · 後期減衰` の定義と一致（**厳密**）。(5) validation の実現値が毎回同じ |
 | 受け入れ（公式一致）| 公式 Rust の `libDF` を実行できる環境があれば、固定入力・固定 seed の混合出力と比べる（できない場合は、式の読み合わせとし、「公式一致」と書かない）|
 | 完了条件 | 代替素材の Dataset が `protocol_conformant_substitute_materials` として登録・スナップショットまで作れる。公式素材の Dataset は `blocked` のまま、欠けているものが `blocking_json` に列挙される |
-| 状態 | **実装済み**（2026-11-06、代替素材）。公式素材の再現は未達で `dfn3.online.official@1` は blocked。検証は [P8_VERIFICATION](P8_VERIFICATION.md)。P9 には進まない |
+| 状態 | **実装済み**（2026-11-06、代替素材）。公式素材の再現は未達で `dfn3.online.official@1` は blocked。検証は [P8_VERIFICATION](P8_VERIFICATION.md)。P9 は [P9_VERIFICATION](P9_VERIFICATION.md) |
 | 依存 | P3、Q8、素材（UN-1）|
 
 ### 3.10 フェーズ 9: SEMamba++ のオンライン混合
@@ -215,6 +215,7 @@ P2 の実施結果（2026-11-06）:
 | 機能 | 劣化の順序（reverb → noise → clipping → bandwidth）、VAD 基準の SNR、窓 48,000、`independent_peak_v1`、`per_rank_independent_v1`、**公式の最小補修（起動不能の 4 点）は実装しない**（D-05。必要になった時点で別の Protocol として決める）|
 | 受け入れ（単体）| (1) `realize` が純関数。(2) 劣化の適用順が固定。劣化の確率（0.5 / 1.0）と SNR の分布が公式の `config.yaml` に統計的に同等。(3) VAD 基準の SNR が、固定入力で、公式の `utils.py` の式を再実装した参照と一致（**厳密**）。(4) `per_rank_independent_v1` で rank 間の重複・欠落が起きる |
 | 完了条件 | 代替素材の Dataset が登録・スナップショットまで作れる。公式素材は `blocked` / `unknown` |
+| 状態 | **実装済み**（2026-11-07、代替素材）。公式素材の再現は未達で `semambapp.gsr.official@1` は blocked。データの接続は `pipeline/training_data.py` と `src/training/se/run.py`。`semambapp.py` のモデルと損失は変えていない。検証は [P9_VERIFICATION](P9_VERIFICATION.md)。P10 には進まない |
 | 依存 | P3、Q8、素材（UN-2）|
 
 ### 3.11 フェーズ 10: 統計的同等性と公式一致の検証、再現 run

@@ -332,25 +332,44 @@ def open_training_data(
         generated=DEFAULT_GENERATED if generated_root is None else generated_root,
     )
     if store.dataset.get("kind") == "online_mixing":
-        if store.dataset.get("algorithm") != "online.dfn3":
-            raise ReproductionError("only online.dfn3 mixing is implemented")
-        from src.reproduction.pipeline.online_dfn3 import OnlineDFN3TrainingData
+        algorithm = store.dataset.get("algorithm")
+        if algorithm == "online.dfn3":
+            from src.reproduction.pipeline.online_dfn3 import OnlineDFN3TrainingData
 
-        return OnlineDFN3TrainingData(
-            store,
-            settings={
-                "allow_test_selection": allow_test_selection,
-                "seed": seed,
-                "global_batch": global_batch,
-                "micro_batch": micro_batch,
-                "accumulation": accumulation,
-                "world_size": world_size,
-                "segment_size": segment_size,
-                "model_sample_rate": model_sample_rate,
-                "load_workers": load_workers,
-                "verify_on_read": verify_on_read,
-            },
-        )
+            return OnlineDFN3TrainingData(
+                store,
+                settings={
+                    "allow_test_selection": allow_test_selection,
+                    "seed": seed,
+                    "global_batch": global_batch,
+                    "micro_batch": micro_batch,
+                    "accumulation": accumulation,
+                    "world_size": world_size,
+                    "segment_size": segment_size,
+                    "model_sample_rate": model_sample_rate,
+                    "load_workers": load_workers,
+                    "verify_on_read": verify_on_read,
+                },
+            )
+        if algorithm == "online.semambapp_gsr":
+            from src.reproduction.pipeline.online_semamba import OnlineSemambaTrainingData
+
+            return OnlineSemambaTrainingData(
+                store,
+                settings={
+                    "allow_test_selection": allow_test_selection,
+                    "seed": seed,
+                    "global_batch": global_batch,
+                    "micro_batch": micro_batch,
+                    "accumulation": accumulation,
+                    "world_size": world_size,
+                    "segment_size": segment_size,
+                    "model_sample_rate": model_sample_rate,
+                    "load_workers": load_workers,
+                    "verify_on_read": verify_on_read,
+                },
+            )
+        raise ReproductionError(f"online mixing algorithm is not implemented: {algorithm}")
     return ReproductionTrainingData(
         store,
         settings={

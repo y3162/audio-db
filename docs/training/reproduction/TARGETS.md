@@ -373,6 +373,8 @@
 | 未確定 | 学習データの件数・話者、VCTK-GSR の分割、検証データの作り方、再学習の実データ |
 | 再現不能 | 論文の重み（バグ入り）/ 公式の学習マニフェスト |
 
+2026-11-07 追記: オンライン劣化のプロトコルは代替素材で実装した（`semambapp.gsr.substitute@1`、`semambapp.gsr.smoke@1`）。公式素材の Dataset `semambapp.gsr.official@1` は blocked。公式の学習結果は未達。検証は [P9_VERIFICATION](P9_VERIFICATION.md)。上の必須・未確定の表は採用時の記録のまま。
+
 ### 5.5 TF-GridNet（ESPnet recipe）
 
 | 区分 | 内容 |

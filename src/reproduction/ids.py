@@ -126,6 +126,48 @@ DFN3_ONLINE_V1 = {
     "keep_remainder": True,
     "official_seed": 43,
 }
+# HEAD config.yaml of Eddieyjlee/SEMambapp @ cd369c89. Not config_orig.yaml
+# and not the paper's 24,000-sample / −10 dB setting. Tiny constants are
+# strings so the 6-decimal recipe hash does not collapse 1e-9 to 0.
+SEMAMBA_GSR_V1 = {
+    "config_name": "config.yaml",
+    "official_commit": "cd369c89a8106072c077b468417b765b227afd74",
+    "sample_rate": 16000,
+    "segment_size": 48000,
+    "snr": [-5, 0, 5, 10, 15, 20],
+    "bandwidth_sr": [4000, 6000, 8000, 10000, 12000, 14000],
+    "bandwidth_type": ["kaiser_best", "kaiser_fast", "scipy", "polyphase"],
+    "lowpass_type": ["butter", "cheby1", "cheby2", "bessel", "ellip"],
+    "lowpass_order": [2, 4, 6, 8],
+    "lowpass_ripple": 1,
+    "lowpass_stop_atten": 40,
+    "clipping_min": [0.0, 0.1],
+    "clipping_max": [0.9, 1.0],
+    "packet_duration": [10, 20],
+    "packet_loss_rate": [0.05, 0.25],
+    "noise_prob": 1.0,
+    "reverb_prob": 0.5,
+    "bandwidth_prob": 0.5,
+    "clipping_prob": 0.5,
+    "packet_loss_prob": 0.2,
+    "packet_loss_selected": False,
+    "degrad_order": ["reverb", "noise", "clipping", "bandwidth"],
+    "discard_first_draw": True,
+    "vad_frame": 1024,
+    "vad_shift": 512,
+    "vad_threshold": 0.01,
+    "vad_window": "boxcar",
+    "peak_eps": "1e-9",
+    "snr_power_floor": "1e-10",
+    "normalize": "independent_peak_v1",
+    "order": "per_rank_independent_v1",
+    "teacher": "dry_clean",
+    "rir_normalize": False,
+    "rir_delay_compensation": False,
+    "renderer_version": "semamba_gsr_v1",
+    "seed_rule": "semamba-gsr protocol snapshot seed split epoch index",
+    "load_resample": "librosa_load_sr16000_mono",
+}
 RESAMPLE_KEYS = {
     "tool",
     "quality",
@@ -536,6 +578,19 @@ def validate_rule(algorithm: str, rule: Any) -> dict[str, Any]:
             raise ReproductionError("online.dfn3 global_batch must be the shipped cap 64")
         if body.get("delivery") != "on_demand":
             raise ReproductionError("online.dfn3 delivery must be on_demand")
+    elif algorithm == "online.semambapp_gsr":
+        if body.get("online") != SEMAMBA_GSR_V1:
+            raise ReproductionError(
+                "online.semambapp_gsr rule_json.online is not the HEAD config.yaml distribution"
+            )
+        if body.get("order") != "per_rank_independent_v1":
+            raise ReproductionError("online.semambapp_gsr order must be per_rank_independent_v1")
+        if body.get("window") != 48000:
+            raise ReproductionError("online.semambapp_gsr window must be 48000")
+        if body.get("global_batch") != 8:
+            raise ReproductionError("online.semambapp_gsr global_batch must be the shipped 8")
+        if body.get("delivery") != "on_demand":
+            raise ReproductionError("online.semambapp_gsr delivery must be on_demand")
     elif "online" in body:
         raise ReproductionError(f"{algorithm} does not take online")
     if "resample" in body:

@@ -153,6 +153,7 @@ def execute(config_path: str | Path, *, resume: str | Path | None = None,
             "mp_senet": "fixed_pair.mp_senet",
             "mossformergan": "fixed_pair.mossformergan_se_16k",
             "deepfilternet3": "online.dfn3",
+            "semambapp": "online.semambapp_gsr",
         }.get(config["model"]["name"])
         require_on_demand(train.store.dataset)
         if expected != train.algorithm:
