@@ -14,11 +14,14 @@ import soundfile as sf
 
 from src.reproduction.build.dns2020 import (
     SAMPLE_RATE,
+    _build_signal,
     build_definition,
     is_clipped,
     order_sha256,
     plan_accepted_case,
+    plan_accepted_realizations,
     plan_case,
+    read_signal_span,
     render_realization,
     snr_mixer,
 )
@@ -215,6 +218,120 @@ class DnsAcceptanceTests(unittest.TestCase):
             self.assertEqual(len(set(hashes)), 3)
             train.close()
             valid.close()
+
+    def test_test_set_clean_keeps_a_file_longer_than_the_target(self):
+        import sys
+
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "book_00000_chp_0000_reader_00000_0.wav"
+            _write(path, np.full(1000, 0.1), SAMPLE_RATE)
+            rng = np.random.Generator(np.random.PCG64(1))
+            pieces, _position, skips, ok = _build_signal(
+                [path.name],
+                {path.name: path},
+                0,
+                400,
+                0,
+                rng,
+                is_clean=True,
+                is_test_set=True,
+                cache=None,
+            )
+            self.assertTrue(ok)
+            self.assertEqual(skips, 0)
+            self.assertEqual(pieces[0]["start"], 0)
+            self.assertEqual(pieces[0]["length"], 1000)
+            cropped, _position, _skips, cropped_ok = _build_signal(
+                [path.name],
+                {path.name: path},
+                0,
+                400,
+                0,
+                np.random.Generator(np.random.PCG64(1)),
+                is_clean=True,
+                is_test_set=False,
+                cache=None,
+            )
+            self.assertTrue(cropped_ok)
+            self.assertEqual(cropped[0]["length"], 400)
+            official_path = ROOT / "data" / "corpora" / "DNS2020" / "noisyspeech_synthesizer_multiprocessing.py"
+            if not official_path.is_file():
+                self.skipTest("DNS synthesizer is not in the corpus checkout")
+            # The official module seeds the global RNGs on import, so it runs in a child process.
+            probe = subprocess.run(
+                [
+                    sys.executable,
+                    "-c",
+                    textwrap.dedent(
+                        f"""
+                        import multiprocessing, sys
+                        sys.path.insert(0, {str(official_path.parent)!r})
+                        import noisyspeech_synthesizer_multiprocessing as official
+                        official.clean_counter = multiprocessing.Value("i", 0)
+                        audio, files, clipped = official.build_audio(
+                            True,
+                            {{
+                                "fs": {SAMPLE_RATE},
+                                "silence_length": 0.0,
+                                "audio_length": {400 / SAMPLE_RATE},
+                                "is_test_set": True,
+                                "cleanfilenames": [{str(path)!r}],
+                            }},
+                            0,
+                        )
+                        assert clipped == []
+                        assert len(files) == 1
+                        assert len(audio) == 1000
+                        """
+                    ),
+                ],
+                check=False,
+                capture_output=True,
+                text=True,
+            )
+            self.assertEqual(probe.returncode, 0, probe.stderr)
+
+    def test_worker_count_does_not_change_documents(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            clean_names = []
+            noise_names = []
+            clean_paths = {}
+            noise_paths = {}
+            for index in range(4):
+                name = f"book_00000_chp_0000_reader_{index:05d}_0.wav"
+                path = root / name
+                _write(path, _active(16000, 10 + index), SAMPLE_RATE)
+                clean_names.append(name)
+                clean_paths[name] = path
+            for index in range(3):
+                name = f"noise_{index}.wav"
+                path = root / name
+                _write(path, _active(24000, 40 + index), SAMPLE_RATE)
+                noise_names.append(name)
+                noise_paths[name] = path
+            definition = build_definition(
+                seed=17,
+                num_files=6,
+                clean_count=4,
+                noise_count=3,
+                order_sha256=order_sha256(clean_names, noise_names),
+                inputs={"speech": "s", "noise": "n"},
+                audio_seconds=0.5,
+                acceptance="deterministic_case_stream_v1",
+            )
+            one, stats_one = plan_accepted_realizations(
+                definition, clean_names, clean_paths, noise_names, noise_paths, workers=1
+            )
+            two, stats_two = plan_accepted_realizations(
+                definition, clean_names, clean_paths, noise_names, noise_paths, workers=2
+            )
+            self.assertEqual(one, two)
+            self.assertEqual(stats_one["outer_attempts"], stats_two["outer_attempts"])
+            full, _rate = sf.read(clean_paths[clean_names[0]], dtype="float64", always_2d=True)
+            span, rate = read_signal_span(clean_paths[clean_names[0]], 100, 500)
+            self.assertEqual(rate, SAMPLE_RATE)
+            self.assertTrue(np.array_equal(span, np.asarray(full[100:600, 0], dtype=np.float64)))
 
     def test_exhausted_attempts_raise(self):
         with tempfile.TemporaryDirectory() as tmp:

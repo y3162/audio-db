@@ -3,10 +3,12 @@
 from __future__ import annotations
 
 import sys
+import tempfile
 import unittest
 from pathlib import Path
 
 import numpy as np
+import soundfile as sf
 
 ROOT = Path(__file__).resolve().parents[2]
 CORPUS = ROOT / "data" / "corpora" / "MS-SNSD"
@@ -108,6 +110,46 @@ class RenderTests(unittest.TestCase):
         self.assertLess(float(np.max(np.abs(residual))), 1e-12)
         pcm = _pcm16_roundtrip(first["noisy"])
         self.assertTrue(np.array_equal(pcm, _pcm16_roundtrip(second["noisy"])))
+
+    def test_concatenated_files_match_official_audioread(self):
+        if not (CORPUS / "audiolib.py").is_file():
+            self.skipTest("MS-SNSD audiolib.py is absent")
+        official = _official_mixer()
+        sys.path.insert(0, str(CORPUS))
+        from audiolib import audioread
+
+        rng = np.random.default_rng(9)
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            clean_a = 0.02 * rng.normal(size=4800)
+            clean_b = 0.25 * rng.normal(size=6400)
+            noise = 0.1 * rng.normal(size=20000)
+            sf.write(root / "a.wav", clean_a, SAMPLE_RATE)
+            sf.write(root / "b.wav", clean_b, SAMPLE_RATE)
+            sf.write(root / "n.wav", noise, SAMPLE_RATE)
+            first, rate = audioread(str(root / "a.wav"))
+            second, _rate = audioread(str(root / "b.wav"))
+            silence = np.zeros(int(rate * 0.2))
+            clean = np.concatenate([first, silence, second])
+            noise_wave, _rate = audioread(str(root / "n.wav"))
+            noise_wave = noise_wave[: clean.shape[0]]
+            reference = official(clean=clean, noise=noise_wave, snr=20.0)
+            document = {
+                "sources": {
+                    "speech": [
+                        {"name": "a.wav", "start": 0, "length": clean_a.shape[0]},
+                        {"silence": int(0.2 * SAMPLE_RATE)},
+                        {"name": "b.wav", "start": 0, "length": clean_b.shape[0]},
+                    ],
+                    "noise": [{"name": "n.wav", "start": 0, "length": int(clean.shape[0])}],
+                },
+                "draws": {"nominal_snr_db": 20.0, "gen_index": 0},
+                "output": {"length": int(clean.shape[0])},
+            }
+            rendered = render_realization(document, {"speech": root, "noise": root})
+        for got, ref in zip((rendered["clean"], rendered["noise"], rendered["noisy"]), reference):
+            self.assertEqual(got.shape, np.asarray(ref).shape)
+            self.assertTrue(np.array_equal(got, np.asarray(ref)))
 
     def test_stored_wav_writer_is_gone(self):
         import src.reproduction.build.ms_snsd as module

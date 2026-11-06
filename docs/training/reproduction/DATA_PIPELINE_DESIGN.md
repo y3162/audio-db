@@ -269,8 +269,8 @@ P2 の VoiceBank 16 kHz 派生素材は、そのまま固定ペアの入力で�
 - Dataset 定義: `train.cases`、`valid.cases`、`test.cases`。各 Case は `realization_v1` で、長さは計画の `output.length`。TF-GridNet の新しい Protocol は `rule_json.delivery = on_demand` で、Case は生成 WAV を指さない。素材リスト（`train.speech` など）が元素材の SHA-256 を持つ。
 - 旧い `tf_gridnet.ms_snsd.smoke@1` は `delivery` を持たず、生成 WAV を読む。新しい学習入口は `tf_gridnet.ms_snsd.ondemand@1`。
 - Planner: ESPnet の `ChunkIterFactory` の再現（§8.3）。長さは文書から取り、ファイルを開かない。
-- Renderer: `pipeline/ondemand.py` がバッチの切り出し時に `snr_mixer` を実行し、PCM_16 の読み戻しと同じ値を返す。正規化はしない。同じ文書は同じ波形になる。結果は保持しない。
-- TF-Locoformer の DNS 合成も同じ分離である。生成器は `src/reproduction/build/dns2020.py` で、学習時の再構築は `pipeline/dns_ondemand.py` が行う。混合 WAV は書かない。P7 の規則は 16 kHz の区間読みで再試行しない。P7.1 は別規則で、受理した区間を保存し、16 kHz でない雑音だけを描画時にリサンプルする。検証は [P7_VERIFICATION](P7_VERIFICATION.md) と [P7_1_VERIFICATION](P7_1_VERIFICATION.md)。
+- Renderer: `pipeline/ondemand.py` がバッチの切り出し時に、各元素材ファイル全体を −25 dBFS にしてから連結し、そのあと `snr_mixer` を実行する。学習時の発話 RMS 正規化は掛けない。戻り値は PCM_16 の読み戻しと同じ値である。同じ文書は同じ波形になる。結果は保持しない。
+- TF-Locoformer の DNS 合成も同じ分離である。生成器は `src/reproduction/build/dns2020.py` で、学習時の再構築は `pipeline/dns_ondemand.py` が行う。混合 WAV は書かない。P7 の規則は 16 kHz の区間読みで再試行しない。P7.1 は別規則で、受理した区間を保存し、16 kHz でない雑音だけを描画時にリサンプルする。受理の計画は案件ごとに区間を読む。16 kHz はファイル全体をメモリに載せない。worker を分けても文書は変わらない。コーパス全体の波形キャッシュは作らない。検証は [P7_VERIFICATION](P7_VERIFICATION.md) と [P7_1_VERIFICATION](P7_1_VERIFICATION.md)。
 - 混合 WAV を書く経路は無い。登録は条件と元素材だけを書き、学習時に `render_realization` が PCM_16 を作る。
 
 ### 6.4 オンライン混合（DFN3、SEMamba++）

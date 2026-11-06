@@ -1,10 +1,12 @@
 """MS-SNSD mixtures for the ESPnet public SE recipe.
 
 The mix follows ``audiolib.snr_mixer`` and ``ms_snsd_noisyspeech_synthesizer.py``
-at ESPnet ``0d136c5``: each source is scaled to -25 dBFS, nominal SNR uses
-``sqrt`` so the measured SNR is half the nominal value, clips shorter than
-10 s are concatenated with 0.2 s of silence, and a longer clip is kept whole.
-Noise is cut from the start to the clean length. There is no random offset.
+at ESPnet ``0d136c5``. ``audioread(norm=True)`` scales each whole source file
+to -25 dBFS before concatenation or the noise prefix crop. ``snr_mixer`` then
+scales the concatenated waveforms to -25 dBFS again. Nominal SNR uses ``sqrt``,
+so the measured SNR is half the nominal value. Clips shorter than or equal to
+10 s are concatenated with 0.2 s of silence, and a longer clean clip is kept
+whole. Noise is cut from the start to the clean length. There is no random offset.
 
 The official script draws from the process-global ``np.random`` and never
 seeds it. This builder draws each clip from
@@ -47,9 +49,13 @@ def nominal_snrs(lower: float = 0.0, upper: float = 40.0, levels: int = 5) -> tu
 
 
 def scale_to_dbfs(waveform: np.ndarray, level_db: float = TARGET_DBFS) -> np.ndarray:
-    """Match ``audioread(..., norm=True)`` and the first half of ``snr_mixer``."""
+    """Match ``audioread(..., norm=True)`` and the first half of ``snr_mixer``.
+
+    The official divisor is the RMS with no epsilon. A silent file is an error
+    here; the official script would divide by zero.
+    """
     audio = np.asarray(waveform, dtype=np.float64)
-    rms = float(np.sqrt(np.mean(audio * audio)))
+    rms = (audio ** 2).mean() ** 0.5
     if not np.isfinite(rms) or rms == 0.0:
         raise ReproductionError("cannot scale a silent waveform to dBFS")
     return audio * (10 ** (level_db / 20.0) / rms)
@@ -356,6 +362,8 @@ def _render_pieces(pieces: Sequence[dict[str, Any]], directory: Path | dict[str,
         audio = np.asarray(audio, dtype=np.float64)
         if audio.ndim == 2:
             audio = audio.mean(axis=1)
+        # audioread(norm=True) scales the whole file, then the synthesizer crops.
+        audio = scale_to_dbfs(audio)
         start = int(piece["start"])
         stop = start + int(piece["length"])
         if stop > audio.shape[0]:

@@ -335,7 +335,12 @@ def run_accept_config(
     noise_paths = {row["name"]: row["path"] for row in listed["noise"]}
     started = time.perf_counter()
     documents, totals = plan_accepted_realizations(
-        definition, clean_names, clean_paths, noise_names, noise_paths, cache={}
+        definition,
+        clean_names,
+        clean_paths,
+        noise_names,
+        noise_paths,
+        workers=int(config.get("workers") or 1),
     )
     plan_seconds = time.perf_counter() - started
     parent, child = accept_protocol_pair()
