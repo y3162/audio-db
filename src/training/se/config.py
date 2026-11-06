@@ -79,7 +79,16 @@ _MODEL = {
     "beta",
     "sampling_rate",
 }
-_DATA = {"database", "train_set", "validation_set", "load_workers", "prefetch", "rms_normalize"}
+_LEGACY_DATA = {"database", "train_set", "validation_set", "load_workers", "prefetch", "rms_normalize"}
+_REPRODUCTION_DATA = {
+    "pipeline",
+    "dataset",
+    "allow_test_selection",
+    "virtual_world_size",
+    "load_workers",
+    "prefetch",
+    "verify_on_read",
+}
 _RUNTIME = {"device", "allow_busy_gpu"}
 
 
@@ -137,6 +146,14 @@ def load_training_config(path: str | Path) -> dict[str, Any]:
                       "max_seconds": float(seconds)},
             "spectrogram": _bool(tb.get("spectrogram", False), "logging.tensorboard.spectrogram"),
         }}
+    reproduction = config["data"].get("pipeline") == "reproduction"
+    if reproduction and (
+        "logical_steps_per_epoch" in raw or "chunk_iterator" in raw or "batch_schedule" in raw
+    ):
+        raise TrainingError(
+            "reproduction data cannot be combined with logical_steps_per_epoch, "
+            "chunk_iterator, or batch_schedule"
+        )
     if "logical_steps_per_epoch" in raw:
         config["logical_steps_per_epoch"] = _int(raw["logical_steps_per_epoch"], "logical_steps_per_epoch")
         if not config["data"]["validation_set"]:
@@ -159,10 +176,11 @@ def load_training_config(path: str | Path) -> dict[str, Any]:
         config["early_stopping_patience"] = _int(
             raw["early_stopping_patience"], "early_stopping_patience", minimum=1,
         )
-    if config["validation_interval"] > 0 and not config["data"]["validation_set"]:
-        raise TrainingError("validation_interval requires data.validation_set")
-    if config["data"]["validation_set"] == config["data"]["train_set"]:
-        raise TrainingError("train_set and validation_set must be different named sets")
+    if not reproduction:
+        if config["validation_interval"] > 0 and not config["data"]["validation_set"]:
+            raise TrainingError("validation_interval requires data.validation_set")
+        if config["data"]["validation_set"] == config["data"]["train_set"]:
+            raise TrainingError("train_set and validation_set must be different named sets")
     return config
 
 
@@ -356,7 +374,22 @@ def _batch_schedule(raw: Any) -> list[list[int]]:
 def _data(raw: Any) -> dict[str, Any]:
     if not isinstance(raw, dict):
         raise TrainingError("data must be a mapping")
-    _unknown(raw, _DATA, "data")
+    pipeline = raw.get("pipeline", "legacy")
+    if pipeline not in ("legacy", "reproduction"):
+        raise TrainingError("data.pipeline must be legacy or reproduction")
+    if pipeline == "reproduction":
+        return _reproduction_data(raw)
+    allowed = set(_LEGACY_DATA)
+    if "pipeline" in raw:
+        allowed.add("pipeline")
+    _unknown(raw, allowed, "data")
+    parsed = _legacy_data(raw)
+    if "pipeline" in raw:
+        parsed["pipeline"] = "legacy"
+    return parsed
+
+
+def _legacy_data(raw: dict[str, Any]) -> dict[str, Any]:
     validation = raw.get("validation_set")
     if validation is not None and not isinstance(validation, str):
         raise TrainingError("data.validation_set must be a string or null")
@@ -374,6 +407,34 @@ def _data(raw: Any) -> dict[str, Any]:
         "load_workers": workers,
         "prefetch": _bool(raw.get("prefetch", True), "data.prefetch"),
         "rms_normalize": _bool(raw.get("rms_normalize", True), "data.rms_normalize"),
+    }
+
+
+def _reproduction_data(raw: dict[str, Any]) -> dict[str, Any]:
+    _unknown(raw, _REPRODUCTION_DATA, "data")
+    if raw.get("virtual_world_size") is not None:
+        raise TrainingError("data.virtual_world_size is not implemented")
+    dataset = raw.get("dataset")
+    if not isinstance(dataset, str):
+        raise TrainingError("data.dataset must be name@version")
+    name, separator, version = dataset.rpartition("@")
+    if separator != "@" or not name or not version.isdigit() or int(version) < 1:
+        raise TrainingError("data.dataset must be name@version")
+    return {
+        "pipeline": "reproduction",
+        "dataset": dataset,
+        "allow_test_selection": _bool(
+            raw.get("allow_test_selection", False),
+            "data.allow_test_selection",
+        ),
+        "virtual_world_size": None,
+        "load_workers": _int(raw.get("load_workers", 4), "data.load_workers", minimum=1),
+        "prefetch": _bool(raw.get("prefetch", True), "data.prefetch"),
+        "verify_on_read": _bool(raw.get("verify_on_read", False), "data.verify_on_read"),
+        "database": None,
+        "train_set": None,
+        "validation_set": None,
+        "rms_normalize": False,
     }
 
 

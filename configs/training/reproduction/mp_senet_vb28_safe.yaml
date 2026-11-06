@@ -1,0 +1,48 @@
+# Leakage-safe MP-SENet on mp_senet.vb28.safe@1.
+# Same optimizer and loss as the official profile. Train is 10,700 utterances
+# (2,675 updates per epoch at global batch 4). Validation is p286/p287, not test.
+
+seed: 1234
+deterministic: false
+global_batch_size: 4
+micro_batch_size_per_gpu: 4
+max_steps: 1070000
+segment_size: 32000
+loss: official
+checkpoint_dir: ./data/results/training/reproduction/mp_senet.vb28.safe
+checkpoint_interval: 2675
+validation_interval: 2675
+best_checkpoint_start_epoch: 40
+
+optimizer:
+  name: adamw
+  lr: 0.0005
+  betas: [0.8, 0.99]
+  weight_decay: 0.01
+
+scheduler:
+  name: exponential
+  gamma: 0.99
+
+model:
+  name: mp_senet
+  dense_channel: 64
+  num_tsconformers: 4
+  n_fft: 400
+  hop_size: 100
+  win_size: 400
+  compress_factor: 0.3
+  beta: 2.0
+  sampling_rate: 16000
+
+data:
+  pipeline: reproduction
+  dataset: mp_senet.vb28.safe@1
+  allow_test_selection: false
+  load_workers: 4
+  prefetch: true
+  verify_on_read: false
+
+runtime:
+  device: cuda
+  allow_busy_gpu: false

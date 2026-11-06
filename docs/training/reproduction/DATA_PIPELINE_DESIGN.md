@@ -1,6 +1,6 @@
 # 再現用 Data Pipeline 設計
 
-状態: **Pipeline は未実装**（2026-11-06）。P1 の DB コマンド（`reproduction-doctor`、`reproduction-init-db`、`reproduction-verify`、`reproduction-snapshot`、`reproduction-rebuild-db`）だけが Makefile にある。prepare、生成、学習接続は未実装。
+状態: **固定ペアの学習 Pipeline は実装済み**（2026-11-06、P3）。P1 の DB コマンドと P2 の `make reproduction-prepare` に加え、`src/reproduction/pipeline/` が MP-SENet と MossFormerGAN のスナップショットを Trainer へ渡す。事前生成の実行、オンライン混合、`espnet_chunk_v1` の複数 rank、`data.virtual_world_size` は未実装。検証は [P3_VERIFICATION](P3_VERIFICATION.md)。
 
 ## 0. 位置づけと正本の分担
 
@@ -27,6 +27,8 @@
 ---
 
 ## 2. 現行実装の事実と限界（確認）
+
+P3 のあと、固定ペアは下表の `RecipeDataset` 一行ではなく `src/reproduction/pipeline` を通る。Legacy の `RecipeDataset` 経路は残している。この表のほかの行は、P3 時点の Legacy と未実装の方式の説明である。
 
 | 項目 | 現状 | 新設計への影響 |
 |---|---|---|

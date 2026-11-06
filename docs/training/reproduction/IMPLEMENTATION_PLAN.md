@@ -1,6 +1,6 @@
 # 再現用 DB・Data Pipeline の実装計画
 
-状態: **P1 と P2 は実装済み。** P1 は合成データの単体テスト。P2 は VoiceBank-DEMAND の実ファイルで、MP-SENet と MossFormerGAN の 4 Dataset とスナップショットまで完了している。**P3〜P10 は未着手。** フェーズ 3 以降は、この計画の受け入れ条件をそのまま使う。
+状態: **P1〜P3 は実装済み。** P1 は合成データの単体テスト。P2 は VoiceBank-DEMAND の実ファイルで、MP-SENet と MossFormerGAN の 4 Dataset とスナップショットまで完了している。P3 は固定ペアの Pipeline、Legacy アダプタ、Trainer 接続まで完了している。検証は [P3_VERIFICATION](P3_VERIFICATION.md)。**P4〜P10 は未着手。** フェーズ 4 以降は、この計画の受け入れ条件をそのまま使う。
 
 設計の正本: [REPRODUCTION_DB_DESIGN](../../db/REPRODUCTION_DB_DESIGN.md)（DB）、[DATA_PIPELINE_DESIGN](DATA_PIPELINE_DESIGN.md)（Pipeline）。再現対象の正本: [TARGETS](TARGETS.md)。採用決定: [DECISIONS](../../../.agents/DECISIONS.md) の D-01〜D-09。
 

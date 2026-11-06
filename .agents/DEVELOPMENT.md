@@ -43,7 +43,7 @@
 .venvs/se/bin/python -m unittest discover -s tests/asr -v         # ASR。重みをダウンロードしない
 .venvs/se/bin/python -m unittest discover -s tests/evaluation -v  # 評価。一時 DB だけを書き、resource.duckdb は変更しない
 .venvs/se/bin/python -m unittest discover -s tests/training -v    # 学習。CPU。resource.duckdb は開かない
-.venvs/se/bin/python -m unittest discover -s tests/reproduction -v  # 再現 DB。P1 は合成データ。P2 の単体テストも合成データで、resource.duckdb は開かない
+.venvs/se/bin/python -m unittest discover -s tests/reproduction -v  # 再現 DB と固定ペア Pipeline。P1・P2 の単体テストは合成データ。P3 の実スナップショット試験は data/db/snapshots を読む。resource.duckdb は開かない
 make reproduction-prepare STEP=all WORKERS=8  # VoiceBank 固定ペアの登録とスナップショット。実コーパスを読む。resource.duckdb は読み取り専用
 .venvs/deepfilternet/bin/python -c 'import src.reproduction.snapshot_reader'  # DuckDB の無い環境でスナップショット読み込み側を import する
 .venvs/se/bin/python -m src.evaluation.cli --config configs/evaluation/smoke.yaml --limit 2 --device cpu   # 合成音声 + mock

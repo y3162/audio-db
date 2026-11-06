@@ -96,28 +96,57 @@ def execute(config_path: str | Path, *, resume: str | Path | None = None,
     task = build_task(config, process.device)
     data = config["data"]
     sample_rate = int(config["model"]["sampling_rate"])
-    train = load_recipe_dataset(
-        data["database"],
-        data["train_set"],
-        role="train",
-        seed=config["seed"],
-        sample_rate=sample_rate,
-        segment_size=config["segment_size"],
-        training=True,
-        rms_normalize=data["rms_normalize"],
-    )
-    validation = None
-    if data["validation_set"]:
-        validation = load_recipe_dataset(
+    if data.get("pipeline") == "reproduction":
+        from src.reproduction.pipeline.training_data import open_training_data
+
+        train = open_training_data(
+            dataset=data["dataset"],
+            allow_test_selection=data["allow_test_selection"],
+            seed=config["seed"],
+            global_batch=plan.global_batch_size,
+            micro_batch=plan.micro_batch_size,
+            accumulation=plan.accumulation_steps,
+            world_size=process.world_size,
+            segment_size=config["segment_size"],
+            model_sample_rate=sample_rate,
+            load_workers=data["load_workers"],
+            verify_on_read=data["verify_on_read"],
+        )
+        expected = {
+            "mp_senet": "fixed_pair.mp_senet",
+            "mossformergan": "fixed_pair.mossformergan_se_16k",
+        }.get(config["model"]["name"])
+        if expected != train.algorithm:
+            train.close()
+            raise TrainingError(
+                f"model {config['model']['name']} does not match dataset algorithm {train.algorithm}"
+            )
+        if process.rank == 0 and train.batch_warning:
+            print(train.batch_warning, flush=True)
+        validation = None
+    else:
+        train = load_recipe_dataset(
             data["database"],
-            data["validation_set"],
-            role="validation",
+            data["train_set"],
+            role="train",
             seed=config["seed"],
             sample_rate=sample_rate,
-            segment_size=None,
-            training=False,
+            segment_size=config["segment_size"],
+            training=True,
             rms_normalize=data["rms_normalize"],
         )
+        validation = None
+        if data["validation_set"]:
+            validation = load_recipe_dataset(
+                data["database"],
+                data["validation_set"],
+                role="validation",
+                seed=config["seed"],
+                sample_rate=sample_rate,
+                segment_size=None,
+                training=False,
+                rms_normalize=data["rms_normalize"],
+            )
     trainer = Trainer(
         task,
         plan,

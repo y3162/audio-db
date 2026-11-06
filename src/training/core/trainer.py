@@ -161,6 +161,7 @@ class Trainer:
         deadline: float | None = None,
         segment_steps: int | None = None,
     ) -> None:
+        self._data_provenance = _provenance_of(dataset)
         if (deadline is not None or segment_steps is not None) and self.process.world_size != 1:
             raise TrainingError("managed stops require one training process")
         if segment_steps is not None and segment_steps < 1:
@@ -216,7 +217,13 @@ class Trainer:
         if self.process.rank == 0:
             self.checkpoint_dir.mkdir(parents=True, exist_ok=True)
         barrier(self.process)
-        dataset.load_workers = int(self.config.get("data", {}).get("load_workers", 1))
+        workers = int(self.config.get("data", {}).get("load_workers", 1))
+        if _is_training_data(dataset):
+            wrapped = getattr(dataset, "train", None)
+            if wrapped is not None and hasattr(wrapped, "load_workers"):
+                wrapped.load_workers = workers
+        else:
+            dataset.load_workers = workers
         prefetch = bool(self.config.get("data", {}).get("prefetch", False))
         halt = False
         loader = ThreadPoolExecutor(max_workers=1, thread_name_prefix="audio-db-prefetch") if prefetch else None
@@ -231,13 +238,18 @@ class Trainer:
                     write_run_info(self._tb, self.config, self.process.world_size, self.global_step)
                 finally:
                     restore_rng(state, cuda=self.process.uses_cuda)
-            if self.config.get("chunk_iterator"):
+            if _is_training_data(dataset):
+                self._run_data_epochs(dataset, skip, epoch, halt, loader, prefetch)
+            elif self.config.get("chunk_iterator"):
                 self._run_chunk_epochs(dataset, validation, skip, epoch, halt)
             else:
                 self._run_epochs(dataset, validation, skip, epoch, halt, loader, prefetch)
         finally:
             if loader is not None:
                 loader.shutdown(wait=True, cancel_futures=True)
+            closer = getattr(dataset, "close", None)
+            if _is_training_data(dataset) and callable(closer):
+                closer()
             if self._tb is not None:
                 self._tb.close()
 
@@ -320,6 +332,112 @@ class Trainer:
                         if self._tb is not None:
                             self._tb.flush()
                         self.last_checkpoint = self._save(dataset, epoch, cursor, usable_batches)
+                    if (
+                        self.global_step == 1
+                        or self.global_step % 10 == 0
+                        or self.global_step == self.max_steps
+                    ):
+                        rendered = " ".join(f"{name}={value:.6f}" for name, value in sorted(metrics.items()))
+                        print(f"step {self.global_step} {rendered}", flush=True)
+                barrier(self.process)
+                if timed_stop:
+                    self.stop_reason = "CHECKPOINTED"
+                    halt = True
+                    break
+            if pending is not None:
+                pending.result()
+                pending = None
+            if halt or self.global_step >= self.max_steps:
+                break
+            epoch += 1
+        barrier(self.process)
+        if self.stop_reason is None:
+            self.stop_reason = "COMPLETED"
+            self._mark_complete()
+
+    def _run_data_epochs(self, dataset, skip, epoch, halt, loader, prefetch) -> None:
+        """Same optimizer loop as ``_run_epochs``, fed by ``TrainingData``."""
+        accumulation = self.plan.accumulation_steps
+        while self.global_step < self.max_steps and not halt:
+            self._apply_batch_schedule(epoch)
+            stream = dataset.epoch(
+                epoch,
+                rank=self.process.rank,
+                world_size=self.process.world_size,
+                start_update=0,
+            )
+            self._broadcast_plan_hash(stream.plan_hash)
+            updates = stream.updates
+            usable_batches = updates * accumulation
+            if skip > usable_batches or skip % accumulation != 0:
+                raise TrainingError(
+                    f"checkpoint micro-batch position {skip} is not an optimizer boundary "
+                    f"in an epoch of {usable_batches} micro-batches"
+                )
+            if skip == usable_batches:
+                epoch += 1
+                skip = 0
+                continue
+            self._retarget_schedule(usable_batches // accumulation)
+            cursor = skip
+            skip = 0
+            pending: Future | None = None
+            while cursor < usable_batches and self.global_step < self.max_steps:
+                self._note_schedule(epoch, cursor // accumulation, usable_batches // accumulation)
+                if pending is not None:
+                    group, cursor = pending.result()
+                    pending = None
+                else:
+                    group, cursor = _load_update(stream.render, cursor // accumulation, accumulation)
+                self._batch_ready = time.perf_counter()
+                if (
+                    prefetch
+                    and loader is not None
+                    and cursor < usable_batches
+                    and self.global_step + 1 < self.max_steps
+                ):
+                    pending = loader.submit(
+                        _load_update, stream.render, cursor // accumulation, accumulation
+                    )
+                update_started = time.perf_counter()
+                metrics = self.task.train_update(group, accumulation)
+                self._update_seconds = time.perf_counter() - update_started
+                self._require_finite(metrics)
+                self.global_step += 1
+                epoch_done = (self.global_step % self.steps_per_epoch == 0) if self.steps_per_epoch else cursor >= usable_batches
+                logical_epoch = (self.global_step - 1) // self.steps_per_epoch if self.steps_per_epoch else epoch
+                validation_summary = None
+                scheduled_epoch = bool(self.config.get("batch_schedule") and epoch_done and _has_validation(dataset))
+                step_validation = bool(
+                    not self.steps_per_epoch
+                    and not self.config.get("batch_schedule")
+                    and self.validation_interval
+                    and self.global_step % self.validation_interval == 0
+                )
+                if (self.steps_per_epoch and epoch_done) or scheduled_epoch or step_validation:
+                    validation_summary = self._validate_training_data(dataset, logical_epoch)
+                if epoch_done:
+                    self.task.step_schedulers(self._scheduler_validation(validation_summary))
+                    halt = bool(getattr(self.task, "stop_training", False)) or self._batch_schedule_should_stop(validation_summary)
+                timed_stop = not halt and self.global_step < self.max_steps and self._stop_requested()
+                save = self._should_save(self.global_step) or timed_stop or ((self.steps_per_epoch or self.config.get("batch_schedule")) and epoch_done and self.process.rank == 0)
+                checkpoint_path = str(self.checkpoint_dir / f"step_{self.global_step:08d}.pt") if save else None
+                if self.process.rank == 0:
+                    self._log_train(logical_epoch, metrics, checkpoint_path, validation_summary, group)
+                    if save:
+                        if self._tb is not None:
+                            self._tb.flush()
+                        if cursor >= usable_batches:
+                            stored_epoch, stored_updates = epoch + 1, 0
+                        else:
+                            stored_epoch, stored_updates = epoch, cursor // accumulation
+                        self.last_checkpoint = self._save(
+                            dataset,
+                            epoch,
+                            cursor,
+                            usable_batches,
+                            dataset.data_state(stored_epoch, stored_updates),
+                        )
                     if (
                         self.global_step == 1
                         or self.global_step % 10 == 0
@@ -588,7 +706,7 @@ class Trainer:
             return True
         return self.checkpoint_interval > 0 and step % self.checkpoint_interval == 0
 
-    def _save(self, dataset: RecipeDataset, epoch: int, cursor: int, usable_batches: int) -> None:
+    def _save(self, dataset, epoch: int, cursor: int, usable_batches: int, data_state: dict[str, Any] | None = None) -> None:
         if cursor >= usable_batches:
             stored_epoch, stored_cursor = epoch + 1, 0
         else:
@@ -612,6 +730,9 @@ class Trainer:
             "plateau_count": self.plateau_count,
             "plateau_metric": self.plateau_metric,
         }
+        if data_state is not None:
+            payload["data_state"] = data_state
+            payload["update_in_epoch"] = data_state["update_in_epoch"]
         path = self.checkpoint_dir / f"step_{self.global_step:08d}.pt"
         save_atomic(path, payload, verify_training=True)
         exported = _inference_payload(self.task)
@@ -671,6 +792,74 @@ class Trainer:
         barrier(self.process)
         return summary
 
+    def _validate_training_data(self, dataset, epoch: int) -> dict[str, Any] | None:
+        if hasattr(dataset, "validation_set") and dataset.validation_set is None:
+            raise TrainingError("validation_interval is set but no validation set was given")
+        rng_state = capture_rng(cuda=self.process.uses_cuda)
+        summary = None
+        try:
+            if self.process.rank == 0:
+                self.task.eval_mode()
+                reports = []
+                set_name = _validation_name(dataset)
+                batches = dataset.validation(
+                    rank=self.process.rank,
+                    world_size=self.process.world_size,
+                    epoch=epoch,
+                )
+                for batch in batches:
+                    report = self.task.validation_report(batch)
+                    reports.append(report)
+                    if "si_sdr" in report:
+                        append_record(self._log_path(), {
+                            "type": "validation_case", "global_step": self.global_step,
+                            "set": set_name, "case_id": batch["case_id"][0],
+                            **report,
+                        })
+                if not reports:
+                    raise TrainingError("validation produced no batches")
+                summary = _aggregate_validation(reports)
+                best_path = self._consider_best(epoch, summary)
+                summary["best_checkpoint"] = best_path
+                append_record(
+                    self._log_path(),
+                    {
+                        "type": "validation",
+                        "global_step": self.global_step,
+                        "epoch": epoch,
+                        "losses": summary["losses"],
+                        "pesq": summary["pesq"],
+                        "stoi": summary["stoi"],
+                        "si_sdr": summary.get("si_sdr"),
+                        "si_snr": summary.get("si_snr"),
+                        "best_checkpoint": best_path,
+                        "seed": self.seed,
+                    },
+                )
+                pesq = summary["pesq"]
+                pesq_text = "na" if pesq["value"] is None else f"{pesq['value']:.6f}"
+                print(
+                    f"validation step {self.global_step} pesq={pesq_text} ({pesq['status']})",
+                    flush=True,
+                )
+        finally:
+            restore_rng(rng_state, cuda=self.process.uses_cuda)
+            self.task.train_mode()
+        barrier(self.process)
+        return summary
+
+    def _broadcast_plan_hash(self, plan_hash: str) -> None:
+        if not self.process.distributed:
+            return
+        raw = bytes.fromhex(plan_hash)
+        if len(raw) != 32:
+            raise TrainingError("plan_hash is not a sha256 hex digest")
+        local = torch.tensor(list(raw), dtype=torch.int64, device=self.process.device)
+        gathered = [torch.empty_like(local) for _ in range(self.process.world_size)]
+        dist.all_gather(gathered, local)
+        if any(not torch.equal(item, gathered[0]) for item in gathered):
+            raise TrainingError("data plan_hash differs across ranks")
+
     def _check_resume(self, payload: dict[str, Any], dataset: RecipeDataset) -> None:
         if self.config.get("batch_schedule"):
             if payload["config"].get("batch_schedule") != self.config.get("batch_schedule"):
@@ -688,6 +877,28 @@ class Trainer:
             raise TrainingError("checkpoint seed or loss does not match this run")
         if saved["model"] != self.config["model"]:
             raise TrainingError("checkpoint model settings do not match this run")
+        saved_state = payload.get("data_state")
+        checker = getattr(dataset, "check_resume", None)
+        if checker is None:
+            if saved_state is not None:
+                raise TrainingError("checkpoint data_state does not match this dataset")
+            return
+        if not isinstance(saved_state, dict):
+            raise TrainingError("checkpoint is missing data_state")
+        accumulation = self.plan.accumulation_steps
+        consumed = int(payload["micro_batches_consumed"])
+        if consumed % accumulation != 0:
+            raise TrainingError("checkpoint micro-batch position is not an optimizer boundary")
+        if int(saved_state["update_in_epoch"]) != consumed // accumulation:
+            raise TrainingError("checkpoint update_in_epoch does not match micro_batches_consumed")
+        if int(saved_state["epoch"]) != int(payload["epoch"]):
+            raise TrainingError("checkpoint data_state epoch does not match")
+        from src.reproduction.errors import ReproductionError
+
+        try:
+            checker(saved_state)
+        except ReproductionError as exc:
+            raise TrainingError(str(exc)) from exc
 
     def _log_path(self) -> Path:
         return self.checkpoint_dir / "metrics.jsonl"
@@ -805,6 +1016,41 @@ class Trainer:
                 raise TrainingError(f"non-finite metric {name}")
 
 
+def _is_training_data(dataset) -> bool:
+    return (
+        not isinstance(dataset, RecipeDataset)
+        and callable(getattr(dataset, "epoch", None))
+        and callable(getattr(dataset, "data_state", None))
+    )
+
+
+def _provenance_of(dataset):
+    source = getattr(dataset, "provenance", None)
+    if not callable(source):
+        return None
+    return source()
+
+
+def _has_validation(dataset) -> bool:
+    if hasattr(dataset, "validation_set"):
+        return dataset.validation_set is not None
+    return True
+
+
+def _validation_name(dataset) -> str:
+    validation = getattr(dataset, "validation_set", None)
+    if validation is not None and hasattr(validation, "name"):
+        return validation.name
+    identity = dataset.identity()
+    return str(identity.get("name", "validation"))
+
+
+def _load_update(render, update_index: int, accumulation: int):
+    """Load one optimizer step. The returned cursor is the next micro-batch."""
+    group = render(update_index)
+    return group, (update_index + 1) * accumulation
+
+
 def _load_group(dataset, indices, cursor: int, micro: int, accumulation: int):
     """Load the next optimizer step. The returned cursor is the following step."""
     group = []
@@ -827,7 +1073,7 @@ def _environment(process: ProcessInfo) -> dict[str, Any]:
 
 
 def _run_header(trainer: Trainer) -> dict[str, Any]:
-    return {
+    record = {
         "type": "run",
         "seed": trainer.seed,
         "config": trainer.config,
@@ -837,6 +1083,10 @@ def _run_header(trainer: Trainer) -> dict[str, Any]:
         "best_checkpoint_start_epoch": trainer.best_checkpoint_start_epoch,
         "scheduler": "epoch",
     }
+    provenance = getattr(trainer, "_data_provenance", None)
+    if provenance:
+        record["data_provenance"] = provenance
+    return record
 
 
 def _stored_best_pesq(payload: dict[str, Any], directory: Path) -> float | None:

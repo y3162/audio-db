@@ -1,0 +1,50 @@
+# Official-faithful MP-SENet on mp_senet.vb28.official@1.
+# Hyperparameters follow the pinned train.py / config.json. 11,572 utterances,
+# global batch 4, 2,893 updates per epoch, 400 epochs. 1 GPU uses micro-batch 4.
+# 2 GPUs use micro-batch 2 because micro_batch_size_per_gpu is an upper bound.
+# Validation is the official test split. Both selection flags are required.
+
+seed: 1234
+deterministic: false
+global_batch_size: 4
+micro_batch_size_per_gpu: 4
+max_steps: 1157200
+segment_size: 32000
+loss: official
+checkpoint_dir: ./data/results/training/reproduction/mp_senet.vb28.official
+checkpoint_interval: 5000
+validation_interval: 5000
+best_checkpoint_start_epoch: 40
+
+optimizer:
+  name: adamw
+  lr: 0.0005
+  betas: [0.8, 0.99]
+  weight_decay: 0.01
+
+scheduler:
+  name: exponential
+  gamma: 0.99
+
+model:
+  name: mp_senet
+  dense_channel: 64
+  num_tsconformers: 4
+  n_fft: 400
+  hop_size: 100
+  win_size: 400
+  compress_factor: 0.3
+  beta: 2.0
+  sampling_rate: 16000
+
+data:
+  pipeline: reproduction
+  dataset: mp_senet.vb28.official@1
+  allow_test_selection: true
+  load_workers: 4
+  prefetch: true
+  verify_on_read: false
+
+runtime:
+  device: cuda
+  allow_busy_gpu: false
