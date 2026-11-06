@@ -25,9 +25,9 @@
 現状（import で確認）:
 
 - `src/se/` と `src/asr/` は、他の `src/` モジュールを import しない。`src/asr` は `tests/asr/test_independence.py` が、evaluation・se・モデルライブラリを import しないことを確認している。
-- `src/evaluation/` は `src/se`、`src/asr`（遅延 import）、`src/data`（列定義・スキーマ・レシピ検証）を使う。波形生成は `src/evaluation/audio/render.py` にあり、`src/data/` はそれを import しない。
+- `src/evaluation/` は `src/se`、`src/asr`（遅延 import）、`src/data`（列定義・スキーマ・レシピ検証）を使う。波形生成は `src/evaluation/audio/render.py` にあり、`src/data/` はそれを import しない。学習データの来歴は checkpoint 横の `data_provenance.json` を `src/evaluation/provenance.py` が読む。`src.reproduction` は import しない。
 - `src/data/` から `src/evaluation/` への依存もある。`src/data/init_eval.py` と注釈インポータ（`src/data/corpora/chime3_annotations.py`、`src/data/corpora/mpsenet_filelist.py`）が `EvaluationDB` と `AudioSample` を使う。data と evaluation は相互依存のままである。レシピの検証を `src/data/recipe.py` に置いたので、この循環は広がっていない。
-- `src/training/` は `src/se`（`build_model`）、`src/data/recipe`、`src/evaluation`（レシピの波形化と名前付きセットの読み取り）を使う。再現経路では `src/reproduction.pipeline` の `TrainingData` だけを使う。`src/se` と `src/asr` は `src/training` を import しない。学習コードは `src/se/official/` を import しない。学習は `src/reproduction.db` を開かない。
+- `src/training/` は `src/se`（`build_model`）、`src/data/recipe`、`src/evaluation`（レシピの波形化、名前付きセットの読み取り、来歴 JSON のバイト列）を使う。再現経路では `src/reproduction.pipeline` の `TrainingData` だけを使う。checkpoint 保存時に rank 0 が `data_provenance.json` を書く。`src/se` と `src/asr` は `src/training` を import しない。学習コードは `src/se/official/` を import しない。学習は `src/reproduction.db` を開かない。`repro.runs` への登録は学習後の `register_training_run` である。
 - `src/reproduction/` は `src/data/recipe`（正規化と SHA-256）を使う。`src/reproduction/db/` は DuckDB を使う。`src/reproduction/snapshot_reader.py` と `src/reproduction/pipeline/` は NumPy と JSON でスナップショットを読み、DuckDB を import しない。`src/reproduction` は `src/se`、`src/asr`、`src/evaluation`、`src/training` を import しない。`src/evaluation` は `src/reproduction` を import しない。
 
 方針:

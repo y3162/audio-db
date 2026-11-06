@@ -27,6 +27,7 @@ from src.evaluation.errors import ConfigError, DatasetError
 from src.evaluation.gpu import assert_gpu_idle
 from src.evaluation.identity import (
     canonical_snr,
+    checkpoint_files,
     checkpoint_fingerprint,
     checkpoint_status,
     derive_seed,
@@ -36,6 +37,7 @@ from src.evaluation.identity import (
     sha256_json,
     tensor_sha256,
 )
+from src.evaluation.provenance import apply_independence, judge_model_checkpoints
 from src.evaluation.metrics.compute import not_computed, score_utterance
 from src.evaluation.metrics.pesq import library_status as pesq_library_status
 from src.evaluation.metrics.stoi import library_status as stoi_library_status
@@ -217,6 +219,7 @@ def _run_model(
     enhancer = None
     reused = 0
     written = 0
+    judgment = judge_model_checkpoints(checkpoint_files(model), samples)
     try:
         for index, sample in enumerate(samples):
             for snr in _snrs(config, sample):
@@ -236,6 +239,7 @@ def _run_model(
                     enhancer,
                     git,
                     environment,
+                    judgment,
                 )
                 records.append(record)
                 reused += int(did_reuse)
@@ -268,6 +272,7 @@ def _one_utterance(
     enhancer,
     git,
     environment,
+    judgment,
 ):
     noise_item = _paired_noise(config, bundle, sample, index)
     prepared = _prepare(config, sample, noise_item, snr)
@@ -300,7 +305,9 @@ def _one_utterance(
             and existing.get("status") == "ok"
             and existing.get("identity_hash") == identity_hash
         ):
-            return existing, True, False, enhancer
+            stamped = dict(existing)
+            apply_independence(stamped, judgment)
+            return stamped, True, False, enhancer
     if prepared["status"] != "ok":
         record = _finish_record(
             config,
@@ -318,6 +325,7 @@ def _one_utterance(
             metrics=not_computed(prepared["reason"] or prepared["status"]),
             timing={"prepare": prepared["seconds"], "enhance": None, "asr": None, "metrics": None},
             saved_audio=None,
+            judgment=judgment,
         )
         return record, False, True, enhancer
     if enhancer is None:
@@ -349,6 +357,7 @@ def _one_utterance(
             metrics=not_computed("enhancement_failed"),
             timing={"prepare": prepared["seconds"], "enhance": None, "asr": None, "metrics": None},
             saved_audio=None,
+            judgment=judgment,
         )
         return record, False, True, enhancer
     hypotheses, asr_seconds = _recognize(
@@ -392,6 +401,7 @@ def _one_utterance(
             "metrics": metric_seconds,
         },
         saved_audio=saved,
+        judgment=judgment,
     )
     return record, False, True, enhancer
 
@@ -651,8 +661,9 @@ def _finish_record(
     metrics,
     timing,
     saved_audio,
+    judgment,
 ) -> dict[str, Any]:
-    return {
+    record = {
         "schema_version": 1,
         "record_id": slot_id,
         "identity": identity,
@@ -703,6 +714,8 @@ def _finish_record(
             "device": config.runtime.device,
         },
     }
+    apply_independence(record, judgment)
+    return record
 
 
 def _save_enhanced(config, run_dir, slot_id, waveform, sample_rate):

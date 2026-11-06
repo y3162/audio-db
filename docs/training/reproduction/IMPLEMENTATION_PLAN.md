@@ -1,6 +1,6 @@
 # 再現用 DB・Data Pipeline の実装計画
 
-状態: **P1〜P3 は実装済み。** P1 は合成データの単体テスト。P2 は VoiceBank-DEMAND の実ファイルで、MP-SENet と MossFormerGAN の 4 Dataset とスナップショットまで完了している。P3 は固定ペアの Pipeline、Legacy アダプタ、Trainer 接続まで完了している。検証は [P3_VERIFICATION](P3_VERIFICATION.md)。**P4〜P10 は未着手。** フェーズ 4 以降は、この計画の受け入れ条件をそのまま使う。
+状態: **P1〜P4 は実装済み。** P1 は合成データの単体テスト。P2 は VoiceBank-DEMAND の実ファイルで、MP-SENet と MossFormerGAN の 4 Dataset とスナップショットまで完了している。P3 は固定ペアの Pipeline、Legacy アダプタ、Trainer 接続まで完了している。P4 は checkpoint の `data_provenance.json`、`repro.runs` への事後登録、評価結果の `independent` まで完了している。検証は [P3_VERIFICATION](P3_VERIFICATION.md) と [P4_VERIFICATION](P4_VERIFICATION.md)。**P5〜P10 は未着手。** フェーズ 5 以降は、この計画の受け入れ条件をそのまま使う。
 
 設計の正本: [REPRODUCTION_DB_DESIGN](../../db/REPRODUCTION_DB_DESIGN.md)（DB）、[DATA_PIPELINE_DESIGN](DATA_PIPELINE_DESIGN.md)（Pipeline）。再現対象の正本: [TARGETS](TARGETS.md)。採用決定: [DECISIONS](../../../.agents/DECISIONS.md) の D-01〜D-09。
 
@@ -138,6 +138,7 @@ P2 の実施結果（2026-11-06）:
 | 機能 | `data_provenance.json` の書き込み、`runs` への登録、評価結果の `independent` と `checkpoint_selection_overlap` の記録 |
 | 受け入れ（単体）| (1) 選択に test を使った checkpoint を、同じ素材を含む評価セットで評価すると `independent: false` と重なった集合名が記録される。(2) 素材が重ならなければ記録されない。(3) 名前が同じで素材が違うセットを、重なりと誤認しない |
 | 完了条件 | 通過。Official Evaluation の仕様（OP-4）が文書化されている（実装はしない）|
+| 状態 | **実装済み**（2026-11-06）。検証は [P4_VERIFICATION](P4_VERIFICATION.md)。Official Evaluation の仕様は [OFFICIAL_EVALUATION](../../evaluation/OFFICIAL_EVALUATION.md)。実装はしていない |
 | 依存 | P2、P3 |
 | 更新する正本 | `.agents/DATA.md`（評価結果の列）、`docs/evaluation/`（該当する文書）|
 

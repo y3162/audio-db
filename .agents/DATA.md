@@ -48,7 +48,8 @@ DuckDB は `data/db/resource.duckdb`（`src/data/constants.py`）。
 
 ## 学習に使うセット
 
-- 学習 checkpoint は、その step の JSONL 書き込みと TensorBoard 有効時の event flush の後に公開する。途中で停止した場合は、完成済み checkpoint より後の記録を再開時に巻き戻す。電源断やストレージ障害に対する複数ファイルの原子性は保証しない。
+- 学習 checkpoint は、その step の JSONL 書き込みと TensorBoard 有効時の event flush の後に公開する。途中で停止した場合は、完成済み checkpoint より後の記録を再開時に巻き戻す。電源断やストレージ障害に対する複数ファイルの原子性は保証しない。再現学習の rank 0 は、同じディレクトリに `data_provenance.json` を一度だけ排他作成する。`data_state` は再開位置で、来歴 JSON は Dataset・snapshot・使用集合の内容ハッシュと派生元である。`provenance_sha256` を持つ checkpoint は、横の JSON が欠けるかハッシュが違うと再開しない。来歴の無い古い checkpoint は再開できるが、評価の `independent` は `UNKNOWN` である。`UNKNOWN` は独立評価ではない。
+- 評価結果の `independent` は true / false / `UNKNOWN` である。`checkpoint_selection_overlap` は、選択に使った素材と内容または既知の派生元が重なった評価セット名である。情報が足りないときは null で、空リストは重なりが無いと確認できたときだけ使う。`selection_uses_test` は独立性とは別に残す。判定は checkpoint 横の JSON と評価レシピの SHA-256 だけで、`reproduction.duckdb` は開かない。
 
 学習は評価と同じ名前付きセットとレシピを読む。詳細は `docs/training/MP_SENET.md`。
 
@@ -102,5 +103,5 @@ DuckDB は `data/db/resource.duckdb`（`src/data/constants.py`）。
 - 書き込む操作は、`make db-init` と `EvaluationDB` の登録系（`import_manifest`、`create_set_from_corpus`、`register_samples`）が `eval` へ、`make db-ingest` が `corpora` へ。読み取りは `read_only=True` で開く。`src/evaluation/` から `corpora.audio_files` を変更しない。
 - DuckDB の書き込みは 1 プロセスだけ。ほかのプロセスが DB を開いている間は、書き込みを伴う操作をしない。
 - 実験とテストは一時 DB を使う。単体テストは `resource.duckdb` を開いて書き込まない。
-- `reproduction.duckdb` は `resource.duckdb` とは別ファイルである。登録は `data/staging/reproduction/` を再構築元にし、同じ ID で内容が違う行は拒否する。再構築は新しいファイルへ書き、全表のハッシュが一致したときだけ置き換える。`eval` スキーマが無い、または `--resource-db` を渡さない leakage 監査は `UNKNOWN` であり、`PASS` にしない。学習プロセスはこの DB を開かない。固定ペアの学習は `data/db/snapshots/<dataset_id>/` を `src/reproduction/pipeline` から読む。P2 で登録済みの Dataset は `mp_senet.vb28.official@1`、`mp_senet.vb28.safe@1`、`mossformergan.vb28.official@1`、`mossformergan.vb28.safe@1` である。音声は 48 kHz の VoiceBank-DEMAND 28 話者 train と公式 test から、soxr HQ で作った 16 kHz PCM_16 を指す。公式の 16 kHz 変換器は不明なままである。同じ 16 kHz ペアの `case_id` はモデル間で共有し、`cases.protocol_id` は `mp_senet.fixed_pair` を指す。学習時の正規化・窓・順序は Dataset の protocol を読む。
+- `reproduction.duckdb` は `resource.duckdb` とは別ファイルである。登録は `data/staging/reproduction/` を再構築元にし、同じ ID で内容が違う行は拒否する。再構築は新しいファイルへ書き、全表のハッシュが一致したときだけ置き換える。`eval` スキーマが無い、または `--resource-db` を渡さない leakage 監査は `UNKNOWN` であり、`PASS` にしない。学習プロセスはこの DB を開かない。固定ペアの学習は `data/db/snapshots/<dataset_id>/` を `src/reproduction/pipeline` から読む。学習後の `register_training_run` だけが `repro.runs` を書く。同じ run の checkpoint 位置の更新は許し、dataset・snapshot・profile・claim が違う再登録は拒否する。claim と checkpoint パスは列が無いので `data_state_json` に足す。P2 で登録済みの Dataset は `mp_senet.vb28.official@1`、`mp_senet.vb28.safe@1`、`mossformergan.vb28.official@1`、`mossformergan.vb28.safe@1` である。音声は 48 kHz の VoiceBank-DEMAND 28 話者 train と公式 test から、soxr HQ で作った 16 kHz PCM_16 を指す。公式の 16 kHz 変換器は不明なままである。同じ 16 kHz ペアの `case_id` はモデル間で共有し、`cases.protocol_id` は `mp_senet.fixed_pair` を指す。学習時の正規化・窓・順序は Dataset の protocol を読む。
 - 破壊的な操作（`db-ingest`、DB の削除、スキーマの作り直し）の前に、`data/db/resource.duckdb` を退避する。

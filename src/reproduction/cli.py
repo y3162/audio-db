@@ -1,6 +1,9 @@
 """Command line for the reproduction database.
 
-``python -m src.reproduction.cli doctor|init-db|snapshot|rebuild-db|verify|prepare``
+``python -m src.reproduction.cli doctor|init-db|snapshot|rebuild-db|verify|prepare|register-run``
+
+``register-run`` reads JSON files after training. It does not open a checkpoint
+and it does not default to the production database.
 """
 
 from __future__ import annotations
@@ -70,6 +73,13 @@ def main(argv: list[str] | None = None) -> int:
     prepare.add_argument("--repo-root", default=str(ROOT))
     prepare.add_argument("--config-root", default=str(ROOT / "configs" / "data"))
     prepare.add_argument("--workers", type=int, default=8)
+
+    register = commands.add_parser("register-run")
+    register.add_argument("--database", required=True)
+    register.add_argument("--provenance", required=True)
+    register.add_argument("--data-state", required=True)
+    register.add_argument("--checkpoint", required=True)
+    register.add_argument("--checkpoint-sha256", required=True)
 
     args = parser.parse_args(argv)
     try:
@@ -156,6 +166,25 @@ def _run(args: argparse.Namespace) -> int:
                 workers=args.workers,
             ),
         )
+        return 0
+    if args.command == "register-run":
+        import json
+
+        from src.reproduction.db.registry import register_training_run
+
+        try:
+            provenance = json.loads(Path(args.provenance).read_text(encoding="utf-8"))
+            data_state = json.loads(Path(args.data_state).read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError) as exc:
+            raise ReproductionError(f"cannot read run JSON: {exc}") from exc
+        status = register_training_run(
+            args.database,
+            provenance,
+            data_state,
+            checkpoint_path=args.checkpoint,
+            checkpoint_sha256=args.checkpoint_sha256,
+        )
+        print(f"{status}\t{provenance.get('run_id')}")
         return 0
     raise ReproductionError(f"unknown command: {args.command}")
 

@@ -14,6 +14,7 @@ from pathlib import Path
 from typing import Any
 
 from src.evaluation.metrics.wer import add_counts, corpus_wer, empty_counts
+from src.evaluation.provenance import summarize_record_independence
 from src.evaluation.results.reader import read_jsonl, read_record_files
 from src.evaluation.results.writer import atomic_write_json, atomic_write_text
 
@@ -42,7 +43,7 @@ def build_summary(records: list[dict[str, Any]]) -> dict[str, Any]:
         _render_group(key, items)
         for key, items in sorted(grouped.items(), key=_sort_key)
     ]
-    return {
+    summary = {
         "schema_version": 1,
         "wer_aggregation": "micro",
         "num_records": len(records),
@@ -52,6 +53,10 @@ def build_summary(records: list[dict[str, Any]]) -> dict[str, Any]:
         "groups": groups,
         "paired_signal_metrics": _paired_signal_metrics(records),
     }
+    independence = summarize_record_independence(records)
+    if independence is not None:
+        summary["data_independence"] = independence
+    return summary
 
 
 def _paired_signal_metrics(records: list[dict[str, Any]]) -> list[dict[str, Any]]:

@@ -433,6 +433,10 @@ DuckDB のスキーマ名は `repro`。型は DuckDB の型。CHECK は同じ行
 
 学習が終わった（または止まった）後に、1 プロセスの書き込みで登録する。**学習中は書かない。** checkpoint ディレクトリの `data_provenance.json` が一次記録で、この表はそれを後から載せる（既存の `register_run` と同じ順序）。
 
+P4 の登録関数は `register_training_run`（`python -m src.reproduction.cli register-run`）。学習プロセスは呼ばない。`--database` の既定値は無く、本番 `reproduction.duckdb` を暗黙には開かない。同じ `run_id` で dataset・snapshot・config・git・world size・`ddp_mode`・`selection_uses_test`・claim・データ計画が同じなら、checkpoint の位置（`epoch`、`update_in_epoch`、`plan_hash`）と checkpoint パスだけの変化は同じ run の更新である。それらが違う再登録は拒否し、行を変えない。別の `run_id` は別 run として挿入する。
+
+`profile` は checkpoint の `data_state` に既にある。`claim_label`、`checkpoint_path`、`checkpoint_sha256` は表に列が無いので、スキーマを変えずに `data_state_json` へ足す。再開が読むのは checkpoint 本体の `data_state` であり、この足したキーは DB 側の登録情報である。
+
 ### 4.13 表の関係
 
 ```

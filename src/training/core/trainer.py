@@ -151,6 +151,9 @@ class Trainer:
         self.stop_reason: str | None = None
         self.last_checkpoint: str | None = None
         self._tb = None
+        self._provenance_raw: bytes | None = None
+        self._provenance_sha: str | None = None
+        self._run_id: str | None = None
 
     def fit(
         self,
@@ -178,7 +181,7 @@ class Trainer:
                 )
         if resume is not None:
             payload = load_checkpoint(resume, self.process.device)
-            self._check_resume(payload, dataset)
+            self._check_resume(payload, dataset, resume)
             self.task.load_state_dict(payload["task"])
             restore_rng(payload["rng"], cuda=self.process.uses_cuda)
             self.global_step = int(payload["global_step"])
@@ -196,11 +199,13 @@ class Trainer:
                 raise TrainingError("checkpoint global_step is already at max_steps")
             if self.process.rank == 0:
                 truncate_after(self._log_path(), self.global_step)
+                self._bind_provenance(dataset)
         else:
             self._reject_existing_checkpoints()
             seed_training_stream(self.seed, cuda=self.process.uses_cuda)
             if self.process.rank == 0:
                 self.checkpoint_dir.mkdir(parents=True, exist_ok=True)
+                self._bind_provenance(dataset)
                 append_record(self._log_path(), _run_header(self))
         if self.config.get("logging", {}).get("tensorboard", {}).get("enabled"):
             state = capture_rng(cuda=self.process.uses_cuda)
@@ -627,12 +632,15 @@ class Trainer:
         if exported is not None:
             path = self.checkpoint_dir / f"{espnet_epoch}epoch.pt"
             save_atomic(path, exported)
+            self._attach_provenance(path)
             for row, name, metric in (
                 (by_loss[0], "valid.loss.best.pt", "loss"),
                 (by_si[0] if by_si else None, "valid.si_snr.best.pt", "si_snr"),
             ):
                 if row is not None and int(row["epoch"]) == espnet_epoch:
-                    save_atomic(self.checkpoint_dir / name, exported)
+                    best_path = self.checkpoint_dir / name
+                    save_atomic(best_path, exported)
+                    self._attach_provenance(best_path)
                     write_json(self.checkpoint_dir / f"{name}.json", {
                         "metric": metric, "epoch": espnet_epoch, "value": row[metric],
                         "global_step": self.global_step,
@@ -733,11 +741,21 @@ class Trainer:
         if data_state is not None:
             payload["data_state"] = data_state
             payload["update_in_epoch"] = data_state["update_in_epoch"]
+        if self._provenance_raw is None:
+            self._bind_provenance(dataset)
+        payload["run_id"] = self._run_id
+        payload["provenance_sha256"] = self._provenance_sha
+        payload["provenance_file"] = "data_provenance.json"
         path = self.checkpoint_dir / f"step_{self.global_step:08d}.pt"
         save_atomic(path, payload, verify_training=True)
+        self._attach_provenance(path)
+        if data_state is not None:
+            write_json(self.checkpoint_dir / "data_state.json", data_state)
         exported = _inference_payload(self.task)
         if exported is not None:
-            save_atomic(self.checkpoint_dir / "generator.pt", exported)
+            generator = self.checkpoint_dir / "generator.pt"
+            save_atomic(generator, exported)
+            self._attach_provenance(generator)
         return str(path)
 
     def _validate(self, validation: RecipeDataset | None, epoch: int) -> dict[str, Any] | None:
@@ -860,7 +878,23 @@ class Trainer:
         if any(not torch.equal(item, gathered[0]) for item in gathered):
             raise TrainingError("data plan_hash differs across ranks")
 
-    def _check_resume(self, payload: dict[str, Any], dataset: RecipeDataset) -> None:
+    def _bind_provenance(self, dataset) -> None:
+        from src.training.provenance import build_provenance, provenance_sha256, publish_provenance
+
+        document = build_provenance(dataset, self.config, self.process)
+        raw = publish_provenance(self.checkpoint_dir, document, rank=self.process.rank)
+        self._provenance_raw = raw
+        self._provenance_sha = provenance_sha256(raw)
+        self._run_id = json.loads(raw.decode("utf-8"))["run_id"]
+
+    def _attach_provenance(self, checkpoint: Path) -> None:
+        if not self._provenance_raw:
+            return
+        from src.training.provenance import write_provenance_sidecar
+
+        write_provenance_sidecar(checkpoint, self._provenance_raw)
+
+    def _check_resume(self, payload: dict[str, Any], dataset: RecipeDataset, checkpoint: Path | None = None) -> None:
         if self.config.get("batch_schedule"):
             if payload["config"].get("batch_schedule") != self.config.get("batch_schedule"):
                 raise TrainingError("checkpoint batch schedule does not match this run")
@@ -877,6 +911,12 @@ class Trainer:
             raise TrainingError("checkpoint seed or loss does not match this run")
         if saved["model"] != self.config["model"]:
             raise TrainingError("checkpoint model settings do not match this run")
+        if payload.get("provenance_sha256") is not None:
+            if checkpoint is None:
+                raise TrainingError("checkpoint path is required to check data provenance")
+            from src.training.provenance import assert_checkpoint_provenance
+
+            assert_checkpoint_provenance(payload, checkpoint, dataset)
         saved_state = payload.get("data_state")
         checker = getattr(dataset, "check_resume", None)
         if checker is None:
@@ -964,6 +1004,7 @@ class Trainer:
             self.best_loss = score
             path = self.checkpoint_dir / "best_generator.pt"
             save_atomic(path, exported)
+            self._attach_provenance(path)
             write_json(self.checkpoint_dir / "best_generator.json", {
                 "metric": "validation_loss", "loss": score, "global_step": self.global_step,
                 "epoch": epoch, "validation": summary, "config": self.config, "checkpoint": str(path),
@@ -981,6 +1022,7 @@ class Trainer:
         self.best_pesq = score
         path = self.checkpoint_dir / "best_generator.pt"
         save_atomic(path, exported)
+        self._attach_provenance(path)
         write_json(
             self.checkpoint_dir / "best_generator.json",
             {
@@ -1086,6 +1128,10 @@ def _run_header(trainer: Trainer) -> dict[str, Any]:
     provenance = getattr(trainer, "_data_provenance", None)
     if provenance:
         record["data_provenance"] = provenance
+    if trainer._run_id:
+        record["run_id"] = trainer._run_id
+    if trainer._provenance_sha:
+        record["provenance_sha256"] = trainer._provenance_sha
     return record
 
 

@@ -338,6 +338,22 @@ torch、torchaudio、duckdb、numpy は既存の lab 環境のものを使いま
 uv pip install --python .venvs/lab/bin/python "numpy==2.5.4" -r requirements/evaluation.txt
 ```
 
+## 学習データの来歴
+
+SE の checkpoint が学習ディレクトリにあるとき、評価は同じディレクトリの `data_provenance.json`（または `<checkpoint>.data_provenance.json`）を読む。`src.reproduction` も DuckDB も使わない。
+
+各レコードと `summary.json` の `data_independence` に、次を書く。
+
+| フィールド | 意味 |
+|---|---|
+| `independent` | `true`、`false`、または `UNKNOWN` |
+| `checkpoint_selection_overlap` | 選択集合と重なった評価セット名。`UNKNOWN` のときは null。空リストは、重なりが無いと確認できたときだけ |
+| `selection_uses_test` | その checkpoint のモデル選択が test を使ったか。独立性とは別 |
+
+`UNKNOWN` は独立な評価ではない。`confirmed_independent` は `independent` が `true` のときだけ true になる。由来 JSON が無い、壊れている、ハッシュだけでは派生元を結べない、という場合は `UNKNOWN` のままにする。公式再現で test を validation に使っていても、評価セット側のハッシュが無いときは `UNKNOWN` とし、`selection_uses_test: true` は残す。
+
+公式指標で公式 test を採点する経路は、この本線とは別である。仕様は [OFFICIAL_EVALUATION](OFFICIAL_EVALUATION.md)。未実装。
+
 ## まだやらないこと
 
 全コーパスの推論、5 モデルの一括ベンチマーク、論文用 WER、ASR の学習、SE の再学習、結果テーブルの DuckDB への書き込み、公式混合プロトコルへの置き換えは、この基盤の対象外です。ASR の推論入口は [ASR](../asr/MODELS.md) にあります。結果ファイルは、あとから DuckDB へ登録できる JSON のままにしています。

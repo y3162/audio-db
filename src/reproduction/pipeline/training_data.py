@@ -162,6 +162,16 @@ class ReproductionTrainingData:
         recorded["crop"] = CROP_NOTE
         return recorded
 
+    def provenance_parts(self) -> dict[str, Any]:
+        """Content hashes and derivation stamps. Cached for the life of this object."""
+        cached = getattr(self, "_provenance_parts_cache", None)
+        if cached is None:
+            from src.reproduction.pipeline.provenance import snapshot_provenance_parts
+
+            cached = snapshot_provenance_parts(self.store)
+            self._provenance_parts_cache = cached
+        return cached
+
     def plan_for(self, epoch: int) -> EpochPlan:
         cached = self._plans.get(epoch)
         if cached is None:

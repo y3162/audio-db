@@ -512,7 +512,7 @@ data:
 | 結果の置き場 | `data/results/se-official-eval/<run_id>/`（将来）| `data/results/se-evaluation/<run_id>/`（既存）|
 | 主張 | 公式再現の指標。`claim_label` と `selection_uses_test` を併記 | 独立性を満たす評価だけを「独立」と書く（DB 設計 §7.4）|
 
-- `src/evaluation/` と `resource.duckdb` は**変更しない**。`src/evaluation/` は `src.reproduction.*` を import しない。
+- `resource.duckdb` は変更しない。`src/evaluation/` は `src.reproduction.*` を import しない。P4 以降、評価は checkpoint 横の `data_provenance.json` だけを読み、`independent` と `checkpoint_selection_overlap` を結果に書く。DuckDB も学習パッケージも要らない。
 - 学習と評価で**共有するもの**: レシピ JSON v1 とハッシュ（`src/data/recipe.py`）、素材の索引の出所（`corpora.audio_files`）、素材の SHA-256 と `mix_seed` 型の seed 導出の規則、音声ファイルの読み込み。
 - **分離するもの**: 学習データの生成（公式の混合、事前生成、オンライン混合）。評価の `rms_v1` 混合とは定義が違うので、評価コードに入れない。公式再現の「test を validation に使う」データ定義は、評価 DB に持ち込まない。
 - 公式再現の checkpoint を Research Evaluation で評価するとき、その評価セットの素材が、checkpoint の選択に使った集合と重なるなら、結果に `independent: false` と重なった集合を記録する（IMPLEMENTATION_PLAN フェーズ 4）。

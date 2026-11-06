@@ -441,6 +441,193 @@ def _apply_hash_updates(connection, updates: list[dict[str, Any]]) -> None:
         raise ReproductionError(f"asset {update['asset_id']} sha256 does not match the staged hash")
 
 
+_RUN_COLUMNS = (
+    "run_id",
+    "dataset_id",
+    "snapshot_hash",
+    "config_hash",
+    "git_commit",
+    "world_size",
+    "ddp_mode",
+    "selection_uses_test",
+)
+_REGISTRATION_KEYS = ("claim_label", "checkpoint_path", "checkpoint_sha256")
+_MOVING_STATE_KEYS = {"epoch", "update_in_epoch", "plan_hash"}
+_DDP_MODES = {"single", "real", "virtual"}
+
+
+def register_training_run(
+    database: str | Path,
+    provenance: dict[str, Any],
+    data_state: dict[str, Any],
+    *,
+    checkpoint_path: str,
+    checkpoint_sha256: str,
+) -> str:
+    """Insert one finished run. Learning does not call this.
+
+    The same run id with the same plan is ``unchanged`` or ``updated`` when
+    only the checkpoint position moved. A different dataset, snapshot, profile,
+    or claim is refused and the database is left unchanged.
+    """
+    row, stored_state = _run_row(
+        provenance,
+        data_state,
+        checkpoint_path=checkpoint_path,
+        checkpoint_sha256=checkpoint_sha256,
+    )
+    path = Path(database)
+    with reproduction_lock(path.parent):
+        connection = _connect(path, read_only=False)
+        try:
+            assert_ready(connection)
+            _require_dataset_match(connection, provenance)
+            connection.execute("BEGIN TRANSACTION")
+            try:
+                status = _write_run(connection, row, stored_state)
+                connection.execute("COMMIT")
+            except Exception:
+                connection.execute("ROLLBACK")
+                raise
+        finally:
+            connection.close()
+    return status
+
+
+def _run_row(
+    provenance: dict[str, Any],
+    data_state: dict[str, Any],
+    *,
+    checkpoint_path: str,
+    checkpoint_sha256: str,
+) -> tuple[dict[str, Any], dict[str, Any]]:
+    if not isinstance(provenance, dict) or not isinstance(data_state, dict):
+        raise ReproductionError("run provenance and data_state must be objects")
+    if provenance.get("pipeline") != "reproduction" or data_state.get("pipeline") != "reproduction":
+        raise ReproductionError("only a reproduction run can be registered")
+    for key in _REGISTRATION_KEYS:
+        if key in data_state:
+            raise ReproductionError(f"data_state must not already contain {key}")
+    dataset_id = _text(provenance.get("dataset_id"), "dataset_id")
+    snapshot_hash = _text(provenance.get("snapshot_hash"), "snapshot_hash")
+    if data_state.get("dataset_id") != dataset_id or data_state.get("snapshot_hash") != snapshot_hash:
+        raise ReproductionError("data_state does not match the provenance dataset")
+    if data_state.get("profile") != provenance.get("profile"):
+        raise ReproductionError("data_state profile does not match the provenance")
+    if bool(data_state.get("selection_uses_test")) != bool(provenance.get("selection_uses_test")):
+        raise ReproductionError("data_state selection_uses_test does not match the provenance")
+    claim = _text(provenance.get("claim_label"), "claim_label")
+    if claim not in {
+        "official_reproduction",
+        "protocol_conformant_substitute_materials",
+        "espnet_public_se_recipe_reproduction",
+        "official_recipe_scaled_down",
+        "minimal_repair_reproduction",
+        "leakage_safe_comparison",
+    }:
+        raise ReproductionError(f"unknown claim_label: {claim}")
+    profile = provenance.get("profile")
+    if profile not in ("official_faithful", "leakage_safe"):
+        raise ReproductionError(f"unknown profile: {profile}")
+    if not isinstance(provenance.get("selection_uses_test"), bool):
+        raise ReproductionError("selection_uses_test must be a boolean")
+    mode = provenance.get("ddp_mode")
+    if mode not in _DDP_MODES:
+        raise ReproductionError(f"unknown ddp_mode: {mode}")
+    world = data_state.get("world_size")
+    if isinstance(world, bool) or not isinstance(world, int) or world < 1:
+        raise ReproductionError("world_size must be a positive integer")
+    if not checkpoint_path or not isinstance(checkpoint_path, str):
+        raise ReproductionError("checkpoint_path is required")
+    _sha(checkpoint_sha256, "checkpoint_sha256")
+    stored = dict(data_state)
+    stored["claim_label"] = claim
+    stored["checkpoint_path"] = checkpoint_path
+    stored["checkpoint_sha256"] = checkpoint_sha256
+    row = {
+        "run_id": _sha(provenance.get("run_id"), "run_id"),
+        "dataset_id": dataset_id,
+        "snapshot_hash": snapshot_hash,
+        "config_hash": _sha(provenance.get("config_hash"), "config_hash"),
+        "git_commit": _text(provenance.get("git_commit") or "unknown", "git_commit"),
+        "world_size": world,
+        "ddp_mode": mode,
+        "selection_uses_test": provenance["selection_uses_test"],
+        "data_state_json": stored,
+    }
+    return row, stored
+
+
+def _require_dataset_match(connection, provenance: dict[str, Any]) -> None:
+    found = connection.execute(
+        """
+        SELECT profile, claim_label, selection_uses_test
+        FROM repro.datasets WHERE dataset_id = ?
+        """,
+        [provenance["dataset_id"]],
+    ).fetchone()
+    if found is None:
+        raise ReproductionError(f"dataset {provenance['dataset_id']} is not registered")
+    profile, claim, selection = found
+    if profile != provenance["profile"] or claim != provenance["claim_label"]:
+        raise ReproductionError("provenance profile or claim_label does not match the dataset")
+    if bool(selection) != bool(provenance["selection_uses_test"]):
+        raise ReproductionError("provenance selection_uses_test does not match the dataset")
+
+
+def _write_run(connection, row: dict[str, Any], stored_state: dict[str, Any]) -> str:
+    import json
+
+    current = connection.execute(
+        f"""
+        SELECT {", ".join(_RUN_COLUMNS)}, data_state_json::VARCHAR
+        FROM repro.runs WHERE run_id = ?
+        """,
+        [row["run_id"]],
+    ).fetchone()
+    if current is None:
+        _insert_rows(connection, TABLES["runs"], [row])
+        return "inserted"
+    stored = dict(zip(_RUN_COLUMNS, current[:-1], strict=True))
+    previous = json.loads(current[-1])
+    for column in _RUN_COLUMNS:
+        if column == "run_id":
+            continue
+        if stored[column] != row[column]:
+            raise ReproductionError(f"run {row['run_id']} is already registered with a different {column}")
+    if previous.get("claim_label") != stored_state.get("claim_label"):
+        raise ReproductionError(f"run {row['run_id']} is already registered with a different claim_label")
+    if _stable_state(previous) != _stable_state(stored_state):
+        raise ReproductionError(f"run {row['run_id']} is already registered with a different data plan")
+    if previous == stored_state:
+        return "unchanged"
+    connection.execute(
+        "UPDATE repro.runs SET data_state_json = ?::JSON WHERE run_id = ?",
+        [json.dumps(stored_state, ensure_ascii=False, sort_keys=True), row["run_id"]],
+    )
+    return "updated"
+
+
+def _stable_state(state: dict[str, Any]) -> dict[str, Any]:
+    return {
+        key: value
+        for key, value in state.items()
+        if key not in _MOVING_STATE_KEYS and key not in ("checkpoint_path", "checkpoint_sha256")
+    }
+
+
+def _text(value: Any, where: str) -> str:
+    if not isinstance(value, str) or not value:
+        raise ReproductionError(f"{where} is required")
+    return value
+
+
+def _sha(value: Any, where: str) -> str:
+    if not isinstance(value, str) or len(value) != 64 or any(char not in "0123456789abcdef" for char in value):
+        raise ReproductionError(f"{where} must be 64 lowercase hex characters")
+    return value
+
+
 def _connect(path: Path, *, read_only: bool):
     import duckdb
 
