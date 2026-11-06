@@ -31,27 +31,39 @@ from src.reproduction.prepare.lists import holdout_split, speaker_of
 
 SHARED_PROTOCOL_NAME = "mp_senet.fixed_pair"
 DATASET_FILES = (
-    "mp_senet.vb28.official.yaml",
-    "mp_senet.vb28.safe.yaml",
-    "mossformergan.vb28.official.yaml",
-    "mossformergan.vb28.safe.yaml",
+    "mp_senet.vb28.ondemand.official.yaml",
+    "mp_senet.vb28.ondemand.safe.yaml",
+    "mossformergan.vb28.ondemand.official.yaml",
+    "mossformergan.vb28.ondemand.safe.yaml",
 )
-PROTOCOL_FILES = (
+PARENT_PROTOCOL_FILES = (
     "mp_senet.fixed_pair.yaml",
     "mossformergan_se_16k.fixed_pair.yaml",
+)
+PROTOCOL_FILES = PARENT_PROTOCOL_FILES + (
+    "mp_senet.fixed_pair.ondemand.yaml",
+    "mossformergan_se_16k.fixed_pair.ondemand.yaml",
 )
 
 
 def load_protocols(config_root: Path) -> list[dict[str, Any]]:
-    return [load_protocol(config_root / "protocols" / name) for name in PROTOCOL_FILES]
+    parents = [load_protocol(config_root / "protocols" / name) for name in PARENT_PROTOCOL_FILES]
+    by_name = {row["name"]: row for row in parents}
+    children = []
+    for name in PROTOCOL_FILES[len(PARENT_PROTOCOL_FILES):]:
+        path = config_root / "protocols" / name
+        parent_name = _yaml(path).get("parent_name")
+        parent_id = None if not parent_name else by_name[parent_name]["protocol_id"]
+        children.append(load_protocol(path, parent_id=parent_id))
+    return parents + children
 
 
-def load_protocol(path: Path) -> dict[str, Any]:
+def load_protocol(path: Path, *, parent_id: str | None = None) -> dict[str, Any]:
     document = _yaml(path)
     rule = validate_rule(document["algorithm"], document["rule"])
     official = validate_official_ref(document["official_ref"])
     deviations = validate_deviations(document.get("deviations") or [])
-    parent = document.get("parent_protocol_id")
+    parent = parent_id if parent_id is not None else document.get("parent_protocol_id")
     protocol_id = protocol_id_for(
         algorithm=document["algorithm"],
         algorithm_version=int(document["algorithm_version"]),
@@ -163,15 +175,17 @@ def build_voicebank_graph(
                 {row["case_id"]: row for row in cases.values()},
             )
         )
-    corpus_assets, derived_assets = _assets(utterances, cases)
+    corpus_assets = _assets(utterances, cases)
     catalog, catalog_rows = _catalog(corpus_assets, source_kind=catalog_source_kind, source_db_sha256=source_db_sha256)
     for asset in corpus_assets:
         asset["catalog_id"] = catalog["catalog_id"]
+    from src.reproduction.prepare.resample import derivation_row
+
     graph = Graph(
         catalogs=[catalog],
         catalog_rows={catalog["catalog_id"]: catalog_rows},
-        derivations=[utterances[next(iter(cases))]["derivation"]],
-        assets=corpus_assets + derived_assets,
+        derivations=[derivation_row()],
+        assets=corpus_assets,
         protocols=list(protocols),
         cases=list(cases.values()),
         case_sets=case_sets,
@@ -431,10 +445,16 @@ def _dataset(spec, protocol_id, bindings, case_sets, cases) -> dict[str, Any]:
 
 
 def _case(utterance: dict[str, Any], protocol_id: str) -> dict[str, Any]:
-    clean = utterance["clean"]["derived"]
-    noisy = utterance["noisy"]["derived"]
-    if clean["frames"] != noisy["frames"] or clean["sample_rate"] != noisy["sample_rate"]:
-        raise ReproductionError(f"{utterance['utterance_id']} clean and noisy derivatives differ in shape")
+    from src.reproduction.prepare.resample import TARGET_RATE, soxr_hq_frame_count
+
+    clean = utterance["clean"]["corpus"]
+    noisy = utterance["noisy"]["corpus"]
+    clean_frames = soxr_hq_frame_count(int(clean["frames"]), int(clean["sample_rate"]))
+    noisy_frames = soxr_hq_frame_count(int(noisy["frames"]), int(noisy["sample_rate"]))
+    if clean_frames != noisy_frames:
+        raise ReproductionError(
+            f"{utterance['utterance_id']} clean and noisy resample to {clean_frames} and {noisy_frames}"
+        )
     document = canonical_recipe(
         {
             "recipe_version": 1,
@@ -443,7 +463,7 @@ def _case(utterance: dict[str, Any], protocol_id: str) -> dict[str, Any]:
                 "noisy": {"path": "../" + noisy["asset_id"], "sha256": noisy["sha256"]},
             },
             "operations": [],
-            "output": {"sample_rate": 16000, "reference": "dry_clean"},
+            "output": {"sample_rate": TARGET_RATE, "reference": "dry_clean"},
         }
     )
     row = {
@@ -456,8 +476,8 @@ def _case(utterance: dict[str, Any], protocol_id: str) -> dict[str, Any]:
         "noisy_asset_id": noisy["asset_id"],
         "noise_asset_id": None,
         "teacher_kind": "dry_clean",
-        "sample_rate": 16000,
-        "frames": int(noisy["frames"]),
+        "sample_rate": TARGET_RATE,
+        "frames": clean_frames,
         "speaker_id": utterance["speaker_id"],
         "utterance_key": utterance["utterance_id"],
         "transcript": utterance.get("transcript"),
@@ -470,7 +490,9 @@ def _case(utterance: dict[str, Any], protocol_id: str) -> dict[str, Any]:
 
 
 def _case_protocol_id(protocols_by_name: dict[str, dict[str, Any]]) -> str:
-    chosen = protocols_by_name.get(SHARED_PROTOCOL_NAME)
+    chosen = protocols_by_name.get(SHARED_PROTOCOL_NAME + ".ondemand")
+    if chosen is None:
+        chosen = protocols_by_name.get(SHARED_PROTOCOL_NAME)
     if chosen is None:
         if len(protocols_by_name) != 1:
             raise ReproductionError("shared VoiceBank cases need the mp_senet.fixed_pair protocol")
@@ -478,23 +500,18 @@ def _case_protocol_id(protocols_by_name: dict[str, dict[str, Any]]) -> str:
     return chosen["protocol_id"]
 
 
-def _assets(utterances: dict[str, dict[str, Any]], cases: dict[str, dict[str, Any]]) -> tuple[list[dict], list[dict]]:
+def _assets(utterances: dict[str, dict[str, Any]], cases: dict[str, dict[str, Any]]) -> list[dict]:
     corpus = []
-    derived = []
     seen: set[str] = set()
     for utterance_id in cases:
         utterance = utterances[utterance_id]
         for side in ("clean", "noisy"):
-            for kind in ("corpus", "derived"):
-                asset = utterance[side][kind]
-                if asset["asset_id"] in seen:
-                    raise ReproductionError(f"duplicate asset {asset['asset_id']}")
-                seen.add(asset["asset_id"])
-                if kind == "corpus":
-                    corpus.append(asset)
-                else:
-                    derived.append(asset)
-    return corpus, derived
+            asset = utterance[side]["corpus"]
+            if asset["asset_id"] in seen:
+                raise ReproductionError(f"duplicate asset {asset['asset_id']}")
+            seen.add(asset["asset_id"])
+            corpus.append(asset)
+    return corpus
 
 
 def _catalog(assets: list[dict[str, Any]], *, source_kind: str, source_db_sha256: str | None) -> tuple[dict, list[dict]]:

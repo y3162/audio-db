@@ -1,6 +1,6 @@
 # 再現用 DB・Data Pipeline の実装計画
 
-状態: **P1〜P5 は実装済み。** P1 は合成データの単体テスト。P2 は VoiceBank-DEMAND の実ファイルで、MP-SENet と MossFormerGAN の 4 Dataset とスナップショットまで完了している。P3 は固定ペアの Pipeline、Legacy アダプタ、Trainer 接続まで完了している。P4 は checkpoint の `data_provenance.json`、`repro.runs` への事後登録、評価結果の `independent` まで完了している。P5 は ESPnet chunk iterator の複数 rank と virtual rank で、合成データと短い DDP スモークまで完了している。検証は [P3_VERIFICATION](P3_VERIFICATION.md)、[P4_VERIFICATION](P4_VERIFICATION.md)、[P5_VERIFICATION](P5_VERIFICATION.md)。**P6 はオンデマンドの小規模 Dataset まで実装した。全量 WAV の事前生成は止め、公式規模の素材登録は上限の無い走査として拒否する。P7〜P10 は未着手。** 検証は [P6_VERIFICATION](P6_VERIFICATION.md)。P2 の 16 kHz 派生素材を学習時リサンプルへ移す場合は、P2・P3 の再検証が要る。オンライン混合の実装は P8・P9 のまま。 フェーズ 6 以降は、この計画の受け入れ条件をそのまま使う。
+状態: **P1〜P5 は実装済み。** P1 は合成データの単体テスト。P2 は VoiceBank-DEMAND の実ファイルで、MP-SENet と MossFormerGAN の 4 Dataset とスナップショットまで完了している。P3 は固定ペアの Pipeline、Legacy アダプタ、Trainer 接続まで完了している。P4 は checkpoint の `data_provenance.json`、`repro.runs` への事後登録、評価結果の `independent` まで完了している。P5 は ESPnet chunk iterator の複数 rank と virtual rank で、合成データと短い DDP スモークまで完了している。検証は [P3_VERIFICATION](P3_VERIFICATION.md)、[P4_VERIFICATION](P4_VERIFICATION.md)、[P5_VERIFICATION](P5_VERIFICATION.md)。**P6 はオンデマンドで完了した。** VoiceBank は 48 kHz から学習時に 16 kHz PCM_16 を作る 4 Dataset を登録した。MS-SNSD の公式規模は `tf_gridnet.ms_snsd.espnet_recipe@1`（train 7,345 / valid 1,835 / test 305）で、混合 WAV は作っていない。全量 WAV の事前生成は撤去した。P7〜P10 は未着手。検証は [P6_VERIFICATION](P6_VERIFICATION.md)。オンライン混合の実装は P8・P9 のまま。 フェーズ 6 以降は、この計画の受け入れ条件をそのまま使う。
 
 設計の正本: [REPRODUCTION_DB_DESIGN](../../db/REPRODUCTION_DB_DESIGN.md)（DB）、[DATA_PIPELINE_DESIGN](DATA_PIPELINE_DESIGN.md)（Pipeline）。再現対象の正本: [TARGETS](TARGETS.md)。採用決定: [DECISIONS](../../../.agents/DECISIONS.md) の D-01〜D-09。
 
@@ -171,7 +171,7 @@ P2 の実施結果（2026-11-06）:
 | 依存 | P1、P3、P5（学習入口の検証）|
 | 更新する正本 | `.agents/DATA.md`、`DECISIONS.md`、`docs/training/`（TF-GridNet の記録）|
 
-2026-11-06 の実施: 全量 WAV は作らない。受け入れの shard 再開は `write_build` の単体テストに残し、登録経路は `delivery: on_demand` である。登録したのは `tf_gridnet.ms_snsd.ondemand@1`（`official_recipe_scaled_down`）。公式規模の `espnet_public_se_recipe_reproduction` は、元素材ハッシュが上限の無い走査になるため未登録。P7 には進まない。
+2026-11-06 の実施: 全量 WAV は作らない。`write_build` は削除した。登録経路は `delivery: on_demand` である。`tf_gridnet.ms_snsd.ondemand@1`（`official_recipe_scaled_down`）に加え、公式規模の `tf_gridnet.ms_snsd.espnet_recipe@1`（train 7,345 / valid 1,835 / test 305）を登録した。`source_scan: full` のときだけ上限なしの走査を許す。P7 には進まない。
 
 ### 3.8 フェーズ 7: TF-Locoformer（段階生成）
 

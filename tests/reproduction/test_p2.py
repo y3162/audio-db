@@ -25,7 +25,8 @@ from src.reproduction.prepare.assemble import (
     load_dataset_specs,
     load_protocols,
 )
-from src.reproduction.prepare.derive import derive_all, derivation_row
+from src.reproduction.prepare.derive import derive_all
+from src.reproduction.prepare.resample import derivation_row, resample_pcm16
 from src.reproduction.prepare.lists import (
     holdout_split,
     load_manifest,
@@ -68,9 +69,13 @@ class ListTests(unittest.TestCase):
         protocols = {row["name"]: row for row in load_protocols(CONFIG)}
         self.assertEqual(protocols["mp_senet.fixed_pair"]["rule_json"]["normalize"], "noisy_rms_unit_v1")
         self.assertEqual(protocols["mossformergan_se_16k.fixed_pair"]["rule_json"]["normalize"], "independent_audio_norm_v1")
+        ondemand = protocols["mp_senet.fixed_pair.ondemand"]["rule_json"]
+        self.assertEqual(ondemand["delivery"], "on_demand")
+        self.assertEqual(ondemand["resample"]["length"], "source_frames_plus_one_div_3")
+        self.assertNotIn("resample", protocols["mp_senet.fixed_pair"]["rule_json"])
         specs = {row["name"]: row for row in load_dataset_specs(CONFIG)}
-        self.assertEqual(specs["mp_senet.vb28.official"]["expect"], {"train": 11572, "valid": 824, "test": 824})
-        self.assertEqual(specs["mossformergan.vb28.safe"]["profile"], "leakage_safe")
+        self.assertEqual(specs["mp_senet.vb28.ondemand.official"]["expect"], {"train": 11572, "valid": 824, "test": 824})
+        self.assertEqual(specs["mossformergan.vb28.ondemand.safe"]["profile"], "leakage_safe")
 
     def test_parser_rejects_duplicates_and_pair_mismatches(self) -> None:
         with self.assertRaises(ReproductionError):
@@ -84,6 +89,16 @@ class ListTests(unittest.TestCase):
         self.assertEqual(ids, ["p226_010"])
         self.assertEqual(parse_mp_senet("p226_010|ignored/path.wav\n", where="training.txt"), ["p226_010"])
 
+    def test_training_launch_requires_on_demand(self) -> None:
+        from src.training.errors import TrainingError
+        from src.training.se.run import require_on_demand
+
+        with self.assertRaises(TrainingError):
+            require_on_demand({"name": "mp_senet.vb28.official", "version": 1, "rule_json": {}})
+        with self.assertRaises(TrainingError):
+            require_on_demand({"name": "tf_gridnet.ms_snsd.smoke", "version": 1, "rule_json": {"delivery": "stored"}})
+        require_on_demand({"name": "mp_senet.vb28.ondemand.official", "version": 1, "rule_json": {"delivery": "on_demand"}})
+
     def test_holdout_preserves_order_without_a_seed(self) -> None:
         train, valid = holdout_split(
             ["p226_002", "p287_001", "p226_001", "p286_009"],
@@ -96,6 +111,76 @@ class ListTests(unittest.TestCase):
         self.assertEqual(train, ["p226_002", "p226_001"])
         self.assertEqual(valid, ["p287_001", "p286_009"])
         self.assertEqual((train, valid), (again, valid_again))
+
+
+class StoredDerivativeTests(unittest.TestCase):
+    def test_ondemand_pcm_matches_stored_16k_for_each_remainder(self) -> None:
+        database = ROOT / "data" / "db" / "reproduction.duckdb"
+        if not database.is_file():
+            self.skipTest("reproduction database is absent")
+        import duckdb
+        import numpy as np
+        import soundfile as sf
+
+        connection = duckdb.connect(str(database), read_only=True)
+        try:
+            rows = connection.execute(
+                """
+                WITH pairs AS (
+                    SELECT c.rel_path AS source_rel, c.frames AS source_frames,
+                           d.rel_path AS derived_rel, d.frames AS derived_frames,
+                           d.sample_rate AS derived_rate, c.frames % 3 AS remainder
+                    FROM repro.assets c
+                    JOIN repro.assets d ON d.derived_from = c.asset_id
+                    WHERE c.storage_root = 'corpora'
+                      AND c.corpus = 'VoiceBank-DEMAND'
+                      AND d.storage_root = 'derived'
+                ),
+                picked AS (
+                    SELECT * FROM pairs
+                    QUALIFY row_number() OVER (PARTITION BY remainder ORDER BY source_frames) = 1
+                    UNION ALL
+                    SELECT * FROM pairs
+                    QUALIFY row_number() OVER (ORDER BY source_frames) = 1
+                    UNION ALL
+                    SELECT * FROM pairs
+                    QUALIFY row_number() OVER (ORDER BY source_frames DESC) = 1
+                )
+                SELECT * FROM picked
+                """
+            ).fetchall()
+        finally:
+            connection.close()
+        if not rows:
+            self.skipTest("no stored VoiceBank derivatives are registered")
+        seen = set()
+        for source_rel, source_frames, derived_rel, derived_frames, derived_rate, remainder in rows:
+            key = (source_rel, derived_rel)
+            if key in seen:
+                continue
+            seen.add(key)
+            source = ROOT / "data" / "corpora" / source_rel
+            derived = ROOT / "data" / "derived" / derived_rel
+            if not source.is_file() or not derived.is_file():
+                self.skipTest(f"audio missing for {source_rel}")
+            fresh = resample_pcm16(*_read_mono(source))
+            stored, stored_rate = sf.read(derived, dtype="float32", always_2d=False)
+            info = sf.info(derived)
+            self.assertEqual(info.subtype, "PCM_16")
+            self.assertEqual(int(stored_rate), 16000)
+            self.assertEqual(int(derived_rate), 16000)
+            self.assertEqual(int(derived_frames), (int(source_frames) + 1) // 3)
+            self.assertEqual(fresh.shape[0], int(derived_frames))
+            self.assertEqual(int(remainder), int(source_frames) % 3)
+            self.assertTrue(np.array_equal(fresh, np.asarray(stored, dtype=np.float32)))
+
+
+def _read_mono(path: Path):
+    import numpy as np
+    import soundfile as sf
+
+    audio, rate = sf.read(path, dtype="float32", always_2d=False)
+    return np.asarray(audio, dtype=np.float32), int(rate)
 
 
 class PrepareTests(unittest.TestCase):
@@ -141,39 +226,39 @@ class PrepareTests(unittest.TestCase):
     def test_graph_distinguishes_official_and_safe(self) -> None:
         graph = _synthetic_graph()
         by_name = {row["name"]: row for row in graph.datasets}
-        self.assertTrue(by_name["mp_senet.vb28.official"]["selection_uses_test"])
-        self.assertFalse(by_name["mp_senet.vb28.safe"]["selection_uses_test"])
-        self.assertFalse(by_name["mossformergan.vb28.safe"]["selection_uses_test"])
-        mp_protocol = next(row["protocol_id"] for row in graph.protocols if row["name"] == "mp_senet.fixed_pair")
+        self.assertTrue(by_name["mp_senet.vb28.ondemand.official"]["selection_uses_test"])
+        self.assertFalse(by_name["mp_senet.vb28.ondemand.safe"]["selection_uses_test"])
+        self.assertFalse(by_name["mossformergan.vb28.ondemand.safe"]["selection_uses_test"])
+        mp_protocol = next(row["protocol_id"] for row in graph.protocols if row["name"] == "mp_senet.fixed_pair.ondemand")
         moss_protocol = next(
-            row["protocol_id"] for row in graph.protocols if row["name"] == "mossformergan_se_16k.fixed_pair"
+            row["protocol_id"] for row in graph.protocols if row["name"] == "mossformergan_se_16k.fixed_pair.ondemand"
         )
         self.assertNotEqual(mp_protocol, moss_protocol)
         self.assertTrue(all(row["protocol_id"] == mp_protocol for row in graph.cases))
-        self.assertEqual(by_name["mossformergan.vb28.official"]["protocol_id"], moss_protocol)
+        self.assertEqual(by_name["mossformergan.vb28.ondemand.official"]["protocol_id"], moss_protocol)
+        self.assertTrue(all(row["storage_root"] == "corpora" for row in graph.assets))
         counts = _member_counts(graph)
-        self.assertEqual(counts["mp_senet.vb28.train.official"], 3)
-        self.assertEqual(counts["mp_senet.vb28.valid.safe"], 2)
-        self.assertEqual(counts["mp_senet.vb28.train.safe"], 1)
+        self.assertEqual(counts["mp_senet.vb28.ondemand.train.official"], 3)
+        self.assertEqual(counts["mp_senet.vb28.ondemand.valid.safe"], 2)
+        self.assertEqual(counts["mp_senet.vb28.ondemand.train.safe"], 1)
         self.assertEqual(len({row["case_id"] for row in graph.cases}), 4)
         with self.assertRaises(ReproductionError):
             _synthetic_graph(safe_uses_test=True)
 
-    def test_derive_is_deterministic_and_refuses_overwrite(self) -> None:
+    def test_resample_is_deterministic_and_derive_writes_nothing(self) -> None:
+        import soundfile as sf
+
         source = self.root / "source.wav"
-        dest = self.root / "derived" / "out.wav"
-        _pcm(source, frames=4800, rate=48000, seed=3)
-        first = derive_all([{"source": source, "dest": dest}], workers=1)[0]
-        stamp = dest.with_name(dest.name + ".stamp.json").read_text(encoding="utf-8")
-        modified = dest.stat().st_mtime_ns
-        second = derive_all([{"source": source, "dest": dest}], workers=1)[0]
-        self.assertEqual(first["output_sha256"], second["output_sha256"])
-        self.assertEqual(dest.stat().st_mtime_ns, modified)
-        self.assertEqual(dest.with_name(dest.name + ".stamp.json").read_text(encoding="utf-8"), stamp)
-        dest.write_bytes(b"not a wav")
+        _pcm(source, frames=4803, rate=48000, seed=3)
+        audio, rate = sf.read(source, dtype="float32", always_2d=False)
+        first = resample_pcm16(audio, rate)
+        second = resample_pcm16(audio, rate)
+        self.assertEqual(first.shape, second.shape)
+        self.assertTrue((first == second).all())
+        self.assertEqual(first.shape[0], (4803 + 1) // 3)
         with self.assertRaises(ReproductionError):
-            derive_all([{"source": source, "dest": dest}], workers=1)
-        self.assertEqual(dest.read_bytes(), b"not a wav")
+            derive_all([{"source": source, "dest": self.root / "derived" / "out.wav"}], workers=1)
+        self.assertEqual(list(self.root.rglob("*.wav")), [source])
 
     def test_tiny_corpus_round_trip(self) -> None:
         paths = _tiny_paths(self.root)
@@ -185,15 +270,15 @@ class PrepareTests(unittest.TestCase):
         self.assertEqual(
             names,
             [
-                "mossformergan.vb28.official",
-                "mossformergan.vb28.safe",
-                "mp_senet.vb28.official",
-                "mp_senet.vb28.safe",
+                "mossformergan.vb28.ondemand.official",
+                "mossformergan.vb28.ondemand.safe",
+                "mp_senet.vb28.ondemand.official",
+                "mp_senet.vb28.ondemand.safe",
             ],
         )
         by_name = {row["name"]: row for row in stored.datasets}
-        official = by_name["mp_senet.vb28.official"]
-        safe = by_name["mp_senet.vb28.safe"]
+        official = by_name["mp_senet.vb28.ondemand.official"]
+        safe = by_name["mp_senet.vb28.ondemand.safe"]
         self.assertTrue(official["selection_uses_test"])
         self.assertFalse(safe["selection_uses_test"])
         audits = {
@@ -210,12 +295,12 @@ class PrepareTests(unittest.TestCase):
         official_loaded = load_snapshot(paths.snapshots / official["dataset_id"])
         self.assertFalse(official_loaded.manifest["provenance"]["allow_unknown_leak_check"])
         self.assertEqual(official_loaded.dataset["algorithm"], "fixed_pair.mp_senet")
-        moss = load_snapshot(paths.snapshots / by_name["mossformergan.vb28.official"]["dataset_id"])
+        moss = load_snapshot(paths.snapshots / by_name["mossformergan.vb28.ondemand.official"]["dataset_id"])
         self.assertEqual(moss.dataset["algorithm"], "fixed_pair.mossformergan_se_16k")
         self.assertTrue(all(row["protocol_id"] == official["protocol_id"] for row in moss.cases))
         again = export_snapshot(
             paths.database,
-            "mp_senet.vb28.safe@1",
+            "mp_senet.vb28.ondemand.safe@1",
             paths.snapshots,
             allow_unknown_leak_check=True,
             corpora=paths.corpora,
@@ -225,7 +310,7 @@ class PrepareTests(unittest.TestCase):
         with self.assertRaises(ReproductionError):
             export_snapshot(
                 paths.database,
-                "mp_senet.vb28.safe@1",
+                "mp_senet.vb28.ondemand.safe@1",
                 self.root / "other-snapshots",
                 allow_unknown_leak_check=False,
                 corpora=paths.corpora,
@@ -246,11 +331,11 @@ class PrepareTests(unittest.TestCase):
         self.assertTrue(reasons)
         self.assertTrue(all(row["status"] == "UNKNOWN" for row in reasons))
         self.assertTrue(any("eval schema is absent" in json.dumps(row["report_json"]) for row in reasons))
-        wavs = list(paths.derived.rglob("*.wav"))
-        self.assertEqual(len(wavs), 8)
-        before = {path: path.stat().st_mtime_ns for path in wavs}
-        execute("derive", paths)
-        self.assertEqual(before, {path: path.stat().st_mtime_ns for path in wavs})
+        self.assertEqual(list(paths.derived.rglob("*.wav")), [])
+        with self.assertRaises(ReproductionError):
+            execute("derive", paths)
+        execute("register", paths)
+        self.assertEqual(list(paths.derived.rglob("*.wav")), [])
 
 
 def _synthetic_graph(*, safe_uses_test: bool = False):
@@ -394,7 +479,12 @@ def _write_tiny_config(repo: Path) -> None:
     config.mkdir(parents=True)
     shutil.copy(CONFIG / "voicebank_vb28.yaml", config / "voicebank_vb28.yaml")
     (config / "protocols").mkdir(parents=True)
-    for name in ("mp_senet.fixed_pair.yaml", "mossformergan_se_16k.fixed_pair.yaml"):
+    for name in (
+        "mp_senet.fixed_pair.yaml",
+        "mossformergan_se_16k.fixed_pair.yaml",
+        "mp_senet.fixed_pair.ondemand.yaml",
+        "mossformergan_se_16k.fixed_pair.ondemand.yaml",
+    ):
         shutil.copy(CONFIG / "protocols" / name, config / "protocols" / name)
     train = ["p226_001", "p286_001", "p287_001"]
     test = ["p232_001"]
@@ -444,10 +534,10 @@ def _write_tiny_config(repo: Path) -> None:
     (config / "lists" / "manifest.yaml").write_text(yaml.safe_dump(manifest), encoding="utf-8")
     (config / "datasets").mkdir(parents=True)
     for name, profile, claim, train_role, valid_role, note in (
-        ("mp_senet.vb28.official", "official_faithful", "official_reproduction", "official_train", "official_test", "uses test"),
-        ("mp_senet.vb28.safe", "leakage_safe", "leakage_safe_comparison", "safe_train", "safe_valid", "holds out speakers"),
+        ("mp_senet.vb28.ondemand.official", "official_faithful", "official_reproduction", "official_train", "official_test", "uses test"),
+        ("mp_senet.vb28.ondemand.safe", "leakage_safe", "leakage_safe_comparison", "safe_train", "safe_valid", "holds out speakers"),
         (
-            "mossformergan.vb28.official",
+            "mossformergan.vb28.ondemand.official",
             "official_faithful",
             "official_reproduction",
             "official_train",
@@ -455,7 +545,7 @@ def _write_tiny_config(repo: Path) -> None:
             "uses test",
         ),
         (
-            "mossformergan.vb28.safe",
+            "mossformergan.vb28.ondemand.safe",
             "leakage_safe",
             "leakage_safe_comparison",
             "safe_train",
@@ -465,7 +555,9 @@ def _write_tiny_config(repo: Path) -> None:
     ):
         expect = {"train": 3, "valid": 1, "test": 1} if profile == "official_faithful" else {"train": 1, "valid": 2, "test": 1}
         model = "mp_senet" if name.startswith("mp_senet") else "mossformergan"
-        protocol = "mp_senet.fixed_pair" if model == "mp_senet" else "mossformergan_se_16k.fixed_pair"
+        protocol = (
+            "mp_senet.fixed_pair.ondemand" if model == "mp_senet" else "mossformergan_se_16k.fixed_pair.ondemand"
+        )
         document = {
             "name": name,
             "version": 1,

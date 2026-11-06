@@ -54,8 +54,32 @@ def _corpus(root: Path, *, clean: int, noise: int, clean_frames: int, noise_fram
 
 class OnDemandTests(unittest.TestCase):
     def test_cli_refuses_stored_wavs_and_unbounded_scans(self):
-        with self.assertRaises(ReproductionError):
-            run_config(ROOT / "configs/data/builds/ms_snsd_tfgridnet.yaml", "plan")
+        with tempfile.TemporaryDirectory() as tmp:
+            unbounded = Path(tmp) / "unbounded.yaml"
+            unbounded.write_text(
+                textwrap.dedent(
+                    """
+                    name: tf_gridnet.ms_snsd.unbounded
+                    seed: 17
+                    shard_size: 5
+                    claim_label: official_recipe_scaled_down
+                    delivery: on_demand
+                    train:
+                      total_hours: 30
+                      max_clips: null
+                      clean_limit: null
+                      noise_limit: null
+                    test:
+                      total_hours: 1
+                      max_clips: null
+                      clean_limit: null
+                      noise_limit: null
+                    """
+                ),
+                encoding="utf-8",
+            )
+            with self.assertRaises(ReproductionError):
+                run_config(unbounded, "plan")
         with self.assertRaises(ReproductionError):
             run_config(ROOT / "configs/data/builds/ms_snsd_tfgridnet_smoke.yaml", "register")
         with self.assertRaises(ReproductionError):

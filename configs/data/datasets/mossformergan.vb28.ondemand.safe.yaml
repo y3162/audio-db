@@ -1,0 +1,29 @@
+name: mossformergan.vb28.ondemand.safe
+version: 1
+protocol: mossformergan_se_16k.fixed_pair.ondemand
+profile: leakage_safe
+material_origin: derived_from_official
+claim_label: leakage_safe_comparison
+list_model: mossformergan
+selection_note: "公式 training 順の p286 と p287 を validation にし、test は選択に使わない。音声は 48 kHz から学習時に 16 kHz PCM_16 へ変換する。"
+bindings:
+  train: safe_train
+  valid: safe_valid
+  test: official_test
+expect:
+  train: 10700
+  valid: 872
+  test: 824
+deviations:
+  - id: vb28-16k-converter-unknown
+    class: official_effective
+    text: "公式 scp の 16 kHz ファイルの変換器は不明である。この Dataset は 48 kHz を学習時に soxr HQ と PCM_16 で 16 kHz にする。事前に書いた 16 kHz WAV は要らない。"
+    ref: "UN-3"
+  - id: vb28-shared-recorded-pair
+    class: official_effective
+    text: "同一の 48 kHz ペアはレシピの case_id を MP-SENet と MossFormerGAN で共有する。cases.protocol_id は mp_senet.fixed_pair.ondemand を指す。学習時の正規化、窓、順序は Dataset の protocol に従う。"
+    ref: "REPRODUCTION_DB_DESIGN"
+  - id: vb28-speaker-holdout
+    class: research_improvement
+    text: "公式 training リストの順を保ったまま p286 と p287 を validation にする。乱数 seed は使わない。test は選択に使わない。"
+    ref: "D-01"

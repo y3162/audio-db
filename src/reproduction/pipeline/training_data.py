@@ -114,6 +114,7 @@ class ReproductionTrainingData:
         self.algorithm = str(dataset["algorithm"])
         self.algorithm_version = int(dataset["algorithm_version"])
         self.verify_on_read = bool(settings.get("verify_on_read", False))
+        self.resample = rule.get("resample")
         self.train_ids = store.case_ids("train.cases")
         self.valid_ids = store.case_ids("valid.cases")
         self.test_ids = store.case_ids("test.cases") if "test.cases" in store.bindings else []
@@ -144,6 +145,8 @@ class ReproductionTrainingData:
             "sample_rate": self.sample_rate,
             "window": self.window,
             "normalize": self.normalize,
+            "delivery": (self.rule.get("delivery") if self.resample else None),
+            "resample": self.resample,
             "order_policy": self.policy,
             "world_size": self.world_size,
             "global_batch": self.global_batch,
@@ -284,6 +287,7 @@ class ReproductionTrainingData:
             normalize=self.normalize,
             sample_rate=self.sample_rate,
             verify_on_read=self.verify_on_read,
+            resample=self.resample,
         )
 
     def _reject_test_selection(self) -> None:

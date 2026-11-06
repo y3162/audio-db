@@ -1,6 +1,6 @@
 # MossFormerGAN 公式再現プロトコル監査
 
-この文書の監査本文は調査記録である。P2 で、公開学習コードの VoiceBank 固定ペアを `reproduction.duckdb` の `mossformergan.vb28.official@1` と `mossformergan.vb28.safe@1` として登録した。配布 checkpoint の学習データ再現ではない。16 kHz 化は soxr HQ で、公式 scp の事前変換器とは別である。学習 Pipeline への接続はまだ無い。
+この文書の監査本文は調査記録である。現行の学習入口は `mossformergan.vb28.ondemand.official@1` と `mossformergan.vb28.ondemand.safe@1` で、48 kHz 原音を学習時に soxr HQ の 16 kHz PCM_16 にする。履歴の `mossformergan.vb28.official@1` と `mossformergan.vb28.safe@1` は 16 kHz 派生素材を指し、新しい学習の `execute` は拒否する。配布 checkpoint の学習データ再現ではない。下の表が書く `torchaudio` 変換は、このオンデマンド入口では使わない。公式 scp の事前変換器は不明なままである。
 
 表記:
 

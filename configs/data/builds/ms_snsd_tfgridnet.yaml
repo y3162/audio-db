@@ -1,13 +1,15 @@
-# Official-scale MS-SNSD plan for the ESPnet public SE recipe.
+# Official-scale MS-SNSD conditions for the ESPnet public SE recipe.
 # Not a TF-GridNet paper experiment. Commit 0d136c5456d403cb2c0a4c13e76e8136e32e9b7a.
-# The CLI refuses this file: clean_limit and noise_limit are unbounded, and
-# stored wav generation is disabled. Hashing the full source lists is a long
-# IO job and needs a separate approval. Do not remove the limits to start it.
+# source_scan full is the explicit opt-in for null limits. Registration hashes
+# every selected source and mixes only audit_realizations in memory.
 
 name: tf_gridnet.ms_snsd.espnet_recipe
 seed: 17
 shard_size: 1000
 claim_label: espnet_public_se_recipe_reproduction
+delivery: on_demand
+source_scan: full
+audit_realizations: 1000
 train:
   total_hours: 30
   max_clips: null

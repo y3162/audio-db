@@ -2,12 +2,9 @@
 
 from __future__ import annotations
 
-import json
-import shutil
 import tempfile
 import unittest
 from pathlib import Path
-from unittest import mock
 
 import numpy as np
 import soundfile as sf
@@ -19,11 +16,8 @@ from src.reproduction.build.ms_snsd import (
     list_wavs,
     ordered_paths,
     plan_realizations,
-    read_frames,
     sort_like_kaldi,
     train_valid_counts,
-    verify_build,
-    write_build,
 )
 from src.reproduction.db.registry import initialize_database, register_staging
 from src.reproduction.db.snapshot import export_snapshot
@@ -32,7 +26,8 @@ from src.reproduction.errors import ReproductionError
 from src.reproduction.pipeline.chunking import plan_chunk_epoch
 from src.reproduction.pipeline.pregenerated import open_chunk_datasets
 from src.reproduction.prepare.ms_snsd import (
-    assemble_smoke_graph,
+    assemble_ondemand_graph,
+    audit_conditions,
     collect_sources,
     material_set,
     write_shapes,
@@ -101,31 +96,32 @@ class PlanRuleTests(unittest.TestCase):
         self.assertEqual(len(first), 5)
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
-            with mock.patch("src.reproduction.build.ms_snsd.shutil.disk_usage") as usage:
-                usage.return_value = shutil.disk_usage(root)
-                usage.return_value = mock.Mock(free=0)
-                with self.assertRaises(ReproductionError):
-                    write_build(
-                        definition, first,
-                        audio_root=root / "generated", staging_root=root / "staging",
-                        clean_dir=root, noise_dir=root,
-                    )
+            before = list(root.rglob("*"))
+            with self.assertRaises(ReproductionError):
+                audit_conditions(definition, first, clean_dir=root / "clean", noise_dir=root / "noise")
+            self.assertEqual(list(root.rglob("*")), before)
 
 
 class PipelineTests(unittest.TestCase):
     def test_synthetic_build_registers_and_plans_chunks(self):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
-            clean = root / "clean"
-            noise = root / "noise"
-            for index in range(8):
+            clean = root / "clean_train"
+            noise = root / "noise_train"
+            test_clean_dir = root / "clean_test"
+            test_noise_dir = root / "noise_test"
+            for index in range(6):
                 _tone(clean / f"c{index}.wav", SAMPLE_RATE * 3, 100 + index)
-            for index in range(4):
+            for index in range(3):
                 _tone(noise / f"n{index}.wav", SAMPLE_RATE * 3, 200 + index)
+            for index in range(3):
+                _tone(test_clean_dir / f"t{index}.wav", SAMPLE_RATE * 3, 300 + index)
+            for index in range(2):
+                _tone(test_noise_dir / f"m{index}.wav", SAMPLE_RATE * 3, 400 + index)
             clean_names = ordered_paths(list_wavs(clean), seed=17, split="train")
             noise_names = ordered_paths(list_wavs(noise), seed=17, split="train")
-            test_clean = ordered_paths(list_wavs(clean), seed=17, split="test")
-            test_noise = ordered_paths(list_wavs(noise), seed=17, split="test")
+            test_clean = ordered_paths(list_wavs(test_clean_dir), seed=17, split="test")
+            test_noise = ordered_paths(list_wavs(test_noise_dir), seed=17, split="test")
             train_clean, train_clean_frames = collect_sources(
                 clean, clean_names, rel_prefix="MS-SNSD/clean_train", subset="clean_train",
             )
@@ -133,10 +129,10 @@ class PipelineTests(unittest.TestCase):
                 noise, noise_names, rel_prefix="MS-SNSD/noise_train", subset="noise_train",
             )
             test_clean_assets, test_clean_frames = collect_sources(
-                clean, test_clean, rel_prefix="MS-SNSD/clean_test", subset="clean_test",
+                test_clean_dir, test_clean, rel_prefix="MS-SNSD/clean_test", subset="clean_test",
             )
             test_noise_assets, test_noise_frames = collect_sources(
-                noise, test_noise, rel_prefix="MS-SNSD/noise_test", subset="noise_test",
+                test_noise_dir, test_noise, rel_prefix="MS-SNSD/noise_test", subset="noise_test",
             )
             train_clean_set = material_set(
                 train_clean, name="ms_snsd.smoke.clean_train", role="speech",
@@ -169,105 +165,59 @@ class PipelineTests(unittest.TestCase):
             test_documents = plan_realizations(test_definition, test_clean_frames, test_noise_frames)
             self.assertEqual(len(train_documents), 25)
             self.assertEqual(len(test_documents), 5)
-            audio = root / "generated"
-            workspace = root / "workspace"
-            train_written = write_build(
-                train_definition, train_documents,
-                audio_root=audio, staging_root=workspace,
-                clean_dir=clean, noise_dir=noise,
+            train_report = audit_conditions(
+                train_definition, train_documents, clean_dir=clean, noise_dir=noise,
             )
-            test_written = write_build(
-                test_definition, test_documents,
-                audio_root=audio, staging_root=workspace,
-                clean_dir=clean, noise_dir=noise,
+            test_report = audit_conditions(
+                test_definition, test_documents, clean_dir=test_clean_dir, noise_dir=test_noise_dir,
             )
-            other_audio = (audio / "ms_snsd_synth" / train_definition["build_id"][:16]).resolve()
-            self.assertTrue(other_audio.is_dir())
-            train_report = verify_build(
-                train_definition, train_documents,
-                audio_dir=train_written["audio_dir"], staging_dir=train_written["staging_dir"],
-                clean_dir=clean, noise_dir=noise,
-            )
-            broken = next((train_written["audio_dir"]).rglob("*.wav"))
-            original = broken.read_bytes()
-            broken.write_bytes(original[:-1] + bytes([original[-1] ^ 0x01]))
-            with self.assertRaises(ReproductionError):
-                verify_build(
-                    train_definition, train_documents,
-                    audio_dir=train_written["audio_dir"], staging_dir=train_written["staging_dir"],
-                    clean_dir=clean, noise_dir=noise,
-                )
-            self.assertTrue(broken.is_file())
-            broken.write_bytes(original)
-            train_report = verify_build(
-                train_definition, train_documents,
-                audio_dir=train_written["audio_dir"], staging_dir=train_written["staging_dir"],
-                clean_dir=clean, noise_dir=noise,
-            )
-            test_report = verify_build(
-                test_definition, test_documents,
-                audio_dir=test_written["audio_dir"], staging_dir=test_written["staging_dir"],
-                clean_dir=clean, noise_dir=noise,
-            )
-            graph = assemble_smoke_graph(
+            self.assertEqual(train_report["delivery"], "on_demand")
+            self.assertEqual(train_report["wav_files"], 0)
+            self.assertEqual(train_report["rendered"], len(train_documents))
+            graph_kwargs = dict(
                 train_definition=train_definition,
                 train_documents=train_documents,
-                train_manifests=_manifests(train_written["staging_dir"]),
-                train_verify=train_report,
+                train_report=train_report,
                 test_definition=test_definition,
                 test_documents=test_documents,
-                test_manifests=_manifests(test_written["staging_dir"]),
-                test_verify=test_report,
+                test_report=test_report,
                 source_assets=train_clean + train_noise + test_clean_assets + test_noise_assets,
                 train_clean=train_clean_set,
                 train_noise=train_noise_set,
                 test_clean=test_clean_set,
                 test_noise=test_noise_set,
-                dataset_name="tf_gridnet.ms_snsd.smoke",
+                dataset_name="tf_gridnet.ms_snsd.synthetic",
                 resource_db=None,
             )
+            graph = assemble_ondemand_graph(**graph_kwargs)
+            self.assertTrue(all(row["storage_root"] == "corpora" for row in graph.assets))
+            self.assertTrue(all(row["noisy_asset_id"] is None for row in graph.cases))
             refused = dict(train_report)
             refused["status"] = "FAIL"
             with self.assertRaises(ReproductionError):
-                assemble_smoke_graph(
-                    train_definition=train_definition,
-                    train_documents=train_documents,
-                    train_manifests=_manifests(train_written["staging_dir"]),
-                    train_verify=refused,
-                    test_definition=test_definition,
-                    test_documents=test_documents,
-                    test_manifests=_manifests(test_written["staging_dir"]),
-                    test_verify=test_report,
-                    source_assets=train_clean + train_noise + test_clean_assets + test_noise_assets,
-                    train_clean=train_clean_set,
-                    train_noise=train_noise_set,
-                    test_clean=test_clean_set,
-                    test_noise=test_noise_set,
-                    dataset_name="tf_gridnet.ms_snsd.smoke",
-                    resource_db=None,
-                )
+                assemble_ondemand_graph(**{**graph_kwargs, "train_report": refused})
             staging = root / "staging"
             write_graph(staging, graph)
             database = root / "reproduction.duckdb"
             initialize_database(database)
             register_staging(staging, database, resource_db=None)
             dataset_id = graph.datasets[0]["dataset_id"]
-            _link_sources(root / "corpora_mount", clean, noise)
+            _link_sources(root / "corpora_mount", clean, noise, test_clean_dir, test_noise_dir)
             first_hash = export_snapshot(
-                database, f"tf_gridnet.ms_snsd.smoke@1", root / "snapshots",
-                corpora=root / "corpora_mount", generated=audio, derived=root / "derived",
+                database, "tf_gridnet.ms_snsd.synthetic@1", root / "snapshots",
+                corpora=root / "corpora_mount", generated=root / "generated", derived=root / "derived",
             )
             second_hash = export_snapshot(
-                database, "tf_gridnet.ms_snsd.smoke@1", root / "snapshots",
-                corpora=root / "corpora_mount", generated=audio, derived=root / "derived",
+                database, "tf_gridnet.ms_snsd.synthetic@1", root / "snapshots",
+                corpora=root / "corpora_mount", generated=root / "generated", derived=root / "derived",
             )
             self.assertEqual(first_hash, second_hash)
             loaded = load_snapshot(root / "snapshots" / dataset_id)
             self.assertEqual(loaded.snapshot_hash, first_hash)
             train, valid = open_chunk_datasets(
-                dataset="tf_gridnet.ms_snsd.smoke@1",
+                dataset="tf_gridnet.ms_snsd.synthetic@1",
                 snapshot_root=root / "snapshots",
-                generated_root=audio,
+                generated_root=root / "generated",
                 corpora_root=root / "corpora_mount",
                 derived_root=root / "derived",
             )
@@ -276,15 +226,15 @@ class PipelineTests(unittest.TestCase):
             self.assertEqual(len(train.case_ids()), len(train.waveform_lengths()))
             self.assertTrue(all(length > 48000 for length in train.waveform_lengths()))
             shape_dir = root / "shapes" / "train"
-            noisy_paths = {}
-            for case in graph.case_sets[0]["items"]:
-                row = next(item for item in graph.cases if item["case_id"] == case["case_id"])
-                noisy_paths[row["utterance_key"]] = row["noisy_asset_id"]
             # case set 0 is train because assemble appends train, valid, test.
             train_cases = [
                 next(item for item in graph.cases if item["case_id"] == entry["case_id"])
                 for entry in graph.case_sets[0]["items"]
             ]
+            noisy_paths = {
+                row["utterance_key"]: f"ondemand:{row['case_id']}"
+                for row in train_cases
+            }
             self.assertEqual([row["case_id"] for row in train_cases], train.case_ids())
             write_shapes(
                 shape_dir,
@@ -321,8 +271,12 @@ class PipelineTests(unittest.TestCase):
             chunk = plan.rank_batches[0][0][0]
             self.assertEqual(chunk.stop - chunk.start, 48000)
             batch = train.collate_chunks(plan.rank_batches[0][0])
+            repeated = train.collate_chunks(plan.rank_batches[0][0])
             self.assertEqual(tuple(batch["noisy"].shape), (2, 48000))
             self.assertEqual(tuple(batch["clean"].shape), (2, 48000))
+            self.assertTrue(batch["noisy"].equal(repeated["noisy"]))
+            self.assertTrue(batch["clean"].equal(repeated["clean"]))
+            self.assertIn("ondemand:", (shape_dir / "wav.scp").read_text(encoding="utf-8"))
             again = plan_chunk_epoch(
                 samples, espnet_epoch=1, seed=0, world_size=2, num_samples=5000,
                 chunk_length=48000, global_batch=4, num_cache_chunks=1024,
@@ -331,19 +285,12 @@ class PipelineTests(unittest.TestCase):
             self.assertEqual(plan.plan_hash, again.plan_hash)
 
 
-def _manifests(staging_dir: Path) -> list[dict]:
-    return [
-        json.loads(path.read_text(encoding="utf-8"))
-        for path in sorted((staging_dir / "shards").glob("shard-*.json"))
-    ]
-
-
-def _link_sources(mount: Path, clean: Path, noise: Path) -> None:
+def _link_sources(mount: Path, clean: Path, noise: Path, test_clean: Path, test_noise: Path) -> None:
     for subset, source in (
         ("clean_train", clean),
         ("noise_train", noise),
-        ("clean_test", clean),
-        ("noise_test", noise),
+        ("clean_test", test_clean),
+        ("noise_test", test_noise),
     ):
         destination = mount / "MS-SNSD" / subset
         destination.parent.mkdir(parents=True, exist_ok=True)

@@ -34,7 +34,6 @@ from src.reproduction.ids import (
     catalog_id_for,
     dataset_id_for,
     digest,
-    generated_rel_path,
     material_members_key,
     material_set_id_for,
     protocol_id_for,
@@ -91,14 +90,34 @@ def collect_sources(
     *,
     rel_prefix: str,
     subset: str,
+    known: dict[str, dict[str, Any]] | None = None,
 ) -> tuple[list[dict[str, Any]], dict[str, int]]:
-    """Hash and describe the wavs a build will read. The directory is not modified."""
+    """Hash and describe the wavs a build will read. The directory is not modified.
+
+    ``known`` supplies header fields already checked against the file size.
+    The bytes are still hashed.
+    """
     assets = []
     frames: dict[str, int] = {}
-    for name in names:
+    for index, name in enumerate(names, 1):
         path = directory / name
-        info = sf.info(path)
-        if int(info.samplerate) != SAMPLE_RATE or int(info.channels) < 1 or int(info.frames) < 1:
+        if known is not None and name in known:
+            row = known[name]
+            rate = int(row["sample_rate"])
+            file_frames = int(row["frames"])
+            channels = int(row["channels"])
+            size = int(row["size_bytes"])
+            subtype = "PCM_16"
+            if path.stat().st_size != size:
+                raise ReproductionError(f"catalog size does not match {path}")
+        else:
+            info = sf.info(path)
+            rate = int(info.samplerate)
+            file_frames = int(info.frames)
+            channels = int(info.channels)
+            size = path.stat().st_size
+            subtype = str(info.subtype or "")
+        if rate != SAMPLE_RATE or channels < 1 or file_frames < 1:
             raise ReproductionError(f"{path} is not {SAMPLE_RATE} Hz audio with frames")
         rel = f"{rel_prefix}/{name}"
         asset = {
@@ -110,10 +129,10 @@ def collect_sources(
             "speaker_id": None,
             "utterance_key": Path(name).stem,
             "sample_rate": SAMPLE_RATE,
-            "frames": int(info.frames),
-            "channels": int(info.channels),
-            "sample_format": str(info.subtype or ""),
-            "size_bytes": path.stat().st_size,
+            "frames": file_frames,
+            "channels": channels,
+            "sample_format": subtype,
+            "size_bytes": size,
             "sha256": sha256_file(path),
             "integrity": "sha256",
             "catalog_id": None,
@@ -123,7 +142,9 @@ def collect_sources(
             "extra_json": {},
         }
         assets.append(asset)
-        frames[name] = int(info.frames)
+        frames[name] = file_frames
+        if index % 2000 == 0 or index == len(names):
+            print(f"hashed\t{subset}\t{index}\t{len(names)}", flush=True)
     return assets, frames
 
 
@@ -288,102 +309,6 @@ def build_row(definition: dict[str, Any]) -> dict[str, Any]:
     }
 
 
-def generated_assets(
-    definition: dict[str, Any],
-    documents: Sequence[dict[str, Any]],
-    manifests: Sequence[dict[str, Any]],
-) -> list[dict[str, Any]]:
-    by_index = {int(item["draws"]["gen_index"]): item for item in documents}
-    rows = []
-    shard_size = int(definition["shard_size"])
-    build_id = str(definition["build_id"])
-    for manifest in manifests:
-        shard_id = f"{int(manifest['shard']):04d}"
-        for item in manifest["files"]:
-            gen_index = int(item["gen_index"])
-            stream = str(item["stream"])
-            document = by_index[gen_index]
-            rel = generated_rel_path(
-                generator=GENERATOR,
-                build_id=build_id,
-                stream=stream,
-                gen_index=gen_index,
-                shard_size=shard_size,
-            )
-            suffix = str(item["rel_path"])
-            if rel != f"{GENERATOR}/{build_id[:16]}/{suffix}":
-                raise ReproductionError(f"manifest path {suffix} is not the generated layout")
-            rows.append(
-                {
-                    "asset_id": f"generated/{rel}",
-                    "storage_root": "generated",
-                    "rel_path": rel,
-                    "corpus": None,
-                    "subset": None,
-                    "speaker_id": None,
-                    "utterance_key": str(document["draws"]["utt_id"]),
-                    "sample_rate": SAMPLE_RATE,
-                    "frames": int(item["frames"]),
-                    "channels": 1,
-                    "sample_format": "PCM_16",
-                    "size_bytes": int(item["size_bytes"]),
-                    "sha256": str(item["sha256"]),
-                    "integrity": "sha256",
-                    "catalog_id": None,
-                    "derivation_id": None,
-                    "derived_from": None,
-                    "build_id": build_id,
-                    "extra_json": {"stream": stream, "gen_index": gen_index, "shard_id": shard_id},
-                }
-            )
-    return rows
-
-
-def realization_case(
-    document: dict[str, Any],
-    assets: dict[tuple[int, str], dict[str, Any]],
-    *,
-    protocol_id: str,
-) -> dict[str, Any]:
-    stored = {
-        key: document[key]
-        for key in (
-            "realization_version",
-            "algorithm",
-            "algorithm_version",
-            "sample_rate",
-            "sources",
-            "draws",
-            "steps",
-            "output",
-        )
-    }
-    gen_index = int(stored["draws"]["gen_index"])
-    clean = assets[(gen_index, "clean")]
-    noisy = assets[(gen_index, "noisy")]
-    noise = assets[(gen_index, "noise")]
-    row = {
-        "case_id": digest(stored),
-        "doc_kind": "realization_v1",
-        "doc_json": stored,
-        "case_role": "generated",
-        "protocol_id": protocol_id,
-        "clean_asset_id": clean["asset_id"],
-        "noisy_asset_id": noisy["asset_id"],
-        "noise_asset_id": noise["asset_id"],
-        "teacher_kind": "dry_clean",
-        "sample_rate": SAMPLE_RATE,
-        "frames": int(stored["output"]["length"]),
-        "speaker_id": None,
-        "utterance_key": str(stored["draws"]["utt_id"]),
-        "transcript": None,
-        "build_id": str(stored["draws"]["build_id"]),
-        "gen_index": gen_index,
-    }
-    row["content_hash"] = case_content_hash(row)
-    return row
-
-
 def condition_case(document: dict[str, Any], *, protocol_id: str) -> dict[str, Any]:
     """One planned mixture. The waveform is not an asset."""
     stored = {
@@ -428,13 +353,19 @@ def audit_conditions(
     *,
     clean_dir: Path,
     noise_dir: Path,
+    render_limit: int | None = None,
 ) -> dict[str, Any]:
-    """Render every plan in memory. Nothing is written."""
+    """Check every plan and render a sample in memory. Nothing is written.
+
+    ``render_limit`` caps the mixtures that are actually mixed. File existence
+    is still checked for every piece. A limit of ``None`` renders every plan.
+    """
     seen: set[int] = set()
     clipped = 0
     peak = 0.0
     speech: set[str] = set()
     noise: set[str] = set()
+    rendered = 0
     for document in documents:
         gen_index = int(document["draws"]["gen_index"])
         if gen_index in seen:
@@ -457,12 +388,16 @@ def audit_conditions(
             noise.add(name)
             if not (noise_dir / name).is_file():
                 raise ReproductionError(f"planned noise {name} is not in {noise_dir}")
-        rendered = render_realization(document, {"speech": clean_dir, "noise": noise_dir})
-        for wave in rendered.values():
+        if render_limit is not None and rendered >= int(render_limit):
+            continue
+        mixed = render_realization(document, {"speech": clean_dir, "noise": noise_dir})
+        rendered += 1
+        for wave in mixed.values():
             if int(wave.shape[0]) != length:
                 raise ReproductionError(f"gen_index {gen_index} rendered length does not match the plan")
             clipped += int(np.count_nonzero(np.abs(wave) >= 1.0))
             peak = max(peak, float(np.max(np.abs(wave))))
+    scope = "all" if render_limit is None or rendered == len(documents) else "sample"
     return {
         "build_id": str(definition["build_id"]),
         "status": "PASS",
@@ -471,6 +406,8 @@ def audit_conditions(
         "shard_ids": ["conditions"],
         "files": len(documents) * 3,
         "realizations": len(documents),
+        "rendered": rendered,
+        "render_scope": scope,
         "clipped_samples": clipped,
         "peak_abs": peak,
         "speech_files": len(speech),
@@ -514,125 +451,6 @@ def case_set_for(
         case_ids=case_ids,
     )
     return body
-
-
-def assemble_smoke_graph(
-    *,
-    train_definition: dict[str, Any],
-    train_documents: Sequence[dict[str, Any]],
-    train_manifests: Sequence[dict[str, Any]],
-    train_verify: dict[str, Any],
-    test_definition: dict[str, Any],
-    test_documents: Sequence[dict[str, Any]],
-    test_manifests: Sequence[dict[str, Any]],
-    test_verify: dict[str, Any],
-    source_assets: Sequence[dict[str, Any]],
-    train_clean: dict[str, Any],
-    train_noise: dict[str, Any],
-    test_clean: dict[str, Any],
-    test_noise: dict[str, Any],
-    dataset_name: str,
-    resource_db: str | None,
-    claim_label: str = "official_recipe_scaled_down",
-) -> Graph:
-    """One ready scaled-down dataset. Incomplete verifies are refused."""
-    for report in (train_verify, test_verify):
-        if report.get("status") != "PASS" or not report.get("shard_ids"):
-            raise ReproductionError("refusing to register a build that did not verify")
-    parent, child = protocol_pair()
-    catalog, catalog_rows = _catalog(list(source_assets))
-    for asset in source_assets:
-        asset["catalog_id"] = catalog["catalog_id"]
-    train_generated = generated_assets(train_definition, train_documents, train_manifests)
-    test_generated = generated_assets(test_definition, test_documents, test_manifests)
-    by_stream = {
-        (int(asset["extra_json"]["gen_index"]), asset["extra_json"]["stream"], asset["build_id"]): asset
-        for asset in train_generated + test_generated
-    }
-    train_kept, valid_kept, train_stats = split_train_valid(train_documents)
-    test_kept, test_stats = filter_test(test_documents)
-    train_cases = [
-        _case_for(item, by_stream, train_definition["build_id"], child["protocol_id"]) for item in train_kept
-    ]
-    valid_cases = [
-        _case_for(item, by_stream, train_definition["build_id"], child["protocol_id"]) for item in valid_kept
-    ]
-    test_cases = [
-        _case_for(item, by_stream, test_definition["build_id"], child["protocol_id"]) for item in test_kept
-    ]
-    train_set = case_set_for(
-        f"{dataset_name}.train",
-        "train",
-        train_cases,
-        {"rule": "sorted_ratio", "key": "utt_id", "ratio": 0.8, "part": "head"},
-        f"bash count*8/10 of sorted official utt ids, then duration filter; {json.dumps(train_stats, sort_keys=True)}",
-    )
-    valid_set = case_set_for(
-        f"{dataset_name}.valid",
-        "valid",
-        valid_cases,
-        {"rule": "sorted_ratio", "key": "utt_id", "ratio": 0.8, "part": "tail"},
-        f"complement of the train head after the duration filter; {json.dumps(train_stats, sort_keys=True)}",
-    )
-    test_set = case_set_for(
-        f"{dataset_name}.test",
-        "test",
-        test_cases,
-        {"rule": "explicit"},
-        f"all duration-kept test noisy files in utt-id order; {json.dumps(test_stats, sort_keys=True)}",
-    )
-    bindings = [
-        {"slot": "train.cases", "case_set_id": train_set["case_set_id"], "material_set_id": None},
-        {"slot": "valid.cases", "case_set_id": valid_set["case_set_id"], "material_set_id": None},
-        {"slot": "test.cases", "case_set_id": test_set["case_set_id"], "material_set_id": None},
-    ]
-    dataset = {
-        "name": dataset_name,
-        "version": 1,
-        "protocol_id": child["protocol_id"],
-        "profile": "official_faithful",
-        "material_origin": "derived_from_official",
-        "claim_label": claim_label,
-        "declared_status": "ready",
-        "blocking_json": [],
-        "selection_uses_test": False,
-        "selection_note": _selection_note(claim_label),
-        "deviations_json": _dataset_deviations(train_stats, claim_label=claim_label),
-        "bindings": bindings,
-    }
-    uses_test = compute_selection_uses_test(
-        dataset,
-        {row["case_set_id"]: row for row in (train_set, valid_set, test_set)},
-        {},
-        {row["case_id"]: row for row in train_cases + valid_cases + test_cases},
-    )
-    dataset["selection_uses_test"] = uses_test
-    dataset["dataset_id"] = dataset_id_for(
-        protocol_id=child["protocol_id"],
-        bindings=bindings,
-        profile=dataset["profile"],
-        material_origin=dataset["material_origin"],
-        claim_label=dataset["claim_label"],
-        selection_uses_test=uses_test,
-        declared_status="ready",
-    )
-    graph = Graph(
-        catalogs=[catalog],
-        catalog_rows={catalog["catalog_id"]: catalog_rows},
-        assets=list(source_assets) + train_generated + test_generated,
-        materials=[train_clean, train_noise, test_clean, test_noise],
-        protocols=[parent, child],
-        cases=train_cases + valid_cases + test_cases,
-        case_sets=[train_set, valid_set, test_set],
-        datasets=[dataset],
-        builds=[build_row(train_definition), build_row(test_definition)],
-        verified={
-            train_definition["build_id"]: _marker(train_verify),
-            test_definition["build_id"]: _marker(test_verify),
-        },
-    )
-    validate_graph(graph, resource_db=resource_db)
-    return graph
 
 
 def assemble_ondemand_graph(
@@ -808,15 +626,6 @@ def _dataset_deviations(train_stats: dict[str, int], *, claim_label: str) -> lis
             }
         )
     return rows
-
-
-def _case_for(document: dict[str, Any], by_stream: dict, build_id: str, protocol_id: str) -> dict[str, Any]:
-    gen_index = int(document["draws"]["gen_index"])
-    assets = {
-        (gen_index, stream): by_stream[(gen_index, stream, build_id)]
-        for stream in ("clean", "noise", "noisy")
-    }
-    return realization_case(document, assets, protocol_id=protocol_id)
 
 
 def _marker(report: dict[str, Any]) -> dict[str, Any]:

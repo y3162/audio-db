@@ -2,14 +2,11 @@
 
 from __future__ import annotations
 
-import json
 import sys
-import tempfile
 import unittest
 from pathlib import Path
 
 import numpy as np
-import soundfile as sf
 
 ROOT = Path(__file__).resolve().parents[2]
 CORPUS = ROOT / "data" / "corpora" / "MS-SNSD"
@@ -27,9 +24,8 @@ from src.reproduction.build.ms_snsd import (
     read_frames,
     render_realization,
     snr_mixer,
-    write_build,
+    _pcm16_roundtrip,
 )
-from src.reproduction.errors import ReproductionError
 
 
 def _official_mixer():
@@ -102,63 +98,22 @@ class RenderTests(unittest.TestCase):
             [0.0, 10.0, 20.0, 30.0, 40.0],
         )
         self.assertGreater(documents[0]["output"]["length"], int(AUDIO_SECONDS * SAMPLE_RATE))
-        with tempfile.TemporaryDirectory() as directory:
-            root = Path(directory)
-            first = write_build(
-                definition, documents,
-                audio_root=root / "generated", staging_root=root / "staging",
-                clean_dir=CORPUS / "clean_train", noise_dir=CORPUS / "noise_train",
-            )
-            manifest = json.loads((first["staging_dir"] / "shards" / "shard-0000.json").read_text(encoding="utf-8"))
-            hashes = {item["rel_path"]: item["sha256"] for item in manifest["files"]}
-            noisy = next(item for item in manifest["files"] if item["stream"] == "noisy" and item["gen_index"] == 2)
-            audio, rate = sf.read(first["audio_dir"] / noisy["rel_path"], dtype="float64")
-            self.assertEqual(rate, SAMPLE_RATE)
-            self.assertEqual(audio.shape[0], noisy["frames"])
-            waves = render_realization(documents[2], {"speech": CORPUS / "clean_train", "noise": CORPUS / "noise_train"})
-            self.assertAlmostEqual(measured_snr_db(waves["clean"], waves["noise"]), 10.0, places=5)
-            residual = waves["noisy"] - waves["clean"] - waves["noise"]
-            self.assertLess(float(np.max(np.abs(residual))), 1e-12)
-            second = write_build(
-                definition, documents,
-                audio_root=root / "generated", staging_root=root / "staging",
-                clean_dir=CORPUS / "clean_train", noise_dir=CORPUS / "noise_train",
-            )
-            again = json.loads((second["staging_dir"] / "shards" / "shard-0000.json").read_text(encoding="utf-8"))
-            self.assertEqual(hashes, {item["rel_path"]: item["sha256"] for item in again["files"]})
-            shard = second["staging_dir"] / "shards" / "shard-0000.json"
-            shard.unlink()
-            target = first["audio_dir"] / noisy["rel_path"]
-            target.write_bytes(b"broken")
-            third = write_build(
-                definition, documents,
-                audio_root=root / "generated", staging_root=root / "staging",
-                clean_dir=CORPUS / "clean_train", noise_dir=CORPUS / "noise_train",
-            )
-            restored = json.loads((third["staging_dir"] / "shards" / "shard-0000.json").read_text(encoding="utf-8"))
-            self.assertEqual(hashes[noisy["rel_path"]], next(item["sha256"] for item in restored["files"] if item["rel_path"] == noisy["rel_path"]))
-            self.assertTrue((third["staging_dir"] / "verified.json").is_file())
+        roots = {"speech": CORPUS / "clean_train", "noise": CORPUS / "noise_train"}
+        first = render_realization(documents[2], roots)
+        second = render_realization(documents[2], roots)
+        for key in ("clean", "noise", "noisy"):
+            self.assertTrue(np.array_equal(first[key], second[key]))
+        self.assertAlmostEqual(measured_snr_db(first["clean"], first["noise"]), 10.0, places=5)
+        residual = first["noisy"] - first["clean"] - first["noise"]
+        self.assertLess(float(np.max(np.abs(residual))), 1e-12)
+        pcm = _pcm16_roundtrip(first["noisy"])
+        self.assertTrue(np.array_equal(pcm, _pcm16_roundtrip(second["noisy"])))
 
-    def test_a_different_definition_is_refused(self):
-        definition = build_definition(
-            seed=1, split="train", clean_names=["a.wav"], noise_names=["n.wav"],
-            total_hours=0.01, max_clips=1,
-        )
-        other = dict(definition)
-        other["seed"] = 2
-        with tempfile.TemporaryDirectory() as directory:
-            stage = Path(directory) / "staging" / "builds" / definition["build_id"]
-            stage.mkdir(parents=True)
-            (stage / "build.json").write_text(json.dumps(other), encoding="utf-8")
-            with self.assertRaises(ReproductionError):
-                write_build(
-                    definition,
-                    [],
-                    audio_root=Path(directory) / "generated",
-                    staging_root=Path(directory) / "staging",
-                    clean_dir=Path(directory),
-                    noise_dir=Path(directory),
-                )
+    def test_stored_wav_writer_is_gone(self):
+        import src.reproduction.build.ms_snsd as module
+
+        self.assertFalse(hasattr(module, "write_build"))
+        self.assertFalse(hasattr(module, "verify_build"))
 
 
 if __name__ == "__main__":

@@ -61,7 +61,9 @@ checkpoint を公開する前に同じ step の JSONL を書き、TensorBoard �
 
 ## 学習データ
 
-`data.database` はレシピスキーマの DuckDB である。`data/db/resource.duckdb` は評価セットの本番ファイルなので、名前でも拒否する。`configs/training/mp_senet.yaml` は `data/db/training.duckdb` の `libri_demand_smoke_train` と `libri_demand_smoke_valid` を指す。これは LibriSpeech train-clean-100 と dev-clean に DEMAND を混ぜた 2 秒のスモークで、VoiceBank-DEMAND ではない。`train_set` と `validation_set` は別名にする。
+公式再現の設定 `configs/training/reproduction/mp_senet_vb28_*.yaml` は、スナップショットのオンデマンド Dataset を読む。16 kHz の派生素材 WAV は要らない。48 kHz 原音を学習時に soxr HQ の PCM_16 にする。履歴の `mp_senet.vb28.official@1` と `mp_senet.vb28.safe@1` をこの入口に渡すと拒否する。
+
+下は再現用ではないスモーク経路である。`data.database` はレシピスキーマの DuckDB である。`data/db/resource.duckdb` は評価セットの本番ファイルなので、名前でも拒否する。`configs/training/mp_senet.yaml` は `data/db/training.duckdb` の `libri_demand_smoke_train` と `libri_demand_smoke_valid` を指す。これは LibriSpeech train-clean-100 と dev-clean に DEMAND を混ぜた 2 秒のスモークで、VoiceBank-DEMAND ではない。`train_set` と `validation_set` は別名にする。
 
 教師が `dry_clean` または `reverberant_clean` のケースだけを使う。`none` はエラーにする。`dry_clean` を残響教師の代わりには使わない。ケースの識別子はレシピの SHA-256 で、採番 ID は使わない。
 

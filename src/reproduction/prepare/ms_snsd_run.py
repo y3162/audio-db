@@ -41,17 +41,57 @@ from src.reproduction.prepare.ms_snsd import (
 )
 
 
+def _reuse_registered_assets(graph, database: Path):
+    """Keep corpus rows already stored when the file bytes still match.
+
+    A second catalog id on the same path is a different asset row and the
+    registrar rolls the whole graph back. The earlier smoke rows stay.
+    """
+    if not database.is_file():
+        return graph
+    from src.reproduction.db.registry import read_graph
+
+    existing = {row["asset_id"]: row for row in read_graph(database).assets}
+    if not existing:
+        return graph
+    aligned = []
+    for asset in graph.assets:
+        previous = existing.get(asset["asset_id"])
+        if previous is None:
+            aligned.append(asset)
+            continue
+        for key in ("rel_path", "sha256", "frames", "size_bytes", "sample_rate"):
+            if asset.get(key) != previous.get(key):
+                raise ReproductionError(
+                    f"corpus asset {asset['asset_id']} does not match the registered {key}"
+                )
+        aligned.append(previous)
+    graph.assets = aligned
+    return graph
+
+
 def select_names(
     directory: Path,
     *,
     limit: int | None,
     minimum: int | None,
     maximum: int | None,
+    catalog: dict[str, dict[str, Any]] | None = None,
 ) -> list[str]:
     chosen = []
-    for path in sorted(path for path in directory.glob("*.wav") if path.is_file()):
-        info = sf.info(path)
-        frames = int(info.frames)
+    names = sorted(catalog) if catalog is not None else sorted(
+        path.name for path in directory.glob("*.wav") if path.is_file()
+    )
+    for name in names:
+        if catalog is not None:
+            frames = int(catalog[name]["frames"])
+            path = directory / name
+            if not path.is_file() or path.stat().st_size != int(catalog[name]["size_bytes"]):
+                raise ReproductionError(f"catalog row does not match {path}")
+        else:
+            path = directory / name
+            info = sf.info(path)
+            frames = int(info.frames)
         if minimum is not None and frames < minimum:
             continue
         if maximum is not None and frames > maximum:
@@ -62,6 +102,48 @@ def select_names(
     if not chosen:
         raise ReproductionError(f"no wavs matched the length filter in {directory}")
     return chosen
+
+
+def _catalog_index(config: dict[str, Any]) -> dict[str, dict[str, dict[str, Any]]]:
+    """Header rows from resource.duckdb, with sizes read from the files.
+
+    The caller still hashes every selected file. This avoids a second decode
+    of each header. ``config`` is accepted so a future caller can point at
+    another catalog; the production file is the only one used.
+    """
+    del config
+    import duckdb
+
+    if not DEFAULT_RESOURCE_DB.is_file():
+        raise ReproductionError(f"resource catalog is missing: {DEFAULT_RESOURCE_DB}")
+    connection = duckdb.connect(str(DEFAULT_RESOURCE_DB), read_only=True)
+    try:
+        rows = connection.execute(
+            """
+            SELECT path, sample_rate, frames, channels
+            FROM corpora.audio_files
+            WHERE path LIKE 'MS-SNSD/%'
+            """
+        ).fetchall()
+    finally:
+        connection.close()
+    index: dict[str, dict[str, dict[str, Any]]] = {}
+    for path, rate, frames, channels in rows:
+        parts = str(path).split("/")
+        if len(parts) != 3 or not parts[2].endswith(".wav"):
+            continue
+        full = DEFAULT_CORPORA / str(path)
+        if not full.is_file():
+            raise ReproductionError(f"catalog file is missing: {full}")
+        index.setdefault(parts[1], {})[parts[2]] = {
+            "sample_rate": int(rate),
+            "frames": int(frames),
+            "channels": int(channels),
+            "size_bytes": full.stat().st_size,
+        }
+    if not index:
+        raise ReproductionError("resource.duckdb has no MS-SNSD audio_files rows")
+    return index
 
 
 def load_build_config(path: Path) -> dict[str, Any]:
@@ -82,8 +164,8 @@ def run_config(
     snapshots: Path = DEFAULT_SNAPSHOTS,
     resource_db: Path = DEFAULT_RESOURCE_DB,
 ) -> dict[str, Any]:
-    if step not in ("plan", "generate", "register"):
-        raise ReproductionError("step must be plan, generate, or register")
+    if step not in ("plan", "register"):
+        raise ReproductionError("step must be plan or register; stored wav generation is disabled")
     config = load_build_config(config_path)
     claim = str(config.get("claim_label") or "official_recipe_scaled_down")
     if claim not in ("official_recipe_scaled_down", "espnet_public_se_recipe_reproduction"):
@@ -92,17 +174,19 @@ def run_config(
         raise ReproductionError(
             "stored wav generation is disabled; set delivery: on_demand and register conditions"
         )
-    if step == "generate":
-        raise ReproductionError("stored wav generation is disabled; use --step register")
+    full_scan = config.get("source_scan") == "full"
     for split in ("train", "test"):
         side = config[split]
         if side.get("clean_limit") is None or side.get("noise_limit") is None:
-            raise ReproductionError(
-                f"{split} has no clean_limit or noise_limit; refusing an unbounded source scan"
-            )
+            if not full_scan:
+                raise ReproductionError(
+                    f"{split} has no clean_limit or noise_limit; "
+                    "refusing an unbounded source scan without source_scan: full"
+                )
     started = time.perf_counter()
-    train = _prepare_side(config, "train", corpus)
-    test = _prepare_side(config, "test", corpus)
+    catalog = _catalog_index(config) if full_scan else None
+    train = _prepare_side(config, "train", corpus, catalog)
+    test = _prepare_side(config, "test", corpus, catalog)
     summary = {
         "name": config["name"],
         "train_realizations": len(train["documents"]),
@@ -118,13 +202,20 @@ def run_config(
     if step == "plan":
         return summary
     checked = time.perf_counter()
+    render_limit = config.get("audit_realizations")
+    if render_limit is not None:
+        render_limit = int(render_limit)
+        if render_limit < 1:
+            raise ReproductionError("audit_realizations must be positive")
     train_report = audit_conditions(
         train["definition"], train["documents"],
         clean_dir=corpus / "clean_train", noise_dir=corpus / "noise_train",
+        render_limit=render_limit,
     )
     test_report = audit_conditions(
         test["definition"], test["documents"],
         clean_dir=corpus / "clean_test", noise_dir=corpus / "noise_test",
+        render_limit=render_limit,
     )
     summary["render_seconds"] = time.perf_counter() - checked
     print(f"checked conditions in {summary['render_seconds']:.1f}s", flush=True)
@@ -134,7 +225,8 @@ def run_config(
     summary["test_verify"] = {
         key: test_report[key] for key in ("files", "clipped_samples", "peak_abs", "status", "wav_files")
     }
-    graph = assemble_ondemand_graph(
+    graph = _reuse_registered_assets(
+        assemble_ondemand_graph(
         train_definition=train["definition"],
         train_documents=train["documents"],
         train_report=train_report,
@@ -149,6 +241,8 @@ def run_config(
         dataset_name=str(config["name"]),
         resource_db=str(resource_db) if resource_db.is_file() else None,
         claim_label=claim,
+        ),
+        database,
     )
     write_graph(staging, graph)
     register_staging(staging, database, resource_db=str(resource_db) if resource_db.is_file() else None)
@@ -169,7 +263,12 @@ def run_config(
     return summary
 
 
-def _prepare_side(config: dict[str, Any], split: str, corpus: Path) -> dict[str, Any]:
+def _prepare_side(
+    config: dict[str, Any],
+    split: str,
+    corpus: Path,
+    catalog: dict[str, dict[str, Any]] | None,
+) -> dict[str, Any]:
     print(f"preparing {split}", flush=True)
     side = config[split]
     clean_dir = corpus / f"clean_{split}"
@@ -179,12 +278,14 @@ def _prepare_side(config: dict[str, Any], split: str, corpus: Path) -> dict[str,
         limit=side.get("clean_limit"),
         minimum=side.get("clean_min_frames"),
         maximum=side.get("clean_max_frames"),
+        catalog=None if catalog is None else catalog.get(f"clean_{split}"),
     )
     noise_pool = select_names(
         noise_dir,
         limit=side.get("noise_limit"),
         minimum=side.get("noise_min_frames"),
         maximum=side.get("noise_max_frames"),
+        catalog=None if catalog is None else catalog.get(f"noise_{split}"),
     )
     clean_names = ordered_paths(
         [clean_dir / name for name in clean_pool], seed=int(config["seed"]), split=split,
@@ -194,11 +295,15 @@ def _prepare_side(config: dict[str, Any], split: str, corpus: Path) -> dict[str,
     )
     prefix = "train" if split == "train" else "test"
     tag = str(config["name"]).replace("tf_gridnet.ms_snsd.", "ms_snsd.")
+    clean_known = None if catalog is None else catalog.get(f"clean_{split}")
+    noise_known = None if catalog is None else catalog.get(f"noise_{split}")
     clean_assets, clean_frames = collect_sources(
         clean_dir, clean_names, rel_prefix=f"MS-SNSD/clean_{split}", subset=f"clean_{split}",
+        known=clean_known,
     )
     noise_assets, noise_frames = collect_sources(
         noise_dir, noise_names, rel_prefix=f"MS-SNSD/noise_{split}", subset=f"noise_{split}",
+        known=noise_known,
     )
     clean_set = material_set(
         clean_assets, name=f"{tag}.clean_{split}", role="speech", split_role=prefix,
@@ -253,7 +358,7 @@ def main(argv: list[str] | None = None) -> int:
 
     parser = argparse.ArgumentParser(prog="python -m src.reproduction.prepare.ms_snsd_run")
     parser.add_argument("--config", required=True)
-    parser.add_argument("--step", required=True, choices=("plan", "generate", "register"))
+    parser.add_argument("--step", required=True, choices=("plan", "register"))
     args = parser.parse_args(argv)
     summary = run_config(Path(args.config), args.step)
     print(json.dumps(summary, sort_keys=True))

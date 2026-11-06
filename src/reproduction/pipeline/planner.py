@@ -244,6 +244,11 @@ def _crop(case_id: str, length: int, window: int, seed: int, epoch: int | str, p
 
 def _pair_length(store: AssetStore, case_id: str, normalize: str) -> int:
     case = store.case(case_id)
+    if (store.dataset.get("rule_json") or {}).get("resample"):
+        length = int(case["frames"])
+        if length < 1:
+            raise ReproductionError(f"case {case_id} has no resampled samples")
+        return length
     clean = int(store.asset(case["clean_asset_id"])["frames"])
     noisy = int(store.asset(case["noisy_asset_id"])["frames"])
     if clean < 1 or noisy < 1:

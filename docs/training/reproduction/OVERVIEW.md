@@ -4,6 +4,8 @@
 
 この文書は 6 本のモデル別監査を統合した全体表である。個々の事実、行番号、公式ソースの引用は各モデル別文書にある。この文書だけで事実を確定せず、必ずモデル別文書の該当節を見る。
 
+2026-11-06 の実装後: 下文が「現行」と呼ぶ学習データは、監査時点の共通 VoiceBank 経路である。再現用の学習入口は別で、MP-SENet と MossFormerGAN は 48 kHz 固定ペアの学習時リサンプル、TF-GridNet は MS-SNSD の条件からの再構築である。生成済み WAV は必須にしない。DeepFilterNet3、SEMamba++、TF-Locoformer のオンデマンド実装は未着手である。
+
 | モデル | 文書 |
 |---|---|
 | DeepFilterNet3 | [deepfilternet3.md](deepfilternet3.md) |

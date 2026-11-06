@@ -76,7 +76,7 @@ def main(argv: list[str] | None = None) -> int:
 
     ms_snsd = commands.add_parser("ms-snsd")
     ms_snsd.add_argument("--config", required=True)
-    ms_snsd.add_argument("--step", required=True, choices=("plan", "generate", "register"))
+    ms_snsd.add_argument("--step", required=True, choices=("plan", "register"))
 
     register = commands.add_parser("register-run")
     register.add_argument("--database", required=True)

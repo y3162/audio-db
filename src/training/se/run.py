@@ -46,6 +46,17 @@ def build_task(config: dict, device):
     raise TrainingError(f"no training task for {name}")
 
 
+def require_on_demand(dataset: dict) -> None:
+    """New training reads on-demand snapshots. Stored wav datasets are refused."""
+    delivery = (dataset.get("rule_json") or {}).get("delivery")
+    name = f"{dataset.get('name')}@{dataset.get('version')}"
+    if delivery != "on_demand":
+        raise TrainingError(
+            f"dataset {name} is not delivery on_demand; "
+            "stored wav and pre-resampled wav training is disabled"
+        )
+
+
 def experiment_lock(directory: Path):
     """Exclusive lock for one experiment directory. Same-process reentry succeeds."""
     directory.mkdir(parents=True, exist_ok=True)
@@ -112,6 +123,7 @@ def execute(config_path: str | Path, *, resume: str | Path | None = None,
             load_workers=data["load_workers"],
             verify_on_read=data["verify_on_read"],
         )
+        require_on_demand(train.store.dataset)
         if config["model"]["name"] != "tf_gridnet" or train.algorithm != "pregenerated.ms_snsd_tfgridnet":
             train.close()
             raise TrainingError(
@@ -137,6 +149,7 @@ def execute(config_path: str | Path, *, resume: str | Path | None = None,
             "mp_senet": "fixed_pair.mp_senet",
             "mossformergan": "fixed_pair.mossformergan_se_16k",
         }.get(config["model"]["name"])
+        require_on_demand(train.store.dataset)
         if expected != train.algorithm:
             train.close()
             raise TrainingError(

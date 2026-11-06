@@ -46,10 +46,9 @@
 .venvs/official/bin/python -m unittest tests.training.test_chunk_official -v  # ピン留め ESPnet の chunk iterator との照合。PYTHONPATH に espnet の checkout を足す。`.venvs/se` は typeguard が無く、このテストは SKIP になる
 # P5 の実 DDP は tests/training/p5_gpu_job.sh。node_h=1 は 2 GPU、node_f=1 は 4 GPU。承認された h_rt の合計を超えて投入しない
 .venvs/se/bin/python -m unittest discover -s tests/reproduction -v  # 再現 DB と固定ペア Pipeline。P1・P2 の単体テストは合成データ。P3 の実スナップショット試験と P4 の来歴スモークは data/db/snapshots を読む。resource.duckdb は読み取り専用。P4 の判定テストは tests/evaluation/test_provenance.py
-make reproduction-prepare STEP=all WORKERS=8  # VoiceBank 固定ペアの登録とスナップショット。実コーパスを読む。resource.duckdb は読み取り専用
-make reproduction-plan-build   # MS-SNSD の計画だけ。既定は configs/data/builds/ms_snsd_tfgridnet_ondemand.yaml。音声は作らない。clean_limit が無い設定は拒否する
-make reproduction-build        # 保存済み WAV の生成は無効。終了コード 1
-make reproduction-register     # オンデマンドの条件を reproduction.duckdb に足してスナップショットを書く。混合 WAV は作らない。VoiceBank の 4 Dataset は変えない
+make reproduction-prepare STEP=all WORKERS=8  # VoiceBank オンデマンド固定ペアの登録とスナップショット。48 kHz を読み、16 kHz WAV は書かない。resource.duckdb は読み取り専用
+make reproduction-plan-build   # MS-SNSD の計画だけ。既定は configs/data/builds/ms_snsd_tfgridnet_ondemand.yaml。音声は作らない。source_scan: full が無い上限なし設定は拒否する
+make reproduction-register     # オンデマンドの条件を reproduction.duckdb に足してスナップショットを書く。混合 WAV は作らない
 .venvs/deepfilternet/bin/python -c 'import src.reproduction.snapshot_reader'  # DuckDB の無い環境でスナップショット読み込み側を import する
 .venvs/se/bin/python -m src.evaluation.cli --config configs/evaluation/smoke.yaml --limit 2 --device cpu   # 合成音声 + mock
 .venvs/asr/bin/python -m tests.asr_smoke.run_smoke parakeet whisper wav2vec2   # 実 ASR のスモーク（GPU）

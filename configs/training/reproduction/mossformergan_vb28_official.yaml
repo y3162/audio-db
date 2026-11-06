@@ -1,4 +1,5 @@
-# MossFormerGAN fixed pairs, one process.
+# MossFormerGAN on mossformergan.vb28.ondemand.official@1, one process.
+# 16 kHz PCM_16 is resampled from the 48 kHz source when a batch is rendered.
 # Official 1-GPU effective batch is micro-batch 1 x accumulation 2 (global 2).
 # The protocol's 2-GPU global batch is 4; see mossformergan_vb28_official_2gpu.yaml.
 # The public solver loops epochs 0..120 inclusive (121 passes).
@@ -12,7 +13,7 @@ max_steps: 700106
 segment_size: 32000
 loss: official
 grad_clip: 10.0
-checkpoint_dir: ./data/results/training/reproduction/mossformergan.vb28.official
+checkpoint_dir: ./data/results/training/reproduction/mossformergan.vb28.ondemand.official
 checkpoint_interval: 5786
 validation_interval: 5786
 best_checkpoint_start_epoch: 40
@@ -38,7 +39,7 @@ model:
 
 data:
   pipeline: reproduction
-  dataset: mossformergan.vb28.official@1
+  dataset: mossformergan.vb28.ondemand.official@1
   allow_test_selection: true
   load_workers: 4
   prefetch: true

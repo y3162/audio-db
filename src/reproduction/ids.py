@@ -71,7 +71,25 @@ RULE_KEYS = {
     "global_batch",
     "validation",
     "delivery",
+    "resample",
 }
+RESAMPLE_KEYS = {
+    "tool",
+    "quality",
+    "source_rate",
+    "target_rate",
+    "quantization",
+    "length",
+    "order",
+}
+RESAMPLE_ORDER = (
+    "read_float32",
+    "soxr_hq",
+    "clip_to_unit",
+    "pcm16_roundtrip",
+    "protocol_normalize",
+    "protocol_window",
+)
 VALIDATION_KEYS = {"crop", "batch", "interval", "note"}
 REALIZATION_KEYS = {
     "realization_version",
@@ -443,7 +461,29 @@ def validate_rule(algorithm: str, rule: Any) -> dict[str, Any]:
                 raise ReproductionError(f"rule_json.validation.{key} must be a string or integer")
     if "delivery" in body and body["delivery"] != "on_demand":
         raise ReproductionError("rule_json.delivery must be on_demand")
+    if "resample" in body:
+        if not algorithm.startswith("fixed_pair."):
+            raise ReproductionError(f"{algorithm} does not take resample")
+        if body.get("delivery") != "on_demand":
+            raise ReproductionError("resample requires delivery on_demand")
+        _check_resample(body["resample"])
+    elif body.get("delivery") == "on_demand" and algorithm.startswith("fixed_pair."):
+        raise ReproductionError("on-demand fixed-pair rule needs resample")
     return body
+
+
+def _check_resample(value: Any) -> None:
+    body = require_object(value, "rule_json.resample", RESAMPLE_KEYS)
+    if body.get("tool") != "soxr" or body.get("quality") != "HQ":
+        raise ReproductionError("resample tool must be soxr HQ")
+    if body.get("source_rate") != 48000 or body.get("target_rate") != 16000:
+        raise ReproductionError("resample rates must be 48000 to 16000")
+    if body.get("quantization") != "pcm16":
+        raise ReproductionError("resample quantization must be pcm16")
+    if body.get("length") != "source_frames_plus_one_div_3":
+        raise ReproductionError("resample length formula is not the recorded soxr HQ count")
+    if tuple(body.get("order") or ()) != RESAMPLE_ORDER:
+        raise ReproductionError("resample order does not match the recorded VoiceBank order")
 
 
 def _check_order(value: Any) -> None:

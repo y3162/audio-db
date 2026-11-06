@@ -1,6 +1,6 @@
 # 再現用 Data Pipeline 設計
 
-状態: **固定ペアの学習 Pipeline、ESPnet chunk の複数 rank、MS-SNSD のオンデマンド混合は実装済み**（2026-11-06、P3・P5・P6）。学習用の生成済み WAV は必須にしない。波形キャッシュは実装しない。`pipeline/pregenerated.py` は、`delivery: on_demand` のスナップショットを `pipeline/ondemand.py` へ渡し、それ以外の保存済み WAV は従来どおり読む。オンライン混合の実装は P8・P9 のまま。検証は [P3_VERIFICATION](P3_VERIFICATION.md)、[P5_VERIFICATION](P5_VERIFICATION.md)、[P6_VERIFICATION](P6_VERIFICATION.md)。
+状態: **固定ペアの学習 Pipeline、ESPnet chunk の複数 rank、MS-SNSD のオンデマンド混合、VoiceBank の学習時リサンプルは実装済み**（2026-11-06、P3・P5・P6）。学習用の生成済み WAV は必須にしない。波形キャッシュは実装しない。`pipeline/pregenerated.py` は `delivery: on_demand` 以外を拒否し、オンデマンドは `pipeline/ondemand.py` が再構築する。履歴の固定ペアスナップショットは `open_training_data` が読む。新しい学習の `execute` は `on_demand` を必須にする。オンライン混合の実装は P8・P9 のまま。検証は [P3_VERIFICATION](P3_VERIFICATION.md)、[P5_VERIFICATION](P5_VERIFICATION.md)、[P6_VERIFICATION](P6_VERIFICATION.md)。
 
 ## 0. 位置づけと正本の分担
 
@@ -102,6 +102,8 @@ src/reproduction/
     state.py            # DataState（checkpoint に保存する位置・hash）
     training_data.py    # TrainingData 実装
 ```
+
+上の木は設計時の配置である。実装では `prepare/derive.py` は 16 kHz WAV を書かず、呼ぶと拒否する。MS-SNSD の混合は `build/ms_snsd.py` がメモリ上で行い、shard の WAV は書かない。VoiceBank の 16 kHz 化は `prepare/resample.py` が学習時に行う。
 
 依存規則（import テストで固定する）:
 
@@ -269,7 +271,7 @@ P2 の VoiceBank 16 kHz 派生素材は、そのまま固定ペアの入力で�
 - Planner: ESPnet の `ChunkIterFactory` の再現（§8.3）。長さは文書から取り、ファイルを開かない。
 - Renderer: `pipeline/ondemand.py` がバッチの切り出し時に `snr_mixer` を実行し、PCM_16 の読み戻しと同じ値を返す。正規化はしない。同じ文書は同じ波形になる。結果は保持しない。
 - TF-Locoformer の DNS 合成は同じ分離（条件を先に固定し、学習時に再構築する）だが、生成器は P7 で、今回は作っていない。
-- 保存済み WAV の shard 検証は `write_build` に残る。学習の登録経路はそれを呼ばない。
+- 混合 WAV を書く経路は無い。登録は条件と元素材だけを書き、学習時に `render_realization` が PCM_16 を作る。
 
 ### 6.4 オンライン混合（DFN3、SEMamba++）
 
@@ -500,15 +502,14 @@ data:
 | `make setup PLATFORM=tsubame\|shinoda_lab` | 既存 | 環境（仮想環境、アセット）だけ。**データと DB を作らない**。既存の動作を変えない | 既存どおり | 既存どおり |
 | `make reproduction-doctor` | `MODELS=`（任意）| 読み取りのみ。DuckDB の版（環境ごと）、`data/corpora`、`resource.duckdb` の状態（`corpora` / `eval` の有無）、`data/generated` の空き容量、ライブラリの版（`soundfile`、`librosa`、`soxr`、`torch`）、公式リストの有無を表示 | 常に | 致命的な不足があれば非 0（変更はしない）|
 | `make reproduction-init-db` | — | `reproduction.duckdb` を作る（`repro` スキーマ）| 同じスキーマなら何もしない | 既存で違うスキーマなら**変更せず拒否**（現行の `db-init` と同じ規則）|
-| `make reproduction-prepare` | `STEP=diagnose\|lists\|resolve\|derive\|register\|snapshot\|verify\|all`、`WORKERS=` | MP-SENet と MossFormerGAN の VoiceBank 固定ペアを staging に書き、登録し、スナップショットを出す。事前生成はしない | 同じ派生ファイルと同じ ID は再利用する。内容が違えば上書きせずエラー | 素材が無い場合は `BLOCKED`（終了コード 3）で、派生・staging・DB を作らない |
-| `make reproduction-plan-build` | `MS_SNSD_CONFIG=` | MS-SNSD の計画だけを書く。混合 WAV は作らない。既定は `ms_snsd_tfgridnet_ondemand.yaml` | 同じ計画を再度書ける | `delivery: on_demand` が無い。`clean_limit` または `noise_limit` が無い |
-| `make reproduction-build` | — | 保存済み WAV の生成は無効。終了コード 1 | — | 常に拒否する |
+| `make reproduction-prepare` | `STEP=diagnose\|lists\|resolve\|register\|snapshot\|verify\|all`、`WORKERS=` | MP-SENet と MossFormerGAN のオンデマンド VoiceBank 固定ペアを staging に書き、登録し、スナップショットを出す。16 kHz WAV は書かない | 同じコーパス素材と同じ ID は再利用する。内容が違えば上書きせずエラー | 素材が無い場合は `BLOCKED`（終了コード 3）。`derive` は未知のステップとして拒否する |
+| `make reproduction-plan-build` | `MS_SNSD_CONFIG=` | MS-SNSD の計画だけを書く。混合 WAV は作らない。既定は `ms_snsd_tfgridnet_ondemand.yaml` | 同じ計画を再度書ける | `delivery: on_demand` が無い。`source_scan: full` が無い上限なし走査 |
 | `make reproduction-verify` | `BUILD=` または `DATASET=`、`HASH=1`（任意）| 検査（件数、サイズ、SHA-256、分布、leak）を `audits` に記録 | 常に（追記）| 不整合は `FAIL` を記録して非 0。自動で直さない |
-| `make reproduction-register` | `MS_SNSD_CONFIG=` | オンデマンドの条件と元素材を登録し、スナップショットを書く。混合 WAV は作らない | 同じ内容なら何もしない | 条件検査が PASS でない。上限の無い素材走査 |
+| `make reproduction-register` | `MS_SNSD_CONFIG=` | オンデマンドの条件と元素材を登録し、スナップショットを書く。混合 WAV は作らない。公式規模は `ms_snsd_tfgridnet.yaml` の `source_scan: full` | 同じ内容なら何もしない | 条件検査が PASS でない。`source_scan: full` が無い上限なし走査 |
 | `make reproduction-snapshot` | `DATASET=` | スナップショットを書き出す（DB 設計 §10）| 同じ内容なら何もしない。内容が違えばエラー | `declared_status` が `ready` でない。監査が `PASS` でない。素材の大きさが違う |
 | `make reproduction-rebuild-db` | `OUT=` | staging から**新しい** DB ファイルを作り、全表のハッシュを比較 | `OUT` が既存ならエラー | ハッシュの不一致 |
 
-- 30 分以上のジョブ（公式規模の素材ハッシュ、P7 以降の生成）は、TSUBAME へ投入する前に、ユーザーの明示の指示または追加承認が要る。優先度は `-p -5`。`h_rt` を 29 分にして回避しない（AGENTS.md）。`reproduction-build` は保存済み WAV を作らない。
+- 30 分以上のジョブ（公式規模の素材ハッシュ、P7 以降の生成）は、TSUBAME へ投入する前に、ユーザーの明示の指示または追加承認が要る。優先度は `-p -5`。`h_rt` を 29 分にして回避しない（AGENTS.md）。混合 WAV を書く Make ターゲットは無い。
 - どのコマンドも、`data/db/resource.duckdb`、`data/corpora/`、`data/checkpoints/`、`data/results/`、`data/staging/` の既存の内容を削除・上書きしない。`make db-ingest` を呼ばない。
 - 学習の起動は、既存の学習 CLI（`configs/training/<model>.yaml` を渡す）を使う。新しいコマンドは足さない。
 

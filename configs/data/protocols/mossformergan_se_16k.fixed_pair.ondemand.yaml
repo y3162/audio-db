@@ -1,0 +1,44 @@
+name: mossformergan_se_16k.fixed_pair.ondemand
+version: 1
+kind: fixed_pair
+algorithm: fixed_pair.mossformergan_se_16k
+algorithm_version: 1
+deviation_class: official_effective
+parent_name: mossformergan_se_16k.fixed_pair
+rule:
+  sample_rate: 16000
+  teacher: dry_clean
+  normalize: independent_audio_norm_v1
+  window: 32000
+  order: rank_mod_fixed_v1
+  epoch_unit: utterance
+  global_batch: 4
+  delivery: on_demand
+  resample:
+    tool: soxr
+    quality: HQ
+    source_rate: 48000
+    target_rate: 16000
+    quantization: pcm16
+    length: source_frames_plus_one_div_3
+    order:
+      - read_float32
+      - soxr_hq
+      - clip_to_unit
+      - pcm16_roundtrip
+      - protocol_normalize
+      - protocol_window
+  validation:
+    crop: per_epoch_random
+    batch: 1
+    note: "train.sh defaults to 2 GPUs and an effective batch of 2 per GPU. Validation uses a 2 second crop. 16 kHz PCM_16 is resampled from the 48 kHz source when the batch is rendered."
+official_ref:
+  repo: https://github.com/modelscope/ClearerVoice-Studio
+  commit: 6b3774dc79c46ae8bed2a4fa5f706f0ac8c75c61
+  path: train/speech_enhancement/dataloader/dataloader.py
+  document: docs/training/reproduction/mossformergan.md
+deviations:
+  - id: vb28-ondemand-resample
+    class: official_effective
+    text: "16 kHz PCM_16 is produced at training time from the 48 kHz source with soxr HQ and a PCM_16 round trip. Pre-written 16 kHz wavs are not required. The official converter remains unknown."
+    ref: "UN-3"

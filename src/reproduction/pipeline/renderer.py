@@ -25,6 +25,7 @@ def render_sample(
     normalize: str,
     sample_rate: int,
     verify_on_read: bool = False,
+    resample: dict | None = None,
 ) -> RenderedSample:
     if not sample.case_id:
         raise ReproductionError("fixed-pair rendering requires a case id")
@@ -35,15 +36,25 @@ def render_sample(
     noisy_id = case.get("noisy_asset_id")
     if not clean_id or not noisy_id:
         raise ReproductionError(f"case {sample.case_id} is not a recorded pair")
-    clean, clean_rate = _read_mono(store.path(clean_id), verify_sha=_sha(store, clean_id, verify_on_read))
-    noisy, noisy_rate = _read_mono(store.path(noisy_id), verify_sha=_sha(store, noisy_id, verify_on_read))
-    if clean_rate != sample_rate or noisy_rate != sample_rate:
-        raise ReproductionError(
-            f"case {sample.case_id} is {noisy_rate}/{clean_rate} Hz; "
-            f"refusing to resample to {sample_rate}"
-        )
-    _expect_frames(store, noisy_id, noisy, "noisy")
-    _expect_frames(store, clean_id, clean, "clean")
+    if resample:
+        clean = _resample_asset(store, clean_id, verify_on_read)
+        noisy = _resample_asset(store, noisy_id, verify_on_read)
+        expected = int(case["frames"])
+        if int(clean.shape[0]) != expected or int(noisy.shape[0]) != expected:
+            raise ReproductionError(
+                f"case {sample.case_id} resampled to {clean.shape[0]}/{noisy.shape[0]} samples; "
+                f"the snapshot says {expected}"
+            )
+    else:
+        clean, clean_rate = _read_mono(store.path(clean_id), verify_sha=_sha(store, clean_id, verify_on_read))
+        noisy, noisy_rate = _read_mono(store.path(noisy_id), verify_sha=_sha(store, noisy_id, verify_on_read))
+        if clean_rate != sample_rate or noisy_rate != sample_rate:
+            raise ReproductionError(
+                f"case {sample.case_id} is {noisy_rate}/{clean_rate} Hz; "
+                f"refusing to resample to {sample_rate}"
+            )
+        _expect_frames(store, noisy_id, noisy, "noisy")
+        _expect_frames(store, clean_id, clean, "clean")
     if normalize == "noisy_rms_unit_v1":
         noisy, clean = trim_to_shorter(noisy, clean)
         noisy, clean = noisy_rms_unit(noisy, clean)
@@ -107,6 +118,21 @@ def _read_mono(path: Path, *, verify_sha: str | None) -> tuple[np.ndarray, int]:
     if not np.isfinite(mono).all():
         raise ReproductionError(f"audio file is non-finite: {path}")
     return mono, int(rate)
+
+
+def _resample_asset(store: AssetStore, asset_id: str, verify: bool) -> np.ndarray:
+    from src.reproduction.prepare.resample import SOURCE_RATE, resample_pcm16
+
+    path = store.path(asset_id)
+    audio, rate = _read_mono(path, verify_sha=_sha(store, asset_id, verify))
+    asset = store.asset(asset_id)
+    if int(asset["sample_rate"]) != int(rate) or int(rate) != SOURCE_RATE:
+        raise ReproductionError(f"{path} is {rate} Hz; on-demand resampling expects {SOURCE_RATE}")
+    if int(audio.shape[0]) != int(asset["frames"]):
+        raise ReproductionError(
+            f"{path} has {audio.shape[0]} samples; the snapshot says {asset['frames']}"
+        )
+    return resample_pcm16(audio, int(rate))
 
 
 def _file_sha256(path: Path) -> str:

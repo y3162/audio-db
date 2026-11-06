@@ -15,16 +15,12 @@ file list before one seeded shuffle. That seed is a recorded deviation
 
 from __future__ import annotations
 
-import json
-import os
-import shutil
 from pathlib import Path
 from typing import Any, Sequence
 
 import numpy as np
 import soundfile as sf
 
-from src.data.recipe import sha256_file
 from src.reproduction.errors import ReproductionError
 from src.reproduction.ids import build_id_for, digest, validate_realization
 from src.reproduction.pipeline.seeds import mix_seed
@@ -260,69 +256,6 @@ def render_realization(
     return {"clean": mixed_clean, "noise": mixed_noise, "noisy": noisy}
 
 
-def write_build(
-    definition: dict[str, Any],
-    documents: list[dict[str, Any]],
-    *,
-    audio_root: Path,
-    staging_root: Path,
-    clean_dir: Path,
-    noise_dir: Path,
-    resume: bool = True,
-) -> dict[str, Any]:
-    """Write wavs and a shard manifest. A finished shard is not rewritten."""
-    build_id = str(definition["build_id"])
-    audio_dir = audio_root / GENERATOR / build_id[:16]
-    stage_dir = staging_root / "builds" / build_id
-    _refuse_conflicting_definition(stage_dir, definition)
-    estimate = _estimate_bytes(documents)
-    _require_space(audio_dir if audio_dir.exists() else audio_root, estimate)
-    stage_dir.mkdir(parents=True, exist_ok=True)
-    _atomic_text(stage_dir / "build.json", json.dumps(definition, sort_keys=True, indent=2) + "\n")
-    _atomic_text(stage_dir / "plan.jsonl", "".join(json.dumps(item, sort_keys=True) + "\n" for item in documents))
-    shard_size = int(definition["shard_size"])
-    shard_ids = sorted({int(item["draws"]["gen_index"]) // shard_size for item in documents})
-    written = []
-    for shard_id in shard_ids:
-        manifest_path = stage_dir / "shards" / f"shard-{shard_id:04d}.json"
-        if resume and manifest_path.is_file():
-            written.append(json.loads(manifest_path.read_text(encoding="utf-8")))
-            continue
-        _clear_incomplete_shard(audio_dir, documents, shard_id, shard_size)
-        rows = []
-        for document in documents:
-            gen_index = int(document["draws"]["gen_index"])
-            if gen_index // shard_size != shard_id:
-                continue
-            waves = render_realization(document, {"speech": clean_dir, "noise": noise_dir})
-            for stream, wave in waves.items():
-                rel = _audio_rel(stream, gen_index, shard_size)
-                path = audio_dir / rel
-                _write_wav(path, wave)
-                rows.append(
-                    {
-                        "gen_index": gen_index,
-                        "stream": stream,
-                        "rel_path": rel,
-                        "sha256": sha256_file(path),
-                        "frames": int(wave.shape[0]),
-                        "sample_rate": SAMPLE_RATE,
-                        "size_bytes": path.stat().st_size,
-                    }
-                )
-        manifest = {"build_id": build_id, "shard": shard_id, "files": rows}
-        _atomic_text(manifest_path, json.dumps(manifest, sort_keys=True, indent=2) + "\n")
-        written.append(manifest)
-    verified = {
-        "build_id": build_id,
-        "shards": [item["shard"] for item in written],
-        "files": sum(len(item["files"]) for item in written),
-        "ready": True,
-    }
-    _atomic_text(stage_dir / "verified.json", json.dumps(verified, sort_keys=True, indent=2) + "\n")
-    return {"audio_dir": audio_dir, "staging_dir": stage_dir, "verified": verified}
-
-
 def _assemble(names, frames, rng, audio_length: int, silence: int, stop_at: int | None) -> tuple[list[dict[str, Any]], int]:
     count = len(names)
     if count < 1:
@@ -431,68 +364,6 @@ def _render_pieces(pieces: Sequence[dict[str, Any]], directory: Path | dict[str,
     if not chunks:
         raise ReproductionError("realization has no audio pieces")
     return np.concatenate(chunks)
-
-
-def _audio_rel(stream: str, gen_index: int, shard_size: int) -> str:
-    """Path under ``generator/build_id[:16]/``. The directory index is ``shard_size``."""
-    if shard_size < 1:
-        raise ReproductionError("shard_size must be positive")
-    shard = gen_index // shard_size
-    return f"{stream}/s{shard:04d}/fid{gen_index:07d}.wav"
-
-
-def _write_wav(path: Path, waveform: np.ndarray) -> None:
-    path.parent.mkdir(parents=True, exist_ok=True)
-    temporary = path.with_name(path.name + ".part")
-    sf.write(
-        temporary,
-        np.asarray(waveform, dtype=np.float64),
-        SAMPLE_RATE,
-        format="WAV",
-        subtype="PCM_16",
-    )
-    with temporary.open("rb") as handle:
-        os.fsync(handle.fileno())
-    os.replace(temporary, path)
-
-
-def _atomic_text(path: Path, text: str) -> None:
-    path.parent.mkdir(parents=True, exist_ok=True)
-    temporary = path.with_name(path.name + ".part")
-    temporary.write_text(text, encoding="utf-8")
-    os.replace(temporary, path)
-
-
-def _refuse_conflicting_definition(stage_dir: Path, definition: dict[str, Any]) -> None:
-    path = stage_dir / "build.json"
-    if not path.is_file():
-        return
-    stored = json.loads(path.read_text(encoding="utf-8"))
-    if stored != definition:
-        raise ReproductionError(f"build {definition['build_id']} already has a different definition")
-
-
-def _estimate_bytes(documents: list[dict[str, Any]]) -> int:
-    frames = sum(int(item["output"]["length"]) for item in documents)
-    return frames * 2 * 3
-
-
-def _require_space(path: Path, estimate: int) -> None:
-    target = path if path.exists() else path.parent
-    free = shutil.disk_usage(target).free
-    if free < int(estimate * 1.2):
-        raise ReproductionError(f"not enough free space for {estimate} bytes under {target}")
-
-
-def _clear_incomplete_shard(audio_dir: Path, documents: list[dict[str, Any]], shard_id: int, shard_size: int) -> None:
-    for document in documents:
-        gen_index = int(document["draws"]["gen_index"])
-        if gen_index // shard_size != shard_id:
-            continue
-        for stream in ("clean", "noise", "noisy"):
-            path = audio_dir / _audio_rel(stream, gen_index, shard_size)
-            path.unlink(missing_ok=True)
-            path.with_name(path.name + ".part").unlink(missing_ok=True)
 
 
 def read_frames(directory: Path, names: Sequence[str]) -> dict[str, int]:
@@ -610,84 +481,6 @@ def shape_lines(rows: Sequence[tuple[str, int]]) -> str:
     return "\n".join(lines) + "\n"
 
 
-def verify_build(
-    definition: dict[str, Any],
-    documents: list[dict[str, Any]],
-    *,
-    audio_dir: Path,
-    staging_dir: Path,
-    clean_dir: Path,
-    noise_dir: Path,
-) -> dict[str, Any]:
-    """Check completed shards. A hash mismatch is an error and is not rewritten."""
-    by_index = {int(item["draws"]["gen_index"]): item for item in documents}
-    shard_size = int(definition["shard_size"])
-    shard_ids = sorted({int(item["draws"]["gen_index"]) // shard_size for item in documents})
-    checked = 0
-    clipped = 0
-    peak = 0.0
-    snr_errors = []
-    for shard_id in shard_ids:
-        manifest_path = staging_dir / "shards" / f"shard-{shard_id:04d}.json"
-        if not manifest_path.is_file():
-            raise ReproductionError(f"shard {shard_id} has no manifest")
-        manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
-        if manifest.get("build_id") != definition["build_id"] or int(manifest.get("shard", -1)) != shard_id:
-            raise ReproductionError(f"shard {shard_id} manifest does not match the build")
-        grouped: dict[int, dict[str, dict[str, Any]]] = {}
-        for row in manifest["files"]:
-            grouped.setdefault(int(row["gen_index"]), {})[str(row["stream"])] = row
-        for gen_index, streams in sorted(grouped.items()):
-            document = by_index.get(gen_index)
-            if document is None:
-                raise ReproductionError(f"manifest gen_index {gen_index} is not in the plan")
-            if set(streams) != {"clean", "noise", "noisy"}:
-                raise ReproductionError(f"gen_index {gen_index} is missing a stream")
-            rendered = render_realization(document, {"speech": clean_dir, "noise": noise_dir})
-            nominal = float(document["draws"]["nominal_snr_db"])
-            measured = measured_snr_db(rendered["clean"], rendered["noise"])
-            if abs(measured - nominal / 2.0) > 1e-4:
-                snr_errors.append((gen_index, measured, nominal / 2.0))
-            clean_level = _level_dbfs(rendered["clean"])
-            if abs(clean_level - TARGET_DBFS) > 1e-4:
-                raise ReproductionError(f"gen_index {gen_index} clean level is {clean_level} dBFS")
-            if rendered["clean"].shape != rendered["noisy"].shape or rendered["noise"].shape != rendered["noisy"].shape:
-                raise ReproductionError(f"gen_index {gen_index} streams are not time-aligned")
-            residual = rendered["noisy"] - rendered["clean"] - rendered["noise"]
-            if float(np.max(np.abs(residual))) > 1e-8:
-                raise ReproductionError(f"gen_index {gen_index} is not clean + noise")
-            for stream, wave in rendered.items():
-                row = streams[stream]
-                path = audio_dir / str(row["rel_path"])
-                _check_written(path, row, wave, gen_index, stream)
-                overflow = int(np.count_nonzero(np.abs(wave) >= 1.0))
-                clipped += overflow
-                peak = max(peak, float(np.max(np.abs(wave))))
-                checked += 1
-    if snr_errors:
-        raise ReproductionError(f"measured SNR does not match half the nominal SNR: {snr_errors[:3]}")
-    report = {
-        "build_id": definition["build_id"],
-        "status": "PASS",
-        "shard_ids": [f"{shard_id:04d}" for shard_id in shard_ids],
-        "files": checked,
-        "clipped_samples": clipped,
-        "peak_abs": peak,
-        "snr": "half_nominal",
-        "level_dbfs": TARGET_DBFS,
-        "pcm16": True,
-    }
-    _atomic_text(staging_dir / "verify.json", json.dumps(report, sort_keys=True, indent=2) + "\n")
-    return report
-
-
-def _level_dbfs(wave: np.ndarray) -> float:
-    rms = float(np.sqrt(np.mean(np.asarray(wave, dtype=np.float64) ** 2)))
-    if rms <= 0.0:
-        raise ReproductionError("level is undefined for a silent waveform")
-    return 20.0 * float(np.log10(rms))
-
-
 def _pcm16_roundtrip(wave: np.ndarray) -> np.ndarray:
     """Match libsndfile's float PCM_16 read-back.
 
@@ -699,23 +492,3 @@ def _pcm16_roundtrip(wave: np.ndarray) -> np.ndarray:
     return codes / 32768.0
 
 
-def _check_written(path: Path, row: dict[str, Any], wave: np.ndarray, gen_index: int, stream: str) -> None:
-    if path.name.endswith(".part") or not path.is_file():
-        raise ReproductionError(f"{stream} gen_index {gen_index} is missing or still a partial file")
-    info = sf.info(path)
-    if int(info.samplerate) != SAMPLE_RATE or int(info.channels) != 1 or info.subtype != "PCM_16":
-        raise ReproductionError(f"{path} is not 16 kHz mono PCM_16")
-    if int(info.frames) != int(wave.shape[0]) or int(info.frames) != int(row["frames"]):
-        raise ReproductionError(f"{path} frame count does not match the plan")
-    if path.stat().st_size != int(row["size_bytes"]):
-        raise ReproductionError(f"{path} size does not match the manifest")
-    digest_value = sha256_file(path)
-    if digest_value != row["sha256"]:
-        raise ReproductionError(f"{path} sha256 does not match the manifest")
-    audio, rate = sf.read(path, dtype="float64", always_2d=False)
-    if int(rate) != SAMPLE_RATE or audio.shape != wave.shape:
-        raise ReproductionError(f"{path} decoded shape does not match the plan")
-    expected = _pcm16_roundtrip(wave)
-    # Float rounding can move one sample by a single PCM code.
-    if float(np.max(np.abs(audio - expected))) > (1.0 / 32768.0) + 1e-9:
-        raise ReproductionError(f"{path} is not the PCM_16 rendering of the planned mix")

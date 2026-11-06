@@ -1,4 +1,6 @@
-# Leakage-safe MossFormerGAN. Train 10,700, validation p286/p287.
+# Leakage-safe MossFormerGAN on mossformergan.vb28.ondemand.safe@1.
+# 16 kHz PCM_16 is resampled from the 48 kHz source when a batch is rendered.
+# Train 10,700, validation p286/p287.
 # One process, global batch 2 (micro 1 x accumulation 2). 121 passes.
 
 seed: 777
@@ -9,7 +11,7 @@ max_steps: 647350
 segment_size: 32000
 loss: official
 grad_clip: 10.0
-checkpoint_dir: ./data/results/training/reproduction/mossformergan.vb28.safe
+checkpoint_dir: ./data/results/training/reproduction/mossformergan.vb28.ondemand.safe
 checkpoint_interval: 5350
 validation_interval: 5350
 best_checkpoint_start_epoch: 40
@@ -35,7 +37,7 @@ model:
 
 data:
   pipeline: reproduction
-  dataset: mossformergan.vb28.safe@1
+  dataset: mossformergan.vb28.ondemand.safe@1
   allow_test_selection: false
   load_workers: 4
   prefetch: true
