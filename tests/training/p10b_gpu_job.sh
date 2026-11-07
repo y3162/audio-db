@@ -1,8 +1,10 @@
 #!/bin/bash
 # P10-B official-width GPU smoke. No interactive input.
 # Usage: p10b_gpu_job.sh MODEL GPU_COUNT RUN_ID
+# On a shared host, set CUDA_VISIBLE_DEVICES to exactly GPU_COUNT free devices
+# before starting. A dedicated allocation can leave it unset.
 set -u
-cd /gs/bs/tga-shinoda/seki/exp/audio-db
+cd "$(cd "$(dirname "$0")/../.." && pwd)"
 MODEL="${1:?model}"
 GPUS="${2:?gpu count}"
 RUN_ID="${3:?run id}"
@@ -25,6 +27,14 @@ echo "START_EPOCH ${START_EPOCH}"
 echo "HOST $(hostname)"
 echo "JOB_ID ${JOB_ID:-unset}"
 echo "MODEL ${MODEL} GPUS ${GPUS} RUN_ID ${RUN_ID}"
+echo "CUDA_VISIBLE_DEVICES ${CUDA_VISIBLE_DEVICES:-unset}"
+if [ -n "${CUDA_VISIBLE_DEVICES:-}" ]; then
+  VISIBLE_COUNT=$(awk -F, '{print NF}' <<< "${CUDA_VISIBLE_DEVICES}")
+  if [ "$VISIBLE_COUNT" -ne "$GPUS" ]; then
+    echo "VISIBLE_GPU_MISMATCH ${VISIBLE_COUNT} != ${GPUS}"
+    stop 3
+  fi
+fi
 echo "HEAD $(git rev-parse HEAD)"
 echo "DIRTY $(git status --porcelain | wc -l)"
 echo "IMPL_SHA256 $(
@@ -134,6 +144,7 @@ def state_of(directory):
     for path in sorted(directory.glob("step_*.pt")):
         payload = torch.load(path, map_location="cpu", weights_only=False)
         saved = payload.get("data_state") or {}
+        nested = saved.get("dataset") if isinstance(saved.get("dataset"), dict) else {}
         found[path.name] = {
             "global_step": payload.get("global_step"),
             "epoch": payload.get("epoch"),
@@ -141,8 +152,8 @@ def state_of(directory):
             "data_epoch": saved.get("epoch"),
             "update_in_epoch": saved.get("update_in_epoch"),
             "plan_hash": saved.get("plan_hash"),
-            "dataset_id": saved.get("dataset_id"),
-            "snapshot_hash": saved.get("snapshot_hash"),
+            "dataset_id": saved.get("dataset_id") or nested.get("dataset_id"),
+            "snapshot_hash": saved.get("snapshot_hash") or nested.get("snapshot_hash"),
             "world_size": saved.get("world_size"),
         }
     return found
