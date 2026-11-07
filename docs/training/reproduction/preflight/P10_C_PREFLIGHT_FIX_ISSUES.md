@@ -11,7 +11,7 @@
 | P10P-A-002 | RESOLVED | 検証とプレビューは全長を Generator に入れる。長さ 1650 と切り詰め 1600 の magnitude 差は 1.5627。同じ重みの公式経路との差は 0。更新経路の長さ拒否は残る |
 | P10P-A-006 | RESOLVED | 残す重みは G1 と D4。担当テストは公式 state_dict との最大絶対差 0。`7729.488281` は正解にしていない |
 | P10P-A-007 / P10P-D-004 | MITIGATED | 1 GPU は失敗 micro-batch を backward せず、後続の成功で蓄積窓を埋める。`official_step` は失敗を含めて増え、`global_step` は Optimizer 更新だけ数える。データ epoch の末では更新回数がずれても検証し、plateau に損失を渡す。2 GPU は片 rank の失敗で全 rank がその micro-batch を backward しない。公式の片 rank スキップとは違うので RESOLVED ではない |
-| P10P-A-008 / P10P-D-002 | MITIGATED | 824 件は world 2 で 412 と 412。公式 DistributedSampler の epoch 0 と一致した。CUDA の world 2 以上だけ SyncBatchNorm。`find_unused_parameters=True`。Discriminator の `broadcast_buffers` は True。公式 2 GPU 学習との数値一致は NOT_TESTED。2 GPU の本格開始は NO-GO |
+| P10P-A-008 / P10P-D-002 | MITIGATED | 824 件は world 2 で 412 と 412。公式 DistributedSampler の epoch 0 と一致した。CUDA の world 2 以上だけ SyncBatchNorm。`find_unused_parameters=True`。Discriminator の `broadcast_buffers` は True。Fix.2-A で、公式の 3 forward と 2 backward は Discriminator の rank を割る。audio-db は増分を平均するので公式 2 GPU の重みとは一致しない。2 GPU の本格開始は NO-GO |
 | P10P-B-005 / P10P-F-001 | RESOLVED | 本格 YAML を新設した。p10b は上書きしていない。スモーク cap は本格 YAML に無い |
 | P10P-F-002 | RESOLVED | 本格 YAML の `checkpoint_interval` は 0。p10b の 2 はスモークのまま |
 | P10P-F-003 | RESOLVED | `required_world_size` が実プロセス数と違うときは `build_task` の前に拒否する |
@@ -25,7 +25,7 @@
 | P10P-A-011 / P10P-G-004 | OPEN | 検証 crop の乱数源は変えていない |
 | P10P-B-003 | OPEN | `cv_synthetic_small` は UNKNOWN のまま。1,024 件はその名前ではない |
 | P10P-B-006 | OPEN | 標準偏差の扱いは変えていない |
-| P10P-D-001 | MITIGATED | 成功 micro-batch ごとに、増分勾配を rank 間平均してから走っている和を clip する。実音声 2 micro-batch の clip 前 norm は約 45 と 56 で、閾値 10 を超えた。頻度は測っていない。公式の蓄積済み勾配の再平均はコピーしていない |
+| P10P-D-001 | MITIGATED | 成功 micro-batch ごとに、増分勾配を rank 間平均してから走っている和を clip する。同期済みの蓄積勾配を平均し直すことと、増分だけを平均することは、PyTorch 2.6 では同じ値になる。公式の 2 回目の Discriminator backward は all-reduce されない。その割れはコピーしない。1 GPU の合成 2 秒では clip 前の Generator norm が 326.47 と 16.93、別初期化の 2 GPU では 26.28 と 56.13 で、閾値 10 を超えた。最後に 1 回だけ clip する更新とは重みが違う |
 | P10P-E-001 / P10P-E-003 | MITIGATED | `validation_pending` を検証の前に残す。検証成果物だけで best を確定しない。公開済み pickle と周辺ファイルの別更新は残る |
 | P10P-F-004 | RESOLVED | CLI の `--resume` は `logging` 以外の差を拒否する。上限を外した再開はモデル構築の前に失敗する |
 | P10P-F-006 | OPEN | `complete.json` の中身は変えていない。完了の唯一の証拠にはしない、という Preflight の注記だけがある |

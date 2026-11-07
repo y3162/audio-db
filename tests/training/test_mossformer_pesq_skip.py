@@ -267,6 +267,102 @@ class MossFormerPesqSkipTests(unittest.TestCase):
             self.assertFalse(torch.equal(before, task.discriminator.sigmoid.slope.detach()))
             self.assertNotEqual(task.optim_d.state_dict()["state"], {})
 
+    def test_failure_sequences_keep_the_official_window(self):
+        with tempfile.TemporaryDirectory() as directory:
+            task = MossFormerGANTask(_config(Path(directory)), torch.device("cpu"))
+            initial = copy.deepcopy(task.state_dict())
+            slope = task.discriminator.sigmoid.slope.detach().clone()
+            sequences = {
+                "A": [False, False],
+                "B": [True, False, False],
+                "C": [False, True, False],
+                "D": [False, False, True],
+                "E": [True, True],
+            }
+            expected = {
+                "A": (2, 2, 0, 1, 2, 0, 1.0),
+                "B": (3, 2, 1, 1, 3, 0, 1.0),
+                "C": (3, 2, 1, 1, 3, 0, 1.0),
+                "D": (3, 2, 1, 1, 3, 0, 1.0),
+                "E": (2, 0, 2, 0, 2, 0, 0.0),
+            }
+
+            def fake_terms(self, module, discriminator, clean, noisy):
+                del module
+                audio = torch.zeros(clean.shape[0], 8)
+                magnitude = torch.zeros(clean.shape[0], 1, 201, 19)
+                return {
+                    "generator": discriminator.sigmoid.slope.reshape(-1)[:1].sum(),
+                    "teacher": audio,
+                    "audio": audio,
+                    "label_mag": magnitude,
+                    "pred_mag": magnitude,
+                }
+
+            batch = {"clean": torch.zeros(1, 32), "noisy": torch.zeros(1, 32), "case_id": ["schedule"]}
+            for name, pattern in sequences.items():
+                task.load_state_dict(copy.deepcopy(initial))
+                task.optim_g.zero_grad(set_to_none=True)
+                task.optim_d.zero_grad(set_to_none=True)
+                calls = {"n": 0}
+
+                def metric(teacher, audio, rate, pattern=pattern, calls=calls):
+                    del audio, rate
+                    failed = pattern[calls["n"]]
+                    calls["n"] += 1
+                    if failed:
+                        return None
+                    return torch.ones(teacher.shape[0])
+
+                with patch.object(MossFormerGANTask, "_generator_terms", fake_terms):
+                    with patch("src.training.se.mossformergan.metric_targets", metric):
+                        metrics = task.train_update([batch] * len(pattern), 2)
+                processed, succeeded, failed, optim, official, accu, applied = expected[name]
+                self.assertEqual(calls["n"], len(pattern), name)
+                self.assertEqual(metrics["update_applied"], applied, name)
+                self.assertEqual(task.counters["micro_batches_processed"], processed, name)
+                self.assertEqual(task.counters["micro_batches_succeeded"], succeeded, name)
+                self.assertEqual(task.counters["micro_batches_failed"], failed, name)
+                self.assertEqual(task.counters["optimizer_updates"], optim, name)
+                self.assertEqual(task.counters["official_step"], official, name)
+                self.assertEqual(task._accu_count, accu, name)
+                changed = not torch.equal(slope, task.discriminator.sigmoid.slope.detach())
+                self.assertEqual(changed, applied == 1.0, name)
+                if applied == 0.0:
+                    self.assertIsNone(task.discriminator.sigmoid.slope.grad)
+
+    def test_epoch_start_drops_a_partial_window(self):
+        with tempfile.TemporaryDirectory() as directory:
+            task = MossFormerGANTask(_config(Path(directory)), torch.device("cpu"))
+
+            def fake_terms(self, module, discriminator, clean, noisy):
+                del module
+                audio = torch.zeros(clean.shape[0], 8)
+                magnitude = torch.zeros(clean.shape[0], 1, 201, 19)
+                return {
+                    "generator": discriminator.sigmoid.slope.reshape(-1)[:1].sum(),
+                    "teacher": audio,
+                    "audio": audio,
+                    "label_mag": magnitude,
+                    "pred_mag": magnitude,
+                }
+
+            batch = {"clean": torch.zeros(1, 32), "noisy": torch.zeros(1, 32), "case_id": ["partial"]}
+            with patch.object(MossFormerGANTask, "_generator_terms", fake_terms):
+                with patch("src.training.se.mossformergan.metric_targets", return_value=torch.ones(1)):
+                    metrics = task.train_update([batch], 2)
+            self.assertEqual(metrics["update_applied"], 0.0)
+            self.assertEqual(task._accu_count, 1)
+            self.assertIsNotNone(task.discriminator.sigmoid.slope.grad)
+            kept = task.discriminator.sigmoid.slope.grad.detach().clone()
+            task.start_epoch(resume_mid_epoch=True)
+            self.assertEqual(task._accu_count, 1)
+            self.assertTrue(torch.equal(kept, task.discriminator.sigmoid.slope.grad))
+            task.start_epoch(resume_mid_epoch=False)
+            self.assertEqual(task._accu_count, 0)
+            self.assertIsNone(task.discriminator.sigmoid.slope.grad)
+            self.assertIsNone(next(task.generator.parameters()).grad)
+
     def test_ddp_rank_disagreement_and_both_ranks_skip(self):
         import multiprocessing as mp
 

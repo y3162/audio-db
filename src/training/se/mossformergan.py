@@ -386,8 +386,15 @@ class MossFormerGANTask:
 
         Forwards stay in ``no_sync``. After each successful backward, only the
         new gradient is averaged across ranks, added to the running sum, and
-        then clipped. Official DDP would average on every backward without
-        ``no_sync``, which also averages gradients already accumulated.
+        then clipped. On PyTorch 2.6, re-averaging an accumulated gradient that
+        is already identical on every rank matches that increment average.
+        The released loop does not use ``no_sync``. Its discriminator is
+        forwarded three times and then backward runs twice. The second
+        backward does not all-reduce, so discriminator weights diverge across
+        ranks. This method still averages the discriminator-loss increment.
+        That is the safe stand-in, not a copy of the divergent step.
+        World size 1 uses the released order: scale by the accumulation count,
+        backward, clip that module, and do this again for the other loss.
         Discriminator DDP uses ``broadcast_buffers=True``. That broadcast is
         the DDP forward itself, so this method does not broadcast again.
 
@@ -478,7 +485,13 @@ class MossFormerGANTask:
         return int(flag.item()) == 1
 
     def _backward_average_and_clip(self, loss: torch.Tensor, clip_module: torch.nn.Module) -> None:
-        """Backward, average only the new gradient, then clip the running sum."""
+        """Backward, average only the new gradient, then clip the running sum.
+
+        World size 1 clips whatever ``backward`` just added to ``.grad``.
+        A larger world averages the new increment before that clip. Clipping
+        the sum once at the end of the window is a different update once a
+        micro-batch norm exceeds the threshold.
+        """
         modules = (unwrap(self.generator), unwrap(self.discriminator))
         before: dict[int, torch.Tensor | None] = {}
         for module in modules:
