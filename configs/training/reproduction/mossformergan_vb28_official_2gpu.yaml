@@ -8,6 +8,9 @@ seed: 777
 deterministic: false
 global_batch_size: 4
 micro_batch_size_per_gpu: 1
+required_world_size: 2
+experiment_profile: full
+experiment_claim: official_faithful
 max_steps: 350053
 segment_size: 32000
 loss: official

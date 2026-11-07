@@ -18,6 +18,8 @@ _TOP = {
     "deterministic",
     "global_batch_size",
     "micro_batch_size_per_gpu",
+    "required_world_size",
+    "expected_global_batch",
     "max_steps",
     "verification_max_updates",
     "logical_steps_per_epoch",
@@ -29,6 +31,7 @@ _TOP = {
     "loss",
     "checkpoint_dir",
     "checkpoint_interval",
+    "checkpoint_retention",
     "validation_interval",
     "best_checkpoint_start_epoch",
     "grad_clip",
@@ -38,7 +41,17 @@ _TOP = {
     "data",
     "runtime",
     "logging",
+    "experiment_profile",
+    "experiment_claim",
 }
+_CLAIMS = {
+    "official_faithful",
+    "leakage_safe",
+    "research_checkpoint_selection",
+    "official_algorithm_fixed_seed",
+}
+_PROFILES = {"full", "smoke"}
+_RETENTION = {"keep_latest", "keep_best", "protect_nbest", "bytes_per_checkpoint"}
 _OPTIMIZER = {"name", "lr", "betas", "weight_decay", "amsgrad"}
 _SCHEDULER = {
     "name",
@@ -133,6 +146,16 @@ def load_training_config(path: str | Path) -> dict[str, Any]:
         "data": _data(raw["data"]),
         "runtime": _runtime(raw["runtime"]),
     }
+    if "required_world_size" in raw:
+        config["required_world_size"] = _int(raw["required_world_size"], "required_world_size")
+    if "expected_global_batch" in raw:
+        config["expected_global_batch"] = _int(raw["expected_global_batch"], "expected_global_batch")
+    if "checkpoint_retention" in raw:
+        config["checkpoint_retention"] = _checkpoint_retention(raw["checkpoint_retention"])
+    if "experiment_profile" in raw:
+        config["experiment_profile"] = _choice(raw["experiment_profile"], "experiment_profile", _PROFILES)
+    if "experiment_claim" in raw:
+        config["experiment_claim"] = _choice(raw["experiment_claim"], "experiment_claim", _CLAIMS)
     if "verification_max_updates" in raw:
         limit = _int(raw["verification_max_updates"], "verification_max_updates")
         if limit >= config["max_steps"]:
@@ -466,6 +489,22 @@ def _reproduction_data(raw: dict[str, Any]) -> dict[str, Any]:
         parsed["max_updates_per_epoch"] = _int(raw["max_updates_per_epoch"], "data.max_updates_per_epoch")
     if "validation_max_batches" in raw:
         parsed["validation_max_batches"] = _int(raw["validation_max_batches"], "data.validation_max_batches")
+    return parsed
+
+
+def _checkpoint_retention(raw: Any) -> dict[str, Any]:
+    if not isinstance(raw, dict):
+        raise TrainingError("checkpoint_retention must be a mapping")
+    _unknown(raw, _RETENTION, "checkpoint_retention")
+    parsed = {
+        "keep_latest": _int(raw.get("keep_latest", 3), "checkpoint_retention.keep_latest"),
+        "keep_best": _bool(raw.get("keep_best", True), "checkpoint_retention.keep_best"),
+        "protect_nbest": _bool(raw.get("protect_nbest", True), "checkpoint_retention.protect_nbest"),
+    }
+    if "bytes_per_checkpoint" in raw:
+        parsed["bytes_per_checkpoint"] = _int(
+            raw["bytes_per_checkpoint"], "checkpoint_retention.bytes_per_checkpoint"
+        )
     return parsed
 
 

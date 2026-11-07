@@ -2,6 +2,10 @@
 
 本格学習はこの計画では開始しない。GPU 台数は公式プロトコルの要求である。どのマシンのどの GPU を使うかは、実行時の別指示に従う。
 
+2026-11-07 の preflight 修正で、検証方式は次に固定した。TF-Locoformer の checkpoint 選択は、親 validation 36,000 件から seed `20261107` で選んだ 1,024 件（`research_valid_fixed_v1`）を使う研究用 Protocol である。`cv_synthetic_small` ではなく、`leakage_safe` でもない。登録と snapshot は、この作業木に `reproduction.duckdb` が無いため未発行である。本格 YAML は `configs/training/reproduction/tf_locoformer_dns_research_valid_full.yaml` で、Preflight は data gap により FAIL する。親 Dataset は変えていない。36,000 件を毎 epoch 見る案 A では 150 epoch を始めない。
+
+TF-GridNet の本格 YAML は `configs/training/reproduction/tf_gridnet_ms_snsd_full.yaml` である。生成は公式アルゴリズムに固定 `mix_seed` を足したもので、公式 WAV とのビット一致や統計的同等の実証ではない。Preflight の PASS は実行条件の確認であり、公式再現の成功ではない。
+
 時間は `AUDIO_DB_STEP_SYNC=1` の今回の計測から置く。1 step は同期した更新時間とデータ待ちを足した値である。安全余裕は、その学習側に 1.3 を掛ける。検証の実測が全件のときは 1.5 を掛ける。早く plateau や early stop で終わる場合、この時間は上限である。
 
 計測の詳細は [P10_B2_VERIFICATION](P10_B2_VERIFICATION.md)。
@@ -72,7 +76,7 @@
 | Checkpoint | epoch 末に 150 個残すと 150 × 179,910,164 バイト = 25.1 GiB。書き込みは 1 回 2.29 秒。`ave_5best` は上位 5 epoch の追加ファイル |
 | 中断 | 12 更新は `INTERRUPTED`。`complete.json` は無い。学習率は step 番号に比例した。P10-B.1 の公式幅 4 GPU で、中断再開と連続ランの case id と plan hash は一致している |
 | 公式との差 | 平均 Checkpoint の拡張子は `.pt`。検証セット名は `cv_synthetic_small` ではない。`valid/si_snr` は公式 stats に無い |
-| 開始条件 | Dataset は変えていない。150 epoch を始める前に、下の検証案のどれで選択するかを決める。`max_updates` と `validation_max_updates` と `verification_max_updates` を外す場合、現行コードは案 A の全件を毎 epoch 行う |
+| 開始条件 | 選択は案 B。1,024 件の定義はある。snapshot が未発行なので、研究用本格 YAML の Preflight は FAIL であり、150 epoch は始めない。案 A の 36,000 件を毎 epoch 見る実行もしない |
 
 ### 検証案
 
@@ -84,7 +88,7 @@
 | B. 固定した小さい集合 | 発話数に比例。4 rank で約 0.560 秒/発話 | その 150 倍 | 学習 384 時間に検証を足す | 集合を決めてから同じ 1.3 と 1.5 を掛ける |
 | C. `cv_synthetic_small` | 件数 UNKNOWN | 見積もれない | 見積もれない | 公式の一覧が無いので開始条件にできない |
 
-案 A のまま 150 epoch を始めると、検証が学習より長い。patience 10 の early stop で短くなることはある。案 B は別 Protocol で、公式再現とは呼ばない。案 C は実装しない。
+案 A のまま 150 epoch を始めると、検証が学習より長い。案 B を採用した。1,024 発話、1 発話 14 chunk、合計 14,336 chunk。4 rank なら rank あたり 3,584 chunk。0.1602 秒/chunk の外挿で 1 回 574 秒、150 epoch で 23.92 時間。学習 384.4 時間と、epoch 末の書き込み 2.29 秒 × 150 を足すと約 408.4 時間である。これは再計測ではない。雑音ファイルは train と共有する。`leakage_safe` とは呼ばない。案 C は実装しない。
 
 ## 共通の開始前チェック
 

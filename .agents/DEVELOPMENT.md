@@ -43,6 +43,7 @@
 .venvs/se/bin/python -m unittest discover -s tests/asr -v         # ASR。重みをダウンロードしない
 .venvs/se/bin/python -m unittest discover -s tests/evaluation -v  # 評価。一時 DB だけを書き、resource.duckdb は変更しない
 .venvs/se/bin/python -m unittest discover -s tests/training -v    # 学習。CPU。resource.duckdb は開かない
+.venvs/se/bin/python -m src.training.se.cli --config configs/training/reproduction/tf_gridnet_ms_snsd_full.yaml --preflight --world-size 2  # 学習は始めない。PASS は公式再現の成功ではない
 .venvs/official/bin/python -m unittest tests.training.test_chunk_official -v  # ピン留め ESPnet の chunk iterator との照合。PYTHONPATH に espnet の checkout を足す。`.venvs/se` は typeguard が無く、このテストは SKIP になる
 # P5 の実 DDP は tests/training/p5_gpu_job.sh。node_h=1 は 2 GPU、node_f=1 は 4 GPU。承認された h_rt の合計を超えて投入しない
 .venvs/se/bin/python -m unittest discover -s tests/reproduction -v  # 再現 DB と固定ペア Pipeline。P1・P2 の単体テストは合成データ。P3 の実スナップショット試験と P4 の来歴スモークは data/db/snapshots を読む。resource.duckdb は読み取り専用。P4 の判定テストは tests/evaluation/test_provenance.py。P8 は tests/reproduction/test_p8_dfn3.py で、data/db/reproduction-p8.duckdb と代替素材のスナップショットを読む。分布試験は 4,000 混合で数分かかる。公式 libdf の波形照合はしない

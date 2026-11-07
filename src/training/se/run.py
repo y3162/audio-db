@@ -6,6 +6,7 @@ import fcntl
 import os
 from pathlib import Path
 
+import torch
 import torch.distributed as dist
 
 from src.training.core.batch import plan_batches
@@ -79,6 +80,22 @@ def execute(config_path: str | Path, *, resume: str | Path | None = None,
         assert_gpu_idle(local_rank, allow_busy=config["runtime"]["allow_busy_gpu"])
     set_determinism(config["deterministic"], cuda=device_name == "cuda")
     process = setup_process(device_name)
+    required_world = config.get("required_world_size")
+    if required_world is not None and int(required_world) != int(process.world_size):
+        raise TrainingError(
+            f"required_world_size {required_world} does not match "
+            f"process world_size {process.world_size}"
+        )
+    if strict_resume and resume is not None:
+        from src.training.core.checkpoint import load_checkpoint
+        from src.training.se.preflight import resume_config_mismatch
+
+        saved = load_checkpoint(Path(resume), torch.device("cpu"))
+        mismatches = resume_config_mismatch(saved.get("config") or {}, config)
+        if mismatches:
+            raise TrainingError(
+                "checkpoint configuration does not match this experiment: " + ", ".join(mismatches)
+            )
     data = config["data"]
     plan_world = process.world_size
     virtual = data.get("virtual_world_size")
@@ -198,14 +215,6 @@ def execute(config_path: str | Path, *, resume: str | Path | None = None,
         validation_interval=config["validation_interval"],
         config=config,
     )
-    if strict_resume and resume is not None:
-        from src.training.core.checkpoint import load_checkpoint
-        saved = load_checkpoint(Path(resume), process.device)
-        ignored = {"logging", "verification_max_updates"}
-        saved_identity = {k: v for k, v in saved.get("config", {}).items() if k not in ignored}
-        current_identity = {k: v for k, v in config.items() if k not in ignored}
-        if saved_identity != current_identity:
-            raise TrainingError("checkpoint configuration does not match this experiment")
     lock = experiment_lock(Path(config["checkpoint_dir"])) if process.rank == 0 else None
     try:
         trainer.fit(train, validation, resume=None if resume is None else Path(resume),

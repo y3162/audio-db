@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import os
 import pickle
+import re
 import tempfile
 from pathlib import Path
 from typing import Any
@@ -76,3 +77,70 @@ def _is_relative_to(path: Path, parent: Path) -> bool:
     except ValueError:
         return False
     return True
+
+
+_STEP_NAME = re.compile(r"^step_(\d+)\.pt$")
+_EPOCH_NAME = re.compile(r"^(\d+)epoch\.pt$")
+
+
+def prune_run_checkpoints(
+    directory: Path,
+    owned: set[str],
+    *,
+    keep_latest: int,
+    keep_best: bool,
+    best_names: set[str],
+    nbest_names: set[str],
+    extra_protected: set[str] | None = None,
+) -> list[str]:
+    """Delete step and epoch files this run owns, after a successful save.
+
+    The latest ``keep_latest`` resumable ``step_*.pt`` files stay. Best files,
+    n-best average inputs, symlink targets, and names in ``extra_protected``
+    stay as well. Files outside ``directory`` and files this run does not own
+    are left in place. A symlink itself is not removed here.
+    """
+    if keep_latest < 0:
+        raise TrainingError("keep_latest must be zero or positive")
+    root = directory.resolve()
+    if not root.is_dir():
+        return []
+    symlink_targets: set[Path] = set()
+    for child in root.iterdir():
+        if not child.is_symlink():
+            continue
+        try:
+            symlink_targets.add(child.resolve())
+        except OSError:
+            continue
+    steps: list[tuple[int, str]] = []
+    for child in root.iterdir():
+        match = _STEP_NAME.match(child.name)
+        if match and child.is_file() and not child.is_symlink():
+            steps.append((int(match.group(1)), child.name))
+    steps.sort()
+    protected = {name for _, name in steps[-keep_latest:]} if keep_latest else set()
+    protected.update(nbest_names)
+    protected.update(extra_protected or set())
+    if keep_best:
+        protected.update(best_names)
+    deleted: list[str] = []
+    for name in sorted(owned):
+        if not (_STEP_NAME.match(name) or _EPOCH_NAME.match(name)):
+            continue
+        if name in protected:
+            continue
+        path = root / name
+        if path.is_symlink() or not path.exists():
+            continue
+        try:
+            resolved = path.resolve()
+        except OSError:
+            continue
+        if resolved.parent != root:
+            continue
+        if resolved in symlink_targets or not resolved.is_file():
+            continue
+        resolved.unlink()
+        deleted.append(name)
+    return deleted

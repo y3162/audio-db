@@ -1,0 +1,90 @@
+# Full run config, not a smoke.
+# Official MS-SNSD algorithm with a fixed mix_seed. The RNG is reproducible.
+# The WAVs are not bit-identical to the official files, and this file is not
+# a demonstrated statistical equivalence. Checkpoint selection uses valid.loss.
+# max_steps 553521 is the planned optimizer-update total for 35 epochs in
+# docs/training/reproduction/P10_C_EXECUTION_PLAN.md. max_steps 2000000 is
+# not that official count. validation_interval 0 and checkpoint_interval 0
+# validate and save at epoch end for this chunk model, not every N updates.
+
+seed: 0
+deterministic: false
+global_batch_size: 4
+micro_batch_size_per_gpu: 2
+required_world_size: 2
+experiment_profile: full
+experiment_claim: official_algorithm_fixed_seed
+max_steps: 553521
+segment_size: 48000
+loss: official
+grad_clip: 5.0
+checkpoint_dir: data/results/training/reproduction/tf_gridnet.ms_snsd.espnet_recipe-full
+checkpoint_interval: 0
+checkpoint_retention:
+  keep_latest: 3
+  keep_best: true
+  protect_nbest: true
+validation_interval: 0
+best_checkpoint_start_epoch: 0
+
+chunk_iterator:
+  num_samples_per_epoch: 5000
+  chunk_length: 48000
+  chunk_shift_ratio: 0.5
+  num_cache_chunks: 1024
+  shuffle: true
+  max_epochs: 35
+  early_stopping_patience: 5
+  keep_nbest: 5
+
+optimizer:
+  name: adam
+  lr: 0.001
+  betas: [0.9, 0.999]
+  weight_decay: 0.0
+
+scheduler:
+  name: plateau
+  factor: 0.7
+  patience: 1
+
+model:
+  name: tf_gridnet
+  variant: ms-snsd
+  init: xavier_uniform
+  sampling_rate: 16000
+  architecture:
+    n_fft: 512
+    stride: 256
+    n_layers: 4
+    lstm_hidden_units: 128
+    attn_n_head: 4
+    attn_approx_qk_dim: 512
+    emb_dim: 32
+    emb_ks: 4
+    emb_hs: 4
+    activation: prelu
+    eps: 1.0e-5
+  stft: {}
+
+data:
+  pipeline: reproduction
+  dataset: tf_gridnet.ms_snsd.espnet_recipe@1
+  allow_test_selection: false
+  load_workers: 2
+  prefetch: false
+  verify_on_read: false
+
+runtime:
+  device: cuda
+  allow_busy_gpu: false
+
+logging:
+  tensorboard:
+    enabled: true
+    scalar_interval: 1
+    audio:
+      enabled: false
+      max_cases: 0
+      max_seconds: 1
+    spectrogram: false

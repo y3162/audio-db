@@ -13,10 +13,10 @@ def predict(task, batch, name):
     noisy = batch['noisy'].to(task.device)
     module = unwrap(task.generator)
     if name == 'mp_senet':
-        from src.training.se.mp_senet import align_validation_length
-        length = align_validation_length(clean.shape[-1], int(task.spec['hop_size']), int(task.spec['n_fft']))
-        clean, noisy = clean[..., :length], noisy[..., :length]
-        estimate = task._generate(clean, noisy, generator=module)['audio']
+        # Same full-length input as validation_report. Centered iSTFT may be shorter.
+        estimate = task._generate(
+            clean, noisy, generator=module, allow_official_istft_length=True,
+        )['audio']
     elif name == 'semambapp':
         estimate = task._generate(clean, noisy, module)['audio']
     elif name == 'tf_gridnet':

@@ -1,0 +1,256 @@
+"""PESQ and non-finite MossFormerGAN updates are skipped on every rank."""
+
+from __future__ import annotations
+
+import copy
+import json
+import math
+import os
+import tempfile
+import traceback
+import unittest
+from pathlib import Path
+from unittest.mock import patch
+
+import torch
+import torch.distributed as dist
+
+from src.training.core.distributed import ProcessInfo
+from src.training.se.mossformergan import MossFormerGANTask
+from tests.training.support import free_tcp_port, paired_dataset
+from tests.training.test_mossformer_syncbn_collective import install_cpu_gloo_syncbn
+
+
+def _config(root: Path) -> dict:
+    return {
+        "seed": 7,
+        "loss": "official",
+        "grad_clip": 10.0,
+        "optimizer": {"name": "adamw", "lr": 5e-4, "betas": [0.9, 0.999], "weight_decay": 0.01},
+        "scheduler": {"name": "none"},
+        "model": {
+            "name": "mossformergan",
+            "variant": "se_16k",
+            "sampling_rate": 16000,
+            "architecture": {"n_fft": 400, "win_len": 400, "hop": 100, "num_channel": 64},
+        },
+        "checkpoint_dir": str(root),
+    }
+
+
+def _tone(frames: int, frequency: float) -> torch.Tensor:
+    time = torch.arange(frames, dtype=torch.float32) / 16000
+    return (0.2 * torch.sin(2 * math.pi * frequency * time)).contiguous()
+
+
+def _batch() -> dict:
+    return {
+        "clean": _tone(8000, 180).unsqueeze(0),
+        "noisy": _tone(8000, 90).unsqueeze(0),
+        "case_id": ["toy-case"],
+    }
+
+
+def _clone_weights(task: MossFormerGANTask) -> list[torch.Tensor]:
+    return [parameter.detach().clone() for parameter in task.generator.parameters()]
+
+
+def _same_weights(before: list[torch.Tensor], task: MossFormerGANTask) -> bool:
+    after = [parameter.detach() for parameter in task.generator.parameters()]
+    return all(torch.equal(left, right) for left, right in zip(before, after, strict=True))
+
+
+def _pesq_worker(rank: int, world: int, port: int, result_dir: str) -> None:
+    os.environ["MASTER_ADDR"] = "127.0.0.1"
+    os.environ["MASTER_PORT"] = str(port)
+    os.environ["RANK"] = str(rank)
+    os.environ["WORLD_SIZE"] = str(world)
+    os.environ["LOCAL_RANK"] = str(rank)
+    os.environ["CUDA_VISIBLE_DEVICES"] = ""
+    log_path = Path(result_dir) / f"rank{rank}.log"
+    with log_path.open("w", encoding="utf-8") as log:
+        try:
+            from datetime import timedelta
+
+            dist.init_process_group(backend="gloo", rank=rank, world_size=world, timeout=timedelta(seconds=300))
+            task = MossFormerGANTask(_config(Path(result_dir)), torch.device("cpu"))
+            task.distribute(ProcessInfo(rank, world, rank, torch.device("cpu"), True))
+            # torch 2.6 SyncBatchNorm.forward rejects CPU before its collective.
+            install_cpu_gloo_syncbn()
+            payload: dict = {
+                "sync_discriminator": sum(
+                    isinstance(module, torch.nn.SyncBatchNorm) for module in task.discriminator.modules()
+                ),
+                "validation_requires_all_ranks": task.validation_requires_all_ranks,
+            }
+            scenarios = (
+                ("one_rank", lambda teacher, audio, rate: None if dist.get_rank() == 1 else torch.ones(teacher.shape[0])),
+                ("both_ranks", lambda teacher, audio, rate: None),
+            )
+            for name, metric in scenarios:
+                disc_module = (
+                    task.discriminator.module
+                    if isinstance(task.discriminator, torch.nn.parallel.DistributedDataParallel)
+                    else task.discriminator
+                )
+                before = _clone_weights(task)
+                disc_before = disc_module.sigmoid.slope.detach().clone()
+                optim_before = copy.deepcopy(task.optim_g.state_dict())
+                with patch("src.training.se.mossformergan.metric_targets", metric):
+                    metrics = task.train_update([_batch()], 1)
+                payload[name] = {
+                    "update_applied": metrics["update_applied"],
+                    "generator": metrics["generator"],
+                    "discriminator": metrics["discriminator"],
+                    "reason": None if task.last_skip is None else task.last_skip["reason"],
+                    "case_ids": None if task.last_skip is None else task.last_skip["case_ids"],
+                    "micro_batch_index": None if task.last_skip is None else task.last_skip["micro_batch_index"],
+                    "count": None if task.last_skip is None else task.last_skip["count"],
+                    "weights_unchanged": _same_weights(before, task)
+                    and torch.equal(disc_before, disc_module.sigmoid.slope.detach()),
+                    "optimizer_state_unchanged": task.optim_g.state_dict() == optim_before,
+                    "skip_log": len(task.skip_log),
+                }
+            (Path(result_dir) / f"rank{rank}.json").write_text(json.dumps(payload), encoding="utf-8")
+            dist.destroy_process_group()
+        except Exception:
+            log.write(traceback.format_exc())
+            raise
+
+
+class MossFormerPesqSkipTests(unittest.TestCase):
+    def test_pesq_none_skips_without_a_step(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            task = MossFormerGANTask(_config(root), torch.device("cpu"))
+            data = paired_dataset(root / "wav", 1, frames=8000, segment_size=8000, seed=7)
+            batch = data.collate([0])
+            before = _clone_weights(task)
+            optim_g = task.optim_g.state_dict()
+            optim_d = task.optim_d.state_dict()
+            with patch("src.training.se.mossformergan.metric_targets", return_value=None):
+                metrics = task.train_update([batch], 1)
+            self.assertEqual(metrics["update_applied"], 0.0)
+            self.assertEqual(metrics["generator"], 0.0)
+            self.assertEqual(metrics["discriminator"], 0.0)
+            self.assertTrue(_same_weights(before, task))
+            self.assertEqual(task.optim_g.state_dict(), optim_g)
+            self.assertEqual(task.optim_d.state_dict(), optim_d)
+            self.assertIsNotNone(task.last_skip)
+            self.assertEqual(task.last_skip["reason"], "pesq")
+            self.assertEqual(task.last_skip["micro_batch_index"], 0)
+            self.assertEqual(task.last_skip["count"], 1)
+            self.assertTrue(task.last_skip["case_ids"])
+            self.assertEqual(task.skip_log[-1]["reason"], "pesq")
+
+    def test_nonfinite_generator_loss_skips_without_raising(self):
+        with tempfile.TemporaryDirectory() as directory:
+            task = MossFormerGANTask(_config(Path(directory)), torch.device("cpu"))
+            before = task.discriminator.sigmoid.slope.detach().clone()
+            optim = task.optim_d.state_dict()
+
+            def fake_terms(self, module, discriminator, clean, noisy):
+                del module, discriminator
+                audio = torch.zeros(clean.shape[0], 8)
+                magnitude = torch.rand(clean.shape[0], 1, 201, 19)
+                return {
+                    "generator": torch.tensor(float("nan")),
+                    "teacher": audio,
+                    "audio": audio,
+                    "label_mag": magnitude,
+                    "pred_mag": magnitude,
+                }
+
+            batch = {"clean": torch.zeros(1, 32), "noisy": torch.zeros(1, 32), "case_id": ["nan-case"]}
+            with patch.object(MossFormerGANTask, "_generator_terms", fake_terms):
+                metrics = task.train_update([batch], 1)
+            self.assertEqual(metrics["update_applied"], 0.0)
+            self.assertEqual(metrics["generator"], 0.0)
+            self.assertTrue(torch.equal(before, task.discriminator.sigmoid.slope))
+            self.assertEqual(task.optim_d.state_dict(), optim)
+            self.assertEqual(task.last_skip["reason"], "non-finite generator loss")
+            self.assertEqual(task.last_skip["case_ids"], ["nan-case"])
+
+    def test_later_micro_batch_pesq_failure_does_not_step_the_group(self):
+        with tempfile.TemporaryDirectory() as directory:
+            task = MossFormerGANTask(_config(Path(directory)), torch.device("cpu"))
+            before = task.discriminator.sigmoid.slope.detach().clone()
+            calls = {"n": 0}
+
+            def fake_terms(self, module, discriminator, clean, noisy):
+                del module
+                audio = torch.zeros(clean.shape[0], 8)
+                magnitude = torch.rand(clean.shape[0], 1, 201, 19)
+                return {
+                    "generator": discriminator.sigmoid.slope.reshape(-1)[0] * 0,
+                    "teacher": audio,
+                    "audio": audio,
+                    "label_mag": magnitude,
+                    "pred_mag": magnitude,
+                }
+
+            def metric(teacher, audio, rate):
+                del audio, rate
+                calls["n"] += 1
+                if calls["n"] == 1:
+                    return torch.ones(teacher.shape[0])
+                return None
+
+            batch = {"clean": torch.zeros(1, 32), "noisy": torch.zeros(1, 32), "case_id": ["group"]}
+            with patch.object(MossFormerGANTask, "_generator_terms", fake_terms):
+                with patch("src.training.se.mossformergan.metric_targets", metric):
+                    metrics = task.train_update([batch, batch], 2)
+            self.assertEqual(metrics["update_applied"], 0.0)
+            self.assertEqual(calls["n"], 2)
+            self.assertTrue(torch.equal(before, task.discriminator.sigmoid.slope))
+            self.assertEqual(task.optim_g.state_dict()["state"], {})
+            self.assertEqual(task.last_skip["reason"], "pesq")
+            self.assertEqual(task.last_skip["micro_batch_index"], 1)
+            self.assertEqual(task.last_skip["count"], 2)
+
+    def test_ddp_rank_disagreement_and_both_ranks_skip(self):
+        import multiprocessing as mp
+
+        os.environ["CUDA_VISIBLE_DEVICES"] = ""
+        with tempfile.TemporaryDirectory() as directory:
+            port = free_tcp_port()
+            ctx = mp.get_context("spawn")
+            processes = [
+                ctx.Process(target=_pesq_worker, args=(rank, 2, port, directory))
+                for rank in range(2)
+            ]
+            for process in processes:
+                process.start()
+            for process in processes:
+                process.join(400)
+            alive = [process for process in processes if process.is_alive()]
+            for process in alive:
+                process.kill()
+            for process in processes:
+                process.join()
+            logs = []
+            for rank in range(2):
+                path = Path(directory) / f"rank{rank}.log"
+                logs.append(path.read_text(encoding="utf-8") if path.is_file() else "")
+            self.assertFalse(alive, "DDP PESQ workers hung\n" + "\n".join(logs))
+            codes = [process.exitcode for process in processes]
+            self.assertEqual(codes, [0, 0], "\n".join(logs))
+            ranks = [json.loads((Path(directory) / f"rank{rank}.json").read_text(encoding="utf-8")) for rank in range(2)]
+            for payload in ranks:
+                self.assertGreater(payload["sync_discriminator"], 0)
+                self.assertTrue(payload["validation_requires_all_ranks"])
+            one = [payload["one_rank"] for payload in ranks]
+            self.assertEqual([item["update_applied"] for item in one], [0.0, 0.0])
+            self.assertEqual(sorted(item["reason"] for item in one), ["peer", "pesq"])
+            self.assertTrue(all(item["weights_unchanged"] and item["optimizer_state_unchanged"] for item in one))
+            self.assertTrue(all(item["generator"] == 0.0 and item["discriminator"] == 0.0 for item in one))
+            self.assertEqual([item["case_ids"] for item in one if item["reason"] == "pesq"], [["toy-case"]])
+            both = [payload["both_ranks"] for payload in ranks]
+            self.assertEqual([item["reason"] for item in both], ["pesq", "pesq"])
+            self.assertEqual([item["update_applied"] for item in both], [0.0, 0.0])
+            self.assertTrue(all(item["weights_unchanged"] and item["optimizer_state_unchanged"] for item in both))
+            self.assertEqual([item["count"] for item in both], [1, 1])
+
+
+if __name__ == "__main__":
+    unittest.main()

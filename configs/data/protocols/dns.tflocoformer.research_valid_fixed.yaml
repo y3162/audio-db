@@ -1,0 +1,25 @@
+# Research checkpoint-selection protocol for TF-Locoformer DNS.
+# Not inserted into reproduction.duckdb. snapshot_hash is BLOCKED.
+# Not cv_synthetic_small. Not an official reproduction. Not leakage_safe.
+# official_faithful below is only the schema profile that is not leakage_safe.
+name: dns.tflocoformer.ondemand.accept.research_valid_fixed
+version: 1
+kind: pregenerated
+algorithm: pregenerated.dns_tflocoformer
+algorithm_version: 1
+deviation_class: research_improvement
+parent_protocol_id: cadda632ebd08a9066e5b7a81851920762cc2a5fa5bddc21f8488bf1a1630116
+parent_dataset: tf_locoformer.dns.accept_recipe@1
+parent_snapshot_hash: 3343a55efb4c57d9ffef9179fb2f39c3e0186d36f587a0f4ad9f0aa14e9926f5
+dataset: tf_locoformer.dns.accept_recipe.research_valid_fixed@1
+claim_label: research_checkpoint_selection
+profile: official_faithful
+selection_uses_test: false
+registration: BLOCKED
+selection:
+  algorithm: research_valid_fixed_v1
+  seed: 20261107
+  count: 1024
+  population: parent validation case ids
+  case_id_list_sha256: 73e8d44a3c2196af874f8cddb7a1cc9a6b1745a220d6f1b88fda7a9a502f7ad4
+list: configs/data/lists/tf_locoformer/research_valid_fixed_v1.json

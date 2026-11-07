@@ -48,7 +48,9 @@ def build_provenance(dataset: Any, config: dict[str, Any], process: Any) -> dict
     data_cfg = config.get("data") if isinstance(config.get("data"), dict) else {}
     virtual = data_cfg.get("virtual_world_size")
     ddp_mode = "virtual" if virtual else ("single" if world_size <= 1 else "real")
-    git_commit = git_metadata().get("commit") or "unknown"
+    git_info = git_metadata()
+    git_commit = git_info.get("commit") or "unknown"
+    git_dirty = git_info.get("dirty")
     identity = _json_object(dataset.identity(), "dataset identity")
     parts = _parts(dataset)
     hashed = {
@@ -99,6 +101,7 @@ def build_provenance(dataset: Any, config: dict[str, Any], process: Any) -> dict
         "claim_label": parts.get("claim_label"),
         "selection_uses_test": parts.get("selection_uses_test"),
         "git_commit": git_commit,
+        "git_dirty": git_dirty,
         "config_hash": config_hash,
         "ddp_mode": ddp_mode,
         "world_size": world_size,
