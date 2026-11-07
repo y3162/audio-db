@@ -46,7 +46,7 @@ def _base(root: Path, name: str, **model) -> dict:
     return config
 
 
-def _updated(task, dataset) -> dict[str, float]:
+def _updated(task, dataset, *, require_gradients: bool = True) -> dict[str, float]:
     before = [parameter.detach().clone() for parameter in task.generator.parameters() if parameter.requires_grad]
     metrics = task.train_update([dataset.collate([0])], 1)
     for value in metrics.values():
@@ -55,9 +55,12 @@ def _updated(task, dataset) -> dict[str, float]:
     after = [parameter.detach() for parameter in task.generator.parameters() if parameter.requires_grad]
     if not any(not torch.equal(left, right) for left, right in zip(before, after, strict=True)):
         raise AssertionError("generator weights did not change")
-    grads = [parameter.grad for parameter in task.generator.parameters() if parameter.grad is not None]
-    if not grads or not all(torch.isfinite(grad).all() for grad in grads):
-        raise AssertionError("generator gradients are missing or non-finite")
+    # MossFormerGAN zeroes gradients after the optimizer step, as the official
+    # solver does. The weight change above is the evidence that the step ran.
+    if require_gradients:
+        grads = [parameter.grad for parameter in task.generator.parameters() if parameter.grad is not None]
+        if not grads or not all(torch.isfinite(grad).all() for grad in grads):
+            raise AssertionError("generator gradients are missing or non-finite")
     return metrics
 
 
@@ -395,7 +398,7 @@ class MossFormerTests(unittest.TestCase):
             )
             task = MossFormerGANTask(config, torch.device("cpu"))
             data = paired_dataset(root / "wav", 1, frames=8000, segment_size=8000, seed=config["seed"])
-            metrics = _updated(task, data)
+            metrics = _updated(task, data, require_gradients=False)
             self.assertGreater(task.learning_rates()["discriminator"], task.learning_rates()["generator"])
             self.assertIn("discriminator", metrics)
             path = root / "model.pt"

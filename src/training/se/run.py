@@ -86,7 +86,7 @@ def execute(config_path: str | Path, *, resume: str | Path | None = None,
             f"required_world_size {required_world} does not match "
             f"process world_size {process.world_size}"
         )
-    if strict_resume and resume is not None:
+    if resume is not None and (strict_resume or config.get("experiment_profile") == "full"):
         from src.training.core.checkpoint import load_checkpoint
         from src.training.se.preflight import resume_config_mismatch
 

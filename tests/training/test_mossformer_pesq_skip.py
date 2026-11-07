@@ -142,6 +142,18 @@ class MossFormerPesqSkipTests(unittest.TestCase):
             self.assertEqual(task.last_skip["count"], 1)
             self.assertTrue(task.last_skip["case_ids"])
             self.assertEqual(task.skip_log[-1]["reason"], "pesq")
+            self.assertTrue(task.generator_ddp_broadcast_buffers)
+            self.assertTrue(task.generator_ddp_find_unused_parameters)
+            self.assertTrue(task.discriminator_ddp_broadcast_buffers)
+            self.assertTrue(task.discriminator_ddp_find_unused_parameters)
+            self.assertEqual(
+                sum(isinstance(module, torch.nn.modules.batchnorm._BatchNorm) for module in task.generator.modules()),
+                0,
+            )
+            self.assertGreater(
+                sum(isinstance(module, torch.nn.modules.batchnorm._BatchNorm) for module in task.discriminator.modules()),
+                0,
+            )
 
     def test_nonfinite_generator_loss_skips_without_raising(self):
         with tempfile.TemporaryDirectory() as directory:
@@ -206,7 +218,54 @@ class MossFormerPesqSkipTests(unittest.TestCase):
             self.assertEqual(task.optim_g.state_dict()["state"], {})
             self.assertEqual(task.last_skip["reason"], "pesq")
             self.assertEqual(task.last_skip["micro_batch_index"], 1)
-            self.assertEqual(task.last_skip["count"], 2)
+            self.assertEqual(task.last_skip["count"], 1)
+            self.assertEqual(task.counters["micro_batches_processed"], 2)
+            self.assertEqual(task.counters["micro_batches_succeeded"], 1)
+            self.assertEqual(task.counters["micro_batches_failed"], 1)
+            self.assertEqual(task.counters["optimizer_updates"], 0)
+            self.assertEqual(task.counters["official_step"], 2)
+            self.assertEqual(task._accu_count, 1)
+
+    def test_later_success_completes_the_window_after_a_pesq_failure(self):
+        with tempfile.TemporaryDirectory() as directory:
+            task = MossFormerGANTask(_config(Path(directory)), torch.device("cpu"))
+            calls = {"n": 0}
+
+            def fake_terms(self, module, discriminator, clean, noisy):
+                del module
+                audio = torch.zeros(clean.shape[0], 8)
+                magnitude = torch.rand(clean.shape[0], 1, 201, 19)
+                return {
+                    "generator": discriminator.sigmoid.slope.reshape(-1)[:1].sum(),
+                    "teacher": audio,
+                    "audio": audio,
+                    "label_mag": magnitude,
+                    "pred_mag": magnitude,
+                }
+
+            def metric(teacher, audio, rate):
+                del audio, rate
+                calls["n"] += 1
+                if calls["n"] == 1:
+                    return None
+                return torch.ones(teacher.shape[0])
+
+            batch = {"clean": torch.zeros(1, 32), "noisy": torch.zeros(1, 32), "case_id": ["window"]}
+            before = task.discriminator.sigmoid.slope.detach().clone()
+            with patch.object(MossFormerGANTask, "_generator_terms", fake_terms):
+                with patch("src.training.se.mossformergan.metric_targets", metric):
+                    first = task.train_update([batch, batch], 2)
+                    second = task.train_update([batch], 2)
+            self.assertEqual(first["update_applied"], 0.0)
+            self.assertEqual(second["update_applied"], 1.0)
+            self.assertEqual(task.counters["official_step"], 3)
+            self.assertEqual(task.counters["optimizer_updates"], 1)
+            self.assertEqual(task.counters["micro_batches_processed"], 3)
+            self.assertEqual(task.counters["micro_batches_succeeded"], 2)
+            self.assertEqual(task.counters["micro_batches_failed"], 1)
+            self.assertEqual(task._accu_count, 0)
+            self.assertFalse(torch.equal(before, task.discriminator.sigmoid.slope.detach()))
+            self.assertNotEqual(task.optim_d.state_dict()["state"], {})
 
     def test_ddp_rank_disagreement_and_both_ranks_skip(self):
         import multiprocessing as mp
@@ -237,8 +296,8 @@ class MossFormerPesqSkipTests(unittest.TestCase):
             self.assertEqual(codes, [0, 0], "\n".join(logs))
             ranks = [json.loads((Path(directory) / f"rank{rank}.json").read_text(encoding="utf-8")) for rank in range(2)]
             for payload in ranks:
-                self.assertGreater(payload["sync_discriminator"], 0)
-                self.assertTrue(payload["validation_requires_all_ranks"])
+                self.assertEqual(payload["sync_discriminator"], 0)
+                self.assertFalse(payload["validation_requires_all_ranks"])
             one = [payload["one_rank"] for payload in ranks]
             self.assertEqual([item["update_applied"] for item in one], [0.0, 0.0])
             self.assertEqual(sorted(item["reason"] for item in one), ["peer", "pesq"])

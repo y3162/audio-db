@@ -21,6 +21,13 @@ OFFICIAL = ROOT / "src/se/official/clearervoice-studio/train/speech_enhancement"
 SEED = 777
 
 
+def _batchnorm_count(module) -> int:
+    import torch
+
+    kinds = (torch.nn.BatchNorm1d, torch.nn.BatchNorm2d, torch.nn.BatchNorm3d, torch.nn.SyncBatchNorm)
+    return sum(isinstance(child, kinds) for child in module.modules())
+
+
 def _param_sum(module) -> float:
     import torch
 
@@ -116,6 +123,8 @@ def compare_official() -> dict:
             "first_discriminator_param_sum": _param_sum(first_discriminator),
             "generator": generator_diff,
             "discriminator": discriminator_diff,
+            "generator_batchnorm_modules": _batchnorm_count(task.generator),
+            "official_generator_batchnorm_modules": _batchnorm_count(official_generator),
             "kept_discriminator_differs_from_first_consumer": not torch.equal(
                 task.discriminator.cnn.conv1.weight.detach().cpu(),
                 first_discriminator.cnn.conv1.weight.detach().cpu(),
@@ -150,6 +159,8 @@ class MossFormerOfficialInitTests(unittest.TestCase):
         self.assertFalse(result["discriminator"]["key_mismatch"], result["discriminator"])
         self.assertEqual(result["generator"]["max_abs"], 0.0, result)
         self.assertEqual(result["discriminator"]["max_abs"], 0.0, result)
+        self.assertEqual(result["generator_batchnorm_modules"], 0, result)
+        self.assertEqual(result["official_generator_batchnorm_modules"], 0, result)
         self.assertTrue(result["kept_discriminator_differs_from_first_consumer"], result)
         self.assertNotEqual(result["audio_db_discriminator_param_sum"], result["first_discriminator_param_sum"])
 

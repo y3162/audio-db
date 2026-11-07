@@ -79,8 +79,15 @@ class MossFormerValidationTests(unittest.TestCase):
             with patch("src.training.se.mossformergan.metric_targets", return_value=None):
                 report = task.validation_report(batch)
             after = [parameter.detach() for parameter in task.generator.parameters()]
-            self.assertEqual(report["pesq_gate"], "counted_as_zero")
-            self.assertEqual(report["losses"]["generator"]["value"], 0.0)
+            self.assertEqual(report["pesq_gate"], "denominator_only")
+            self.assertIsNone(report["losses"]["generator"]["value"])
+            self.assertEqual(report["losses"]["generator"]["status"], "na")
+            self.assertFalse(report["generator_loss_included"])
+            reduced = task.reduce_validation([report])
+            self.assertEqual(reduced["losses"]["generator"]["value"], 0.0)
+            self.assertEqual(reduced["validation_coverage"]["pesq_failed_batches"], 1)
+            self.assertEqual(reduced["pesq"]["value"], None)
+            self.assertEqual(reduced["pesq"]["status"], "na")
             self.assertEqual(report["losses"]["time"]["status"], "na")
             self.assertTrue(all(torch.equal(left, right) for left, right in zip(before, after, strict=True)))
 

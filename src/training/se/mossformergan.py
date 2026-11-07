@@ -10,8 +10,9 @@ part with the predicted imaginary part.
 The discriminator reproduces the released NISQA CNN and Conformer scorer.
 Targets are the same: real pairs go to 1 and fakes go to wideband PESQ
 normalized by ``(score - 1) / 3.5``. A missing PESQ score or a non-finite
-generator loss skips that ``train_update`` group. The target is not replaced
-with zero. The returned metrics stay finite and ``update_applied`` is 0.
+loss skips that micro-batch. Later successful micro-batches still fill the
+accumulation window. The target is not replaced with zero. Returned loss
+values stay finite. ``update_applied`` is 1 only when an optimizer step ran.
 
 Update order follows the accumulation branch of the released solver, which is
 what the published yaml enables: backward generator, backward discriminator,
@@ -30,8 +31,9 @@ Validation uses that same generator objective (RI, magnitude, the released
 time term, and the GAN term). It does not minimize time-domain L1 alone.
 ``model.eval()`` is applied to the generator only. The discriminator stays in
 train mode, and neither optimizer is stepped. Official validation does not
-add a missing loss and still divides by the batch count. This task reports 0
-for that batch so the trainer mean keeps the same denominator.
+add a missing loss and still divides by the batch count. A failed batch is
+reported as missing, not as a loss of 0. The reduced value divides the sum
+of included losses by every batch, which is that quotient.
 """
 
 from __future__ import annotations
@@ -65,6 +67,72 @@ OFFICIAL_ADAMW_WEIGHT_DECAY = 0.01
 logger = logging.getLogger(__name__)
 
 
+def _empty_counters() -> dict[str, int]:
+    return {
+        "micro_batches_processed": 0,
+        "micro_batches_succeeded": 0,
+        "micro_batches_failed": 0,
+        "optimizer_updates": 0,
+        "official_step": 0,
+    }
+
+
+def average_new_grad(previous: torch.Tensor | None, local: torch.Tensor, peer_locals: list[torch.Tensor]) -> torch.Tensor:
+    """Average this micro-batch's gradient, then add it to the running sum.
+
+    ``local`` is this rank's newly computed gradient. Peers contribute the
+    same micro-batch only. Earlier micro-batches already stored in
+    ``previous`` are not averaged again.
+    """
+    total = local.detach().clone()
+    for peer in peer_locals:
+        total = total + peer.to(device=total.device, dtype=total.dtype)
+    averaged = total / float(1 + len(peer_locals))
+    if previous is None:
+        return averaged
+    return previous.detach() + averaged
+
+
+def local_validation_totals(reports: list[dict[str, Any]]) -> dict[str, float]:
+    """Official per-rank validation totals.
+
+    Alignment forwards that exist only to keep SyncBatchNorm in step are not
+    part of the denominator. PESQ failures stay in the denominator and do not
+    add a numeric loss. Their contribution is absence, not a stored zero.
+    """
+    loss_sum = 0.0
+    batches = 0
+    failed = 0
+    included = 0
+    alignment = 0
+    for report in reports:
+        if report.get("alignment_pad"):
+            alignment += 1
+            continue
+        batches += 1
+        if report.get("generator_loss_included") and report["losses"]["generator"]["status"] == "ok":
+            loss_sum += float(report["losses"]["generator"]["value"])
+            included += 1
+        else:
+            failed += 1
+    mean = 0.0 if batches == 0 else loss_sum / batches
+    return {
+        "sum": loss_sum,
+        "batches": float(batches),
+        "failed": float(failed),
+        "included": float(included),
+        "alignment": float(alignment),
+        "mean": mean,
+    }
+
+
+def official_validation_mean(rank_means: list[float]) -> float:
+    """Mean of per-rank means, matching ``Solver._reduce_tensor``."""
+    if not rank_means:
+        raise TrainingError("validation produced no batches")
+    return float(sum(rank_means) / len(rank_means))
+
+
 def mossformer_validation_decision(best: float, stalls: int, loss: float) -> tuple[float, int, str]:
     """Return the next best, stall count, and action for one validation.
 
@@ -86,6 +154,9 @@ def mossformer_validation_decision(best: float, stalls: int, loss: float) -> tup
 
 
 class MossFormerGANTask:
+    # Plateau follows the data epoch, not ``global_step % validation_interval``.
+    validate_on_data_epoch_end = True
+
     def __init__(self, config: dict[str, Any], device: torch.device) -> None:
         self.config = config
         self.device = device
@@ -116,11 +187,20 @@ class MossFormerGANTask:
             _discard_initialized(_mossformer_generator(build_config, variant))
             self.discriminator = Discriminator(ndf=16).to(device)
         self.validation_requires_all_ranks = False
+        self.validation_order = "rank_mod_fixed_v1"
         self._cpu_syncbn_unwrapped = False
-        self.discriminator_ddp_broadcast_buffers = False
-        self.discriminator_ddp_find_unused_parameters = False
+        # Official DDP uses find_unused_parameters=True and the default
+        # broadcast_buffers=True. A measured 3-forward, 2-backward step
+        # completes with True, so the discriminator uses that default.
+        # DDP broadcasts buffers itself; a second manual broadcast is not added.
+        self.generator_ddp_broadcast_buffers = True
+        self.generator_ddp_find_unused_parameters = True
+        self.discriminator_ddp_broadcast_buffers = True
+        self.discriminator_ddp_find_unused_parameters = True
         self.last_skip: dict[str, Any] | None = None
         self.skip_log: list[dict[str, Any]] = []
+        self._accu_count = 0
+        self.counters = _empty_counters()
         generator_config = dict(config)
         generator_config["optimizer"] = dict(config["optimizer"])
         generator_config["optimizer"]["weight_decay"] = OFFICIAL_ADAMW_WEIGHT_DECAY
@@ -134,36 +214,36 @@ class MossFormerGANTask:
         self.stop_training = False
 
     def distribute(self, process: ProcessInfo) -> None:
-        # world_size 1 keeps ordinary BatchNorm, matching Solver when distributed is false.
-        # Above 1, convert the discriminator only, before DDP. The generator has no
-        # live BatchNorm, so convert_sync_batchnorm is not applied to it.
-        # torch 2.6 SyncBatchNorm.forward rejects CPU before its gloo all_gather,
-        # and DistributedDataParallel rejects a CPU SyncBatchNorm
-        # ("SyncBatchNorm layers only work with GPU modules"). CPU keeps the
-        # converted module unwrapped. CUDA wraps it.
-        self.discriminator_ddp_broadcast_buffers = False
-        self.discriminator_ddp_find_unused_parameters = False
+        # world_size 1 keeps ordinary BatchNorm. Official multi-GPU training
+        # is CUDA, and only that path converts to SyncBatchNorm. CPU world 2
+        # keeps BatchNorm so forward does not require a GPU tensor.
+        # The live generator has no BatchNorm, so convert_sync_batchnorm does
+        # not add SyncBatchNorm modules there. The discriminator does.
+        self.generator_ddp_broadcast_buffers = True
+        self.generator_ddp_find_unused_parameters = True
+        self.discriminator_ddp_broadcast_buffers = True
+        self.discriminator_ddp_find_unused_parameters = True
         self._cpu_syncbn_unwrapped = False
-        if process.world_size > 1:
+        cuda_sync = process.world_size > 1 and process.device.type == "cuda"
+        if cuda_sync:
+            self.generator = torch.nn.SyncBatchNorm.convert_sync_batchnorm(self.generator)
             self.discriminator = torch.nn.SyncBatchNorm.convert_sync_batchnorm(self.discriminator)
-        self.validation_requires_all_ranks = any(
+        self.validation_requires_all_ranks = cuda_sync and any(
             isinstance(module, torch.nn.SyncBatchNorm) for module in self.discriminator.modules()
         )
-        self.generator = wrap_module(self.generator, process)
-        if process.world_size > 1 and process.device.type != "cuda":
-            self._cpu_syncbn_unwrapped = True
-            return
-        # Three discriminator forwards share one autograd graph. DDP's default
-        # broadcast_buffers=True would mutate BatchNorm state saved for backward.
-        # Official DDP leaves broadcast_buffers at its default True. This wrapper
-        # keeps False, and train_update broadcasts the buffers once per micro-batch.
-        # find_unused_parameters stays at wrap_module's default False.
-        self.discriminator = wrap_module(
-            self.discriminator,
+        self.generator = wrap_module(
+            self.generator,
             process,
-            broadcast_buffers=self.discriminator_ddp_broadcast_buffers,
-            find_unused_parameters=self.discriminator_ddp_find_unused_parameters,
+            broadcast_buffers=self.generator_ddp_broadcast_buffers,
+            find_unused_parameters=self.generator_ddp_find_unused_parameters,
         )
+        if process.world_size > 1:
+            self.discriminator = wrap_module(
+                self.discriminator,
+                process,
+                broadcast_buffers=self.discriminator_ddp_broadcast_buffers,
+                find_unused_parameters=self.discriminator_ddp_find_unused_parameters,
+            )
 
     def train_mode(self) -> None:
         self.generator.train()
@@ -241,6 +321,12 @@ class MossFormerGANTask:
                 "stop": self.stop_training,
                 "best_snapshot": self._best_snapshot,
             },
+            "accumulation": {
+                "count": int(getattr(self, "_accu_count", 0)),
+                "counters": dict(getattr(self, "counters", _empty_counters())),
+                "generator_grads": self._grad_state(self.generator) if getattr(self, "_accu_count", 0) else {},
+                "discriminator_grads": self._grad_state(self.discriminator) if getattr(self, "_accu_count", 0) else {},
+            },
         }
 
     def load_state_dict(self, state: dict[str, Any]) -> None:
@@ -257,42 +343,67 @@ class MossFormerGANTask:
         self._stalls = int(plateau.get("val_no_impv", 0))
         self.stop_training = bool(plateau.get("stop", False))
         self._best_snapshot = plateau.get("best_snapshot")
+        accumulation_state = state.get("accumulation")
+        if isinstance(accumulation_state, dict):
+            self._accu_count = int(accumulation_state.get("count") or 0)
+            stored = accumulation_state.get("counters") or {}
+            self.counters = _empty_counters()
+            for key in self.counters:
+                self.counters[key] = int(stored.get(key) or 0)
+            MossFormerGANTask._restore_grads(self, self.generator, accumulation_state.get("generator_grads") or {})
+            MossFormerGANTask._restore_grads(self, self.discriminator, accumulation_state.get("discriminator_grads") or {})
+        else:
+            self._accu_count = 0
+            self.counters = _empty_counters()
 
-    def train_update(self, batches: list[dict[str, Any]], accumulation: int) -> dict[str, float]:
-        """One optimizer update, or a skipped group when PESQ or the generator loss fails.
+    def start_epoch(self, *, resume_mid_epoch: bool = False) -> None:
+        """Drop a partial accumulation window at an epoch boundary.
 
-        Official ``loss_mossformergan_se_16k`` returns ``None, None`` when the
-        generator loss is NaN or PESQ is missing. ``Solver`` then does not
-        backward and does not ``optimizer.step``. Ranks must take that branch
-        together: a local skip flag is reduced with MAX before any backward.
-        If any rank skips, every rank skips backward, clipping, and both
-        optimizer steps for this whole group. The group is not retried.
-
-        Forwards that already ran stay in ``no_sync`` so a skipped rank does
-        not leave DDP waiting for backward. On a kept group the last
-        micro-batch averages generator and discriminator gradients with SUM
-        and ``world_size`` after each backward and before that backward's
-        clip. Earlier micro-batches are still clipped before any cross-rank
-        average. That is the same clip-versus-average order as before
-        (P10P-D-001 is unchanged).
-
-        ``update_applied`` is 1 when both optimizers stepped and 0 when the
-        group was skipped. Skipped generator and discriminator values are 0.
-        The trainer must not increment ``global_step`` when ``update_applied``
-        is 0. This method cannot change the trainer.
+        Official ``_run_one_epoch`` sets ``accu_count`` to 0 and zeroes both
+        optimizers at the start of every epoch. A mid-epoch resume keeps the
+        window that was stored with the checkpoint.
         """
-        self.train_mode()
+        if resume_mid_epoch:
+            return
         self.optim_g.zero_grad(set_to_none=True)
         self.optim_d.zero_grad(set_to_none=True)
-        prepared: list[dict[str, Any]] = []
-        events: list[dict[str, Any]] = []
+        self._accu_count = 0
+
+    def train_update(self, batches: list[dict[str, Any]], accumulation: int) -> dict[str, float]:
+        """Continue the official accumulation window across this micro-batch group.
+
+        Official ``loss_mossformergan_se_16k`` returns ``None, None`` when the
+        generator loss is NaN or PESQ is missing. That micro-batch does not
+        backward and does not increment ``accu_count``. ``self.step`` still
+        increments. The next successful micro-batch keeps filling the same
+        window. One GPU follows that rule.
+
+        Two or more ranks take the skip together. A local flag is reduced
+        with MAX before backward. If any rank skips a micro-batch, every rank
+        skips backward for that micro-batch. The window index stays aligned.
+        This is not the official per-rank skip, which would leave the other
+        rank inside a DDP collective.
+
+        Forwards stay in ``no_sync``. After each successful backward, only the
+        new gradient is averaged across ranks, added to the running sum, and
+        then clipped. Official DDP would average on every backward without
+        ``no_sync``, which also averages gradients already accumulated.
+        Discriminator DDP uses ``broadcast_buffers=True``. That broadcast is
+        the DDP forward itself, so this method does not broadcast again.
+
+        ``update_applied`` is 1 when this call executed an optimizer step.
+        The trainer's ``global_step`` counts those steps. ``official_step``
+        counts every micro-batch, including failures. A call can step once
+        and still leave a partial window for the next call.
+        """
+        if accumulation < 1:
+            raise TrainingError("MossFormerGAN accumulation must be positive")
+        self.train_mode()
+        successes: list[tuple[float, float]] = []
+        stepped = False
         for index, batch in enumerate(batches):
-            is_last = index == len(batches) - 1
-            self._broadcast_discriminator_buffers()
             clean = batch["clean"].to(self.device)
             noisy = batch["noisy"].to(self.device)
-            # no_sync on every forward. A later skip must not leave the DDP
-            # reducer waiting for backward. The last micro-batch averages below.
             with accumulation_scope([self.generator], last=False), accumulation_scope([self.discriminator], last=False):
                 terms = self._generator_terms(self.generator, self.discriminator, clean, noisy)
             generator_loss = terms["generator"]
@@ -304,12 +415,14 @@ class MossFormerGANTask:
                 targets = metric_targets(terms["teacher"], terms["audio"], self.sample_rate)
                 if targets is None:
                     reason = "pesq"
-            if reason is not None:
-                events.append(_skip_event(reason, batch, index))
+            self.counters["micro_batches_processed"] += 1
+            self.counters["official_step"] += 1
             if self._agree_skip(reason is not None):
                 if reason is None:
-                    events.append(_skip_event("peer", batch, index))
-                return self._commit_skip(events, len(batches))
+                    reason = "peer"
+                self._note_skip(_skip_event(reason, batch, index))
+                self.counters["micro_batches_failed"] += 1
+                continue
             assert targets is not None
             with accumulation_scope([self.discriminator], last=False):
                 ones = torch.ones(clean.shape[0], device=self.device)
@@ -318,55 +431,44 @@ class MossFormerGANTask:
                 discriminator_loss = F.mse_loss(real_score.flatten(), ones) + F.mse_loss(
                     fake_detached.flatten(), targets.to(self.device)
                 )
-            disc_reason = None
-            if not torch.isfinite(discriminator_loss).all():
-                disc_reason = "non-finite discriminator loss"
-                events.append(_skip_event(disc_reason, batch, index))
+            disc_reason = None if torch.isfinite(discriminator_loss).all() else "non-finite discriminator loss"
             if self._agree_skip(disc_reason is not None):
-                if disc_reason is None:
-                    events.append(_skip_event("peer", batch, index))
-                return self._commit_skip(events, len(batches))
-            prepared.append(
-                {
-                    "is_last": is_last,
-                    "generator_loss": generator_loss,
-                    "discriminator_loss": discriminator_loss,
-                }
-            )
-        gen_total = 0.0
-        disc_total = 0.0
-        for item in prepared:
-            generator_loss = item["generator_loss"]
-            discriminator_loss = item["discriminator_loss"]
-            (generator_loss / accumulation).backward()
-            if item["is_last"]:
-                self._average_grads(self.generator)
-            clip_gradients(unwrap(self.generator), self.grad_clip)
-            (discriminator_loss / accumulation).backward()
-            if item["is_last"] and self._discriminator_needs_cross_rank():
-                self._average_named_grads(unwrap(self.discriminator))
-            clip_gradients(unwrap(self.discriminator), self.grad_clip)
-            gen_total += float(generator_loss.detach())
-            disc_total += float(discriminator_loss.detach())
-        self.optim_g.step()
-        self.optim_d.step()
-        count = len(batches)
-        return {"generator": gen_total / count, "discriminator": disc_total / count, "update_applied": 1.0}
+                self._note_skip(_skip_event(disc_reason or "peer", batch, index))
+                self.counters["micro_batches_failed"] += 1
+                continue
+            self.counters["micro_batches_succeeded"] += 1
+            self._accu_count += 1
+            self._backward_average_and_clip(generator_loss / accumulation, unwrap(self.generator))
+            self._backward_average_and_clip(discriminator_loss / accumulation, unwrap(self.discriminator))
+            successes.append((float(generator_loss.detach()), float(discriminator_loss.detach())))
+            if self._accu_count == accumulation:
+                self.optim_g.step()
+                self.optim_d.step()
+                self.optim_g.zero_grad(set_to_none=True)
+                self.optim_d.zero_grad(set_to_none=True)
+                self._accu_count = 0
+                self.counters["optimizer_updates"] += 1
+                stepped = True
+        if successes:
+            generator = sum(item[0] for item in successes) / len(successes)
+            discriminator = sum(item[1] for item in successes) / len(successes)
+        else:
+            generator = 0.0
+            discriminator = 0.0
+        return {
+            "generator": generator,
+            "discriminator": discriminator,
+            "update_applied": 1.0 if stepped else 0.0,
+        }
 
     def _discriminator_needs_cross_rank(self) -> bool:
         return isinstance(self.discriminator, DistributedDataParallel) or self._cpu_syncbn_unwrapped
 
-    def _broadcast_discriminator_buffers(self) -> None:
-        if not self._discriminator_needs_cross_rank():
-            return
-        if not dist.is_available() or not dist.is_initialized() or dist.get_world_size() < 2:
-            return
-        with torch.no_grad():
-            for buffer in unwrap(self.discriminator).buffers():
-                dist.broadcast(buffer, src=0)
+    def _cross_rank(self) -> bool:
+        return self._discriminator_needs_cross_rank() or isinstance(self.generator, DistributedDataParallel)
 
     def _agree_skip(self, local_skip: bool) -> bool:
-        """True when this rank or any other rank skips the whole group."""
+        """True when this rank or any other rank skips this micro-batch."""
         if not dist.is_available() or not dist.is_initialized() or dist.get_world_size() < 2:
             return local_skip
         flag = torch.tensor([1 if local_skip else 0], dtype=torch.int32)
@@ -375,41 +477,62 @@ class MossFormerGANTask:
         dist.all_reduce(flag, op=dist.ReduceOp.MAX)
         return int(flag.item()) == 1
 
-    def _average_grads(self, module: torch.nn.Module) -> None:
-        if not isinstance(module, DistributedDataParallel):
-            return
-        self._average_named_grads(unwrap(module))
+    def _backward_average_and_clip(self, loss: torch.Tensor, clip_module: torch.nn.Module) -> None:
+        """Backward, average only the new gradient, then clip the running sum."""
+        modules = (unwrap(self.generator), unwrap(self.discriminator))
+        before: dict[int, torch.Tensor | None] = {}
+        for module in modules:
+            for parameter in module.parameters():
+                if not parameter.requires_grad:
+                    continue
+                before[id(parameter)] = None if parameter.grad is None else parameter.grad.detach().clone()
+        loss.backward()
+        if self._cross_rank() and dist.is_available() and dist.is_initialized() and dist.get_world_size() > 1:
+            world = dist.get_world_size()
+            for module in modules:
+                for parameter in module.parameters():
+                    if parameter.grad is None:
+                        continue
+                    old = before.get(id(parameter))
+                    raw = parameter.grad if old is None else parameter.grad - old
+                    delta = raw.detach().contiguous()
+                    dist.all_reduce(delta, op=dist.ReduceOp.SUM)
+                    delta.div_(world)
+                    parameter.grad = delta if old is None else old + delta
+        clip_gradients(clip_module, self.grad_clip)
 
-    def _average_named_grads(self, module: torch.nn.Module) -> None:
-        if not dist.is_available() or not dist.is_initialized() or dist.get_world_size() < 2:
-            return
-        world = dist.get_world_size()
-        for parameter in module.parameters():
-            if parameter.grad is None:
-                continue
-            dist.all_reduce(parameter.grad, op=dist.ReduceOp.SUM)
-            parameter.grad.div_(world)
-
-    def _commit_skip(self, events: list[dict[str, Any]], group_size: int) -> dict[str, float]:
-        primary = events[0] if events else {"reason": "peer", "case_ids": None, "micro_batch_index": None}
+    def _note_skip(self, event: dict[str, Any]) -> None:
         record = {
-            "reason": primary["reason"],
-            "case_ids": primary["case_ids"],
-            "micro_batch_index": primary["micro_batch_index"],
-            "count": group_size,
-            "events": list(events),
+            "reason": event["reason"],
+            "case_ids": event["case_ids"],
+            "micro_batch_index": event["micro_batch_index"],
+            "count": 1,
+            "events": [event],
         }
         self.last_skip = record
         self.skip_log.append(record)
-        for event in events:
-            logger.info(
-                "mossformer skip reason=%s case_ids=%s micro_batch_index=%s count=%s",
-                event["reason"],
-                event["case_ids"],
-                event["micro_batch_index"],
-                group_size,
-            )
-        return {"generator": 0.0, "discriminator": 0.0, "update_applied": 0.0}
+        logger.info(
+            "mossformer skip reason=%s case_ids=%s micro_batch_index=%s count=%s",
+            event["reason"],
+            event["case_ids"],
+            event["micro_batch_index"],
+            1,
+        )
+
+    def _grad_state(self, module: torch.nn.Module) -> dict[str, torch.Tensor]:
+        grads = {}
+        for name, parameter in unwrap(module).named_parameters():
+            if parameter.grad is not None:
+                grads[name] = parameter.grad.detach().cpu().clone()
+        return grads
+
+    def _restore_grads(self, module: torch.nn.Module, grads: dict[str, Any]) -> None:
+        named = dict(unwrap(module).named_parameters())
+        for parameter in named.values():
+            parameter.grad = None
+        for name, value in grads.items():
+            parameter = named[name]
+            parameter.grad = value.detach().to(device=parameter.device, dtype=parameter.dtype)
 
     def validation_report(self, batch: dict[str, Any]) -> dict[str, Any]:
         """Official validation generator loss for one already-cropped batch.
@@ -419,36 +542,47 @@ class MossFormerGANTask:
         the plateau metric.
 
         Official ``Solver._run_one_epoch_mossformergan_se_16k`` adds the loss
-        only when it is not None, then returns ``total_loss / (i+1)`` for both
-        train and validation (the division is outside ``state=='train'``).
-        A missing loss is not written as ``+= 0`` in that source. The batch
-        still stays in the denominator. This report uses value 0 and status
-        ok so the trainer average keeps that batch. A missing PESQ score does
-        not raise. A non-finite generator loss still raises here, which is
-        narrower than the official ``None`` return.
+        only when it is not None, then returns ``total_loss / (i+1)``. A
+        missing loss is not written as zero. The batch stays in the
+        denominator. This report keeps that batch out of the numeric values
+        and marks it for the denominator. ``reduce_validation`` divides the
+        included sum by every non-padding batch. A non-finite generator loss
+        is the same exclusion. It does not raise, so the next rank can still
+        enter the following forward.
         """
+        alignment = bool(batch.get("validation_alignment_pad"))
         clean = batch["clean"].to(self.device)
         noisy = batch["noisy"].to(self.device)
         generator = unwrap(self.generator)
         discriminator = unwrap(self.discriminator)
         generator.eval()
         discriminator.train()
+        included = False
+        reason = "pesq failed; batch stays in the official denominator and is not a loss of 0"
+        terms: dict[str, torch.Tensor] | None = None
         with torch.no_grad():
             terms = self._generator_terms(generator, discriminator, clean, noisy)
-            _finite(terms["generator"], "mossformer validation generator")
-            targets = metric_targets(terms["teacher"], terms["audio"], self.sample_rate)
-        included = targets is not None
-        if included:
-            value = float(terms["generator"].detach())
-            reason = "official generator loss; pesq gate included this batch"
+            finite = bool(torch.isfinite(terms["generator"]).all())
+            targets = metric_targets(terms["teacher"], terms["audio"], self.sample_rate) if finite else None
+        if alignment:
+            included = False
+            reason = "alignment forward keeps SyncBatchNorm in step and is outside the denominator"
+        elif not finite:
+            included = False
+            reason = "non-finite generator loss; official validation leaves it out of the sum and keeps the batch in the denominator"
+        elif targets is None:
+            included = False
+            reason = "pesq failed; batch stays in the official denominator and is not a loss of 0"
         else:
-            value = 0.0
-            reason = (
-                "pesq failed; official validation skips the add and divides by "
-                "the batch count, so this report contributes 0"
-            )
+            included = True
+            reason = "official generator loss; pesq gate included this batch"
+        assert terms is not None
+        if included:
+            generator_metric = _metric(float(terms["generator"].detach()), reason=reason)
+        else:
+            generator_metric = _metric(status="na", reason=reason)
         losses = {
-            "generator": _metric(value, reason=reason),
+            "generator": generator_metric,
             "ri": _component(terms["ri"], included),
             "magnitude": _component(terms["magnitude"], included),
             "time": _component(terms["time"], included),
@@ -467,7 +601,78 @@ class MossFormerGANTask:
                 "count": 0,
             },
             "stoi": {"status": "na", "value": None, "reason": "not computed", "count": 0},
-            "pesq_gate": "included" if included else "counted_as_zero",
+            "pesq_gate": "included" if included else "denominator_only",
+            "generator_loss_included": included and not alignment,
+            "alignment_pad": alignment,
+        }
+
+    def reduce_validation(self, reports: list[dict[str, Any]], *, collective: bool | None = None) -> dict[str, Any]:
+        """Official validation loss: the mean of the per-rank means.
+
+        Each rank's mean divides by its own batch count, including PESQ
+        failures and official sampler padding, and excluding alignment pads.
+        Ranks are then averaged with equal weight. Equal batch counts make
+        this the same number as one global quotient. Unequal counts keep the
+        official unweighted mean of means.
+        """
+        local = local_validation_totals(reports)
+        rows = [local]
+        if collective is None:
+            collective = bool(self.validation_requires_all_ranks)
+        if (
+            collective
+            and dist.is_available()
+            and dist.is_initialized()
+            and dist.get_world_size() > 1
+        ):
+            payload = torch.tensor(
+                [local["sum"], local["batches"], local["failed"], local["included"], local["alignment"], local["mean"]],
+                dtype=torch.float64,
+            )
+            if self.device.type == "cuda":
+                payload = payload.to(self.device)
+            gathered = [torch.empty_like(payload) for _ in range(dist.get_world_size())]
+            dist.all_gather(gathered, payload)
+            names = ("sum", "batches", "failed", "included", "alignment", "mean")
+            rows = [dict(zip(names, [float(value) for value in item.tolist()], strict=True)) for item in gathered]
+        active = [row for row in rows if row["batches"] > 0]
+        if not active:
+            raise TrainingError("validation produced no batches")
+        official = official_validation_mean([row["mean"] for row in active])
+        failed = int(sum(row["failed"] for row in rows))
+        included = int(sum(row["included"] for row in rows))
+        batches = int(sum(row["batches"] for row in rows))
+        alignment = int(sum(row["alignment"] for row in rows))
+        per_rank_batches = [int(row["batches"]) for row in rows]
+        return {
+            "losses": {
+                "generator": {
+                    "status": "ok",
+                    "value": official,
+                    "reason": (
+                        "mean of per-rank means; failed PESQ batches stay in each rank's "
+                        "denominator and are not stored as loss 0"
+                    ),
+                    "count": batches,
+                }
+            },
+            "pesq": {
+                "status": "na",
+                "value": None,
+                "reason": "pesq gates inclusion and is not the plateau metric",
+                "count": 0,
+                "failed_batches": failed,
+                "included_batches": included,
+            },
+            "stoi": {"status": "na", "value": None, "reason": "not computed", "count": 0},
+            "validation_coverage": {
+                "batches": batches,
+                "included_batches": included,
+                "pesq_failed_batches": failed,
+                "alignment_pad_forwards": alignment,
+                "per_rank_batches": per_rank_batches,
+                "denominator": "per-rank batch count, then unweighted mean across ranks",
+            },
         }
 
     def participating_validation_forward(self, batch: dict[str, Any]) -> dict[str, Any]:
@@ -575,11 +780,6 @@ def _uncompress(real: torch.Tensor, imag: torch.Tensor) -> torch.Tensor:
     magnitude = value.abs().pow(1.0 / 0.3)
     phase = value.angle()
     return torch.stack((magnitude * torch.cos(phase), magnitude * torch.sin(phase)), -1)
-
-
-def _finite(loss: torch.Tensor, name: str) -> None:
-    if not torch.isfinite(loss).all():
-        raise TrainingError(f"non-finite {name} loss")
 
 
 def _component(value: torch.Tensor, included: bool) -> dict[str, Any]:

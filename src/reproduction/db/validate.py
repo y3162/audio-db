@@ -18,6 +18,7 @@ from src.reproduction.ids import (
     REQUIRED_SLOTS,
     asset_ids_in,
     build_id_for,
+    CLAIM_LABELS,
     case_content_hash,
     case_set_id_for,
     catalog_id_for,
@@ -305,14 +306,14 @@ def _claim(dataset, protocol, materials, case_sets, cases, assets) -> None:
             )
     if label == "official_recipe_scaled_down" and protocol["kind"] != "pregenerated":
         raise ReproductionError("official_recipe_scaled_down requires a pregenerated protocol")
-    if label not in {
-        "official_reproduction",
-        "leakage_safe_comparison",
-        "minimal_repair_reproduction",
-        "protocol_conformant_substitute_materials",
-        "espnet_public_se_recipe_reproduction",
-        "official_recipe_scaled_down",
-    }:
+    if label == "research_checkpoint_selection":
+        if profile != "official_faithful":
+            raise ReproductionError("research_checkpoint_selection requires profile official_faithful")
+        if dataset["selection_uses_test"]:
+            raise ReproductionError("research_checkpoint_selection cannot select on test")
+        if deviation != "research_improvement":
+            raise ReproductionError("research_checkpoint_selection requires deviation_class research_improvement")
+    if label not in CLAIM_LABELS:
         raise ReproductionError(f"unknown claim_label: {label}")
 
 

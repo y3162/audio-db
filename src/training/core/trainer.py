@@ -338,6 +338,7 @@ class Trainer:
             self._retarget_schedule(usable_batches // accumulation)
             cursor = skip
             skip = 0
+            self._start_task_epoch(cursor != 0)
             pending: Future | None = None
             while cursor < usable_batches and self.global_step < self.max_steps:
                 self._note_schedule(epoch, cursor // accumulation, usable_batches // accumulation)
@@ -460,6 +461,7 @@ class Trainer:
             self._retarget_schedule(usable_batches // accumulation)
             cursor = skip
             skip = 0
+            self._start_task_epoch(cursor != 0)
             pending: Future | None = None
             while cursor < usable_batches and self.global_step < self.max_steps:
                 self._note_schedule(epoch, cursor // accumulation, usable_batches // accumulation)
@@ -479,20 +481,38 @@ class Trainer:
                         _load_update, stream.render, cursor // accumulation, accumulation
                     )
                 metrics = self._timed_train_update(group, accumulation)
-                if not self._accept_optimizer_update(metrics, epoch, group):
+                applied = self._accept_optimizer_update(metrics, epoch, group)
+                data_epoch_end = cursor >= usable_batches
+                # MossFormer validates at the end of the data epoch. A PESQ
+                # skip changes the optimizer-update count, so global_step modulo
+                # validation_interval is not that boundary. Other tasks keep
+                # the interval contract below.
+                boundary = self._uses_data_epoch_validation()
+                if not applied and not (boundary and data_epoch_end):
                     continue
-                self.global_step += 1
-                epoch_done = (self.global_step % self.steps_per_epoch == 0) if self.steps_per_epoch else cursor >= usable_batches
-                logical_epoch = (self.global_step - 1) // self.steps_per_epoch if self.steps_per_epoch else epoch
+                if applied:
+                    self.global_step += 1
                 validation_summary = None
-                scheduled_epoch = bool(self.config.get("batch_schedule") and epoch_done and _has_validation(dataset))
-                step_validation = bool(
-                    not self.steps_per_epoch
-                    and not self.config.get("batch_schedule")
-                    and self.validation_interval
-                    and self.global_step % self.validation_interval == 0
-                )
-                will_validate = bool((self.steps_per_epoch and epoch_done) or scheduled_epoch or step_validation)
+                if boundary:
+                    epoch_done = False
+                    logical_epoch = epoch
+                    will_validate = False
+                    if data_epoch_end:
+                        validation_summary, epoch_halt = self._validate_at_data_epoch_end(
+                            dataset, epoch, cursor, usable_batches
+                        )
+                        halt = halt or epoch_halt
+                else:
+                    epoch_done = (self.global_step % self.steps_per_epoch == 0) if self.steps_per_epoch else cursor >= usable_batches
+                    logical_epoch = (self.global_step - 1) // self.steps_per_epoch if self.steps_per_epoch else epoch
+                    scheduled_epoch = bool(self.config.get("batch_schedule") and epoch_done and _has_validation(dataset))
+                    step_validation = bool(
+                        not self.steps_per_epoch
+                        and not self.config.get("batch_schedule")
+                        and self.validation_interval
+                        and self.global_step % self.validation_interval == 0
+                    )
+                    will_validate = bool((self.steps_per_epoch and epoch_done) or scheduled_epoch or step_validation)
                 if cursor >= usable_batches:
                     stored_epoch, stored_updates = epoch + 1, 0
                 else:
@@ -520,7 +540,7 @@ class Trainer:
                 verify_stop = not halt and self._at_verification_limit()
                 save = will_validate or self._should_save(self.global_step) or timed_stop or verify_stop or ((self.steps_per_epoch or self.config.get("batch_schedule")) and epoch_done and self.process.rank == 0)
                 checkpoint_path = str(self.checkpoint_dir / f"step_{self.global_step:08d}.pt") if save else None
-                if self.process.rank == 0:
+                if self.process.rank == 0 and applied:
                     self._log_train(logical_epoch, metrics, checkpoint_path, validation_summary, group)
                     if save:
                         self._save_boundary(dataset, epoch, cursor, usable_batches, data_state)
@@ -1286,10 +1306,51 @@ class Trainer:
             self._attach_provenance(generator)
         return str(path)
 
+    def _uses_data_epoch_validation(self) -> bool:
+        """MossFormer plateau follows the data epoch, not optimizer-step phase."""
+        return bool(getattr(self.task, "validate_on_data_epoch_end", False)) and bool(self.validation_interval)
+
+    def _validate_at_data_epoch_end(self, dataset, epoch: int, cursor: int, usable_batches: int):
+        """Validate and update plateau after every data epoch, including PESQ skips."""
+        if cursor >= usable_batches:
+            stored_epoch, stored_updates = epoch + 1, 0
+        else:
+            stored_epoch, stored_updates = epoch, cursor // self.plan.accumulation_steps
+        data_state = dataset.data_state(stored_epoch, stored_updates)
+        self._save_boundary(
+            dataset,
+            epoch,
+            cursor,
+            usable_batches,
+            data_state,
+            validation_pending={
+                "kind": "training_data",
+                "logical_epoch": epoch,
+                "step_scheduler": True,
+            },
+        )
+        barrier(self.process)
+        summary = self._validate_training_data(dataset, epoch)
+        self.task.step_schedulers(self._scheduler_validation(summary))
+        halt = bool(getattr(self.task, "stop_training", False)) or self._batch_schedule_should_stop(summary)
+        if self.process.rank == 0:
+            self._save_boundary(dataset, epoch, cursor, usable_batches, data_state)
+        barrier(self.process)
+        return summary, halt
+
+    def _start_task_epoch(self, mid_epoch: bool) -> None:
+        start = getattr(self.task, "start_epoch", None)
+        if start is not None:
+            start(resume_mid_epoch=mid_epoch)
+
+    def _validation_uses_rank_reduction(self) -> bool:
+        return callable(getattr(self.task, "reduce_validation", None))
+
     def _validate(self, validation: RecipeDataset | None, epoch: int) -> dict[str, Any] | None:
         if validation is None:
             raise TrainingError("validation_interval is set but no validation set was given")
         requires_all = bool(getattr(self.task, "validation_requires_all_ranks", False))
+        rank_reduced = self._validation_uses_rank_reduction()
         rng_state = capture_rng(cuda=self.process.uses_cuda)
         summary = None
         try:
@@ -1297,54 +1358,56 @@ class Trainer:
             if participate:
                 self.task.eval_mode()
                 count = len(validation)
-                self._require_same_validation_count(count)
+                positions = list(range(count))
+                split_label = "full_list"
+                if (
+                    rank_reduced
+                    and getattr(self.task, "validation_order", None) == "rank_mod_fixed_v1"
+                    and self.process.world_size > 1
+                ):
+                    from src.reproduction.pipeline.order import recipe_validation_positions
+
+                    positions, split_label = recipe_validation_positions(
+                        count, self.process.world_size, self.process.rank
+                    )
+                elif requires_all:
+                    self._require_same_validation_count(count)
+                batches = [validation.collate([index]) for index in positions]
+                if rank_reduced and requires_all:
+                    batches = self._match_validation_forwards(batches)
                 reports = []
                 self._cuda_step_sync()
                 validation_started = time.perf_counter()
-                for index in range(count):
-                    batch = validation.collate([index])
+                for batch in batches:
                     report = self.task.validation_report(batch)
-                    if self.process.rank != 0:
-                        continue
-                    reports.append(report)
-                    if "si_sdr" in report:
+                    if rank_reduced or self.process.rank == 0:
+                        reports.append(report)
+                    if self.process.rank == 0 and "si_sdr" in report:
                         append_record(self._log_path(), {
                             "type": "validation_case", "global_step": self.global_step,
                             "set": validation.name, "case_id": batch["case_id"][0],
                             **report,
                         })
-                if self.process.rank == 0:
+                if rank_reduced:
+                    summary = self.task.reduce_validation(reports, collective=requires_all)
+                    if summary is not None and split_label == "undersized_same_list":
+                        coverage = summary.setdefault("validation_coverage", {})
+                        coverage["rank_split"] = "undersized_same_list"
+                        coverage["official_distributed_sampler"] = False
+                        coverage["note"] = (
+                            "validation count is below world size; every participating rank "
+                            "scores the full short list. This is not the official "
+                            "DistributedSampler split of the 824-utterance validation."
+                        )
+                elif self.process.rank == 0:
+                    summary = _aggregate_validation(reports)
+                if self.process.rank == 0 and summary is not None:
                     if self._tb is not None:
                         from src.training.se.preview import write_preview
                         write_preview(self._tb, self.task, validation, self.global_step, self.config["logging"]["tensorboard"])
                     self._cuda_step_sync()
                     validation_seconds = time.perf_counter() - validation_started
-                    summary = _aggregate_validation(reports)
-                    best_path = self._consider_best(epoch, summary)
-                    summary["best_checkpoint"] = best_path
-                    append_record(
-                        self._log_path(),
-                        {
-                            "type": "validation",
-                            "global_step": self.global_step,
-                            "epoch": epoch,
-                            "losses": summary["losses"],
-                            "pesq": summary["pesq"],
-                            "stoi": summary["stoi"],
-                            "si_sdr": summary.get("si_sdr"),
-                            "si_snr": summary.get("si_snr"),
-                            "best_checkpoint": best_path,
-                            "seed": self.seed,
-                            "seconds": validation_seconds,
-                            "validation_committed": True,
-                        },
-                    )
-                    pesq = summary["pesq"]
-                    pesq_text = "na" if pesq["value"] is None else f"{pesq['value']:.6f}"
-                    print(
-                        f"validation step {self.global_step} pesq={pesq_text} ({pesq['status']})",
-                        flush=True,
-                    )
+                    summary = self._commit_validation_summary(epoch, summary, validation_seconds, None)
         finally:
             restore_rng(rng_state, cuda=self.process.uses_cuda)
             self.task.train_mode()
@@ -1355,6 +1418,7 @@ class Trainer:
         if hasattr(dataset, "validation_set") and dataset.validation_set is None:
             raise TrainingError("validation_interval is set but no validation set was given")
         requires_all = bool(getattr(self.task, "validation_requires_all_ranks", False))
+        rank_reduced = self._validation_uses_rank_reduction()
         rng_state = capture_rng(cuda=self.process.uses_cuda)
         summary = None
         try:
@@ -1368,13 +1432,16 @@ class Trainer:
                     world_size=self.process.world_size,
                     epoch=epoch,
                 )
-                if requires_all:
+                if requires_all or rank_reduced:
                     batches = list(produced)
                     if limit is not None:
                         batches = batches[: int(limit)]
-                    self._require_same_validation_count(len(batches))
-                    if len(batches) < 1:
-                        raise TrainingError("validation produced no batches")
+                    if rank_reduced and requires_all:
+                        batches = self._match_validation_forwards(batches)
+                    elif requires_all:
+                        self._require_same_validation_count(len(batches))
+                        if len(batches) < 1:
+                            raise TrainingError("validation produced no batches")
                     iterator = batches
                 else:
                     iterator = produced
@@ -1382,61 +1449,108 @@ class Trainer:
                 self._cuda_step_sync()
                 validation_started = time.perf_counter()
                 for batch in iterator:
-                    if not requires_all and limit is not None and len(reports) >= int(limit):
+                    if not requires_all and not rank_reduced and limit is not None and len(reports) >= int(limit):
                         break
                     report = self.task.validation_report(batch)
-                    if self.process.rank != 0:
-                        continue
-                    reports.append(report)
-                    if "si_sdr" in report:
+                    if rank_reduced or self.process.rank == 0:
+                        reports.append(report)
+                    if self.process.rank == 0 and "si_sdr" in report:
                         append_record(self._log_path(), {
                             "type": "validation_case", "global_step": self.global_step,
                             "set": set_name, "case_id": batch["case_id"][0],
                             **report,
                         })
-                if self.process.rank == 0:
+                scope = None
+                if limit is not None:
+                    scope = {
+                        "validation_max_batches": int(limit),
+                        "consumed_batches": len(reports),
+                        "rule": "prefix of this rank's validation order; not the full validation set",
+                    }
+                if rank_reduced:
+                    summary = self.task.reduce_validation(reports, collective=requires_all)
+                elif self.process.rank == 0:
                     if not reports:
                         raise TrainingError("validation produced no batches")
+                    summary = _aggregate_validation(reports)
+                if self.process.rank == 0 and summary is not None:
                     self._cuda_step_sync()
                     validation_seconds = time.perf_counter() - validation_started
-                    summary = _aggregate_validation(reports)
-                    if limit is not None:
-                        summary["validation_scope"] = {
-                            "validation_max_batches": int(limit),
-                            "consumed_batches": len(reports),
-                            "rule": "prefix of the official validation order on rank 0; not the full validation set",
-                        }
-                    best_path = self._consider_best(epoch, summary)
-                    summary["best_checkpoint"] = best_path
-                    append_record(
-                        self._log_path(),
-                        {
-                            "type": "validation",
-                            "global_step": self.global_step,
-                            "epoch": epoch,
-                            "losses": summary["losses"],
-                            "pesq": summary["pesq"],
-                            "stoi": summary["stoi"],
-                            "si_sdr": summary.get("si_sdr"),
-                            "si_snr": summary.get("si_snr"),
-                            "best_checkpoint": best_path,
-                            "seed": self.seed,
-                            "seconds": validation_seconds,
-                            "validation_scope": summary.get("validation_scope"),
-                            "validation_committed": True,
-                        },
-                    )
-                    pesq = summary["pesq"]
-                    pesq_text = "na" if pesq["value"] is None else f"{pesq['value']:.6f}"
-                    print(
-                        f"validation step {self.global_step} pesq={pesq_text} ({pesq['status']})",
-                        flush=True,
-                    )
+                    if scope is not None:
+                        summary["validation_scope"] = scope
+                    summary = self._commit_validation_summary(epoch, summary, validation_seconds, scope)
         finally:
             restore_rng(rng_state, cuda=self.process.uses_cuda)
             self.task.train_mode()
         barrier(self.process)
         return summary
+
+    def _commit_validation_summary(
+        self,
+        epoch: int,
+        summary: dict[str, Any],
+        validation_seconds: float,
+        scope: dict[str, Any] | None,
+    ) -> dict[str, Any]:
+        best_path = self._consider_best(epoch, summary)
+        summary["best_checkpoint"] = best_path
+        append_record(
+            self._log_path(),
+            {
+                "type": "validation",
+                "global_step": self.global_step,
+                "epoch": epoch,
+                "losses": summary["losses"],
+                "pesq": summary["pesq"],
+                "stoi": summary["stoi"],
+                "si_sdr": summary.get("si_sdr"),
+                "si_snr": summary.get("si_snr"),
+                "best_checkpoint": best_path,
+                "seed": self.seed,
+                "seconds": validation_seconds,
+                "validation_scope": scope if scope is not None else summary.get("validation_scope"),
+                "validation_coverage": summary.get("validation_coverage"),
+                "validation_committed": True,
+            },
+        )
+        pesq = summary["pesq"]
+        pesq_text = "na" if pesq["value"] is None else f"{pesq['value']:.6f}"
+        print(
+            f"validation step {self.global_step} pesq={pesq_text} ({pesq['status']})",
+            flush=True,
+        )
+        return summary
+
+    def _match_validation_forwards(self, batches: list[dict[str, Any]]) -> list[dict[str, Any]]:
+        """Give every rank the same number of SyncBatchNorm forwards.
+
+        Official DistributedSampler already pads samples so the counts match.
+        A shorter rank repeats its own prefix, and those extra forwards are
+        marked so they stay out of the metric denominator. An empty rank
+        cannot invent a batch; every rank raises before the next forward.
+        """
+        if not self.process.distributed or not dist.is_initialized():
+            return batches
+        local = torch.tensor([len(batches)], dtype=torch.int64, device=self.process.device)
+        gathered = [torch.empty_like(local) for _ in range(self.process.world_size)]
+        dist.all_gather(gathered, local)
+        counts = [int(item.item()) for item in gathered]
+        target = max(counts) if counts else 0
+        if counts and all(item == counts[0] for item in counts):
+            return batches
+        if any(item == 0 for item in counts):
+            raise TrainingError(
+                "validation rank has no batch to repeat for SyncBN alignment: "
+                + ", ".join(str(item) for item in counts)
+            )
+        padded = [dict(batch) for batch in batches]
+        source = 0
+        while len(padded) < target:
+            copied = dict(batches[source % len(batches)])
+            copied["validation_alignment_pad"] = True
+            padded.append(copied)
+            source += 1
+        return padded
 
     def _accept_optimizer_update(self, metrics: dict[str, float], epoch: int, group) -> bool:
         """Count an optimizer update. A PESQ skip keeps the advanced data cursor."""

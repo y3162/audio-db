@@ -1507,6 +1507,235 @@ def _optional_hash(value: str | None) -> str:
     return f"`{value}`"
 
 
+def locate_reproduction_database(root: str | Path | None = None) -> dict[str, Any]:
+    """Look only at the documented database locations.
+
+    This does not create a file and does not search the wider filesystem.
+    """
+    base = ROOT if root is None else Path(root)
+    candidates = (
+        base / "data" / "db" / "reproduction.duckdb",
+        base / "data" / "db" / "backups" / "reproduction.duckdb",
+        base / "data" / "staging" / "reproduction" / "reproduction.duckdb",
+    )
+    found = [str(path) for path in candidates if path.is_file()]
+    return {
+        "candidates": [str(path) for path in candidates],
+        "found": found,
+        "registration": "AVAILABLE" if found else "BLOCKED",
+    }
+
+
+def research_child_graph(parent: Any, *, parent_name: str, child_name: str, selected_case_ids: list[str]) -> Any:
+    """New protocol, validation case set, and dataset. Parent rows are not copied as datasets.
+
+    ``selected_case_ids`` must already be the published order. They have to be
+    members of the parent's validation case set. Train and test bindings stay
+    on the parent's ids.
+    """
+    from src.reproduction.db.graph import Graph
+    from src.reproduction.ids import protocol_id_for
+
+    if not isinstance(parent_name, str) or not parent_name:
+        raise ReproductionError("parent dataset name is required")
+    if not isinstance(child_name, str) or not child_name or child_name == parent_name:
+        raise ReproductionError("child dataset name must be a new name")
+    selected = _require_case_ids(list(selected_case_ids))
+    if selected != sorted(selected):
+        raise ReproductionError("published case ids must already be sorted")
+    if len(set(selected)) != len(selected):
+        raise ReproductionError("selected case ids contain duplicates")
+    datasets = [
+        row for row in parent.datasets if row["name"] == parent_name and int(row["version"]) == 1
+    ]
+    if len(datasets) != 1:
+        raise ReproductionError(f"parent dataset {parent_name}@1 was not found once")
+    dataset = datasets[0]
+    valid_binding = next((item for item in dataset["bindings"] if item["slot"] == "valid.cases"), None)
+    if valid_binding is None or not valid_binding.get("case_set_id"):
+        raise ReproductionError("parent dataset has no validation case set")
+    valid_id = valid_binding["case_set_id"]
+    case_sets = {row["case_set_id"]: row for row in parent.case_sets}
+    valid_set = case_sets.get(valid_id)
+    if valid_set is None:
+        raise ReproductionError("parent validation case set is missing")
+    population = [item["case_id"] for item in valid_set["items"]]
+    unknown = [case_id for case_id in selected if case_id not in set(population)]
+    if unknown:
+        raise ReproductionError("selected case ids are not in the parent validation split")
+    test_binding = next((item for item in dataset["bindings"] if item["slot"] == "test.cases"), None)
+    if test_binding is not None and test_binding.get("case_set_id"):
+        test_set = case_sets.get(test_binding["case_set_id"])
+        test_ids = set() if test_set is None else {item["case_id"] for item in test_set["items"]}
+        if set(selected) & test_ids:
+            raise ReproductionError("research validation overlaps the parent test split")
+    protocols = {row["protocol_id"]: row for row in parent.protocols}
+    parent_protocol = protocols.get(dataset["protocol_id"])
+    if parent_protocol is None:
+        raise ReproductionError("parent protocol is missing")
+    protocol = {
+        "name": f"{child_name}.protocol",
+        "version": 1,
+        "kind": parent_protocol["kind"],
+        "algorithm": parent_protocol["algorithm"],
+        "algorithm_version": parent_protocol["algorithm_version"],
+        "deviation_class": "research_improvement",
+        "parent_protocol_id": parent_protocol["protocol_id"],
+        "rule_json": json.loads(json.dumps(parent_protocol["rule_json"])),
+        "official_ref_json": json.loads(json.dumps(parent_protocol["official_ref_json"])),
+        "deviations_json": [
+            {
+                "id": ALGORITHM_NAME,
+                "class": "research_improvement",
+                "text": (
+                    "validation case ids are a fixed research subset of the parent "
+                    "validation split; not leakage_safe and not cv_synthetic_small"
+                ),
+            }
+        ],
+    }
+    protocol["protocol_id"] = protocol_id_for(
+        algorithm=protocol["algorithm"],
+        algorithm_version=int(protocol["algorithm_version"]),
+        kind=protocol["kind"],
+        rule=protocol["rule_json"],
+        deviation_class="research_improvement",
+        parent=parent_protocol["protocol_id"],
+    )
+    rule = {"rule": "fixed_subset", "of": valid_id, "k": len(selected)}
+    case_set_name = f"{child_name}.valid"
+    case_set = {
+        "case_set_id": case_set_id_for(
+            name=case_set_name,
+            version=1,
+            split_role="valid",
+            rule=rule,
+            case_ids=selected,
+        ),
+        "name": case_set_name,
+        "version": 1,
+        "split_role": "valid",
+        "origin": "derived_from_official",
+        "selection_rule_json": rule,
+        "provenance_json": {"source": ALGORITHM_NAME, "note": "subset of the parent validation case set"},
+        "member_count": len(selected),
+        "list_sha256": digest(selected),
+        "items": [{"position": index, "case_id": case_id} for index, case_id in enumerate(selected)],
+    }
+    bindings = []
+    for binding in dataset["bindings"]:
+        if binding["slot"] == "valid.cases":
+            bindings.append(
+                {"slot": "valid.cases", "case_set_id": case_set["case_set_id"], "material_set_id": None}
+            )
+        else:
+            bindings.append(
+                {
+                    "slot": binding["slot"],
+                    "case_set_id": binding.get("case_set_id"),
+                    "material_set_id": binding.get("material_set_id"),
+                }
+            )
+    child = {
+        "dataset_id": dataset_id_for(
+            protocol_id=protocol["protocol_id"],
+            bindings=bindings,
+            profile="official_faithful",
+            material_origin="derived_from_official",
+            claim_label=CLAIM_LABEL,
+            selection_uses_test=False,
+            declared_status="ready",
+        ),
+        "name": child_name,
+        "version": 1,
+        "protocol_id": protocol["protocol_id"],
+        "profile": "official_faithful",
+        "material_origin": "derived_from_official",
+        "claim_label": CLAIM_LABEL,
+        "declared_status": "ready",
+        "blocking_json": [],
+        "selection_uses_test": False,
+        "selection_note": (
+            f"{ALGORITHM_NAME}; not leakage_safe; not cv_synthetic_small; "
+            f"case_id_list_sha256={case_id_list_sha256(selected)}"
+        ),
+        "deviations_json": list(protocol["deviations_json"]),
+        "bindings": bindings,
+    }
+    by_id = {row["case_id"]: row for row in parent.cases}
+    cases = []
+    for case_id in selected:
+        case = by_id.get(case_id)
+        if case is None:
+            raise ReproductionError(f"selected case {case_id} is missing from the parent graph")
+        cases.append(json.loads(json.dumps(case)))
+    return Graph(protocols=[protocol], cases=cases, case_sets=[case_set], datasets=[child])
+
+
+def register_research_validation_dataset(
+    database: str | Path,
+    *,
+    parent_name: str,
+    child_name: str,
+    selected_case_ids: list[str],
+    staging: str | Path,
+) -> dict[str, Any]:
+    """Append the research dataset. Refuse to create a missing database.
+
+    The claim check is extended in place when an older database does not
+    list it yet. Existing dataset rows are not updated. A second call with
+    the same child is a no-op.
+    """
+    path = Path(database)
+    if not path.is_file():
+        raise ReproductionError(f"database does not exist: {path}. Refusing to create it.")
+    import duckdb
+
+    from src.reproduction.db.lock import reproduction_lock
+    from src.reproduction.db.registry import read_graph, register_staging
+    from src.reproduction.db.schema import ensure_dataset_claim_labels
+    from src.reproduction.db.staging import write_graph
+
+    with reproduction_lock(path.parent):
+        connection = duckdb.connect(str(path))
+        try:
+            ensure_dataset_claim_labels(connection)
+        finally:
+            connection.close()
+    parent = read_graph(path)
+    before = {
+        row["dataset_id"]: digest(row)
+        for row in parent.datasets
+    }
+    child = research_child_graph(
+        parent,
+        parent_name=parent_name,
+        child_name=child_name,
+        selected_case_ids=selected_case_ids,
+    )
+    write_graph(staging, child)
+    counts = register_staging(staging, path)
+    after = read_graph(path)
+    after_ids = {row["dataset_id"]: digest(row) for row in after.datasets}
+    for dataset_id, fingerprint in before.items():
+        if after_ids.get(dataset_id) != fingerprint:
+            raise ReproductionError(f"parent dataset {dataset_id} changed during research registration")
+    stored = next(row for row in after.datasets if row["name"] == child_name and int(row["version"]) == 1)
+    if stored["claim_label"] != CLAIM_LABEL or stored["dataset_id"] != child.datasets[0]["dataset_id"]:
+        raise ReproductionError("registered research dataset does not match the staged id")
+    return {
+        "dataset_id": stored["dataset_id"],
+        "dataset_name": child_name,
+        "protocol_id": stored["protocol_id"],
+        "valid_case_set_id": next(
+            item["case_set_id"] for item in stored["bindings"] if item["slot"] == "valid.cases"
+        ),
+        "claim_label": stored["claim_label"],
+        "inserted": counts,
+        "parent_dataset_ids": sorted(before),
+    }
+
+
 def main() -> None:
     payload = materialize()
     leak = payload["leak"]["checks"]

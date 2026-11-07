@@ -453,7 +453,8 @@ _STATEMENTS = (
                 'espnet_public_se_recipe_reproduction',
                 'official_recipe_scaled_down',
                 'minimal_repair_reproduction',
-                'leakage_safe_comparison'
+                'leakage_safe_comparison',
+                'research_checkpoint_selection'
             )
         ),
         declared_status VARCHAR NOT NULL CHECK (declared_status IN ('ready', 'blocked', 'unknown')),
@@ -540,6 +541,92 @@ def expected_columns() -> list[list[str]]:
 
 def column_fingerprint() -> str:
     return digest(expected_columns())
+
+
+def _create_statement(table: str) -> str:
+    needle = f"CREATE TABLE repro.{table} ("
+    for statement in _STATEMENTS:
+        if needle in statement:
+            return statement
+    raise ReproductionError(f"missing CREATE TABLE for repro.{table}")
+
+
+def _table_exists(connection, table: str) -> bool:
+    found = connection.execute(
+        """
+        SELECT COUNT(*)
+        FROM information_schema.tables
+        WHERE table_schema = 'repro' AND table_name = ?
+        """,
+        [table],
+    ).fetchone()
+    return bool(found and found[0])
+
+
+def _column_names(connection, table: str) -> list[str]:
+    rows = connection.execute(
+        """
+        SELECT column_name
+        FROM information_schema.columns
+        WHERE table_schema = 'repro' AND table_name = ?
+        ORDER BY ordinal_position
+        """,
+        [table],
+    ).fetchall()
+    return [row[0] for row in rows]
+
+
+def ensure_dataset_claim_labels(connection) -> None:
+    """Allow ``research_checkpoint_selection`` on an existing datasets table.
+
+    DuckDB cannot drop a CHECK in place. The datasets table and the bindings
+    that reference it are copied, recreated from the current CREATE TABLE, and
+    copied back. Row values are not edited. Column order stays the same.
+    """
+    rows = connection.execute(
+        """
+        SELECT constraint_text
+        FROM duckdb_constraints()
+        WHERE schema_name = 'repro'
+          AND table_name = 'datasets'
+          AND constraint_text IS NOT NULL
+        """
+    ).fetchall()
+    if any("research_checkpoint_selection" in str(row[0]) for row in rows):
+        return
+    if not _table_exists(connection, "datasets"):
+        raise ReproductionError("repro.datasets was not found; the database was not modified")
+    dependents = [
+        row[0]
+        for row in connection.execute(
+            """
+            SELECT DISTINCT table_name
+            FROM duckdb_constraints()
+            WHERE schema_name = 'repro' AND referenced_table = 'datasets'
+            """
+        ).fetchall()
+        if row[0] != "datasets"
+    ]
+    dataset_columns = _column_names(connection, "datasets")
+    saved = {name: _column_names(connection, name) for name in dependents}
+    connection.execute("CREATE TABLE repro.datasets__claim_keep AS SELECT * FROM repro.datasets")
+    for name in dependents:
+        connection.execute(f"CREATE TABLE repro.{name}__claim_keep AS SELECT * FROM repro.{name}")
+        connection.execute(f"DROP TABLE repro.{name}")
+    connection.execute("DROP TABLE repro.datasets")
+    connection.execute(_create_statement("datasets"))
+    dataset_sql = ", ".join(dataset_columns)
+    connection.execute(
+        f"INSERT INTO repro.datasets ({dataset_sql}) SELECT {dataset_sql} FROM repro.datasets__claim_keep"
+    )
+    connection.execute("DROP TABLE repro.datasets__claim_keep")
+    for name in dependents:
+        connection.execute(_create_statement(name))
+        column_sql = ", ".join(saved[name])
+        connection.execute(
+            f"INSERT INTO repro.{name} ({column_sql}) SELECT {column_sql} FROM repro.{name}__claim_keep"
+        )
+        connection.execute(f"DROP TABLE repro.{name}__claim_keep")
 
 
 def create_schema(connection) -> None:

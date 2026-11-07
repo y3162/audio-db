@@ -41,7 +41,7 @@ TF-GridNet の本格 YAML は `configs/training/reproduction/tf_gridnet_ms_snsd_
 | 上限の合計 | 学習 105.9 時間に 1.3 で 137.6 時間。検証 8.00 時間に 1.5 で 12.0 時間。確保の目安は約 150 時間 |
 | 中断 | 公式完了の前に止めるときは `interrupted.json`。12 更新の計測も `INTERRUPTED` で、`complete.json` は無かった |
 | 公式との差 | plateau の半減と 10 回停止は CPU の合成履歴で確認し、今回の GPU 検証は 1 回なので半減していない。初期化が公式リポジトリの乱数とビット一致するとは見ていない |
-| 開始条件 | このホストのスナップショットで開始できる。`verification_max_updates` と `validation_max_batches` と `max_updates_per_epoch` を外す。2 GPU のままにする |
+| 開始条件 | Fix.1 の独立検証後、公式 2 GPU の本格開始は NO-GO。公式 2 GPU 学習との数値一致は未実施で、PESQ 失敗は全 rank スキップ、勾配は増分平均である。1 GPU は CONDITIONAL GO。上限を外して 2 GPU を始める条件は、その NO-GO が解消したあとである |
 
 10 回連続の非改善で 121 epoch より前に止まる。上の時間は止まらなかった場合の上限である。
 

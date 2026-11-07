@@ -257,6 +257,71 @@ def _rank_mod_fixed(size: int, world_size: int, rank: int, epoch: int, *, sample
     return chosen
 
 
+def distributed_sampler_coverage(size: int, world_size: int) -> dict[str, int]:
+    """Counts for ClearerVoice ``DistributedSampler`` with its default shuffle.
+
+    ``num_samples`` is ``ceil(size / world_size)`` on every rank, so each rank
+    has the same number of samples. The shuffle builds only complete stride
+    groups, which drops ``size % world_size`` tail indexes. The sampler then
+    repeats the front of that list until ``ceil(size / world_size) * world_size``.
+    Those repeated indexes are scored again. DataLoader ``drop_last`` stays
+    false, so a short last batch is kept and still counts as one batch.
+    """
+    if size < 1 or world_size < 1:
+        raise ReproductionError("sampler coverage needs a positive dataset and world size")
+    if size // world_size < 1:
+        raise ReproductionError(
+            f"rank_mod_fixed_v1 cannot assign {size} samples across world_size {world_size}"
+        )
+    num_samples = int(math.ceil(size / world_size))
+    unique = (size // world_size) * world_size
+    return {
+        "num_samples_per_rank": num_samples,
+        "dropped_tail": size - unique,
+        "padded_duplicates": num_samples * world_size - unique,
+        "scored_slots": num_samples * world_size,
+        "unique_assigned": unique,
+    }
+
+
+def recipe_validation_positions(count: int, world_size: int, rank: int) -> tuple[list[int], str]:
+    """Indexes one rank scores in recipe validation.
+
+    When ``count >= world_size > 1``, this is ``rank_mod_fixed_v1`` (ClearerVoice
+    ``DistributedSampler`` at epoch 0). When the validation set is shorter than
+    the world, that sampler's shuffle has no complete stride group and its own
+    length assert fails. Every rank then receives ``range(count)``, the same
+    short list. That keeps the forward count aligned. It is not the official
+    split of the 824-utterance VoiceBank validation.
+    """
+    if count < 0 or world_size < 1 or rank < 0 or rank >= world_size:
+        raise ReproductionError(
+            f"invalid validation positions count={count} world_size={world_size} rank={rank}"
+        )
+    if world_size > 1 and count >= world_size:
+        return (
+            rank_order(
+                "rank_mod_fixed_v1",
+                count,
+                seed=0,
+                epoch=0,
+                world_size=world_size,
+                rank=rank,
+            ),
+            "rank_mod_fixed_v1",
+        )
+    if world_size > 1 and count < world_size:
+        return list(range(count)), "undersized_same_list"
+    return list(range(count)), "single_process"
+
+
+def sampler_batch_count(num_samples: int, batch_size: int) -> int:
+    """Batches one rank yields when ``drop_last`` is false."""
+    if num_samples < 1 or batch_size < 1:
+        raise ReproductionError("batch count needs a positive sample count and batch size")
+    return int(math.ceil(num_samples / batch_size))
+
+
 def _per_rank_independent(size: int, seed: int, epoch: int, world_size: int, rank: int) -> list[int]:
     generator = torch.Generator()
     generator.manual_seed(mix_seed("per_rank", seed, rank))

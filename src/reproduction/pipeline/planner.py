@@ -157,13 +157,16 @@ def validation_refs(
     epoch: int,
     world_size: int,
     policy: str,
+    rank: int | None = None,
 ) -> list[SampleRef]:
-    """Validation samples in the order rank 0 should score.
+    """Validation samples for one rank, or the concatenated MossFormer view.
 
     MP-SENet's validation loader does not shuffle. MossFormerGAN's DDP
-    validation order is the epoch-0 rank sampler; ranks are concatenated so
-    one process still sees every shard. ``epoch`` affects ``per_epoch_random``
-    crops and does not reshuffle that sampler.
+    validation sampler is epoch 0 of ``rank_mod_fixed_v1`` and is not moved
+    by ``set_epoch``. Pass ``rank`` to take that rank's slice, including the
+    official prefix padding and without the dropped tail. Omit ``rank`` to
+    concatenate every rank, which is the single-process view of the same
+    sampler. ``epoch`` affects ``per_epoch_random`` crops only.
     """
     rule = store.dataset["rule_json"]
     crop_name = str(rule["validation"]["crop"])
@@ -172,7 +175,17 @@ def validation_refs(
     pad = _pad_name(normalize)
     case_ids = store.case_ids("valid.cases")
     lengths = [_pair_length(store, case_id, normalize) for case_id in case_ids]
-    positions = _validation_positions(policy, len(case_ids), seed, world_size)
+    if policy == "rank_mod_fixed_v1" and rank is not None:
+        positions = rank_order(
+            policy,
+            len(case_ids),
+            seed=seed,
+            epoch=0,
+            world_size=world_size,
+            rank=rank,
+        )
+    else:
+        positions = _validation_positions(policy, len(case_ids), seed, world_size)
     full = crop_name == "full_length"
     epoch_key: int | str = epoch if crop_name == "per_epoch_random" else "valid"
     if crop_name not in ("full_length", "per_epoch_random", "fixed"):

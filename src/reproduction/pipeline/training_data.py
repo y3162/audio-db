@@ -215,13 +215,13 @@ class ReproductionTrainingData:
             raise ReproductionError(
                 f"rank {rank} world_size {world_size} does not match this training data"
             )
-        del rank
         refs = validation_refs(
             self.store,
             seed=self.seed,
             epoch=0 if epoch is None else epoch,
             world_size=self.world_size,
             policy=self.policy,
+            rank=rank if self.policy == "rank_mod_fixed_v1" else None,
         )
         forbidden = set(self.test_ids) - set(self.valid_ids)
         if any(sample.case_id in forbidden for sample in refs):

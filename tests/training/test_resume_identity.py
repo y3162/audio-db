@@ -133,6 +133,37 @@ class ResumeIdentityTests(unittest.TestCase):
                 with self.assertRaisesRegex(TrainingError, "does not match"):
                     execute(config_path, resume=checkpoint, strict_resume=True)
 
+    def test_full_profile_checks_resume_even_when_strict_is_false(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            config_path = root / "train.yaml"
+            checkpoint_dir = root / "ckpt"
+            text = _YAML.format(checkpoint=checkpoint_dir, database=root / "unused.duckdb")
+            text = text.replace("loss: waveform_l1\n", "loss: waveform_l1\nexperiment_profile: full\n")
+            config_path.write_text(text, encoding="utf-8")
+            config = load_training_config(config_path)
+            saved = dict(config)
+            saved["data"] = dict(config["data"])
+            saved["data"]["validation_set"] = "other_valid"
+            checkpoint = root / "step_00000001.pt"
+            save_atomic(
+                checkpoint,
+                {
+                    "format": "audio-db-training-v1",
+                    "config": saved,
+                    "global_step": 1,
+                    "epoch": 0,
+                    "micro_batches_consumed": 1,
+                },
+            )
+
+            def boom(*_args, **_kwargs):
+                raise AssertionError("build_task was called")
+
+            with patch("src.training.se.run.build_task", side_effect=boom):
+                with self.assertRaisesRegex(TrainingError, "does not match"):
+                    execute(config_path, resume=checkpoint, strict_resume=False)
+
     def test_provenance_records_git_dirty(self):
         document = build_provenance(
             _Identity("n"),

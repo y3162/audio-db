@@ -21,6 +21,7 @@ CLAIM_LABELS = (
     "official_recipe_scaled_down",
     "minimal_repair_reproduction",
     "leakage_safe_comparison",
+    "research_checkpoint_selection",
 )
 DEVIATION_CLASSES = (
     "official_effective",

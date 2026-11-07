@@ -18,7 +18,7 @@ from src.reproduction.db.schema import INSERT_ORDER, TABLE_ORDER, TABLES, TableS
 from src.reproduction.db.staging import load_graph, write_graph
 from src.reproduction.db.validate import validate_graph
 from src.reproduction.errors import ReproductionError
-from src.reproduction.ids import digest
+from src.reproduction.ids import CLAIM_LABELS, digest
 
 _NAMED = ("material_sets", "protocols", "case_sets", "datasets")
 
@@ -548,14 +548,7 @@ def _run_row(
     if bool(data_state.get("selection_uses_test")) != bool(provenance.get("selection_uses_test")):
         raise ReproductionError("data_state selection_uses_test does not match the provenance")
     claim = _text(provenance.get("claim_label"), "claim_label")
-    if claim not in {
-        "official_reproduction",
-        "protocol_conformant_substitute_materials",
-        "espnet_public_se_recipe_reproduction",
-        "official_recipe_scaled_down",
-        "minimal_repair_reproduction",
-        "leakage_safe_comparison",
-    }:
+    if claim not in CLAIM_LABELS:
         raise ReproductionError(f"unknown claim_label: {claim}")
     profile = provenance.get("profile")
     if profile not in ("official_faithful", "leakage_safe"):
