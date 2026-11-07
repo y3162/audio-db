@@ -1,0 +1,27 @@
+# DNS-Challenge acceptance conditions for TF-Locoformer. No mixture wavs are written.
+# tf_locoformer.dns.accept_recipe is the 3000 h accepted plan
+# (324000 train / 36000 valid). It is not tf_locoformer.dns.recipe and not
+# tf_locoformer.dns.accept_smoke. Validation is the sorted-uttid tail.
+# That tail is not cv_synthetic_small.
+
+name: tf_locoformer.dns.accept_recipe
+seed: 17
+shard_size: 1000
+plan_shard: 1000
+delivery: on_demand
+source_scan: full
+acceptance: deterministic_case_stream_v1
+claim_label: espnet_public_se_recipe_reproduction
+total_hours: 3000
+audio_seconds: 30
+silence_seconds: 0.2
+snr_lower: -5
+snr_upper: 15
+target_level_lower: -35
+target_level_upper: -15
+include_test: true
+include_non_16k_noise: all
+audit_realizations: 1024
+workers: 32
+benchmark_counts: [100, 1000]
+benchmark_workers: [1, 2, 4]

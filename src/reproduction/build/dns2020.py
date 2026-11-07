@@ -19,9 +19,11 @@ uses the stored spans, then the same ``snr_mixer`` and PCM_16 rounding.
 
 from __future__ import annotations
 
+import contextvars
 import io
 import random
 import re
+import time
 from pathlib import Path
 from typing import Any, Sequence
 
@@ -58,6 +60,44 @@ DNS_COMMIT = "70f19285c36cca4df2338f9248775ddc50980c6b"
 ESPNET_COMMIT = "90eed8e53498e7af682bc6ff39d9067ae440d6a4"
 UTTID_RE = re.compile(r".*reader_([0-9]*)_.*_([0-9]*)\.wav$", re.IGNORECASE)
 READER_RE = re.compile(r"reader_([0-9]+)", re.IGNORECASE)
+_PROFILE: contextvars.ContextVar["DnsProfile | None"] = contextvars.ContextVar("dns_accept_profile", default=None)
+
+
+class DnsProfile:
+    """Per-process timers for one acceptance plan. Absent unless a caller opts in."""
+
+    __slots__ = ("io", "decode", "resample", "activity", "clip")
+
+    def __init__(self) -> None:
+        self.io = 0.0
+        self.decode = 0.0
+        self.resample = 0.0
+        self.activity = 0.0
+        self.clip = 0.0
+
+    def add(self, bucket: str, seconds: float) -> None:
+        setattr(self, bucket, getattr(self, bucket) + float(seconds))
+
+    def as_dict(self) -> dict[str, float]:
+        return {name: float(getattr(self, name)) for name in self.__slots__}
+
+
+class profile_acceptance:
+    """Time decoder, resample, activity, and clipping work inside this block."""
+
+    def __enter__(self) -> DnsProfile:
+        self.profile = DnsProfile()
+        self.token = _PROFILE.set(self.profile)
+        return self.profile
+
+    def __exit__(self, exc_type, exc, traceback) -> None:
+        _PROFILE.reset(self.token)
+
+
+def _profile_add(bucket: str, started: float) -> None:
+    profile = _PROFILE.get()
+    if profile is not None:
+        profile.add(bucket, time.perf_counter() - started)
 
 
 def python_shuffle(names: Sequence[str], seed: int) -> list[str]:
@@ -79,14 +119,19 @@ def shuffle_pools(clean: Sequence[str], noise: Sequence[str], seed: int) -> tupl
 
 def is_clipped(audio: np.ndarray, clipping_threshold: float = CLIP_THRESHOLD) -> bool:
     """Official ``any(abs(audio) > threshold)``. ``np.any`` is the same predicate."""
+    started = time.perf_counter()
     values = np.asarray(audio)
     if values.size == 0:
-        return False
-    return bool(np.any(np.abs(values) > clipping_threshold))
+        result = False
+    else:
+        result = bool(np.any(np.abs(values) > clipping_threshold))
+    _profile_add("clip", started)
+    return result
 
 
 def activitydetector(audio: np.ndarray, fs: int = SAMPLE_RATE, energy_thresh: float = 0.13, target_level: float = -25) -> float:
     """Official ``activitydetector``. The signal is scaled to ``target_level`` first."""
+    started = time.perf_counter()
     scaled = normalize(np.asarray(audio, dtype=np.float64), target_level)
     window = int(fs * 50 / 1000)
     if window < 1:
@@ -112,7 +157,9 @@ def activitydetector(audio: np.ndarray, fs: int = SAMPLE_RATE, energy_thresh: fl
         if smoothed > energy_thresh:
             active += 1
         previous = current
-    return active / count
+    result = active / count
+    _profile_add("activity", started)
+    return result
 
 
 def normalize(audio: np.ndarray, target_level: float = -25) -> np.ndarray:
@@ -312,7 +359,9 @@ def resample_to_16k(audio: np.ndarray, source_rate: int) -> np.ndarray:
         raise ReproductionError(f"cannot resample {wave.size} samples at {rate} Hz")
     import librosa
 
+    started = time.perf_counter()
     converted = librosa.resample(wave, orig_sr=rate, target_sr=SAMPLE_RATE, res_type="soxr_hq")
+    _profile_add("resample", started)
     out = np.asarray(converted, dtype=np.float64).reshape(-1)
     if out.size < 1 or not np.isfinite(out).all():
         raise ReproductionError(f"resample from {rate} Hz produced no finite 16 kHz samples")
@@ -321,7 +370,9 @@ def resample_to_16k(audio: np.ndarray, source_rate: int) -> np.ndarray:
 
 def read_mono(path: Path) -> tuple[np.ndarray, int]:
     """``audioread`` without its optional RMS normalize: soundfile, then channel mean."""
+    started = time.perf_counter()
     audio, rate = sf.read(path, dtype="float64", always_2d=True)
+    _profile_add("decode", started)
     mono = np.asarray(audio, dtype=np.float64).mean(axis=1)
     return mono, int(rate)
 
@@ -345,7 +396,9 @@ def signal_length(path: Path, cache: dict[str, tuple[np.ndarray, int]] | None = 
     if cache is not None and key in cache:
         audio, rate = cache[key]
         return int(rate), int(audio.shape[0])
+    started = time.perf_counter()
     info = sf.info(path)
+    _profile_add("io", started)
     rate = int(info.samplerate)
     if rate == SAMPLE_RATE:
         return rate, int(info.frames)
@@ -369,12 +422,16 @@ def read_signal_span(
         if crop.shape[0] != length:
             raise ReproductionError(f"{path} span {start}:{start + length} is outside the 16 kHz signal")
         return crop, int(rate)
+    started = time.perf_counter()
     info = sf.info(path)
+    _profile_add("io", started)
     rate = int(info.samplerate)
     if rate == SAMPLE_RATE:
         if start + length > int(info.frames):
             raise ReproductionError(f"{path} span {start}:{start + length} is outside {info.frames} frames")
+        started = time.perf_counter()
         audio, got = sf.read(path, start=start, stop=start + length, dtype="float64", always_2d=True)
+        _profile_add("decode", started)
         if int(got) != SAMPLE_RATE:
             raise ReproductionError(f"{path} is {got} Hz; the plan expected {SAMPLE_RATE}")
         mono = np.asarray(audio, dtype=np.float64).mean(axis=1)
@@ -398,30 +455,63 @@ def plan_accepted_realizations(
     cache: dict[str, tuple[np.ndarray, int]] | None = None,
     workers: int = 1,
 ) -> tuple[list[dict[str, Any]], dict[str, Any]]:
-    """Accepted realizations. Audio is read. Unaccepted candidates are not stored.
+    """Accepted realizations for every ``gen_index``. Audio is read. Unaccepted candidates are not stored."""
+    count = int(definition["params"]["num_files"])
+    return plan_accepted_span(
+        definition,
+        clean_names,
+        clean_paths,
+        noise_names,
+        noise_paths,
+        start=0,
+        stop=count,
+        cache=cache,
+        workers=workers,
+    )
 
-    ``workers`` above 1 plans disjoint ``gen_index`` ranges in separate processes.
-    Each case has its own generator, so the documents do not depend on the worker
-    count. A worker keeps a transient source cache for that process only. Mixture
-    waveforms are not stored.
+
+def plan_accepted_span(
+    definition: dict[str, Any],
+    clean_names: Sequence[str],
+    clean_paths: dict[str, Path],
+    noise_names: Sequence[str],
+    noise_paths: dict[str, Path],
+    *,
+    start: int,
+    stop: int,
+    cache: dict[str, tuple[np.ndarray, int]] | None = None,
+    workers: int = 1,
+) -> tuple[list[dict[str, Any]], dict[str, Any]]:
+    """Accepted realizations for ``gen_index`` in ``[start, stop)``.
+
+    ``workers`` above 1 plans disjoint ranges in separate processes. Each case has
+    its own generator, so the documents do not depend on the worker count or on
+    which range contains the case. The source cache passed as ``None`` is created
+    inside the case and discarded when that case returns. Mixture waveforms are
+    not stored.
     """
     params = definition["params"]
     if params.get("retry_policy") != RETRY_ACCEPT:
         raise ReproductionError("accepted DNS plans require deterministic_case_stream_v1")
-    count = int(params["num_files"])
+    total = int(params["num_files"])
+    start = int(start)
+    stop = int(stop)
+    if start < 0 or stop > total or start >= stop:
+        raise ReproductionError(f"DNS acceptance span {start}:{stop} is outside 0:{total}")
     if digest({"clean": list(clean_names), "noise": list(noise_names)}) != params["order_sha256"]:
         raise ReproductionError("file order does not match the build order_sha256")
     worker_count = int(workers)
     if worker_count < 1:
         raise ReproductionError("DNS acceptance workers must be positive")
-    if worker_count == 1 or count < 2:
+    width = stop - start
+    if worker_count == 1 or width < 2:
         pairs = [
             _accept_one(definition, gen_index, clean_names, clean_paths, noise_names, noise_paths, cache)
-            for gen_index in range(count)
+            for gen_index in range(start, stop)
         ]
     else:
         pairs = _accept_parallel(
-            definition, count, clean_names, clean_paths, noise_names, noise_paths, worker_count
+            definition, start, stop, clean_names, clean_paths, noise_names, noise_paths, worker_count
         )
     documents = []
     totals = {
@@ -432,10 +522,12 @@ def plan_accepted_realizations(
         "clean_clip_skips": 0,
         "noise_clip_skips": 0,
         "outer_attempts": [],
+        "case_stats": [],
         "resampled_noise_pieces": 0,
     }
     for document, stats in pairs:
         documents.append(document)
+        totals["case_stats"].append({key: int(value) for key, value in stats.items()})
         totals["cases"] += 1
         for key in ("activity_rejects", "post_clip_rejects", "short_rejects", "clean_clip_skips", "noise_clip_skips"):
             totals[key] += int(stats[key])
@@ -471,7 +563,8 @@ def _accept_one(
 
 def _accept_parallel(
     definition: dict[str, Any],
-    count: int,
+    start: int,
+    stop: int,
     clean_names: Sequence[str],
     clean_paths: dict[str, Path],
     noise_names: Sequence[str],
@@ -481,8 +574,8 @@ def _accept_parallel(
     import multiprocessing
     from concurrent.futures import ProcessPoolExecutor
 
-    width = max(1, (count + workers - 1) // workers)
-    ranges = [(start, min(count, start + width)) for start in range(0, count, width)]
+    width = max(1, (int(stop) - int(start) + workers - 1) // workers)
+    ranges = [(cursor, min(int(stop), cursor + width)) for cursor in range(int(start), int(stop), width)]
     payload = {
         "definition": definition,
         "clean_names": list(clean_names),
@@ -497,7 +590,7 @@ def _accept_parallel(
     ordered: list[tuple[dict[str, Any], dict[str, int]]] = []
     for chunk in chunks:
         ordered.extend(chunk)
-    if [int(item[0]["draws"]["gen_index"]) for item in ordered] != list(range(count)):
+    if [int(item[0]["draws"]["gen_index"]) for item in ordered] != list(range(int(start), int(stop))):
         raise ReproductionError("parallel DNS acceptance did not return gen_index order")
     return ordered
 

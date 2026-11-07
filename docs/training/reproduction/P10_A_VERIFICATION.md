@@ -41,7 +41,7 @@
 |---|---|---|---|---|
 | `tf_locoformer.dns.accept_smoke@1` | `f75b3e7a4dbab8a68a6594487b3d605e949d96ef85fb8667b34417ea12101a39` | `db52950f22d0b5f9f947a341d1afdf1c2b38f30da375d3fe505e384f5816ec8a` | 230 / 26 / 150 | snapshot と `data/staging/reproduction-p71` |
 
-親 protocol `dns.tflocoformer.formula` は `cb81f473d53ef80ee535fd7b06ec3ca9b57f9ab5e0146e8f89635d79e5e592e1`。子 protocol は `cadda632ebd08a9066e5b7a81851920762cc2a5fa5bddc21f8488bf1a1630116`。公式規模の受理 Dataset は ID を発行していない。
+親 protocol `dns.tflocoformer.formula` は `cb81f473d53ef80ee535fd7b06ec3ca9b57f9ab5e0146e8f89635d79e5e592e1`。子 protocol は `cadda632ebd08a9066e5b7a81851920762cc2a5fa5bddc21f8488bf1a1630116`。この検証の時点では公式規模の受理 Dataset に ID を発行していない。P10-A.1 の登録結果は [P10_A1_VERIFICATION](P10_A1_VERIFICATION.md)。
 
 P8 と P9 は別ファイルのままである。
 
@@ -54,7 +54,7 @@ P8 と P9 は別ファイルのままである。
 | 同上 | `semambapp.gsr.smoke@1` | ready | `protocol_conformant_substitute_materials` | `d3bc5dbea5b7a19c8495a0d2ce5d7d53267c96d6f82dc049c193fd14a04980eb` |
 | 同上 | `semambapp.gsr.substitute@1` | ready | 同上 | `4acf30da286a36cb8c6edcdf1091456c979fd839d7898ecc7528467e4b04d76e` |
 
-学習に使う公式規模の入口は次の 4 つに分かれる。MP-SENet は `mp_senet.vb28.ondemand.official@1`（safe は別 Dataset）。MossFormerGAN は `mossformergan.vb28.ondemand.official@1`。TF-GridNet は `tf_gridnet.ms_snsd.espnet_recipe@1`。TF-Locoformer の受理規則による公式規模 Dataset は未登録で、本番にある `tf_locoformer.dns.recipe@1` は長さ計画である。
+学習に使う公式規模の入口は次の 4 つに分かれる。MP-SENet は `mp_senet.vb28.ondemand.official@1`（safe は別 Dataset）。MossFormerGAN は `mossformergan.vb28.ondemand.official@1`。TF-GridNet は `tf_gridnet.ms_snsd.espnet_recipe@1`。この検証の時点では、TF-Locoformer の受理規則による公式規模 Dataset は未登録で、本番にある `tf_locoformer.dns.recipe@1` は長さ計画である。登録後の入口は [P10_A1_VERIFICATION](P10_A1_VERIFICATION.md)。
 
 ## オンデマンド生成
 
@@ -127,7 +127,7 @@ shape ファイルが無いため、公式 `collect_stats` の発話順は UNKNO
 | MP-SENet | `mp_senet.vb28.ondemand.official@1` | ready。公式 16 kHz 変換器は UNKNOWN |
 | MossFormerGAN | `mossformergan.vb28.ondemand.official@1` | ready。変換器は同じ UNKNOWN |
 | TF-GridNet | `tf_gridnet.ms_snsd.espnet_recipe@1` | ready。連結前の −25 dBFS を公式関数と照合済み |
-| TF-Locoformer | 受理規則の 360,000 件 | 未登録。本番の `tf_locoformer.dns.recipe@1` は長さ計画 |
+| TF-Locoformer | 受理規則の 360,000 件 | この検証の時点では未登録。本番の `tf_locoformer.dns.recipe@1` は長さ計画。P10-A.1 で別 Dataset として登録した |
 | DeepFilterNet3 | `dfn3.online.official@1` | blocked。対象外 |
 | SEMamba++ | `semambapp.gsr.official@1` | blocked。対象外 |
 
@@ -135,4 +135,4 @@ shape ファイルが無いため、公式 `collect_stats` の発話順は UNKNO
 
 MP-SENet、MossFormerGAN、TF-GridNet は、上のオンデマンド Dataset を一意に指定すれば、短い GPU 確認に進める。結果には、VoiceBank 変換器が UNKNOWN であること、MS-SNSD のファイル選択がシード付きであることを残す。公式 epoch までの学習は、この検証だけでは始めない。
 
-TF-Locoformer の公式規模学習は、受理規則の Dataset を新しい ID で登録してからである。`tf_locoformer.dns.recipe@1` を公式の受理データとして学習しない。`cv_synthetic_small` が UNKNOWN の間、36,000 件の検証分割をその名前で扱わない。登録ジョブは 30 分を超える見込みなので、開始前の明示的な承認が要る。承認文に含める条件は、新しい Dataset 名と版、新しい snapshot、staging の保持、混合 WAV を書かないこと、既存の recipe Dataset を変えないこと、spawn と連続 `gen_index`、worker 数で文書が変わらないことの再確認である。
+この節を書いた時点では、TF-Locoformer の公式規模学習は受理規則の Dataset を新しい ID で登録してから、としていた。その登録は P10-A.1 で完了した。`tf_locoformer.dns.recipe@1` を公式の受理データとして学習しない条件は残る。`cv_synthetic_small` が UNKNOWN の間、36,000 件の検証分割をその名前で扱わない。GPU の短時間学習は、この検証とは別の承認が要る。

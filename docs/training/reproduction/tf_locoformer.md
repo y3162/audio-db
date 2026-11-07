@@ -1,6 +1,6 @@
 # TF-Locoformer 公式再現プロトコル監査
 
-P5（2026-11-06）で 4 rank の chunk 計画と `iterator_stop` は実装した。下の「4 rank DDP を再現できない」という行は、この監査時点の記録であり、現行の計画は [P5_VERIFICATION](P5_VERIFICATION.md) を見る。P7 で DNS のオンデマンド条件と `valid.loss.ave_5best` を実装した。このファイルの本文は監査当時の記録である。現行の Dataset、段階名、検証数値は [P7_VERIFICATION](P7_VERIFICATION.md) を見る。P7.1 の受理・リサンプル・`ave_1best` は [P7_1_VERIFICATION](P7_1_VERIFICATION.md) を見る。`cv_synthetic_small` は不明のままである。
+P5（2026-11-06）で 4 rank の chunk 計画と `iterator_stop` は実装した。下の「4 rank DDP を再現できない」という行は、この監査時点の記録であり、現行の計画は [P5_VERIFICATION](P5_VERIFICATION.md) を見る。P7 で DNS のオンデマンド条件と `valid.loss.ave_5best` を実装した。このファイルの本文は監査当時の記録である。現行の Dataset、段階名、検証数値は [P7_VERIFICATION](P7_VERIFICATION.md) を見る。P7.1 の受理・リサンプル・`ave_1best` は [P7_1_VERIFICATION](P7_1_VERIFICATION.md) を見る。受理規則の 360,000 件は [P10_A1_VERIFICATION](P10_A1_VERIFICATION.md) の `tf_locoformer.dns.accept_recipe@1` である。`cv_synthetic_small` は不明のままである。
 
 調査・文書化のみ。コード・設定・DB・データは変更していない。実装案は「提案」として書く。
 

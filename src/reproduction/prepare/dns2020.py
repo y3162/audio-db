@@ -662,8 +662,15 @@ def assemble_accept_graph(
     source_assets: Sequence[dict[str, Any]],
     test_cases: Sequence[dict[str, Any]],
     resource_db: str | None,
+    full_recipe: bool = False,
+    test_set: dict[str, Any] | None = None,
+    extra_protocols: Sequence[dict[str, Any]] | None = None,
 ) -> Graph:
-    """One acceptance dataset. It does not rewrite the P7 protocol or datasets."""
+    """One acceptance dataset. It does not rewrite the P7 protocol or datasets.
+
+    ``full_recipe`` keeps the registered 150-pair test set and does not mark the
+    3000 h plan as a scaled-down sample. The P7 length-plan datasets stay as they are.
+    """
     if report.get("status") != "PASS" or report.get("delivery") != "on_demand" or int(report.get("wav_files", 0)) != 0:
         raise ReproductionError("refusing to register a DNS build that was not checked on demand")
     parent, child = accept_protocol_pair()
@@ -674,13 +681,19 @@ def assemble_accept_graph(
     protocol_id = child["protocol_id"]
     train_cases = [condition_case(item, protocol_id=protocol_id) for item in train_docs]
     valid_cases = [condition_case(item, protocol_id=protocol_id) for item in valid_docs]
-    test_set = case_set_for(
-        "dns.tflocoformer.accept.no_reverb",
-        "test",
-        test_cases,
-        {"rule": "explicit"},
-        "official synthetic no_reverb pairs by fileid. Not used for selection. Not cv_synthetic_small.",
-    )
+    if full_recipe:
+        if test_set is None:
+            raise ReproductionError("the 3000 h acceptance recipe reuses the registered no_reverb test set")
+        if int(test_set["member_count"]) != 150 or len(test_cases) != 150:
+            raise ReproductionError("the reused DNS test set is not the 150 no_reverb pairs")
+    else:
+        test_set = case_set_for(
+            "dns.tflocoformer.accept.no_reverb",
+            "test",
+            test_cases,
+            {"rule": "explicit"},
+            "official synthetic no_reverb pairs by fileid. Not used for selection. Not cv_synthetic_small.",
+        )
     sets = [
         case_set_for(
             f"{name}.train",
@@ -699,17 +712,37 @@ def assemble_accept_graph(
         test_set,
     ]
     deviations = list(child["deviations_json"])
-    deviations.append(
-        {
-            "id": "scaled_down",
-            "class": "research_improvement",
-            "text": (
-                "The mixture count is a P7.1 sample, not the 3000 h recipe. "
-                "The 9/10 split is recomputed on this count. Validation is the sorted-uttid "
-                "tail and is not cv_synthetic_small."
-            ),
-        }
-    )
+    if full_recipe:
+        deviations.append(
+            {
+                "id": "full_accept_recipe",
+                "class": "algorithm_change",
+                "text": (
+                    "This is the 3000 h plan under the P7.1 acceptance rules. "
+                    "It is not tf_locoformer.dns.recipe, which keeps length_plan_no_sample_retry, "
+                    "and not the 256-mixture accept_smoke sample. "
+                    "Validation is the sorted-uttid tail and is not cv_synthetic_small. "
+                    "The 150 no_reverb test pairs are the existing recorded set and are not used for selection."
+                ),
+            }
+        )
+        note = (
+            ACCEPT_NOTE
+            + " This is the 3000 h accepted DNS plan. It is not the P7 length plan and not accept_smoke."
+        )
+    else:
+        deviations.append(
+            {
+                "id": "scaled_down",
+                "class": "research_improvement",
+                "text": (
+                    "The mixture count is a P7.1 sample, not the 3000 h recipe. "
+                    "The 9/10 split is recomputed on this count. Validation is the sorted-uttid "
+                    "tail and is not cv_synthetic_small."
+                ),
+            }
+        )
+        note = ACCEPT_NOTE + " This is a short accepted DNS plan, not the 3000 h recipe."
     dataset = _dataset(
         name,
         protocol_id,
@@ -720,7 +753,7 @@ def assemble_accept_graph(
         speech,
         noise,
         deviations,
-        ACCEPT_NOTE + " This is a short accepted DNS plan, not the 3000 h recipe.",
+        note,
     )
     case_sets = {row["case_set_id"]: row for row in sets}
     cases = {row["case_id"]: row for row in train_cases + valid_cases + list(test_cases)}
@@ -740,12 +773,13 @@ def assemble_accept_graph(
         selection_uses_test=uses_test,
         declared_status="ready",
     )
+    protocols = _unique_rows([parent, child, *(extra_protocols or [])], "protocol_id", "protocol")
     graph = Graph(
         catalogs=[catalog],
         catalog_rows={catalog["catalog_id"]: catalog_rows},
         assets=list(source_assets),
         materials=[speech, noise],
-        protocols=[parent, child],
+        protocols=protocols,
         cases=list(cases.values()),
         case_sets=sets,
         datasets=[dataset],
@@ -838,6 +872,17 @@ def _spread(count: int, limit: int) -> list[int]:
         return [0]
     chosen = sorted({int(round(index * (count - 1) / (limit - 1))) for index in range(limit)})
     return chosen
+
+
+def _unique_rows(rows: Sequence[dict[str, Any]], key: str, label: str) -> list[dict[str, Any]]:
+    found: dict[str, dict[str, Any]] = {}
+    for row in rows:
+        ident = str(row[key])
+        previous = found.get(ident)
+        if previous is not None and digest(previous) != digest(row):
+            raise ReproductionError(f"{label} {ident} was supplied twice with different content")
+        found[ident] = row
+    return list(found.values())
 
 
 def _catalog(assets: list[dict[str, Any]]) -> tuple[dict[str, Any], list[dict[str, Any]]]:

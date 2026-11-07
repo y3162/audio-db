@@ -1,0 +1,71 @@
+# CPU smoke entry for tf_locoformer.dns.accept_recipe@1.
+# The dataset is explicit. This file does not select tf_locoformer.dns.recipe
+# or tf_locoformer.dns.smoke. Validation is the sorted-uttid tail, not
+# cv_synthetic_small, and the 150 no_reverb pairs are not used for selection.
+# A GPU or long training job still needs a separate approval.
+
+seed: 17
+deterministic: false
+global_batch_size: 1
+micro_batch_size_per_gpu: 1
+max_steps: 2
+segment_size: 64000
+loss: official
+grad_clip: 5.0
+checkpoint_dir: data/results/se-repro/p10a1-tflocoformer-accept-recipe-smoke
+checkpoint_interval: 0
+validation_interval: 0
+best_checkpoint_start_epoch: 0
+
+chunk_iterator:
+  num_samples_per_epoch: 1
+  chunk_length: 64000
+  chunk_shift_ratio: 0.5
+  num_cache_chunks: 16
+  shuffle: true
+  max_epochs: 1
+  early_stopping_patience: 5
+  keep_nbest: 5
+
+optimizer:
+  name: adamw
+  lr: 0.001
+  betas: [0.9, 0.999]
+  weight_decay: 0.01
+
+scheduler:
+  name: warmup_reduce_on_plateau
+  warmup_steps: 4000
+  mode: min
+  factor: 0.5
+  patience: 3
+
+model:
+  name: tf_locoformer
+  variant: dns
+  init: xavier_uniform
+  sampling_rate: 16000
+  architecture: {}
+  stft: {}
+
+data:
+  pipeline: reproduction
+  dataset: tf_locoformer.dns.accept_recipe@1
+  allow_test_selection: false
+  load_workers: 1
+  prefetch: false
+  verify_on_read: false
+
+runtime:
+  device: cpu
+  allow_busy_gpu: false
+
+logging:
+  tensorboard:
+    enabled: false
+    scalar_interval: 10
+    audio:
+      enabled: false
+      max_cases: 0
+      max_seconds: 1
+    spectrogram: false

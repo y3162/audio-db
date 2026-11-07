@@ -58,6 +58,7 @@ def export_snapshot(
     corpora: str | Path = DEFAULT_CORPORA,
     generated: str | Path = DEFAULT_GENERATED,
     derived: str | Path = DEFAULT_DERIVED,
+    provenance_extra: dict[str, Any] | None = None,
 ) -> str:
     """Write ``snapshots/<dataset_id>`` once. The same logical snapshot is a no-op."""
     database = Path(database)
@@ -83,6 +84,7 @@ def export_snapshot(
             parts,
             digest_value,
             allow_unknown_leak_check=allow_unknown_leak_check,
+            provenance_extra=provenance_extra,
         )
         loaded = load_snapshot(partial)
         if loaded.snapshot_hash != digest_value:
@@ -327,7 +329,14 @@ def _check_files(
             raise ReproductionError(f"snapshot asset {asset_id} size is {actual}, database has {size}")
 
 
-def _write_snapshot(directory: Path, parts: dict[str, Any], digest_value: str, *, allow_unknown_leak_check: bool) -> None:
+def _write_snapshot(
+    directory: Path,
+    parts: dict[str, Any],
+    digest_value: str,
+    *,
+    allow_unknown_leak_check: bool,
+    provenance_extra: dict[str, Any] | None = None,
+) -> None:
     directory.mkdir(parents=True, exist_ok=False)
     logical = file_hashes(parts)
     manifest = {
@@ -339,6 +348,7 @@ def _write_snapshot(directory: Path, parts: dict[str, Any], digest_value: str, *
             "git_commit": git_commit(),
             "python": sys.version.split()[0],
             "allow_unknown_leak_check": allow_unknown_leak_check,
+            **(provenance_extra or {}),
         },
     }
     _write_text(directory / "dataset.json", canonical_text(parts["dataset"]) + "\n")

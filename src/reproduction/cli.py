@@ -80,7 +80,7 @@ def main(argv: list[str] | None = None) -> int:
 
     dns = commands.add_parser("dns")
     dns.add_argument("--config", required=True)
-    dns.add_argument("--step", required=True, choices=("plan", "register"))
+    dns.add_argument("--step", required=True, choices=("plan", "register", "benchmark"))
 
     register = commands.add_parser("register-run")
     register.add_argument("--database", required=True)

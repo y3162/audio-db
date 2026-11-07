@@ -51,6 +51,9 @@ make reproduction-plan-build   # MS-SNSD の計画だけ。既定は configs/dat
 make reproduction-register     # オンデマンドの条件を reproduction.duckdb に足してスナップショットを書く。混合 WAV は作らない
 make reproduction-plan-dns     # DNS の計画だけ。既定は configs/data/builds/dns_tflocoformer_ondemand.yaml。音声は作らない
 make reproduction-register-dns # DNS の 3000 h 相当の条件と smoke を同じグラフで登録し、スナップショットを書く。混合 WAV は作らない。resource.duckdb は読み取り専用。P7.1 の受理サンプルはこの目標に向けない。`configs/data/builds/dns_tflocoformer_accept_smoke.yaml` は別 DB と別 staging へ登録する
+make reproduction-plan-dns-accept # 受理規則の 360,000 件を計画する。既定は configs/data/builds/dns_tflocoformer_accept_recipe.yaml。音声は作らない。完了済み shard は再計算しない
+make reproduction-register-dns-accept # その計画を reproduction.duckdb に追記し、スナップショットを書く。P7 の recipe / smoke は上書きしない。混合 WAV は作らない
+make reproduction-benchmark-dns-accept # 同じ設定の短い性能計測。全量計画の代わりには使わない
 .venvs/deepfilternet/bin/python -c 'import src.reproduction.snapshot_reader'  # DuckDB の無い環境でスナップショット読み込み側を import する
 .venvs/se/bin/python -m src.evaluation.cli --config configs/evaluation/smoke.yaml --limit 2 --device cpu   # 合成音声 + mock
 .venvs/asr/bin/python -m tests.asr_smoke.run_smoke parakeet whisper wav2vec2   # 実 ASR のスモーク（GPU）

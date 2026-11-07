@@ -507,7 +507,7 @@
 
 **推奨**: **段階**。3000 h の生成と学習（約 14,000 更新 / epoch × 最大 150 epoch）は、30 分を超えるジョブなので、投入前にユーザーの明示の承認が要る（AGENTS.md）。優先度は `-p -5`。
 
-**採用結果（2026-11-06）**: **段階実施**（小規模検証 → 公式の 3000 h）。今は生成しない。保存・I/O・時間・再開・失敗時の設計は [DB 設計 §9](../../db/REPRODUCTION_DB_DESIGN.md) にある。30 分以上のジョブは別の承認が要る。**`cv_synthetic_small` は未解決のまま**。未実装。
+**採用結果（2026-11-07）**: 段階実施のうち、条件の登録まで完了した。混合 WAV は作らず、`tf_locoformer.dns.accept_recipe@1` が受理済み 360,000 件（train 324,000 / valid 36,000、既存 test 150）をオンデマンドで持つ。P7 の長さ計画 `tf_locoformer.dns.recipe@1` は残す。GPU 学習は未着手。**`cv_synthetic_small` は未解決のまま**。詳細は [P10_A1_VERIFICATION](P10_A1_VERIFICATION.md)。
 
 ### D-09 再現の同等性基準
 

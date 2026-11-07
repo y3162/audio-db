@@ -3,7 +3,8 @@
 	reproduction-doctor reproduction-init-db reproduction-snapshot \
 	reproduction-rebuild-db reproduction-verify reproduction-prepare \
 	reproduction-plan-build reproduction-register \
-	reproduction-plan-dns reproduction-register-dns
+	reproduction-plan-dns reproduction-register-dns \
+	reproduction-benchmark-dns-accept reproduction-plan-dns-accept reproduction-register-dns-accept
 
 ROOT := $(abspath $(dir $(lastword $(MAKEFILE_LIST))))
 WITH_ENV := $(ROOT)/scripts/setup/with_env.sh
@@ -51,7 +52,8 @@ help:
 	  '  make reproduction-verify DATASET=name@version [HASH=1]' \
 	  '  make reproduction-snapshot DATASET=name@version [ALLOW_UNKNOWN_LEAK_CHECK=1]' \
 	  '  make reproduction-rebuild-db OUT=path/to/new.duckdb' \
-	  '  make reproduction-prepare [STEP=all] [WORKERS=8]'
+	  '  make reproduction-prepare [STEP=all] [WORKERS=8]' \
+	  '  make reproduction-plan-dns-accept | reproduction-register-dns-accept | reproduction-benchmark-dns-accept'
 
 setup:
 	$(WITH_ENV) $(ROOT)/scripts/setup/setup.sh $(PLATFORM)
@@ -139,3 +141,14 @@ reproduction-plan-dns:
 
 reproduction-register-dns:
 	$(WITH_ENV) $(PYTHON) -m src.reproduction.cli dns --config "$(DNS_CONFIG)" --step register
+
+DNS_ACCEPT_CONFIG ?= configs/data/builds/dns_tflocoformer_accept_recipe.yaml
+
+reproduction-benchmark-dns-accept:
+	$(WITH_ENV) $(PYTHON) -m src.reproduction.cli dns --config "$(DNS_ACCEPT_CONFIG)" --step benchmark
+
+reproduction-plan-dns-accept:
+	$(WITH_ENV) $(PYTHON) -m src.reproduction.cli dns --config "$(DNS_ACCEPT_CONFIG)" --step plan
+
+reproduction-register-dns-accept:
+	$(WITH_ENV) $(PYTHON) -m src.reproduction.cli dns --config "$(DNS_ACCEPT_CONFIG)" --step register

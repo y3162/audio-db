@@ -1,5 +1,7 @@
 # P10-A 監査（2026-11-07）
 
+この文書は監査当時の記録である。P10A-08 の 360,000 件は、その後の P10-A.1 で `tf_locoformer.dns.accept_recipe@1` として登録した。数値と ID は [P10_A1_VERIFICATION](P10_A1_VERIFICATION.md)。
+
 ブランチは `feature/reproduction`、開始時の HEAD は `6f600190e7aafc61465ca76661f2a6b1f3cd722a`。この監査の差分は未コミットである。`reproduction.duckdb`、`resource.duckdb`、既存スナップショット、コーパス、`data/derived/`、`data/checkpoints/`、`data/results/`、`data/staging/` は書き換えていない。新しい学習用 WAV は作っていない。360,000 件の DNS 受理登録と GPU 学習は始めていない。
 
 ## 監査対象
@@ -41,7 +43,7 @@
 | P10A-05 | UNKNOWN | Major | DNS の非 16 kHz | 公式 `librosa.resample(y, fs_in, fs_out)` の版と `res_type` が不明。この環境の librosa 1.0.0 は位置引数を受けず、`resampy` が無いので `kaiser_best` を実行できない | 描画時の `soxr_hq` を維持。元素材は書き換えない | UNKNOWN |
 | P10A-06 | OFFICIAL_DIFF | Major | DNS のファイル選択 | 公式はプロセス間の共有カウンタ。添字は加算後の剰余で 1 から始まる。スケジュールに依存する | 案件ごとの `Generator(PCG64(mix_seed("dns", seed, gen_index)))` を維持。ビット一致は主張しない | INTENTIONAL_DIFFERENCE |
 | P10A-07 | OFFICIAL_DIFF | Minor | DNS の外側ループ | 公式は `while True`。実装は 50 回で打ち切る | 別 Protocol の `algorithm_change` として残す。無制限にはしない | INTENTIONAL_DIFFERENCE |
-| P10A-08 | DATA_GAP | Critical | 受理規則の公式規模 Dataset | 音声探索、ハッシュ、360,000 件の JSON 登録を合わせると 30 分を超える見込み | 登録していない。承認後に新しい Dataset 名、新しい snapshot、追記だけにする。`tf_locoformer.dns.recipe@1` は変えない | BLOCKED |
+| P10A-08 | DATA_GAP | Critical | 受理規則の公式規模 Dataset | 音声探索、ハッシュ、360,000 件の JSON 登録を合わせると 30 分を超える見込み | 監査時点では登録していない。承認後に新しい Dataset 名、新しい snapshot、追記だけにする。`tf_locoformer.dns.recipe@1` は変えない | 監査時点は BLOCKED。P10-A.1 で `tf_locoformer.dns.accept_recipe@1` を追記し、recipe は変えていない |
 | P10A-09 | DATA_GAP / OUT_OF_SCOPE | Major | DeepFilterNet3 | 公式学習素材が無い | `dfn3.online.official@1` は `blocked` のまま | BLOCKED。モデル固有作業は対象外 |
 | P10A-10 | DATA_GAP / OUT_OF_SCOPE | Major | SEMamba++ | 公式学習素材が無い | `semambapp.gsr.official@1` は `blocked` のまま | BLOCKED。モデル固有作業は対象外 |
 | P10A-11 | UNKNOWN | Minor | ESPnet chunk の順序 | shape ファイルが無く、`collect_stats` の順を再計算できない | 呼び出し側の発話順から計画する現行仕様を維持 | UNKNOWN |
