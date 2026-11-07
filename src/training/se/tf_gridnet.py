@@ -19,6 +19,7 @@ from src.training.core.distributed import ProcessInfo, unwrap, wrap_module
 from src.training.core.rng import seed_model_init
 from src.training.core.trainer import accumulation_scope
 from src.training.errors import TrainingError
+from src.training.se.initialization import apply_espnet_initialization
 from src.training.se.optim import build_optimizer, build_scheduler, clip_gradients, step_scheduler
 from src.evaluation.metrics.sisdr import score_si_sdr
 from src.training.se.spectral import multi_resolution_l1, si_sdr_loss
@@ -44,7 +45,10 @@ class TFGridNetTask:
                 "tf_gridnet",
                 model.get("architecture") or None,
                 variant=self.variant,
-            ).to(device)
+            )
+            if model.get("init"):
+                apply_espnet_initialization(self.generator, model["init"])
+        self.generator = self.generator.to(device)
         self.optim_g = build_optimizer(self.generator.parameters(), config)
         self.sched_g = build_scheduler(self.optim_g, config)
 

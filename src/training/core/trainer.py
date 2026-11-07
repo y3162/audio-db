@@ -257,6 +257,14 @@ class Trainer:
             closer = getattr(dataset, "close", None)
             if _is_training_data(dataset) and callable(closer):
                 closer()
+            if self.process.rank == 0 and self.process.uses_cuda:
+                print(
+                    "cuda_peak_allocated_bytes "
+                    f"{torch.cuda.max_memory_allocated(self.process.device)} "
+                    "cuda_peak_reserved_bytes "
+                    f"{torch.cuda.max_memory_reserved(self.process.device)}",
+                    flush=True,
+                )
             if self._tb is not None:
                 self._tb.close()
 
@@ -377,6 +385,14 @@ class Trainer:
             self._broadcast_plan_hash(stream.plan_hash)
             updates = stream.updates
             usable_batches = updates * accumulation
+            cap = (self.config.get("data") or {}).get("max_updates_per_epoch")
+            if cap is not None:
+                usable_batches = min(usable_batches, int(cap) * accumulation)
+            if usable_batches < accumulation:
+                raise TrainingError(
+                    f"epoch {epoch} on rank {self.process.rank} has no optimizer update "
+                    "after data.max_updates_per_epoch"
+                )
             if skip > usable_batches or skip % accumulation != 0:
                 raise TrainingError(
                     f"checkpoint micro-batch position {skip} is not an optimizer boundary "
@@ -486,6 +502,9 @@ class Trainer:
                 raise TrainingError("chunk iterator updates use one official batch and no gradient accumulation")
             batches = self._planned_chunks(dataset, epoch + 1, train=True)
             usable = len(batches)
+            cap = spec.get("max_updates")
+            if cap is not None:
+                usable = min(usable, int(cap))
             if usable < 1:
                 raise TrainingError(f"chunk epoch {epoch + 1} produced no batches")
             if skip > usable:
@@ -606,6 +625,9 @@ class Trainer:
             plan = self._aligned_chunk_plan(dataset, epoch + 1, train=True, world=world)
             self._broadcast_plan_hash(plan.plan_hash)
             usable = plan.updates
+            cap = spec.get("max_updates")
+            if cap is not None:
+                usable = min(usable, int(cap))
             if usable < 1:
                 raise TrainingError(f"chunk epoch {epoch + 1} produced no batches")
             if skip > usable:
@@ -755,12 +777,24 @@ class Trainer:
                 ranks = (self.process.rank,)
             reports = []
             weights = []
+            limit = self.config["chunk_iterator"].get("validation_max_updates")
             for rank in ranks:
-                for chunks in plan.rank_batches[rank]:
+                selected = plan.rank_batches[rank]
+                if limit is not None:
+                    selected = selected[: int(limit)]
+                if len(selected) < 1:
+                    raise TrainingError("validation_max_updates left a rank with no batches")
+                for chunks in selected:
                     batch = validation.collate_chunks(chunks)
                     reports.append(self.task.validation_report(batch))
                     weights.append(len(batch["case_id"]))
             summary = _reduce_weighted_reports(reports, weights, self.process)
+            if limit is not None and summary is not None:
+                summary["validation_scope"] = {
+                    "validation_max_updates": int(limit),
+                    "consumed_batches_this_rank": len(reports),
+                    "rule": "prefix of each rank after iterator_stop; not the full validation set",
+                }
             if self.process.rank == 0 and summary is not None:
                 if self._tb is not None:
                     from src.training.se.preview import write_preview
@@ -784,6 +818,7 @@ class Trainer:
                     "best_checkpoint": summary["best_checkpoint"],
                     "seed": self.seed,
                     "weight": summary.get("weight"),
+                    "validation_scope": summary.get("validation_scope"),
                 })
         finally:
             restore_rng(rng_state, cuda=self.process.uses_cuda)
@@ -802,11 +837,22 @@ class Trainer:
                 batches = self._planned_chunks(validation, espnet_epoch, train=False)
                 if not batches:
                     raise TrainingError("validation chunk iterator produced no batches")
+                limit = self.config["chunk_iterator"].get("validation_max_updates")
+                if limit is not None:
+                    batches = batches[: int(limit)]
+                if not batches:
+                    raise TrainingError("validation_max_updates left validation with no batches")
                 reports = [self.task.validation_report(validation.collate_chunks(chunks)) for chunks in batches]
                 if self._tb is not None:
                     from src.training.se.preview import write_preview
                     write_preview(self._tb, self.task, validation, self.global_step, self.config["logging"]["tensorboard"], chunks=batches)
                 summary = _aggregate_validation(reports)
+                if limit is not None:
+                    summary["validation_scope"] = {
+                        "validation_max_updates": int(limit),
+                        "consumed_batches": len(reports),
+                        "rule": "prefix of the single-process validation iterator; not the full validation set",
+                    }
                 summary["best_checkpoint"] = self._retain_chunk_models(espnet_epoch, summary)
                 append_record(self._log_path(), {
                     "type": "validation",
@@ -818,6 +864,7 @@ class Trainer:
                     "si_snr": summary.get("si_snr"),
                     "best_checkpoint": summary["best_checkpoint"],
                     "seed": self.seed,
+                    "validation_scope": summary.get("validation_scope"),
                 })
         finally:
             restore_rng(rng_state, cuda=self.process.uses_cuda)
@@ -1085,7 +1132,10 @@ class Trainer:
                     world_size=self.process.world_size,
                     epoch=epoch,
                 )
+                limit = (self.config.get("data") or {}).get("validation_max_batches")
                 for batch in batches:
+                    if limit is not None and len(reports) >= int(limit):
+                        break
                     report = self.task.validation_report(batch)
                     reports.append(report)
                     if "si_sdr" in report:
@@ -1097,6 +1147,12 @@ class Trainer:
                 if not reports:
                     raise TrainingError("validation produced no batches")
                 summary = _aggregate_validation(reports)
+                if limit is not None:
+                    summary["validation_scope"] = {
+                        "validation_max_batches": int(limit),
+                        "consumed_batches": len(reports),
+                        "rule": "prefix of the official validation order on rank 0; not the full validation set",
+                    }
                 best_path = self._consider_best(epoch, summary)
                 summary["best_checkpoint"] = best_path
                 append_record(
@@ -1112,6 +1168,7 @@ class Trainer:
                         "si_snr": summary.get("si_snr"),
                         "best_checkpoint": best_path,
                         "seed": self.seed,
+                        "validation_scope": summary.get("validation_scope"),
                     },
                 )
                 pesq = summary["pesq"]

@@ -24,6 +24,13 @@ keeps the learning rate, or, on the fifth validation that is not strictly
 better, reloads the last improving checkpoint and halves only the generator
 learning rate. The tenth such validation stops training. A non-improving
 loss replaces the stored best, matching that solver.
+
+Validation uses that same generator objective (RI, magnitude, the released
+time term, and the GAN term). It does not minimize time-domain L1 alone.
+``model.eval()`` is applied to the generator only. The discriminator stays in
+train mode, and neither optimizer is stepped. A batch whose PESQ score is
+missing contributes 0 and remains in the denominator, matching
+``Solver._run_one_epoch_mossformergan_se_16k`` with ``state='val'``.
 """
 
 from __future__ import annotations
@@ -115,7 +122,9 @@ class MossFormerGANTask:
 
     def eval_mode(self) -> None:
         unwrap(self.generator).eval()
-        unwrap(self.discriminator).eval()
+        # Official validation calls generator.eval() only. The discriminator
+        # stays in train mode, so its BatchNorm updates running statistics.
+        unwrap(self.discriminator).train()
 
     def learning_rates(self) -> dict[str, float]:
         return {
@@ -215,31 +224,21 @@ class MossFormerGANTask:
                         dist.broadcast(buffer, src=0)
             clean = batch["clean"].to(self.device)
             noisy = batch["noisy"].to(self.device)
-            scale = torch.sqrt(noisy.shape[-1] / (noisy.square().sum(dim=-1) + 1e-6)).unsqueeze(-1)
-            normalized = noisy * scale
             # The discriminator participates in two backward calls per batch.
             # Reduce its accumulated gradients once after both, on the final micro-batch.
             with accumulation_scope([self.generator], last=is_last), accumulation_scope([self.discriminator], last=False):
-                real, imag, pred_mag, label_real, label_imag, label_mag = self._forward(
-                    self.generator, normalized, clean * scale
-                )
-                fake_score = self.discriminator(label_mag, pred_mag)
-                ones = torch.ones(clean.shape[0], device=self.device)
-                gan = F.mse_loss(fake_score.flatten(), ones)
-                loss_mag = F.mse_loss(pred_mag, label_mag)
-                loss_ri = F.mse_loss(real, label_real) + F.mse_loss(imag, label_imag)
-                audio = _istft(_uncompress(label_real, imag).squeeze(1), self.n_fft, self.hop, self.win, clean.shape[-1])
-                teacher = clean * scale
-                length = min(audio.shape[-1], teacher.shape[-1])
-                time_loss = (audio[..., :length] - teacher[..., :length]).abs().mean()
-                generator_loss = _RI * loss_ri + _MAG * loss_mag + _TIME * time_loss + _GAN * gan
+                terms = self._generator_terms(self.generator, self.discriminator, clean, noisy)
+                generator_loss = terms["generator"]
                 _finite(generator_loss, "mossformer generator")
-                targets = metric_targets(teacher[..., :length], audio[..., :length], self.sample_rate)
+                label_mag = terms["label_mag"]
+                pred_mag = terms["pred_mag"]
+                targets = metric_targets(terms["teacher"], terms["audio"], self.sample_rate)
                 if targets is None:
                     raise TrainingError(
                         "PESQ could not be computed for this MossFormerGAN batch. "
                         "The discriminator target is not replaced with zero."
                     )
+                ones = torch.ones(clean.shape[0], device=self.device)
                 fake_detached = self.discriminator(label_mag, pred_mag.detach())
                 real_score = self.discriminator(label_mag, label_mag)
                 discriminator_loss = F.mse_loss(real_score.flatten(), ones) + F.mse_loss(
@@ -264,22 +263,87 @@ class MossFormerGANTask:
         return {"generator": gen_total / count, "discriminator": disc_total / count}
 
     def validation_report(self, batch: dict[str, Any]) -> dict[str, Any]:
+        """Official validation generator loss for one already-cropped batch.
+
+        The 2 second crop is applied by the dataset rule before this method
+        runs. This method does not step either optimizer. A missing PESQ score
+        contributes zero and stays in the mean, which is the released
+        validator's denominator. PESQ itself is not the plateau metric.
+        """
         clean = batch["clean"].to(self.device)
         noisy = batch["noisy"].to(self.device)
+        generator = unwrap(self.generator)
+        discriminator = unwrap(self.discriminator)
+        generator.eval()
+        discriminator.train()
         with torch.no_grad():
-            scale = torch.sqrt(noisy.shape[-1] / (noisy.square().sum(dim=-1) + 1e-6)).unsqueeze(-1)
-            _real, _imag, _pred, _lr, _li, _lm = self._forward(
-                unwrap(self.generator), noisy * scale, clean * scale
-            )
-            audio = _istft(_uncompress(_lr, _imag).squeeze(1), self.n_fft, self.hop, self.win, clean.shape[-1])
-            teacher = clean * scale
-            length = min(audio.shape[-1], teacher.shape[-1])
-            value = float((audio[..., :length] - teacher[..., :length]).abs().mean().detach())
-        metric = _metric(value)
+            terms = self._generator_terms(generator, discriminator, clean, noisy)
+            _finite(terms["generator"], "mossformer validation generator")
+            targets = metric_targets(terms["teacher"], terms["audio"], self.sample_rate)
+        included = targets is not None
+        if included:
+            value = float(terms["generator"].detach())
+            reason = "official generator loss; pesq gate included this batch"
+        else:
+            value = 0.0
+            reason = "pesq failed; official validation adds zero and keeps the batch in the denominator"
+        losses = {
+            "generator": _metric(value, reason=reason),
+            "ri": _component(terms["ri"], included),
+            "magnitude": _component(terms["magnitude"], included),
+            "time": _component(terms["time"], included),
+            "gan": _component(terms["gan"], included),
+            "discriminator": _metric(
+                status="na",
+                reason="validation does not step the discriminator",
+            ),
+        }
         return {
-            "losses": {"generator": metric, "time": metric, "discriminator": _metric(status="na", reason="validation uses time L1")},
-            "pesq": {"status": "na", "value": None, "reason": "not computed", "count": 0},
+            "losses": losses,
+            "pesq": {
+                "status": "na",
+                "value": None,
+                "reason": "pesq gates inclusion and is not the plateau metric",
+                "count": 0,
+            },
             "stoi": {"status": "na", "value": None, "reason": "not computed", "count": 0},
+            "pesq_gate": "included" if included else "counted_as_zero",
+        }
+
+    def _generator_terms(self, module, discriminator, clean: torch.Tensor, noisy: torch.Tensor) -> dict[str, torch.Tensor]:
+        """Released ``loss_mossformergan_se_16k`` generator terms.
+
+        The time term reconstructs from the clean real part and the predicted
+        imaginary part. The GAN term asks the discriminator to score the fake
+        pair as 1. Discriminator targets that use PESQ are not part of this sum.
+        """
+        scale = torch.sqrt(noisy.shape[-1] / (noisy.square().sum(dim=-1) + 1e-6)).unsqueeze(-1)
+        normalized = noisy * scale
+        real, imag, pred_mag, label_real, _label_imag, label_mag = self._forward(
+            module, normalized, clean * scale
+        )
+        ones = torch.ones(clean.shape[0], device=clean.device)
+        gan = F.mse_loss(discriminator(label_mag, pred_mag).flatten(), ones)
+        loss_mag = F.mse_loss(pred_mag, label_mag)
+        loss_ri = F.mse_loss(real, label_real) + F.mse_loss(imag, _label_imag)
+        audio = _istft(_uncompress(label_real, imag).squeeze(1), self.n_fft, self.hop, self.win, clean.shape[-1])
+        teacher = clean * scale
+        length = min(audio.shape[-1], teacher.shape[-1])
+        time_loss = (audio[..., :length] - teacher[..., :length]).abs().mean()
+        generator_loss = _RI * loss_ri + _MAG * loss_mag + _TIME * time_loss + _GAN * gan
+        return {
+            "generator": generator_loss,
+            "ri": loss_ri,
+            "magnitude": loss_mag,
+            "time": time_loss,
+            "gan": gan,
+            "audio": audio[..., :length],
+            "teacher": teacher[..., :length],
+            "label_mag": label_mag,
+            "pred_mag": pred_mag,
+            "predicted_real": real,
+            "predicted_imag": imag,
+            "label_real": label_real,
         }
 
     def _forward(self, module, noisy: torch.Tensor, clean: torch.Tensor):
@@ -324,6 +388,12 @@ def _uncompress(real: torch.Tensor, imag: torch.Tensor) -> torch.Tensor:
 def _finite(loss: torch.Tensor, name: str) -> None:
     if not torch.isfinite(loss).all():
         raise TrainingError(f"non-finite {name} loss")
+
+
+def _component(value: torch.Tensor, included: bool) -> dict[str, Any]:
+    if not included:
+        return _metric(status="na", reason="batch excluded by the pesq gate")
+    return _metric(float(value.detach()))
 
 
 def _metric(value: float | None = None, *, status: str = "ok", reason: str | None = None) -> dict[str, Any]:

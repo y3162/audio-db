@@ -96,6 +96,8 @@ _REPRODUCTION_DATA = {
     "load_workers",
     "prefetch",
     "verify_on_read",
+    "max_updates_per_epoch",
+    "validation_max_batches",
 }
 _RUNTIME = {"device", "allow_busy_gpu"}
 
@@ -344,9 +346,11 @@ def _chunk_iterator(raw: Any) -> dict[str, Any]:
         "max_epochs",
         "early_stopping_patience",
         "keep_nbest",
+        "max_updates",
+        "validation_max_updates",
     }
     _unknown(raw, allowed, "chunk_iterator")
-    return {
+    parsed = {
         "num_samples_per_epoch": _int(raw["num_samples_per_epoch"], "chunk_iterator.num_samples_per_epoch"),
         "chunk_length": _int(raw["chunk_length"], "chunk_iterator.chunk_length", minimum=2),
         "chunk_shift_ratio": _float(raw.get("chunk_shift_ratio", 0.5), "chunk_iterator.chunk_shift_ratio", minimum=0.0),
@@ -360,6 +364,13 @@ def _chunk_iterator(raw: Any) -> dict[str, Any]:
         ),
         "keep_nbest": _int(raw.get("keep_nbest", 5), "chunk_iterator.keep_nbest"),
     }
+    if "max_updates" in raw:
+        parsed["max_updates"] = _int(raw["max_updates"], "chunk_iterator.max_updates")
+    if "validation_max_updates" in raw:
+        parsed["validation_max_updates"] = _int(
+            raw["validation_max_updates"], "chunk_iterator.validation_max_updates"
+        )
+    return parsed
 
 
 def _batch_schedule(raw: Any) -> list[list[int]]:
@@ -429,7 +440,7 @@ def _reproduction_data(raw: dict[str, Any]) -> dict[str, Any]:
     if separator != "@" or not name or not version.isdigit() or int(version) < 1:
         raise TrainingError("data.dataset must be name@version")
     virtual = raw.get("virtual_world_size")
-    return {
+    parsed = {
         "pipeline": "reproduction",
         "dataset": dataset,
         "allow_test_selection": _bool(
@@ -445,6 +456,11 @@ def _reproduction_data(raw: dict[str, Any]) -> dict[str, Any]:
         "validation_set": None,
         "rms_normalize": False,
     }
+    if "max_updates_per_epoch" in raw:
+        parsed["max_updates_per_epoch"] = _int(raw["max_updates_per_epoch"], "data.max_updates_per_epoch")
+    if "validation_max_batches" in raw:
+        parsed["validation_max_batches"] = _int(raw["validation_max_batches"], "data.validation_max_batches")
+    return parsed
 
 
 def _runtime(raw: Any) -> dict[str, Any]:
