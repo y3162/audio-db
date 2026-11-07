@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import contextlib
 import json
+import os
 import signal
 import time
 from concurrent.futures import Future, ThreadPoolExecutor
@@ -151,8 +152,13 @@ class Trainer:
         self.plateau_count = 0
         self.plateau_metric: float | None = None
         self.stop_reason: str | None = None
+        self._official_epoch_complete = False
         self.last_checkpoint: str | None = None
         self._tb = None
+        self._update_seconds = 0.0
+        self._load_wait_seconds: float | None = None
+        self._checkpoint_seconds: float | None = None
+        self._prev_step_end: float | None = None
         self._provenance_raw: bytes | None = None
         self._provenance_sha: str | None = None
         self._run_id: str | None = None
@@ -199,6 +205,11 @@ class Trainer:
             self.plateau_metric = None if stored_metric is None else float(stored_metric)
             if self.global_step >= self.max_steps:
                 raise TrainingError("checkpoint global_step is already at max_steps")
+            limit = self._verification_limit()
+            if limit is not None and self.global_step >= limit:
+                raise TrainingError(
+                    "checkpoint global_step is already at verification_max_updates"
+                )
             if self.process.rank == 0:
                 truncate_after(self._log_path(), self.global_step)
                 self._bind_provenance(dataset)
@@ -224,6 +235,8 @@ class Trainer:
         if self.process.rank == 0:
             self.checkpoint_dir.mkdir(parents=True, exist_ok=True)
         barrier(self.process)
+        if self.process.rank == 0:
+            self._write_status("RUNNING")
         workers = int(self.config.get("data", {}).get("load_workers", 1))
         if _is_training_data(dataset):
             wrapped = getattr(dataset, "train", None)
@@ -251,6 +264,14 @@ class Trainer:
                 self._run_chunk_epochs(dataset, validation, skip, epoch, halt)
             else:
                 self._run_epochs(dataset, validation, skip, epoch, halt, loader, prefetch)
+        except Exception:
+            if self.stop_reason is None:
+                self.stop_reason = "FAILED"
+                try:
+                    self._write_status("FAILED")
+                except Exception:
+                    pass
+            raise
         finally:
             if loader is not None:
                 loader.shutdown(wait=True, cancel_futures=True)
@@ -308,7 +329,7 @@ class Trainer:
                     pending = None
                 else:
                     group, cursor = _load_group(dataset, indices, cursor, micro, accumulation)
-                self._batch_ready = time.perf_counter()
+                self._note_batch_ready()
                 if (
                     prefetch
                     and loader is not None
@@ -318,9 +339,7 @@ class Trainer:
                     pending = loader.submit(
                         _load_group, dataset, indices, cursor, micro, accumulation
                     )
-                update_started = time.perf_counter()
-                metrics = self.task.train_update(group, accumulation)
-                self._update_seconds = time.perf_counter() - update_started
+                metrics = self._timed_train_update(group, accumulation)
                 self._require_finite(metrics)
                 self.global_step += 1
                 epoch_done = (self.global_step % self.steps_per_epoch == 0) if self.steps_per_epoch else cursor >= usable_batches
@@ -339,7 +358,8 @@ class Trainer:
                     self.task.step_schedulers(self._scheduler_validation(validation_summary))
                     halt = bool(getattr(self.task, "stop_training", False)) or self._batch_schedule_should_stop(validation_summary)
                 timed_stop = not halt and self.global_step < self.max_steps and self._stop_requested()
-                save = self._should_save(self.global_step) or timed_stop or ((self.steps_per_epoch or self.config.get("batch_schedule")) and epoch_done and self.process.rank == 0)
+                verify_stop = not halt and self._at_verification_limit()
+                save = self._should_save(self.global_step) or timed_stop or verify_stop or ((self.steps_per_epoch or self.config.get("batch_schedule")) and epoch_done and self.process.rank == 0)
                 checkpoint_path = str(self.checkpoint_dir / f"step_{self.global_step:08d}.pt") if save else None
                 if self.process.rank == 0:
                     self._log_train(logical_epoch, metrics, checkpoint_path, validation_summary, group)
@@ -355,6 +375,10 @@ class Trainer:
                         rendered = " ".join(f"{name}={value:.6f}" for name, value in sorted(metrics.items()))
                         print(f"step {self.global_step} {rendered}", flush=True)
                 barrier(self.process)
+                if verify_stop:
+                    self.stop_reason = "INTERRUPTED"
+                    halt = True
+                    break
                 if timed_stop:
                     self.stop_reason = "CHECKPOINTED"
                     halt = True
@@ -368,7 +392,7 @@ class Trainer:
         barrier(self.process)
         if self.stop_reason is None:
             self.stop_reason = "COMPLETED"
-            self._mark_complete()
+        self._publish_stop()
 
     def _run_data_epochs(self, dataset, skip, epoch, halt, loader, prefetch) -> None:
         """Same optimizer loop as ``_run_epochs``, fed by ``TrainingData``."""
@@ -413,7 +437,7 @@ class Trainer:
                     pending = None
                 else:
                     group, cursor = _load_update(stream.render, cursor // accumulation, accumulation)
-                self._batch_ready = time.perf_counter()
+                self._note_batch_ready()
                 if (
                     prefetch
                     and loader is not None
@@ -423,9 +447,7 @@ class Trainer:
                     pending = loader.submit(
                         _load_update, stream.render, cursor // accumulation, accumulation
                     )
-                update_started = time.perf_counter()
-                metrics = self.task.train_update(group, accumulation)
-                self._update_seconds = time.perf_counter() - update_started
+                metrics = self._timed_train_update(group, accumulation)
                 self._require_finite(metrics)
                 self.global_step += 1
                 epoch_done = (self.global_step % self.steps_per_epoch == 0) if self.steps_per_epoch else cursor >= usable_batches
@@ -444,7 +466,8 @@ class Trainer:
                     self.task.step_schedulers(self._scheduler_validation(validation_summary))
                     halt = bool(getattr(self.task, "stop_training", False)) or self._batch_schedule_should_stop(validation_summary)
                 timed_stop = not halt and self.global_step < self.max_steps and self._stop_requested()
-                save = self._should_save(self.global_step) or timed_stop or ((self.steps_per_epoch or self.config.get("batch_schedule")) and epoch_done and self.process.rank == 0)
+                verify_stop = not halt and self._at_verification_limit()
+                save = self._should_save(self.global_step) or timed_stop or verify_stop or ((self.steps_per_epoch or self.config.get("batch_schedule")) and epoch_done and self.process.rank == 0)
                 checkpoint_path = str(self.checkpoint_dir / f"step_{self.global_step:08d}.pt") if save else None
                 if self.process.rank == 0:
                     self._log_train(logical_epoch, metrics, checkpoint_path, validation_summary, group)
@@ -470,6 +493,10 @@ class Trainer:
                         rendered = " ".join(f"{name}={value:.6f}" for name, value in sorted(metrics.items()))
                         print(f"step {self.global_step} {rendered}", flush=True)
                 barrier(self.process)
+                if verify_stop:
+                    self.stop_reason = "INTERRUPTED"
+                    halt = True
+                    break
                 if timed_stop:
                     self.stop_reason = "CHECKPOINTED"
                     halt = True
@@ -483,7 +510,7 @@ class Trainer:
         barrier(self.process)
         if self.stop_reason is None:
             self.stop_reason = "COMPLETED"
-            self._mark_complete()
+        self._publish_stop()
 
     def _run_chunk_epochs(self, dataset, validation, skip, epoch, halt) -> None:
         """One epoch is one pass of the ESPnet chunk iterator, not a fixed update count."""
@@ -495,6 +522,7 @@ class Trainer:
             raise TrainingError("the chunk iterator is implemented for one process")
         spec = self.config["chunk_iterator"]
         max_epochs = int(spec["max_epochs"])
+        self._official_epoch_complete = False
         while epoch < max_epochs and self.global_step < self.max_steps and not halt:
             micro = self.plan.micro_batch_size
             accumulation = self.plan.accumulation_steps
@@ -520,10 +548,9 @@ class Trainer:
             skip = 0
             while cursor < usable and self.global_step < self.max_steps:
                 group = [dataset.collate_chunks(batches[cursor])]
+                self._note_batch_ready()
                 cursor += 1
-                update_started = time.perf_counter()
-                metrics = self.task.train_update(group, accumulation)
-                self._update_seconds = time.perf_counter() - update_started
+                metrics = self._timed_train_update(group, accumulation)
                 self._require_finite(metrics)
                 self.global_step += 1
                 epoch_done = cursor >= usable
@@ -534,9 +561,17 @@ class Trainer:
                     self.task.step_schedulers(self._scheduler_validation(validation_summary))
                     if self._chunk_should_stop(espnet_epoch, validation_summary):
                         halt = True
-                complete = halt or (epoch_done and espnet_epoch >= max_epochs)
+                if epoch_done and espnet_epoch >= max_epochs:
+                    self._official_epoch_complete = True
+                complete = halt or self._official_epoch_complete
                 timed_stop = not complete and self.global_step < self.max_steps and self._stop_requested()
-                save = self._should_save(self.global_step) or timed_stop or (epoch_done and self.process.rank == 0)
+                verify_stop = not complete and self._at_verification_limit()
+                save = (
+                    self._should_save(self.global_step)
+                    or timed_stop
+                    or verify_stop
+                    or (epoch_done and self.process.rank == 0)
+                )
                 checkpoint_path = str(self.checkpoint_dir / f"step_{self.global_step:08d}.pt") if save else None
                 if self.process.rank == 0:
                     self._log_train(espnet_epoch, metrics, checkpoint_path, validation_summary, group)
@@ -552,6 +587,10 @@ class Trainer:
                         )
                         self.last_checkpoint = self._save(dataset, epoch, cursor, usable, state)
                 barrier(self.process)
+                if verify_stop:
+                    self.stop_reason = "INTERRUPTED"
+                    halt = True
+                    break
                 if timed_stop:
                     self.stop_reason = "CHECKPOINTED"
                     halt = True
@@ -560,11 +599,7 @@ class Trainer:
                 break
             epoch += 1
         barrier(self.process)
-        if self.stop_reason is None:
-            if self._managed and self.global_step >= self.max_steps and epoch < max_epochs and not halt:
-                raise TrainingError("chunk iterator reached max_steps before completing training")
-            self.stop_reason = "COMPLETED"
-            self._mark_complete()
+        self._close_chunk_run(epoch, max_epochs, halt)
 
     def _mark_complete(self) -> None:
         if self.process.rank != 0:
@@ -574,6 +609,74 @@ class Trainer:
             "global_step": self.global_step,
             "checkpoint": self.last_checkpoint,
         })
+        self._write_status("COMPLETED")
+
+    def _verification_limit(self) -> int | None:
+        raw = self.config.get("verification_max_updates")
+        return None if raw is None else int(raw)
+
+    def _at_verification_limit(self) -> bool:
+        """A smoke cap below the official budget. Reaching it is not completion."""
+        limit = self._verification_limit()
+        return limit is not None and self.global_step >= limit and self.global_step < self.max_steps
+
+    def _write_status(self, status: str) -> None:
+        if self.process.rank != 0:
+            return
+        payload = {
+            "status": status,
+            "global_step": self.global_step,
+            "checkpoint": self.last_checkpoint,
+        }
+        write_json(self.checkpoint_dir / "status.json", payload)
+        interrupted = self.checkpoint_dir / "interrupted.json"
+        if status == "INTERRUPTED":
+            write_json(interrupted, payload)
+        elif interrupted.is_file():
+            interrupted.unlink()
+
+    def _publish_stop(self) -> None:
+        if self.stop_reason == "COMPLETED":
+            self._mark_complete()
+        elif self.stop_reason == "INTERRUPTED":
+            self._write_status("INTERRUPTED")
+        elif self.stop_reason == "CHECKPOINTED":
+            self._write_status("CHECKPOINTED")
+
+    def _close_chunk_run(self, epoch: int, max_epochs: int, halt: bool) -> None:
+        if self.stop_reason is None:
+            official = halt or self._official_epoch_complete or epoch >= max_epochs
+            if official:
+                self.stop_reason = "COMPLETED"
+            elif self.global_step >= self.max_steps:
+                if self._managed:
+                    raise TrainingError("chunk iterator reached max_steps before completing training")
+                self.stop_reason = "INTERRUPTED"
+            else:
+                self.stop_reason = "COMPLETED"
+        self._publish_stop()
+
+    def _cuda_step_sync(self) -> None:
+        if os.environ.get("AUDIO_DB_STEP_SYNC") == "1" and self.process.uses_cuda:
+            torch.cuda.synchronize(self.process.device)
+
+    def _note_batch_ready(self) -> None:
+        now = time.perf_counter()
+        self._batch_ready = now
+        previous = self._prev_step_end
+        self._load_wait_seconds = None if previous is None else now - previous
+
+    def _timed_train_update(self, group, accumulation: int) -> dict[str, float]:
+        """Time one optimizer update. ``AUDIO_DB_STEP_SYNC=1`` waits for CUDA."""
+        self._cuda_step_sync()
+        started = time.perf_counter()
+        metrics = self.task.train_update(group, accumulation)
+        self._cuda_step_sync()
+        finished = time.perf_counter()
+        self._update_seconds = finished - started
+        self._prev_step_end = finished
+        self._checkpoint_seconds = None
+        return metrics
 
     def _stop_requested(self) -> bool:
         return ((self._deadline is not None and time.time() >= self._deadline)
@@ -621,6 +724,7 @@ class Trainer:
             raise TrainingError("chunk iterator requires micro_batch_size == global_batch_size / world")
         spec = self.config["chunk_iterator"]
         max_epochs = int(spec["max_epochs"])
+        self._official_epoch_complete = False
         while epoch < max_epochs and self.global_step < self.max_steps and not halt:
             plan = self._aligned_chunk_plan(dataset, epoch + 1, train=True, world=world)
             self._broadcast_plan_hash(plan.plan_hash)
@@ -642,17 +746,17 @@ class Trainer:
             cursor = skip
             skip = 0
             while cursor < usable and self.global_step < self.max_steps:
-                update_started = time.perf_counter()
                 if mode == "virtual":
                     group = [
                         dataset.collate_chunks(plan.rank_batches[rank][cursor]) for rank in range(world)
                     ]
                     # Sequential 1/N average of the rank batches. This is not a DDP all-reduce.
-                    metrics = self.task.train_update(group, len(group))
+                    accumulation = len(group)
                 else:
                     group = [dataset.collate_chunks(plan.rank_batches[self.process.rank][cursor])]
-                    metrics = self.task.train_update(group, 1)
-                self._update_seconds = time.perf_counter() - update_started
+                    accumulation = 1
+                self._note_batch_ready()
+                metrics = self._timed_train_update(group, accumulation)
                 cursor += 1
                 self._require_finite(metrics)
                 self.global_step += 1
@@ -664,9 +768,17 @@ class Trainer:
                     self.task.step_schedulers(self._scheduler_validation(validation_summary))
                     if self._chunk_should_stop(espnet_epoch, validation_summary):
                         halt = True
-                complete = halt or (epoch_done and espnet_epoch >= max_epochs)
+                if epoch_done and espnet_epoch >= max_epochs:
+                    self._official_epoch_complete = True
+                complete = halt or self._official_epoch_complete
                 timed_stop = not complete and self.global_step < self.max_steps and self._stop_requested()
-                save = self._should_save(self.global_step) or timed_stop or (epoch_done and self.process.rank == 0)
+                verify_stop = not complete and self._at_verification_limit()
+                save = (
+                    self._should_save(self.global_step)
+                    or timed_stop
+                    or verify_stop
+                    or (epoch_done and self.process.rank == 0)
+                )
                 checkpoint_path = str(self.checkpoint_dir / f"step_{self.global_step:08d}.pt") if save else None
                 if self.process.rank == 0:
                     self._log_train(espnet_epoch, metrics, checkpoint_path, validation_summary, group)
@@ -682,6 +794,10 @@ class Trainer:
                         )
                         self.last_checkpoint = self._save(dataset, epoch, cursor, usable, state)
                 barrier(self.process)
+                if verify_stop:
+                    self.stop_reason = "INTERRUPTED"
+                    halt = True
+                    break
                 if timed_stop:
                     self.stop_reason = "CHECKPOINTED"
                     halt = True
@@ -690,11 +806,7 @@ class Trainer:
                 break
             epoch += 1
         barrier(self.process)
-        if self.stop_reason is None:
-            if self._managed and self.global_step >= self.max_steps and epoch < max_epochs and not halt:
-                raise TrainingError("chunk iterator reached max_steps before completing training")
-            self.stop_reason = "COMPLETED"
-            self._mark_complete()
+        self._close_chunk_run(epoch, max_epochs, halt)
 
     def _aligned_chunk_plan(self, dataset, espnet_epoch: int, *, train: bool, world: int):
         spec = self.config["chunk_iterator"]
@@ -767,6 +879,8 @@ class Trainer:
         summary = None
         try:
             self.task.eval_mode()
+            self._cuda_step_sync()
+            validation_started = time.perf_counter()
             plan = self._aligned_chunk_plan(validation, espnet_epoch, train=False, world=world)
             self._broadcast_plan_hash(plan.plan_hash)
             if plan.updates < 1:
@@ -789,6 +903,8 @@ class Trainer:
                     reports.append(self.task.validation_report(batch))
                     weights.append(len(batch["case_id"]))
             summary = _reduce_weighted_reports(reports, weights, self.process)
+            self._cuda_step_sync()
+            validation_seconds = time.perf_counter() - validation_started
             if limit is not None and summary is not None:
                 summary["validation_scope"] = {
                     "validation_max_updates": int(limit),
@@ -818,6 +934,7 @@ class Trainer:
                     "best_checkpoint": summary["best_checkpoint"],
                     "seed": self.seed,
                     "weight": summary.get("weight"),
+                    "seconds": validation_seconds,
                     "validation_scope": summary.get("validation_scope"),
                 })
         finally:
@@ -842,7 +959,11 @@ class Trainer:
                     batches = batches[: int(limit)]
                 if not batches:
                     raise TrainingError("validation_max_updates left validation with no batches")
+                self._cuda_step_sync()
+                validation_started = time.perf_counter()
                 reports = [self.task.validation_report(validation.collate_chunks(chunks)) for chunks in batches]
+                self._cuda_step_sync()
+                validation_seconds = time.perf_counter() - validation_started
                 if self._tb is not None:
                     from src.training.se.preview import write_preview
                     write_preview(self._tb, self.task, validation, self.global_step, self.config["logging"]["tensorboard"], chunks=batches)
@@ -864,6 +985,7 @@ class Trainer:
                     "si_snr": summary.get("si_snr"),
                     "best_checkpoint": summary["best_checkpoint"],
                     "seed": self.seed,
+                    "seconds": validation_seconds,
                     "validation_scope": summary.get("validation_scope"),
                 })
         finally:
@@ -1054,8 +1176,17 @@ class Trainer:
         payload["provenance_sha256"] = self._provenance_sha
         payload["provenance_file"] = "data_provenance.json"
         path = self.checkpoint_dir / f"step_{self.global_step:08d}.pt"
+        started = time.perf_counter()
         save_atomic(path, payload, verify_training=True)
+        self._checkpoint_seconds = time.perf_counter() - started
         self._attach_provenance(path)
+        append_record(self._log_path(), {
+            "type": "checkpoint_io",
+            "global_step": self.global_step,
+            "seconds": self._checkpoint_seconds,
+            "bytes": path.stat().st_size,
+            "path": path.name,
+        })
         if data_state is not None:
             write_json(self.checkpoint_dir / "data_state.json", data_state)
         exported = _inference_payload(self.task)
@@ -1074,6 +1205,8 @@ class Trainer:
             if self.process.rank == 0:
                 self.task.eval_mode()
                 reports = []
+                self._cuda_step_sync()
+                validation_started = time.perf_counter()
                 for index in range(len(validation)):
                     batch = validation.collate([index])
                     report = self.task.validation_report(batch)
@@ -1087,6 +1220,8 @@ class Trainer:
                 if self._tb is not None:
                     from src.training.se.preview import write_preview
                     write_preview(self._tb, self.task, validation, self.global_step, self.config["logging"]["tensorboard"])
+                self._cuda_step_sync()
+                validation_seconds = time.perf_counter() - validation_started
                 summary = _aggregate_validation(reports)
                 best_path = self._consider_best(epoch, summary)
                 summary["best_checkpoint"] = best_path
@@ -1103,6 +1238,7 @@ class Trainer:
                         "si_snr": summary.get("si_snr"),
                         "best_checkpoint": best_path,
                         "seed": self.seed,
+                        "seconds": validation_seconds,
                     },
                 )
                 pesq = summary["pesq"]
@@ -1133,6 +1269,8 @@ class Trainer:
                     epoch=epoch,
                 )
                 limit = (self.config.get("data") or {}).get("validation_max_batches")
+                self._cuda_step_sync()
+                validation_started = time.perf_counter()
                 for batch in batches:
                     if limit is not None and len(reports) >= int(limit):
                         break
@@ -1146,6 +1284,8 @@ class Trainer:
                         })
                 if not reports:
                     raise TrainingError("validation produced no batches")
+                self._cuda_step_sync()
+                validation_seconds = time.perf_counter() - validation_started
                 summary = _aggregate_validation(reports)
                 if limit is not None:
                     summary["validation_scope"] = {
@@ -1168,6 +1308,7 @@ class Trainer:
                         "si_snr": summary.get("si_snr"),
                         "best_checkpoint": best_path,
                         "seed": self.seed,
+                        "seconds": validation_seconds,
                         "validation_scope": summary.get("validation_scope"),
                     },
                 )
@@ -1286,6 +1427,8 @@ class Trainer:
             "seed": self.seed,
             "checkpoint": checkpoint_path,
             "validated": validation_summary is not None,
+            "update_seconds": self._update_seconds,
+            "load_wait_seconds": self._load_wait_seconds,
         }
         if group is not None:
             record["case_ids"] = [case_id for batch in group for case_id in batch["case_id"]]

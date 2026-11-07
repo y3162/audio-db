@@ -26,12 +26,17 @@ def collate(batch):
 
 
 def _import_factories():
+    inserted = str(SOURCE) not in sys.path
     sys.path.insert(0, str(SOURCE))
     try:
         from espnet2.iterators.chunk_iter_factory import ChunkIterFactory
         from espnet2.iterators.sequence_iter_factory import SequenceIterFactory
     except ModuleNotFoundError as exc:
         raise unittest.SkipTest(f'pinned ESPnet import is unavailable in this environment: {exc}') from exc
+    finally:
+        if inserted:
+            while sys.path and sys.path[0] == str(SOURCE):
+                sys.path.pop(0)
     return ChunkIterFactory, SequenceIterFactory
 
 

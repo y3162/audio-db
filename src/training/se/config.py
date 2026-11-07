@@ -19,6 +19,7 @@ _TOP = {
     "global_batch_size",
     "micro_batch_size_per_gpu",
     "max_steps",
+    "verification_max_updates",
     "logical_steps_per_epoch",
     "chunk_iterator",
     "batch_schedule",
@@ -132,6 +133,11 @@ def load_training_config(path: str | Path) -> dict[str, Any]:
         "data": _data(raw["data"]),
         "runtime": _runtime(raw["runtime"]),
     }
+    if "verification_max_updates" in raw:
+        limit = _int(raw["verification_max_updates"], "verification_max_updates")
+        if limit >= config["max_steps"]:
+            raise TrainingError("verification_max_updates must be less than max_steps")
+        config["verification_max_updates"] = limit
     if "logging" in raw:
         logging = raw["logging"]
         if not isinstance(logging, dict):

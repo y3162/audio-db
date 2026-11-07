@@ -15,8 +15,14 @@ KERNEL = ROOT / "src/se/models/deepfilternet3/libdf_rfft.so"
 
 
 def _libdf():
-    sys.path.insert(0, str(ROOT / ".venvs/tsubame-libdf"))
-    import libdf
+    path = str(ROOT / ".venvs/tsubame-libdf")
+    inserted = path not in sys.path
+    sys.path.insert(0, path)
+    try:
+        import libdf
+    finally:
+        if inserted and path in sys.path:
+            sys.path.remove(path)
     return libdf
 
 

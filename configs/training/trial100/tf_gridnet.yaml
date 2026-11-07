@@ -1,0 +1,59 @@
+# 100-step trial. ESPnet egs2/ms_snsd enh1 train_enh_tfgridnet.yaml:
+# batch 4, chunk 48000, 16 kHz, Adam 1e-3, weight decay 0, eps 1e-8,
+# gradient clip 5, ReduceLROnPlateau factor 0.7 patience 1, max_epoch 35.
+# The published iterator also sets num_iters_per_epoch: 5000, which is not
+# one pass over 10700 utterances. This trial measures the step, not that loop.
+# Our scheduler steps only after a finished epoch, so 100 steps do not move it.
+
+seed: 17
+deterministic: false
+global_batch_size: 4
+micro_batch_size_per_gpu: 4
+max_steps: 100
+segment_size: 48000
+loss: official
+grad_clip: 5.0
+checkpoint_dir: data/results/training/trial100-20261104/tf_gridnet
+checkpoint_interval: 50
+validation_interval: 0
+best_checkpoint_start_epoch: 40
+
+optimizer:
+  name: adam
+  lr: 0.001
+  betas: [0.9, 0.999]
+  weight_decay: 0.0
+
+scheduler:
+  name: plateau
+  factor: 0.7
+  patience: 1
+
+model:
+  name: tf_gridnet
+  variant: ms-snsd
+  sampling_rate: 16000
+  architecture:
+    n_fft: 512
+    stride: 256
+    n_layers: 4
+    lstm_hidden_units: 128
+    attn_n_head: 4
+    attn_approx_qk_dim: 512
+    emb_dim: 32
+    emb_ks: 4
+    emb_hs: 4
+    activation: prelu
+    eps: 1.0e-5
+  stft: {}
+
+data:
+  database: data/db/voicebank.duckdb
+  train_set: voicebank_28_train
+  validation_set: voicebank_28_valid
+  load_workers: 4
+  prefetch: true
+
+runtime:
+  device: cuda
+  allow_busy_gpu: false

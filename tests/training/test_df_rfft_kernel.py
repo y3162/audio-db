@@ -13,9 +13,21 @@ from src.se.models.deepfilternet3.dsp import _rfft_kernel, rfft_library_path
 
 
 class RealFftKernelTest(unittest.TestCase):
+    def setUp(self):
+        self._rfft_required = os.environ.get("DF_RFFT_REQUIRED")
+        self._rfft_library = os.environ.get("DF_RFFT_LIBRARY")
+
     def tearDown(self):
-        os.environ.pop("DF_RFFT_REQUIRED", None)
-        os.environ.pop("DF_RFFT_LIBRARY", None)
+        # Restore the process environment. Popping unconditionally made later
+        # DeepFilterNet3 tests in the same suite miss DF_RFFT_LIBRARY.
+        if self._rfft_required is None:
+            os.environ.pop("DF_RFFT_REQUIRED", None)
+        else:
+            os.environ["DF_RFFT_REQUIRED"] = self._rfft_required
+        if self._rfft_library is None:
+            os.environ.pop("DF_RFFT_LIBRARY", None)
+        else:
+            os.environ["DF_RFFT_LIBRARY"] = self._rfft_library
 
     def test_unnormalized_fft_matches_sum_and_nyquist(self):
         kernel = _rfft_kernel()

@@ -17,6 +17,20 @@ from src.training.core.distributed import ProcessInfo
 from src.training.data.dataset import RecipeDataset, TrainExample
 
 
+def isolated_worker_code(worker: Path) -> str:
+    """Start a worker with the repo root on ``sys.path``.
+
+    The parent suite inserts checkout paths while it runs. Copying that list
+    into the child makes imports depend on which tests ran first.
+    """
+    root = Path(__file__).resolve().parents[2]
+    return (
+        "import sys,runpy; "
+        f"sys.path.insert(0, {str(root)!r}); "
+        f"runpy.run_path({str(worker)!r}, run_name='__main__')"
+    )
+
+
 def free_tcp_port() -> int:
     with socket.socket() as sock:
         sock.bind(("127.0.0.1", 0))

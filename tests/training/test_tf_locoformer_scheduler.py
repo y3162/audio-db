@@ -57,12 +57,16 @@ def _official_class():
         stub.typechecked = lambda fn: fn
         sys.modules["typeguard"] = stub
     esp = str(ESP)
-    if esp not in sys.path:
+    inserted = esp not in sys.path
+    if inserted:
         sys.path.insert(0, esp)
-    from espnet2.schedulers.warmup_reducelronplateau import (
-        WarmupReduceLROnPlateau as Official,
-    )
-
+    try:
+        from espnet2.schedulers.warmup_reducelronplateau import (
+            WarmupReduceLROnPlateau as Official,
+        )
+    finally:
+        if inserted and sys.path and sys.path[0] == esp:
+            sys.path.pop(0)
     return Official
 
 

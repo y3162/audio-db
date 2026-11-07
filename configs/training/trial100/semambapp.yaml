@@ -1,0 +1,58 @@
+# 100-step trial. SEMamba++ config.yaml: batch 8, segment 48000, 16 kHz,
+# AdamW 2e-4, betas 0.8/0.99, weight decay 0.01, ExponentialLR 0.99,
+# 100 epochs, hid 48, 4 TFMamba blocks, fused selective scan.
+# micro 8 is one forward. On this H100 MIG 4g.47gb it allocated 45.56 GiB
+# and OOMed in the discriminator (trial100-20261104/semambapp). The retry
+# uses micro 4 and accumulation 2, which keeps global batch 8 and forwards
+# the generator again for the second micro-batch.
+
+seed: 17
+deterministic: false
+global_batch_size: 8
+micro_batch_size_per_gpu: 4
+max_steps: 100
+segment_size: 48000
+loss: official
+checkpoint_dir: data/results/training/trial100-20261104/semambapp-accum2
+checkpoint_interval: 50
+validation_interval: 0
+best_checkpoint_start_epoch: 40
+
+optimizer:
+  name: adamw
+  lr: 0.0002
+  betas: [0.8, 0.99]
+  weight_decay: 0.01
+
+scheduler:
+  name: exponential
+  gamma: 0.99
+
+model:
+  name: semambapp
+  sampling_rate: 16000
+  architecture:
+    hid_feature: 48
+    num_tfmamba: 4
+    d_state: 16
+    d_conv: 4
+    expand: 2
+    norm_epsilon: 1.0e-5
+    input_channel: 2
+    output_channel: 1
+    n_fft: 400
+    scan_backend: fused
+  stft:
+    hop: 100
+    win: 400
+
+data:
+  database: data/db/voicebank.duckdb
+  train_set: voicebank_28_train
+  validation_set: voicebank_28_valid
+  load_workers: 4
+  prefetch: true
+
+runtime:
+  device: cuda
+  allow_busy_gpu: false

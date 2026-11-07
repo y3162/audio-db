@@ -52,6 +52,12 @@ class MossFormerPlateauTests(unittest.TestCase):
         self.assertEqual(MossFormerGAN.lr, 5e-4)
         self.assertEqual(MossFormerGAN.betas, (0.9, 0.999))
 
+    def test_equal_loss_stalls_and_keeps_the_recorded_value(self):
+        best, stalls, action = mossformer_validation_decision(1.25, 2, 1.25)
+        self.assertEqual(best, 1.25)
+        self.assertEqual(stalls, 3)
+        self.assertEqual(action, "hold")
+
     def test_decision_replaces_best_on_a_worse_loss(self):
         best, stalls, action = mossformer_validation_decision(float("inf"), 0, 1.0)
         self.assertEqual((best, stalls, action), (1.0, 0, "improve"))

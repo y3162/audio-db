@@ -1,6 +1,8 @@
 # P10-B smoke. Official DNS medium TF-Locoformer, 4 ranks, global batch 4.
 # num_samples_per_epoch 1000 is the official per-rank utterance count.
-# max_updates keeps 2 optimizer steps. validation_max_updates is one chunk
+# max_updates keeps 2 optimizer steps. verification_max_updates stops the
+# smoke before 150 epochs and writes interrupted.json, not complete.json.
+# validation_max_updates is one chunk
 # per rank after iterator_stop. The 36,000-utterance tail is not
 # cv_synthetic_small, and this prefix is not that full validation.
 # ave_5best is written only after five retained epochs. One epoch writes
@@ -10,7 +12,8 @@ seed: 0
 deterministic: false
 global_batch_size: 4
 micro_batch_size_per_gpu: 1
-max_steps: 2
+max_steps: 2100000
+verification_max_updates: 2
 segment_size: 64000
 loss: official
 grad_clip: 5.0
@@ -25,7 +28,7 @@ chunk_iterator:
   chunk_shift_ratio: 0.5
   num_cache_chunks: 1024
   shuffle: true
-  max_epochs: 2
+  max_epochs: 150
   early_stopping_patience: 10
   keep_nbest: 5
   max_updates: 2

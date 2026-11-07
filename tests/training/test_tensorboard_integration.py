@@ -110,8 +110,8 @@ class TensorBoardDDPIntegration(unittest.TestCase):
         with tempfile.TemporaryDirectory(prefix='audio-db-tb-ddp-') as tmp:
             root = Path(tmp)
             paired_dataset(root / 'wav', 4, frames=320, segment_size=80, seed=7)
-            # Preserve the caller's package paths without overriding the venv's packages.
-            code = 'import sys,runpy; sys.path.extend(' + repr(sys.path) + '); runpy.run_path(' + repr(str(root_dir / 'tests/training/mock_ddp_worker.py')) + ', run_name="__main__")'
+            from tests.training.support import isolated_worker_code
+            code = isolated_worker_code(root_dir / 'tests/training/mock_ddp_worker.py')
             def arguments(port):
                 return [[sys.executable, '-c', code, str(rank), '2', str(port), str(root), str(root / 'state.pt'), '1'] for rank in range(2)]
             with patch.dict(os.environ, {'AUDIO_DB_TB_DDP_TEST': '1'}):
@@ -140,10 +140,12 @@ class TensorBoardDDPIntegration(unittest.TestCase):
                 global_batch = int(os.environ.get('AUDIO_DB_TB_DDP_GLOBAL_BATCH', '2'))
                 paired_dataset(root / 'train', 2 * global_batch, frames=length, segment_size=length, seed=7)
                 paired_dataset(root / 'valid', 1, frames=length, segment_size=length, seed=8)
-                code = 'import sys,runpy; sys.path.extend(' + repr(sys.path) + '); runpy.run_path(' + repr(str(root_dir / 'tests/training/tensorboard_models_ddp_worker.py')) + ', run_name="__main__")'
+                from tests.training.support import isolated_worker_code
+                code = isolated_worker_code(root_dir / 'tests/training/tensorboard_models_ddp_worker.py')
                 def arguments(port):
                     return [[sys.executable, '-c', code, str(rank), str(port), str(root), name] for rank in range(2)]
-                run_distributed_workers(arguments, cwd=root_dir, timeout=300)
+                # Official-width MossFormerGAN took 669s on this CPU host.
+                run_distributed_workers(arguments, cwd=root_dir, timeout=1500)
                 left = torch.load(root / 'parameters-0.pt', map_location='cpu', weights_only=True)
                 right = torch.load(root / 'parameters-1.pt', map_location='cpu', weights_only=True)
                 self.assertEqual(left.keys(), right.keys())
@@ -201,7 +203,8 @@ class TensorBoardDDPIntegration(unittest.TestCase):
             root = Path(tmp)
             paired_dataset(root / 'train', 4, frames=800, segment_size=800, seed=7)
             paired_dataset(root / 'valid', 1, frames=800, segment_size=800, seed=8)
-            code = 'import sys,runpy; sys.path.extend(' + repr(sys.path) + '); runpy.run_path(' + repr(str(root_dir / 'tests/training/tensorboard_gridnet_ddp_worker.py')) + ', run_name="__main__")'
+            from tests.training.support import isolated_worker_code
+            code = isolated_worker_code(root_dir / 'tests/training/tensorboard_gridnet_ddp_worker.py')
             def arguments(port):
                 return [[sys.executable, '-c', code, str(rank), str(port), str(root)] for rank in range(2)]
             run_distributed_workers(arguments, cwd=root_dir, timeout=300)

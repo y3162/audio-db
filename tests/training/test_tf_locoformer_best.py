@@ -10,6 +10,7 @@ loss. Keeping the positive SI-SDR ranking is intentional.
 from __future__ import annotations
 
 import json
+import os
 import tempfile
 import unittest
 from pathlib import Path
@@ -29,7 +30,10 @@ class _Marked:
         self.mark = 0
 
     def export_for_inference(self) -> dict[str, torch.Tensor]:
-        return {"mark": torch.tensor([self.mark])}
+        return {
+            "mark": torch.tensor([float(self.mark)]),
+            "tracked": torch.tensor([self.mark], dtype=torch.int64),
+        }
 
 
 def _summary(loss: float, si_sdr_db: float) -> dict:
@@ -130,6 +134,13 @@ class PositiveSISDRSelectionTests(unittest.TestCase):
             loss_meta = json.loads((root / "valid.loss.best.pt.json").read_text(encoding="utf-8"))
             self.assertEqual(si_meta, {"epoch": 1, "global_step": 10, "metric": "si_snr", "value": 10.0})
             self.assertEqual(loss_meta, {"epoch": 7, "global_step": 70, "metric": "loss", "value": 1.0})
+            averaged = torch.load(root / "valid.loss.ave_5best.pt", weights_only=True)
+            self.assertEqual(float(averaged["mark"]), 5.0)
+            self.assertEqual(int(averaged["tracked"]), 7 + 6 + 5 + 4 + 3)
+            self.assertEqual(os.readlink(root / "valid.loss.ave.pt"), "valid.loss.ave_5best.pt")
+            average_meta = json.loads((root / "valid.loss.ave_5best.pt.json").read_text(encoding="utf-8"))
+            self.assertEqual(average_meta["epochs"], [7, 6, 5, 4, 3])
+            self.assertEqual(average_meta["average"], "espnet_nbest_float_mean_int_sum")
 
 
 class OfficialSISNRStatsTests(unittest.TestCase):
@@ -141,12 +152,16 @@ class OfficialSISNRStatsTests(unittest.TestCase):
             self.skipTest("official ESPnet checkout missing")
         import sys
 
+        inserted = str(esp) not in sys.path
         sys.path.insert(0, str(esp))
         try:
             from espnet2.enh.loss.criterions.time_domain import SISNRLoss
             from espnet2.enh.loss.wrappers.fixed_order import FixedOrderSolver
         except ModuleNotFoundError as exc:
             self.skipTest(f"official ESPnet loss import unavailable: {exc}")
+        finally:
+            if inserted and sys.path and sys.path[0] == str(esp):
+                sys.path.pop(0)
         criterion = SISNRLoss(eps=1e-7)
         self.assertEqual(criterion.name, "si_snr_loss")
         reference = torch.tensor([[1.0, -1.0, 0.5, -0.5]])

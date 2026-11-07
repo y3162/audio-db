@@ -376,7 +376,23 @@ class StepTests(unittest.TestCase):
         self.assertEqual(config["best_checkpoint_start_epoch"], 40)
         self.assertEqual(config["loss"], "official")
         self.assertEqual(config["model"]["n_fft"], 400)
-        self.assertTrue(config["deterministic"])
+        self.assertFalse(config["deterministic"])
+
+    def test_official_voicebank_keeps_the_released_step_interval(self):
+        config = load_training_config(ROOT / "configs/training/reproduction/mp_senet_vb28_official.yaml")
+        updates_per_epoch = 11572 // config["global_batch_size"]
+        self.assertEqual(updates_per_epoch, 2893)
+        self.assertEqual(config["max_steps"], updates_per_epoch * 400)
+        self.assertEqual(config["validation_interval"], 5000)
+        self.assertEqual(config["checkpoint_interval"], 5000)
+        self.assertNotEqual(5000 % updates_per_epoch, 0)
+        self.assertEqual(config["best_checkpoint_start_epoch"], 40)
+        first_gated_step = next(
+            step for step in range(5000, config["max_steps"] + 1, 5000)
+            if (step - 1) // updates_per_epoch >= 40
+        )
+        self.assertEqual(first_gated_step, 120000)
+        self.assertEqual((first_gated_step - 1) // updates_per_epoch, 41)
 
 
 class ValidationTests(unittest.TestCase):

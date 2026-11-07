@@ -1,13 +1,15 @@
 # P10-B smoke. Official MossFormerGAN SE 16 kHz, 2 GPU.
 # Per GPU: micro-batch 1 and accumulation 2. Global batch 4.
 # The epoch cap and validation prefix are smoke limits, not the 121-epoch run.
+# max_steps stays 350,053. verification_max_updates is the resumable smoke cap.
 # Plateau sees the official generator loss on that prefix.
 
 seed: 777
 deterministic: false
 global_batch_size: 4
 micro_batch_size_per_gpu: 1
-max_steps: 2
+max_steps: 350053
+verification_max_updates: 2
 segment_size: 32000
 loss: official
 grad_clip: 10.0

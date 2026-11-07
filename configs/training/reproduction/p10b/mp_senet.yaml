@@ -1,6 +1,8 @@
 # P10-B smoke. Official MP-SENet width, 2 GPU, global batch 4.
 # data.max_updates_per_epoch ends the epoch after 2 updates so validation
 # and the exponential scheduler run. This is not a 2,893-update epoch.
+# max_steps is the 400-epoch budget. verification_max_updates is the smoke
+# cap and leaves interrupted.json instead of complete.json.
 # validation_max_batches is a prefix of the official validation order.
 # best_checkpoint_start_epoch is 0 here so the PESQ writer can run.
 # The released gate is epoch 40.
@@ -9,7 +11,8 @@ seed: 1234
 deterministic: false
 global_batch_size: 4
 micro_batch_size_per_gpu: 4
-max_steps: 2
+max_steps: 1157200
+verification_max_updates: 2
 segment_size: 32000
 loss: official
 checkpoint_dir: data/results/training/p10b/placeholder/mp_senet

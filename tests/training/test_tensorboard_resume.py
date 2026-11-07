@@ -151,4 +151,7 @@ class ResumeTest(unittest.TestCase):
                 records = [json.loads(x) for x in (root / 'ckpt' / 'metrics.jsonl').read_text().splitlines()]
                 self.assertEqual([r['global_step'] for r in records if r['type'] == 'train'], [1, 2, 3])
                 events = EventAccumulator(str(root / 'ckpt' / 'tensorboard')).Reload()
-                self.assertEqual([e.step for e in events.Scalars('train/loss/generator')], [1, 2, 3])
+                # Resume purge rewrites older events with a new wall time, so file
+                # order is not step order. JSONL order is checked above.
+                got = sorted(event.step for event in events.Scalars('train/loss/generator'))
+                self.assertEqual(got, [1, 2, 3])

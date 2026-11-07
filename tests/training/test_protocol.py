@@ -179,6 +179,35 @@ class ProtocolTests(unittest.TestCase):
             self.assertEqual(payload["epoch"], 0)
             self.assertGreater(payload["micro_batches_consumed"], 0)
 
+    def test_chunk_safety_cap_resumes_without_moving_complete(self):
+        ids = ["a", "b", "c"]
+        lengths = [30, 30, 30]
+        config = _chunk_config()
+        config["chunk_iterator"]["max_epochs"] = 3
+        config["chunk_iterator"]["early_stopping_patience"] = 9
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            first_task = Task()
+            first = Trainer(
+                first_task, plan_batches(2, 2, 1), cpu_process(), max_steps=1, seed=17,
+                checkpoint_dir=root, checkpoint_interval=0, validation_interval=0, config=config,
+            )
+            first.fit(Waves(ids, lengths), Waves(["v"], [40]))
+            self.assertEqual(first.stop_reason, "INTERRUPTED")
+            self.assertFalse((root / "complete.json").is_file())
+            marker = json.loads((root / "interrupted.json").read_text(encoding="utf-8"))
+            self.assertEqual(marker["status"], "INTERRUPTED")
+            self.assertEqual(marker["global_step"], 1)
+            second = Trainer(
+                Task(), plan_batches(2, 2, 1), cpu_process(), max_steps=100, seed=17,
+                checkpoint_dir=root, checkpoint_interval=0, validation_interval=0, config=config,
+            )
+            second.fit(Waves(ids, lengths), Waves(["v"], [40]), resume=Path(first.last_checkpoint))
+            self.assertEqual(second.stop_reason, "COMPLETED")
+            self.assertTrue((root / "complete.json").is_file())
+            self.assertFalse((root / "interrupted.json").exists())
+            self.assertGreater(second.global_step, 1)
+
     def test_batch_schedule_changes_size_and_cosine_index(self):
         config = {
             "seed": 1,

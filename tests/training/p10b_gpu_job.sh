@@ -73,7 +73,9 @@ from pathlib import Path
 import yaml
 template, steps, dest, out = sys.argv[1:]
 raw = yaml.safe_load(Path(template).read_text(encoding="utf-8"))
-raw["max_steps"] = int(steps)
+raw["verification_max_updates"] = int(steps)
+if int(steps) >= int(raw["max_steps"]):
+    raise SystemExit("verification_max_updates must be less than max_steps")
 raw["checkpoint_dir"] = dest
 Path(out).write_text(yaml.safe_dump(raw, sort_keys=False), encoding="utf-8")
 PY
@@ -106,10 +108,11 @@ if [ -z "$CKPT" ]; then
   stop 4
 fi
 if [ -f "$WORK/complete.json" ]; then
-  # max_steps writes complete.json. Resume is a new process with a higher
-  # max_steps, so the finished-run marker has to move first.
-  mv "$WORK/complete.json" "$WORK/complete.phase-train.json"
-  echo "MOVED_COMPLETE complete.phase-train.json"
+  echo "UNEXPECTED_COMPLETE verification cap must stay resumable"
+  stop 4
+fi
+if [ -f "$WORK/interrupted.json" ]; then
+  echo "INTERRUPTED_OK $(cat "$WORK/interrupted.json")"
 fi
 render 3 "$WORK" "$ROOT/resume.yaml"
 echo "PHASE resume $(date -Is)"

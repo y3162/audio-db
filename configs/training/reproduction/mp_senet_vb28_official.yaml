@@ -4,6 +4,9 @@
 # global batch 4, 2,893 updates per epoch, 400 epochs. 1 GPU uses micro-batch 4.
 # 2 GPUs use micro-batch 2 because micro_batch_size_per_gpu is an upper bound.
 # Validation is the official test split. Both selection flags are required.
+# 2,893 updates finish one epoch and step ExponentialLR once.
+# The released CLI validates and writes checkpoints every 5,000 updates,
+# which is not an epoch boundary. Best PESQ starts at epoch 40.
 
 seed: 1234
 deterministic: false
