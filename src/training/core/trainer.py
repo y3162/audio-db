@@ -185,9 +185,15 @@ class Trainer:
             raise TrainingError("segment_steps must be positive")
         epoch = 0
         skip = 0
-        if self.process.rank == 0:
+        # MossFormerGAN validates at the data-epoch boundary on every rank.
+        # SIGTERM has to be caught on those ranks as well. Other tasks keep
+        # the rank-0 handler: their loops do not all-reduce the flag, and a
+        # non-zero rank that stayed alive would desynchronize them.
+        cooperative_stop = bool(getattr(self.task, "validate_on_data_epoch_end", False))
+        if self.process.rank == 0 or cooperative_stop:
             reset_training_stop()
             install_training_stop()
+        if self.process.rank == 0:
             if (self.checkpoint_dir / "complete.json").is_file():
                 raise TrainingError(
                     f"training is already complete: {self.checkpoint_dir}. "
@@ -536,7 +542,8 @@ class Trainer:
                 if epoch_done:
                     self.task.step_schedulers(self._scheduler_validation(validation_summary))
                     halt = bool(getattr(self.task, "stop_training", False)) or self._batch_schedule_should_stop(validation_summary)
-                timed_stop = not halt and self.global_step < self.max_steps and self._stop_requested()
+                shared_stop = self._shared_stop_requested()
+                timed_stop = not halt and self.global_step < self.max_steps and shared_stop
                 verify_stop = not halt and self._at_verification_limit()
                 save = will_validate or self._should_save(self.global_step) or timed_stop or verify_stop or ((self.steps_per_epoch or self.config.get("batch_schedule")) and epoch_done and self.process.rank == 0)
                 checkpoint_path = str(self.checkpoint_dir / f"step_{self.global_step:08d}.pt") if save else None
@@ -758,6 +765,29 @@ class Trainer:
         return ((self._deadline is not None and time.time() >= self._deadline)
                 or (self._segment_end is not None and self.global_step >= self._segment_end)
                 or training_stop_requested())
+
+    def _shared_stop_requested(self) -> bool:
+        """Return whether every rank should stop after this optimizer update.
+
+        A data-epoch task installs the SIGTERM handler on every rank. The
+        local flags are reduced with MAX here, at the one point all ranks
+        reach together, so one rank cannot leave the loop while another
+        enters the next collective. ``deadline`` and ``segment_steps`` stay
+        single-process. Tasks that do not validate on the data-epoch boundary
+        keep the local flag and do not add this collective.
+        """
+        local = self._stop_requested()
+        cooperative = bool(getattr(self.task, "validate_on_data_epoch_end", False))
+        if (
+            not cooperative
+            or self.process.world_size < 2
+            or not self.process.distributed
+            or not dist.is_initialized()
+        ):
+            return local
+        flag = torch.tensor([1 if local else 0], dtype=torch.int32, device=self.process.device)
+        dist.all_reduce(flag, op=dist.ReduceOp.MAX)
+        return int(flag.item()) == 1
 
     def _planned_chunks(self, dataset, espnet_epoch: int, *, train: bool):
         spec = self.config["chunk_iterator"]

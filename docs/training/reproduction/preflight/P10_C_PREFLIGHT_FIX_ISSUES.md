@@ -62,7 +62,7 @@
 | P10P-D-009 | MITIGATED | Generator と Discriminator の DDP は `find_unused_parameters=True`。実音声の 1 更新では Generator 1053、Discriminator 93 のすべてに勾配があり、欠けは 0。他の長さは NOT_TESTED |
 | P10P-E-007 / P10P-E-008 / P10P-E-009 | MITIGATED | 保存失敗で前の checkpoint が残るテストは OK。epoch 途中の未検証は `validation_pending` で表す |
 | P10P-C-002 | BLOCKED | 4 モデルの開始条件ではない。DFN3 オンラインは開始できない |
-| P10P-D-005 | OPEN | PESQ 失敗は micro-batch ごとに全 rank で backward しない。検証の件数が world 未満のときは同じ短い列にし、forward の前に回数を揃える。更新後の検証で出た CUDA illegal memory access は、実 batch の再実行 1 回では再現しなかった。SyncBatchNorm の内側で片 rank だけ例外になると、その collective はまだ deadlock し得る |
+| P10P-D-005 | OPEN | PESQ 失敗は micro-batch ごとに全 rank で backward しない。検証の件数が world 未満のときは同じ短い列にし、forward の前に回数を揃える。Fix.2-B は、公式幅・2 GPU・実 VoiceBank batch の同じ系列を合成 3 回と実データ 3 回行い、そのあと 824 件の検証も同じプロセスで終えた。CUDA illegal memory access は出なかった。原因は不明のままなので RESOLVED にしない。片 rank の SyncBatchNorm 例外は、検証用の 20 秒 timeout で相手 rank が 9–11 秒で終了した。本番の `init_process_group` は timeout を渡さず、NCCL 既定は 10 分である |
 
 ## 意図した差
 
