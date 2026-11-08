@@ -30,6 +30,8 @@
 - **事前生成は、生成条件の確定と波形の再構築を分ける。** 学習は条件と元素材から PCM_16 を作り、生成済み WAV を必須にしない（下記 39）。保存済み WAV を読む旧 Dataset だけが shard マニフェストを完了の証拠にする。生成条件が変わると別の `build_id` になり、既存の登録を上書きしない。
 - 設計の前提確認: 2026-11-08 の `data/db/resource.duckdb` は `corpora` と `eval` を持つ。2026-11-06 に `eval` が無かったという読みは、現行ファイルには当てはまらない。`eval` が無い DB の leakage 監査は、今も `UNKNOWN` であり `PASS` にしない。P4 の実スナップショット試験は `eval` の不在を要求せず、試験前後でスキーマ一覧とファイルが同じであることを確認する。評価材料を渡さない来歴判定は `NOT_TESTED` のままである。
 
+- **Experiment Framework の設計書は `docs/training/experiment-framework/` にある。コードは未実装。** 新パッケージの候補は `src/experiments/`。`src/training/` と `src/reproduction/` は並行して残し、公式再現の経路は変えない。YAML はクラス名・引数・明示参照だけを持ち、学習手順の DSL にはしない。Optimizer は Runtime が準備したパラメータ集合に対して、モデル準備の後で作る。Phase 1 は Factory / Builder と `torch.nn.Linear` の最小実験まで。チェックポイント形式 `audio-db-training-v1` の再開互換は Phase 4 の移行アダプタまで作らない。未決は設計書の「未決事項」。この項目は実装済みではない。
+
 ## 実装済み
 
 1. **評価の入力は DuckDB の名前付きセットだけ。Manifest は登録時にしか読まない。** 同じ名前なら入力・順序・混合条件が同じになり、Manifest や元ファイルの変更に評価が左右されない。
