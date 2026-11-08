@@ -54,9 +54,35 @@ def save_atomic(path: Path, payload: dict[str, Any], *, verify_training: bool = 
             for key in ("task", "rng", "dataset", "config", "batch_plan"):
                 if key not in restored:
                     raise TrainingError(f"checkpoint verification failed: missing {key}")
+            _verify_rank_rng(payload.get("rng_by_rank"), restored.get("rng_by_rank"))
         os.replace(temporary, path)
     finally:
         temporary.unlink(missing_ok=True)
+
+
+def _verify_rank_rng(original: Any, restored: Any) -> None:
+    """Reject a checkpoint whose per-rank RNG did not round-trip."""
+    if original is None and restored is None:
+        return
+    if not isinstance(original, list) or not isinstance(restored, list) or len(original) != len(restored):
+        raise TrainingError("checkpoint verification failed: rng_by_rank")
+    if len(original) == 0:
+        raise TrainingError("checkpoint verification failed: rng_by_rank empty")
+    for index, (left, right) in enumerate(zip(original, restored, strict=True)):
+        if not isinstance(left, dict) or not isinstance(right, dict):
+            raise TrainingError(f"checkpoint verification failed: rng_by_rank[{index}]")
+        for key in ("python", "numpy", "torch"):
+            if key not in right:
+                raise TrainingError(f"checkpoint verification failed: rng_by_rank[{index}].{key}")
+        if not torch.equal(left["torch"].cpu(), right["torch"].cpu()):
+            raise TrainingError(f"checkpoint verification failed: rng_by_rank[{index}].torch")
+        if "cuda" in left or "cuda" in right:
+            if "cuda" not in left or "cuda" not in right:
+                raise TrainingError(f"checkpoint verification failed: rng_by_rank[{index}].cuda")
+            if int(left["cuda_device"]) != int(right["cuda_device"]):
+                raise TrainingError(f"checkpoint verification failed: rng_by_rank[{index}].cuda_device")
+            if not torch.equal(left["cuda"].cpu(), right["cuda"].cpu()):
+                raise TrainingError(f"checkpoint verification failed: rng_by_rank[{index}].cuda")
 
 
 def load_checkpoint(path: Path, device: torch.device) -> dict[str, Any]:

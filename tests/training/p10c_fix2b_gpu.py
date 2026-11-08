@@ -301,6 +301,49 @@ def _rng_diff(left: dict, right: dict) -> dict:
     }
 
 
+def _rank_rng_diff(left, right) -> dict:
+    """Compare per-rank generators. The legacy ``rng`` field is rank 0's device list."""
+    import numpy as np
+    import torch
+
+    if not isinstance(left, list) or not isinstance(right, list):
+        return {"present": False, "ok": False, "ranks": []}
+    rows = []
+    for index, (a, b) in enumerate(zip(left, right, strict=False)):
+        if not isinstance(a, dict) or not isinstance(b, dict):
+            rows.append({"rank": index, "ok": False, "reason": "missing"})
+            continue
+        python_same = a.get("python") == b.get("python")
+        numpy_same = (
+            isinstance(a.get("numpy"), tuple)
+            and isinstance(b.get("numpy"), tuple)
+            and np.array_equal(a["numpy"][1], b["numpy"][1])
+            and a["numpy"][2] == b["numpy"][2]
+        )
+        torch_same = "torch" in a and "torch" in b and torch.equal(a["torch"].cpu(), b["torch"].cpu())
+        cuda_same = None
+        if "cuda" in a or "cuda" in b:
+            cuda_same = (
+                "cuda" in a
+                and "cuda" in b
+                and a.get("cuda_device") == b.get("cuda_device")
+                and torch.equal(a["cuda"].cpu(), b["cuda"].cpu())
+            )
+        rows.append(
+            {
+                "rank": index,
+                "python": python_same,
+                "numpy": bool(numpy_same),
+                "torch": bool(torch_same),
+                "cuda": cuda_same,
+                "cuda_device": [a.get("cuda_device"), b.get("cuda_device")],
+                "ok": bool(python_same and numpy_same and torch_same and cuda_same is not False),
+            }
+        )
+    length_ok = len(left) == len(right)
+    return {"present": True, "length_ok": length_ok, "ok": length_ok and all(row["ok"] for row in rows), "ranks": rows}
+
+
 def _bn_diff(left: dict, right: dict) -> dict:
     import torch
 
@@ -374,6 +417,7 @@ def compare_checkpoints(left_path: Path, right_path: Path) -> dict:
             acc_l.get("discriminator_grads") or {}, acc_r.get("discriminator_grads") or {}, GRAD_ATOL
         ),
         "rng": _rng_diff(left["rng"], right["rng"]),
+        "rng_by_rank": _rank_rng_diff(left.get("rng_by_rank"), right.get("rng_by_rank")),
         "plateau": [task_l.get("plateau"), task_r.get("plateau")],
         "validation_pending": [left.get("validation_pending"), right.get("validation_pending")],
         "learning_rate_g": [task_l["optim_g"]["param_groups"][0]["lr"], task_r["optim_g"]["param_groups"][0]["lr"]],
@@ -819,6 +863,36 @@ def _install_trainer_hooks() -> None:
     def init(self, *args, **kwargs):
         original_init(self, *args, **kwargs)
         holder["task"] = self
+        if os.environ.get("P10C_DUMP_FORWARD") == "1":
+            holder["forward_index"] = 0
+
+            def _after(_module, _inputs, output, _self=self):
+                index = int(holder.get("forward_index") or 0)
+                holder["forward_index"] = index + 1
+                if index != 0:
+                    return
+                blobs = []
+                tensors = output if isinstance(output, (list, tuple)) else [output]
+                for value in tensors:
+                    if torch.is_tensor(value):
+                        blobs.append(value.detach().float().cpu().numpy().tobytes())
+                digest = hashlib.sha256(b"".join(blobs)).hexdigest()
+                path = Path(_self.config["checkpoint_dir"]) / f"forward-rank{dist.get_rank() if dist.is_initialized() else 0}.jsonl"
+                path.parent.mkdir(parents=True, exist_ok=True)
+                with path.open("a", encoding="utf-8") as handle:
+                    handle.write(
+                        json.dumps(
+                            {
+                                "update_ordinal": int(holder.get("updates") or 0),
+                                "official_step": int(_self.counters["official_step"]),
+                                "accu": int(_self._accu_count),
+                                "sha256": digest,
+                            }
+                        )
+                        + "\n"
+                    )
+
+            unwrap(self.generator).register_forward_hook(_after)
 
     MossFormerGANTask.__init__ = init
     original_update = MossFormerGANTask.train_update
@@ -861,6 +935,8 @@ def _install_trainer_hooks() -> None:
             )
 
     def train_update(self, batches, accumulation):
+        holder["forward_index"] = 0
+        holder["updates"] = int(holder.get("updates") or 0) + 1
         result = original_update(self, batches, accumulation)
         if os.environ.get("P10C_RANK_CHECK") != "1" or not dist.is_initialized():
             return result
@@ -875,7 +951,21 @@ def _install_trainer_hooks() -> None:
                 dist.broadcast(other, src=0)
                 if dist.get_rank() != 0:
                     worst = max(worst, float((parameter.detach() - other).abs().max()))
-        packed = torch.tensor([worst], device=device)
+        optim_worst = 0.0
+        for optim in (self.optim_g, self.optim_d):
+            for slot in optim.state.values():
+                if not isinstance(slot, dict):
+                    continue
+                for value in slot.values():
+                    if not torch.is_tensor(value) or not torch.is_floating_point(value):
+                        continue
+                    # Adam's step counter can live on CPU. NCCL cannot broadcast it there.
+                    moved = value.detach().to(device=device, dtype=torch.float32)
+                    other = moved.clone()
+                    dist.broadcast(other, src=0)
+                    if dist.get_rank() != 0:
+                        optim_worst = max(optim_worst, float((moved - other).abs().max()))
+        packed = torch.tensor([worst, optim_worst], device=device)
         dist.all_reduce(packed, op=dist.ReduceOp.MAX)
         path = Path(self.config["checkpoint_dir"]) / f"rank-delta-{dist.get_rank()}.jsonl"
         with path.open("a", encoding="utf-8") as handle:
@@ -884,7 +974,8 @@ def _install_trainer_hooks() -> None:
                     {
                         "global_counters": dict(self.counters),
                         "accu": self._accu_count,
-                        "rank_delta": float(packed.item()),
+                        "rank_delta": float(packed[0].item()),
+                        "optim_delta": float(packed[1].item()),
                         "update_applied": result["update_applied"],
                         "case_ids": [case for batch in batches for case in batch["case_id"]],
                         "lr": self.learning_rates(),

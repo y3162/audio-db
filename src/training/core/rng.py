@@ -93,6 +93,13 @@ def seed_training_stream(seed: int, *, cuda: bool) -> None:
 
 
 def capture_rng(*, cuda: bool) -> dict:
+    """Process-local snapshot, including every visible CUDA device.
+
+    This is the single-process checkpoint field. A multi-process run must not
+    restore it on every rank: ``get_rng_state_all`` includes devices this
+    process does not train on, and those slots are not the other ranks'
+    generators. Use :func:`capture_rank_rng` for that.
+    """
     state = {
         "python": random.getstate(),
         "numpy": np.random.get_state(),
@@ -114,3 +121,76 @@ def restore_rng(state: dict, *, cuda: bool) -> None:
         if saved is None:
             raise TrainingError("checkpoint has no CUDA generator state")
         torch.cuda.set_rng_state_all([item.cpu() for item in saved])
+
+
+def _numpy_state_copy(state: tuple) -> tuple:
+    """Copy NumPy's MT state. ``get_state`` shares the live key array."""
+    kind, keys, position, has_gauss, cached = state
+    return (kind, np.array(keys, copy=True), int(position), int(has_gauss), float(cached))
+
+
+def capture_rank_rng(*, cuda: bool) -> dict:
+    """RNG for the device this process actually trains on.
+
+    Only the current CUDA device is stored. Other visible devices stay at
+    the seed in this process and are not another rank's generator.
+    """
+    state = {
+        "python": random.getstate(),
+        "numpy": _numpy_state_copy(np.random.get_state()),
+        "torch": torch.random.get_rng_state().clone(),
+    }
+    if cuda:
+        index = int(torch.cuda.current_device())
+        state["cuda_device"] = index
+        state["cuda"] = torch.cuda.get_rng_state(index).clone()
+    return state
+
+
+def restore_rank_rng(state: dict, *, cuda: bool) -> None:
+    """Restore one rank's generators onto this process's current device."""
+    random.setstate(state["python"])
+    np.random.set_state(_numpy_state_copy(state["numpy"]))
+    torch.random.set_rng_state(state["torch"].cpu())
+    if not cuda:
+        return
+    saved = state.get("cuda")
+    if saved is None or "cuda_device" not in state:
+        raise TrainingError("checkpoint rank is missing its CUDA generator")
+    index = int(torch.cuda.current_device())
+    saved_index = int(state["cuda_device"])
+    if saved_index != index:
+        raise TrainingError(
+            f"checkpoint CUDA RNG device {saved_index} does not match current device {index}"
+        )
+    torch.cuda.set_rng_state(saved.detach().cpu(), index)
+
+
+def resume_rng_plan(saved_rng: object, rng_by_rank: object, *, rank: int, world_size: int) -> tuple[str, dict]:
+    """Choose the RNG blob for this rank.
+
+    One process keeps the historical ``rng`` snapshot, which lists every
+    visible CUDA device. Two or more processes require ``rng_by_rank``.
+    Copying rank 0's device list onto the other ranks rewinds their current
+    device to the untouched seed slot.
+    """
+    if isinstance(world_size, bool) or not isinstance(world_size, int) or world_size < 1:
+        raise TrainingError(f"invalid world size {world_size}")
+    if isinstance(rank, bool) or not isinstance(rank, int) or rank < 0 or rank >= world_size:
+        raise TrainingError(f"invalid rank {rank} for world size {world_size}")
+    if world_size == 1:
+        if not isinstance(saved_rng, dict):
+            raise TrainingError("checkpoint has no RNG state")
+        return "legacy", saved_rng
+    if not isinstance(rng_by_rank, list) or len(rng_by_rank) != world_size:
+        raise TrainingError(
+            "multi-process checkpoint has no per-rank RNG; "
+            "refusing to copy one rank's CUDA generator onto the other ranks"
+        )
+    state = rng_by_rank[rank]
+    if not isinstance(state, dict):
+        raise TrainingError(f"rank {rank} RNG state is missing")
+    for key in ("python", "numpy", "torch"):
+        if key not in state:
+            raise TrainingError(f"rank {rank} RNG is missing {key}")
+    return "rank", state

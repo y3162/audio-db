@@ -62,13 +62,14 @@
 | P10P-D-009 | MITIGATED | Generator と Discriminator の DDP は `find_unused_parameters=True`。実音声の 1 更新では Generator 1053、Discriminator 93 のすべてに勾配があり、欠けは 0。他の長さは NOT_TESTED |
 | P10P-E-007 / P10P-E-008 / P10P-E-009 | MITIGATED | 保存失敗で前の checkpoint が残るテストは OK。epoch 途中の未検証は `validation_pending` で表す |
 | P10P-C-002 | BLOCKED | 4 モデルの開始条件ではない。DFN3 オンラインは開始できない |
-| P10P-D-005 | OPEN | PESQ 失敗は micro-batch ごとに全 rank で backward しない。検証の件数が world 未満のときは同じ短い列にし、forward の前に回数を揃える。Fix.2-B は、公式幅・2 GPU・実 VoiceBank batch の同じ系列を合成 3 回と実データ 3 回行い、そのあと 824 件の検証も同じプロセスで終えた。CUDA illegal memory access は出なかった。原因は不明のままなので RESOLVED にしない。片 rank の SyncBatchNorm 例外は、検証用の 20 秒 timeout で相手 rank が 9–11 秒で終了した。本番の `init_process_group` は timeout を渡さず、NCCL 既定は 10 分である |
+| P10P-D-005 | OPEN | PESQ 失敗は micro-batch ごとに全 rank で backward しない。検証の件数が world 未満のときは同じ短い列にし、forward の前に回数を揃える。Fix.2-B と Fix.2-B.1 は、公式幅・2 GPU・実 VoiceBank batch の同じ系列を合成 3 回と実データ 3 回行い、そのあと 824 件の検証も同じプロセスで終えた。CUDA illegal memory access はどちらも出なかった。原因は不明のままなので RESOLVED にしない。片 rank の SyncBatchNorm 例外は、検証用の 20 秒 timeout で相手 rank が 9–11 秒で終了した。本番の `init_process_group` は timeout を渡さず、NCCL 既定は 10 分である |
 
 ## 意図した差
 
 - 1 GPU の蓄積窓は、失敗した micro-batch のあとへ伸ばす。`global_step` は公式の `self.step` には合わせない。
 - 2 GPU の PESQ 失敗は全 rank でその micro-batch を落とす。公式の片 rank だけのスキップは採らない。
 - Discriminator の DDP は、差し戻し R2 のあと `broadcast_buffers=True`。手動の追加 broadcast はしない。
+- 2 GPU 以上の再開は `rng_by_rank` が必要である。rank 0 の全 device リストを他 rank の現在 device へコピーしない。Fix.2-B.1 で直した。
 - TF-GridNet は固定 `mix_seed`。公式 WAV とのビット一致も、統計的同等の実証も、しない。
 - TF-Locoformer の 1,024 件は研究用の選択集合であり、公式再現の修正ではない。
 - MP-SENet と MossFormerGAN の `official_faithful` と `leakage_safe` は別 YAML、別 claim、別 checkpoint ディレクトリである。

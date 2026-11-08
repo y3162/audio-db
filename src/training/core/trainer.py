@@ -35,7 +35,14 @@ from src.training.core.average import average_checkpoint_files, replace_symlink
 from src.training.core.checkpoint import load_checkpoint, prune_run_checkpoints, save_atomic
 from src.training.core.distributed import ProcessInfo, barrier, unwrap
 from src.training.core.metrics_log import append_record, truncate_after, write_json
-from src.training.core.rng import capture_rng, restore_rng, seed_training_stream
+from src.training.core.rng import (
+    capture_rank_rng,
+    capture_rng,
+    restore_rank_rng,
+    restore_rng,
+    resume_rng_plan,
+    seed_training_stream,
+)
 from src.training.data.dataset import RecipeDataset
 from src.training.data.sampler import epoch_indices
 from src.training.errors import TrainingError
@@ -203,7 +210,7 @@ class Trainer:
             payload = load_checkpoint(resume, self.process.device)
             self._check_resume(payload, dataset, resume)
             self.task.load_state_dict(payload["task"])
-            restore_rng(payload["rng"], cuda=self.process.uses_cuda)
+            self._restore_checkpoint_rng(payload)
             self.global_step = int(payload["global_step"])
             if payload.get("logical_steps_per_epoch") != self.steps_per_epoch:
                 raise TrainingError("checkpoint logical epoch settings do not match this run")
@@ -398,12 +405,11 @@ class Trainer:
                     halt = bool(getattr(self.task, "stop_training", False)) or self._batch_schedule_should_stop(validation_summary)
                 timed_stop = not halt and self.global_step < self.max_steps and self._stop_requested()
                 verify_stop = not halt and self._at_verification_limit()
-                save = will_validate or self._should_save(self.global_step) or timed_stop or verify_stop or ((self.steps_per_epoch or self.config.get("batch_schedule")) and epoch_done and self.process.rank == 0)
-                checkpoint_path = str(self.checkpoint_dir / f"step_{self.global_step:08d}.pt") if save else None
+                save_local = will_validate or self._should_save(self.global_step) or timed_stop or verify_stop or ((self.steps_per_epoch or self.config.get("batch_schedule")) and epoch_done and self.process.rank == 0)
+                save = self._broadcast_from_rank0(save_local)
+                checkpoint_path = str(self.checkpoint_dir / f"step_{self.global_step:08d}.pt") if save and self.process.rank == 0 else None
                 if self.process.rank == 0:
                     self._log_train(logical_epoch, metrics, checkpoint_path, validation_summary, group)
-                    if save:
-                        self._save_boundary(dataset, epoch, cursor, usable_batches, None)
                     if (
                         self.global_step == 1
                         or self.global_step % 10 == 0
@@ -411,6 +417,8 @@ class Trainer:
                     ):
                         rendered = " ".join(f"{name}={value:.6f}" for name, value in sorted(metrics.items()))
                         print(f"step {self.global_step} {rendered}", flush=True)
+                if save:
+                    self._save_boundary(dataset, epoch, cursor, usable_batches, None)
                 barrier(self.process)
                 if verify_stop:
                     self.stop_reason = "INTERRUPTED"
@@ -545,12 +553,11 @@ class Trainer:
                 shared_stop = self._shared_stop_requested()
                 timed_stop = not halt and self.global_step < self.max_steps and shared_stop
                 verify_stop = not halt and self._at_verification_limit()
-                save = will_validate or self._should_save(self.global_step) or timed_stop or verify_stop or ((self.steps_per_epoch or self.config.get("batch_schedule")) and epoch_done and self.process.rank == 0)
-                checkpoint_path = str(self.checkpoint_dir / f"step_{self.global_step:08d}.pt") if save else None
+                save_local = will_validate or self._should_save(self.global_step) or timed_stop or verify_stop or ((self.steps_per_epoch or self.config.get("batch_schedule")) and epoch_done and self.process.rank == 0)
+                save = self._broadcast_from_rank0(save_local)
+                checkpoint_path = str(self.checkpoint_dir / f"step_{self.global_step:08d}.pt") if save and self.process.rank == 0 else None
                 if self.process.rank == 0 and applied:
                     self._log_train(logical_epoch, metrics, checkpoint_path, validation_summary, group)
-                    if save:
-                        self._save_boundary(dataset, epoch, cursor, usable_batches, data_state)
                     if (
                         self.global_step == 1
                         or self.global_step % 10 == 0
@@ -558,6 +565,8 @@ class Trainer:
                     ):
                         rendered = " ".join(f"{name}={value:.6f}" for name, value in sorted(metrics.items()))
                         print(f"step {self.global_step} {rendered}", flush=True)
+                if save:
+                    self._save_boundary(dataset, epoch, cursor, usable_batches, data_state)
                 barrier(self.process)
                 if verify_stop:
                     self.stop_reason = "INTERRUPTED"
@@ -658,17 +667,18 @@ class Trainer:
                 complete = halt or self._official_epoch_complete
                 timed_stop = not complete and self.global_step < self.max_steps and self._stop_requested()
                 verify_stop = not complete and self._at_verification_limit()
-                save = (
+                save_local = (
                     epoch_done
                     or self._should_save(self.global_step)
                     or timed_stop
                     or verify_stop
                 )
+                save = self._broadcast_from_rank0(save_local)
                 checkpoint_path = str(self.checkpoint_dir / f"step_{self.global_step:08d}.pt") if save and self.process.rank == 0 else None
                 if self.process.rank == 0:
                     self._log_train(espnet_epoch, metrics, checkpoint_path, validation_summary, group)
-                    if save:
-                        self._save_boundary(dataset, epoch, cursor, usable, state)
+                if save:
+                    self._save_boundary(dataset, epoch, cursor, usable, state)
                 barrier(self.process)
                 if verify_stop:
                     self.stop_reason = "INTERRUPTED"
@@ -909,12 +919,13 @@ class Trainer:
                 complete = halt or self._official_epoch_complete
                 timed_stop = not complete and self.global_step < self.max_steps and self._stop_requested()
                 verify_stop = not complete and self._at_verification_limit()
-                save = epoch_done or self._should_save(self.global_step) or timed_stop or verify_stop
+                save_local = epoch_done or self._should_save(self.global_step) or timed_stop or verify_stop
+                save = self._broadcast_from_rank0(save_local)
                 checkpoint_path = str(self.checkpoint_dir / f"step_{self.global_step:08d}.pt") if save and self.process.rank == 0 else None
                 if self.process.rank == 0:
                     self._log_train(espnet_epoch, metrics, checkpoint_path, validation_summary, group)
-                    if save:
-                        self._save_boundary(dataset, epoch, cursor, usable, state)
+                if save:
+                    self._save_boundary(dataset, epoch, cursor, usable, state)
                 barrier(self.process)
                 if verify_stop:
                     self.stop_reason = "INTERRUPTED"
@@ -1278,11 +1289,20 @@ class Trainer:
         data_state: dict[str, Any] | None = None,
         *,
         validation_pending: dict[str, Any] | None = None,
+        rng_by_rank: list[dict[str, Any]] | None = None,
     ) -> str:
         if cursor >= usable_batches:
             stored_epoch, stored_cursor = epoch + 1, 0
         else:
             stored_epoch, stored_cursor = epoch, cursor
+        if rng_by_rank is None:
+            if self.process.world_size > 1:
+                raise TrainingError("multi-process checkpoint save did not collect per-rank RNG")
+            rng_by_rank = [capture_rank_rng(cuda=self.process.uses_cuda)]
+        if len(rng_by_rank) != self.process.world_size:
+            raise TrainingError(
+                f"per-rank RNG count {len(rng_by_rank)} does not match world size {self.process.world_size}"
+            )
         payload = {
             "format": FORMAT,
             "global_step": self.global_step,
@@ -1290,6 +1310,7 @@ class Trainer:
             "micro_batches_consumed": stored_cursor,
             "task": self.task.state_dict(),
             "rng": capture_rng(cuda=self.process.uses_cuda),
+            "rng_by_rank": list(rng_by_rank),
             "config": self.config,
             "batch_plan": self.plan.as_dict(),
             "dataset": dataset.identity(),
@@ -1363,8 +1384,7 @@ class Trainer:
         summary = self._validate_training_data(dataset, epoch)
         self.task.step_schedulers(self._scheduler_validation(summary))
         halt = bool(getattr(self.task, "stop_training", False)) or self._batch_schedule_should_stop(summary)
-        if self.process.rank == 0:
-            self._save_boundary(dataset, epoch, cursor, usable_batches, data_state)
+        self._save_boundary(dataset, epoch, cursor, usable_batches, data_state)
         barrier(self.process)
         return summary, halt
 
@@ -1638,6 +1658,47 @@ class Trainer:
                 + ", ".join(str(item) for item in counts)
             )
 
+    def _broadcast_from_rank0(self, local: bool) -> bool:
+        """Share rank 0's save decision. Every rank calls this together."""
+        if self.process.world_size < 2 or not self.process.distributed or not dist.is_initialized():
+            return bool(local)
+        flag = torch.tensor([1 if local else 0], dtype=torch.int32, device=self.process.device)
+        dist.broadcast(flag, src=0)
+        return int(flag.item()) == 1
+
+    def _gather_rank_rng(self) -> list[dict[str, Any]]:
+        """Collect each rank's own generators. Every rank calls this together."""
+        local = capture_rank_rng(cuda=self.process.uses_cuda)
+        self._require_rank_rng(local, self.process.rank)
+        if self.process.world_size < 2 or not self.process.distributed or not dist.is_initialized():
+            return [local]
+        gathered: list[Any] = [None] * self.process.world_size
+        dist.all_gather_object(gathered, local)
+        if len(gathered) != self.process.world_size or any(not isinstance(item, dict) for item in gathered):
+            raise TrainingError("per-rank RNG gather was incomplete")
+        for index, item in enumerate(gathered):
+            self._require_rank_rng(item, index)
+        return gathered
+
+    def _require_rank_rng(self, state: dict[str, Any], index: int) -> None:
+        for key in ("python", "numpy", "torch"):
+            if key not in state:
+                raise TrainingError(f"rank {index} RNG is missing {key}")
+        if self.process.uses_cuda and ("cuda" not in state or "cuda_device" not in state):
+            raise TrainingError(f"rank {index} CUDA RNG is missing")
+
+    def _restore_checkpoint_rng(self, payload: dict[str, Any]) -> None:
+        kind, state = resume_rng_plan(
+            payload.get("rng"),
+            payload.get("rng_by_rank"),
+            rank=self.process.rank,
+            world_size=self.process.world_size,
+        )
+        if kind == "legacy":
+            restore_rng(state, cuda=self.process.uses_cuda)
+            return
+        restore_rank_rng(state, cuda=self.process.uses_cuda)
+
     def _save_boundary(
         self,
         dataset,
@@ -1648,10 +1709,11 @@ class Trainer:
         *,
         validation_pending: dict[str, Any] | None = None,
     ) -> None:
+        if self.process.rank == 0 and self._tb is not None:
+            self._tb.flush()
+        rng_by_rank = self._gather_rank_rng()
         if self.process.rank != 0:
             return
-        if self._tb is not None:
-            self._tb.flush()
         self.last_checkpoint = self._save(
             dataset,
             epoch,
@@ -1659,6 +1721,7 @@ class Trainer:
             usable,
             data_state,
             validation_pending=validation_pending,
+            rng_by_rank=rng_by_rank,
         )
 
     def _resume_pending_validation(self, dataset, validation) -> bool:
@@ -1694,14 +1757,13 @@ class Trainer:
                 halt = True
             if context.get("official_complete"):
                 self._official_epoch_complete = True
-        if self.process.rank == 0:
-            self._save_boundary(
-                dataset,
-                self._loaded_epoch,
-                self._loaded_cursor,
-                self._loaded_cursor + 1,
-                self._loaded_data_state,
-            )
+        self._save_boundary(
+            dataset,
+            self._loaded_epoch,
+            self._loaded_cursor,
+            self._loaded_cursor + 1,
+            self._loaded_data_state,
+        )
         barrier(self.process)
         return halt
 
