@@ -1,6 +1,6 @@
 # コンポーネントのライフサイクル
 
-Phase 0 の仕様。実装は未着手。
+Phase 1 は下記の段階のうち、Configure から Run までを CPU / FP32 の `StandardTrainer` で実装している。checkpoint の保存と復元、DDP、AMP は未実装。以下は Phase 0 の仕様である。
 
 ## 段階
 

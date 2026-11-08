@@ -1,0 +1,44 @@
+# Phase 1 supervised linear experiment. CPU, float32, four logical steps.
+schema: audio-db-experiment/v1
+seed: 17
+deterministic: true
+entry: trainer
+runtime:
+  class: src.experiments.runtime.ProcessRuntime
+  kwargs:
+    device: cpu
+    precision: fp32
+output:
+  directory: runs/linear-supervised
+components:
+  model:
+    role: module
+    class: torch.nn.Linear
+    kwargs: {in_features: 8, out_features: 8}
+    prepare: {trainable: true, distribute: none}
+  loss:
+    role: loss
+    class: torch.nn.MSELoss
+  loss_for_log:
+    ref: loss
+  data:
+    role: data
+    class: src.experiments.data.TensorPairData
+    kwargs:
+      features: 8
+      examples: 32
+      batch_size: 4
+  optimizer:
+    role: optimizer
+    class: torch.optim.AdamW
+    parameters_of: model
+    kwargs: {lr: 0.001}
+  trainer:
+    role: trainer
+    class: src.experiments.trainers.StandardTrainer
+    kwargs: {max_logical_steps: 4, accumulation: 1}
+    inject:
+      model: {ref: model}
+      loss: {ref: loss}
+      data: {ref: data}
+      optimizer: {ref: optimizer}

@@ -1,6 +1,6 @@
 # 状態と Checkpoint
 
-Phase 0 の仕様。新形式のファイルはまだ無い。現行形式 `audio-db-training-v1` はこの仕様の対象外であり、新ローダはそれを `CheckpointError` で拒否する。
+Phase 1 は state id の登録と `status.json` までを実装している。新形式の checkpoint ファイルはまだ無く、保存と復元は `CheckpointError` である。現行形式 `audio-db-training-v1` はこの仕様の対象外であり、新ローダはそれを `CheckpointError` で拒否する。以下は Phase 0 の仕様である。
 
 ## 再現性の三層
 
