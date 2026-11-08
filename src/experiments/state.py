@@ -9,7 +9,7 @@ from typing import Any
 
 import torch
 
-from src.experiments.errors import CheckpointError, StateError
+from src.experiments.errors import CheckpointError, RuntimeFailure, StateError
 from src.experiments.runtime import PreparedModel, ProcessRuntime
 
 
@@ -50,7 +50,7 @@ class ComponentState:
 
 
 class RuntimeState:
-    """Process runtime state. Phase 1 has no gradient scaler."""
+    """Process runtime state, including the GradScaler when precision is AMP."""
 
     def __init__(self, runtime: ProcessRuntime) -> None:
         self.state_id = "runtime"
@@ -62,9 +62,27 @@ class RuntimeState:
         return {
             "world_size": self.runtime.world_size,
             "precision": self.runtime.precision,
-            "grad_scaler": None,
+            "device": self.runtime.device.type,
+            "grad_scaler": self.runtime.scaler_state(),
         }
 
     def load_state_dict(self, state: dict[str, Any]) -> None:
-        if state.get("world_size") != self.runtime.world_size or state.get("precision") != self.runtime.precision:
+        # Checkpoints written before CUDA support omit device and mean CPU.
+        saved_device = state.get("device", "cpu")
+        if (
+            state.get("world_size") != self.runtime.world_size
+            or state.get("precision") != self.runtime.precision
+            or saved_device != self.runtime.device.type
+        ):
             raise StateError("runtime state does not match this process")
+        saved_scaler = state.get("grad_scaler")
+        if self.runtime.precision != "amp_fp16":
+            if saved_scaler is not None:
+                raise CheckpointError("fp32 runtime cannot restore a grad scaler")
+            return
+        if not isinstance(saved_scaler, dict):
+            raise CheckpointError("amp runtime requires a grad scaler state")
+        try:
+            self.runtime.load_scaler(saved_scaler)
+        except RuntimeFailure as exc:
+            raise CheckpointError(f"grad scaler state is invalid: {exc}") from exc

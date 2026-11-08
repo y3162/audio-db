@@ -131,6 +131,7 @@ class StandardTrainer:
                     optimizer_updates=dict(self.optimizer_updates),
                     output_dir=checkpoint.directory,
                 )
+            self._before_logical_step(runtime)
             view = self.data.train_epoch(epoch, start_update=index)
             if index >= view.updates:
                 epoch += 1
@@ -157,8 +158,9 @@ class StandardTrainer:
                     runtime.backward(micro)
                 detached = micro.detach()
                 total = detached if total is None else total + detached
+            self._before_optimizer_step(runtime)
             if self.grad_clip is not None:
-                runtime.clip(self.model.parameters, self.grad_clip)
+                runtime.clip(self.model.parameters, self.grad_clip, optimizer=self.optimizer)
             result = runtime.step(self.optimizer)
             runtime.end_step()
             if result.applied:
@@ -215,6 +217,16 @@ class StandardTrainer:
         if isinstance(stop_reason, str):
             self.stop_reason = stop_reason
         self._restored = True
+
+    def _before_logical_step(self, runtime: ProcessRuntime) -> None:
+        """Hook for tests that change the grad scale before the next backward."""
+
+        del runtime
+
+    def _before_optimizer_step(self, runtime: ProcessRuntime) -> None:
+        """Hook for tests that edit gradients before unscale, clip, and step."""
+
+        del runtime
 
     def _before_checkpoint(self, runtime: ProcessRuntime, checkpoint: CheckpointManager) -> None:
         """Hook for tests that change state after a step and before publish."""

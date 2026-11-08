@@ -1,10 +1,10 @@
 """Atomic ``audio-db-experiment-v1`` checkpoints.
 
 Restore happens after ``build_experiment`` has prepared the module and
-constructed the optimizer. CPU ``.to(cpu)`` keeps parameter identity, and
-CPU/Gloo DDP does not replace those parameter objects when it wraps the
-module. ``load_state_dict`` therefore writes into the unwrapped
-``state_module`` in place, which is the same storage the optimizer holds.
+constructed the optimizer. CPU ``.to(cpu)`` and single-device CUDA DDP keep
+parameter identity: the wrapper does not replace those parameter objects.
+``load_state_dict`` therefore writes into the unwrapped ``state_module`` in
+place, which is the same storage the optimizer holds.
 Every rank loads the same file. Rank 0 writes it.
 
 FSDP may replace parameters inside ``prepare_model``. That path is not
@@ -27,6 +27,7 @@ import torch
 
 from src.experiments.config import ExperimentConfig, config_sha256
 from src.experiments.errors import CheckpointError, ExperimentError, StateError
+from src.training.errors import TrainingError
 from src.experiments.registry import StateRegistry
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
@@ -451,8 +452,6 @@ def _apply_resume(payload: dict[str, Any], states: StateRegistry, runtime: Any) 
             blob = blobs[state_id]
             if not isinstance(blob, dict):
                 raise CheckpointError(f"state {state_id} is not a mapping")
-            if kind == "runtime" and blob.get("grad_scaler") is not None:
-                raise CheckpointError("grad scaler restore is not implemented")
             owner.load_state_dict(blob)
     index = int(getattr(runtime, "rank", 0))
     ranks = payload["rng_by_rank"]
@@ -466,7 +465,7 @@ def _apply_resume(payload: dict[str, Any], states: StateRegistry, runtime: Any) 
         raise CheckpointError(f"rng_by_rank[{index}] belongs to rank {saved_rank}")
     try:
         runtime.restore_rng(rank)
-    except (KeyError, RuntimeError, TypeError, ValueError) as exc:
+    except (KeyError, RuntimeError, TypeError, ValueError, TrainingError, ExperimentError) as exc:
         raise CheckpointError(f"failed to restore RNG: {exc}") from exc
 
 
@@ -608,23 +607,39 @@ def _code_identity() -> dict[str, Any]:
 def _assert_replicated_states(states: StateRegistry, runtime: Any) -> None:
     """Refuse a checkpoint when replicated state differs across ranks.
 
-    RNG is not compared. It is gathered separately because each rank keeps
-    its own generators. Comparison uses dtype, shape, and values.
+    RNG is not compared here. It is gathered separately because each rank keeps
+    its own generators. Runtime state is compared, including the GradScaler
+    scale and growth tracker. Comparison uses dtype, shape, and values.
     """
 
     if runtime.world_size == 1:
         return
+    # Rank agreement pickles every replicated tensor. Moving to CPU first keeps
+    # the NCCL object-collective payload off the GPU. This still sends the full
+    # optimizer state to every rank and is not a large-model checkpoint.
     local: dict[str, Any] = {}
     for state_id in states.ids():
         owner = states.owner(state_id)
-        if getattr(owner, "kind", None) == "runtime":
-            continue
-        local[state_id] = owner.state_dict()
+        local[state_id] = _cpu_tree(owner.state_dict())
     gathered = runtime.gather_objects(local)
     for rank, other in enumerate(gathered):
         mismatch = _first_difference(gathered[0], other, "state")
         if mismatch is not None:
             raise CheckpointError(f"ranks disagree at {mismatch} on rank {rank}")
+
+
+def _cpu_tree(value: Any) -> Any:
+    """Copy tensors to CPU so rank comparison does not gather GPU storage."""
+
+    if isinstance(value, torch.Tensor):
+        return value.detach().cpu()
+    if isinstance(value, dict):
+        return {key: _cpu_tree(item) for key, item in value.items()}
+    if isinstance(value, list):
+        return [_cpu_tree(item) for item in value]
+    if isinstance(value, tuple):
+        return tuple(_cpu_tree(item) for item in value)
+    return value
 
 
 def _first_difference(left: object, right: object, path: str) -> str | None:

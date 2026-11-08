@@ -1,12 +1,12 @@
 # Phase 2-B CPU / Gloo DDP
 
-CPU / Gloo、world size 2 の DDP 学習、rank 間の状態一致、単一ファイル checkpoint、別プロセス群からの再開を実装した。CUDA、NCCL、AMP、FSDP、sharded checkpoint はこの結果に含まれない。
+CPU / Gloo、world size 2 の DDP 学習、rank 間の状態一致、単一ファイル checkpoint、別プロセス群からの再開を実装した。この文書の測定に CUDA、NCCL、AMP は含まれない。それらは [PHASE_2C_CUDA_AMP.md](PHASE_2C_CUDA_AMP.md)。FSDP と sharded checkpoint は未実装である。
 
 ## 起動
 
-`ProcessRuntime` は `device: cpu` と `precision: fp32` だけを受ける。world size 1 は process group を作らない。world size 2 以上は `torchrun` が置く `RANK`、`LOCAL_RANK`、`WORLD_SIZE` で Gloo を初期化する。コンストラクタの `world_size` を書いたときは、その値と環境変数が一致しなければならない。欠けている、または食い違うときは `PrepareError` で、単一プロセスには落とさない。`timeout_seconds` は process group の timeout で、既定は 120 秒である。
+この文書の測定は `device: cpu` と `precision: fp32` である。world size 1 は process group を作らない。world size 2 以上は `torchrun` が置く `RANK`、`LOCAL_RANK`、`WORLD_SIZE` で Gloo を初期化する。コンストラクタの `world_size` を書いたときは、その値と環境変数が一致しなければならない。欠けている、または食い違うときは `PrepareError` で、単一プロセスには落とさない。`timeout_seconds` は process group の timeout で、既定は 120 秒である。CUDA と AMP の起動は [PHASE_2C_CUDA_AMP.md](PHASE_2C_CUDA_AMP.md)。
 
-world size 1 の `distribute: ddp` は包まない。world size 2 以上で `trainable: true` かつ `distribute` が `ddp` でない module は `PrepareError` になる。`distribute: fsdp`、CUDA、AMP は拒否する。`sync_batchnorm: true` は CUDA のときだけ `SyncBatchNorm` にする契約のままなので、この CPU runtime は BatchNorm を変換しない。
+world size 1 の `distribute: ddp` は包まない。world size 2 以上で `trainable: true` かつ `distribute` が `ddp` でない module は `PrepareError` になる。`distribute: fsdp` は拒否する。`sync_batchnorm: true` は CUDA のときだけ `SyncBatchNorm` にするので、この CPU runtime は BatchNorm を変換しない。
 
 ## Lifecycle と復元
 
@@ -108,4 +108,4 @@ skip 判断を rank 間でずらした `agree` は、30 秒の subprocess timeou
 
 ## 残るもの
 
-Phase 2-C 以降に残るのは、AMP / GradScaler、CUDA / NCCL、FSDP、sharded checkpoint、GAN の学習処理、SE モデル、公式 Dataset、動的 Expert である。process group の初期化中に rank が死んだ場合は、設定した timeout で終わる。それより強いハング回避は検証していない。
+CUDA / NCCL と AMP FP16 は Phase 2-C で実装した。残るのは FSDP、sharded checkpoint、AMP BF16、GAN の学習処理、SE モデル、公式 Dataset、動的 Expert である。process group の初期化中に rank が死んだ場合は、設定した timeout で終わる。それより強いハング回避は検証していない。

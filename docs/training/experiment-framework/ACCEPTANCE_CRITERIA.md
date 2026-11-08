@@ -1,6 +1,6 @@
 # 受け入れ基準
 
-Phase 1、Phase 2-A の CPU checkpoint、Phase 2-B の CPU / Gloo DDP の試験は `tests/experiments/` にある。AMP と CUDA の受け入れ項目は未実装である。数値は [PHASE_2A_CHECKPOINT.md](PHASE_2A_CHECKPOINT.md) と [PHASE_2B_DDP.md](PHASE_2B_DDP.md)。
+Phase 1、Phase 2-A の CPU checkpoint、Phase 2-B の CPU / Gloo DDP、Phase 2-C の CUDA / NCCL / AMP FP16 の試験は `tests/experiments/` にある。FSDP と AMP BF16 は未実装である。数値は [PHASE_2A_CHECKPOINT.md](PHASE_2A_CHECKPOINT.md)、[PHASE_2B_DDP.md](PHASE_2B_DDP.md)、[PHASE_2C_CUDA_AMP.md](PHASE_2C_CUDA_AMP.md)。
 
 既存テストのパスは、この設計作業では実行していない。回帰行は将来の Phase で実行する条件である。
 
@@ -99,10 +99,10 @@ Phase 1、Phase 2-A の CPU checkpoint、Phase 2-B の CPU / Gloo DDP の試験�
 
 ### AMP
 
-- 方法: CUDA が無い環境ではこの項目を実行しない。見える GPU が 1 枚で、使用メモリが 1024 MiB 未満のときだけ、`precision: amp_fp16` の `Linear` を 2 logical step 進める。overflow を起こすように損失を無限大にした micro-batch を 1 回入れる試験を別にする。
-- 期待: 有限損失の 2 step は `applied` が True で、重みが有限。無限大を入れた step は全 rank（この試験は 1 rank）で `applied` が False。その step では update count が増えない。続く有限 step は `applied` が True に戻る。Scaler の `update` 回数が logical step 数と一致し、Optimizer 数とは一致しなくてよい。
+- 方法: CUDA が無い環境、または見える GPU の使用メモリが 1024 MiB 以上のときは実行しない。`precision: amp_fp16` の `Linear` を CUDA で進める。非有限 loss は overflow skip と別の試験にする。有限 loss のまま scale を上げて勾配を溢れさせる試験と、world size 2 で片方の rank だけ勾配を無限大にする試験を分ける。
+- 期待: 非有限 loss は backward の前に `RuntimeFailure`。有限 loss の overflow は全 rank で `applied` が False になり、その step では update count も step ごとの Scheduler も進まない。logical step は進む。続く有限 step は `applied` が True に戻る。Scaler の `update` は logical step ごとに 1 回で、Optimizer の個数とは一致しなくてよい。`optimizer.step` が `None` を返しても、呼ばれていれば `applied` は True。
 - Phase: 2
-- 記録: GPU が無い、または空きが無いときは `NOT_RUN` と書き、成功に数えない。
+- 記録: 2026-11-08 に [PHASE_2C_CUDA_AMP.md](PHASE_2C_CUDA_AMP.md) の C3 と C4 で測った。GPU が無い、または空きが無いときは `NOT_RUN` と書き、成功に数えない。
 
 ### Checkpoint の原子性
 

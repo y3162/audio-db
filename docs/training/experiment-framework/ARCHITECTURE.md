@@ -1,6 +1,6 @@
 # Experiment Framework アーキテクチャ
 
-Phase 1、CPU / FP32 の checkpoint（Phase 2-A）、CPU / Gloo の DDP（Phase 2-B）は `src/experiments/` に実装済みである。AMP、CUDA、NCCL、FSDP、本格 SE 学習は未実装。Phase 2-A の単一プロセス復元は [PHASE_2A_CHECKPOINT.md](PHASE_2A_CHECKPOINT.md)、Phase 2-B の DDP と world size 2 の再開は [PHASE_2B_DDP.md](PHASE_2B_DDP.md)。以下は Phase 0 の設計仕様であり、`src/training/` と `src/reproduction/` は変更しない。
+Phase 1、CPU / FP32 の checkpoint（Phase 2-A）、CPU / Gloo の DDP（Phase 2-B）、CUDA / NCCL / AMP FP16（Phase 2-C）は `src/experiments/` に実装済みである。FSDP、sharded checkpoint、AMP BF16、本格 SE 学習は未実装。Phase 2-A の単一プロセス復元は [PHASE_2A_CHECKPOINT.md](PHASE_2A_CHECKPOINT.md)、Phase 2-B の DDP と world size 2 の再開は [PHASE_2B_DDP.md](PHASE_2B_DDP.md)、Phase 2-C の CUDA と AMP は [PHASE_2C_CUDA_AMP.md](PHASE_2C_CUDA_AMP.md)。以下は Phase 0 の設計仕様であり、`src/training/` と `src/reproduction/` は変更しない。
 
 この文書の「現行」は、2026-11-08 に `feature/experiment-framework` のソースを読んだ事実である。「設計」は新しい枠組みの提案であり、現行コードにあるものとして扱わない。公式再現の数値的同等性は、この設計書では保証しない。
 
@@ -87,7 +87,7 @@ Sample の識別子は、legacy ではレシピの `case_id`、reproduction で�
 
 `src/training/se/optim.py` の `build_optimizer` は設定の `optimizer.name` が `adamw` か `adam` のときだけ動く。パラメータ集合は呼び出し側が渡す。`clip_gradients` は `clip_grad_norm_`。
 
-AMP（`autocast` / `GradScaler`）は `src/training/` に無い。`.agents/DECISIONS.md` の項目 25 は、AMP を現行の高速化には入れていない、と記録している。
+AMP（`autocast` / `GradScaler`）は `src/training/` に無い。`.agents/DECISIONS.md` の項目 25 は、現行の公式再現の高速化には AMP を入れていない、と記録している。Experiment Framework の AMP FP16 は Phase 2-C で `src/experiments/` に入った。`src/training/` の経路は変えていない。
 
 `src/training` は `src.asr` を import しない。ASR-aware の学習経路は現行コードに無い。`src.asr.transcribe` は `torch.inference_mode()` で、勾配を通す契約ではない。
 

@@ -1,6 +1,6 @@
 # Experiment Framework 公開 API
 
-Phase 1 の公開入口、Phase 2-A の CPU checkpoint、Phase 2-B の CPU / Gloo DDP は `src/experiments/` にある。`Experiment.run(resume=...)` と `--initialize-from` は CPU / FP32 で動作する。world size 2 は `torchrun` の `RANK`、`LOCAL_RANK`、`WORLD_SIZE` と Gloo で動き、設定と起動環境が食い違うときは単一プロセスへ落とさない。AMP、CUDA、FSDP は `PrepareError` になる。`audio-db-training-v1` は `CheckpointError` になる。以下は Phase 0 の契約であり、現行 `src/training` の関数ではない。Phase 2-B の差分は [PHASE_2B_DDP.md](PHASE_2B_DDP.md)。
+Phase 1 の公開入口、Phase 2-A の CPU checkpoint、Phase 2-B の CPU / Gloo DDP、Phase 2-C の CUDA / NCCL / AMP FP16 は `src/experiments/` にある。`Experiment.run(resume=...)` と `--initialize-from` は CPU / FP32、CUDA / FP32、CUDA / AMP FP16 で動作する。world size 2 は `torchrun` の `RANK`、`LOCAL_RANK`、`WORLD_SIZE` で動き、CPU は Gloo、CUDA は NCCL である。設定と起動環境が食い違うときは単一プロセスや CPU へ落とさない。FSDP と `amp_bf16` は `PrepareError` になる。`audio-db-training-v1` は `CheckpointError` になる。以下は Phase 0 の契約であり、現行 `src/training` の関数ではない。実装との差分は [PHASE_2B_DDP.md](PHASE_2B_DDP.md) と [PHASE_2C_CUDA_AMP.md](PHASE_2C_CUDA_AMP.md)。
 
 例外の基底は `src.experiments.errors.ExperimentError`。呼び出し側が回復できる失敗はすべてこの基底に乗せる。`ImportError`、`TypeError`、`ValueError` をそのまま外へ出さない。
 
@@ -155,16 +155,26 @@ class Runtime:
         同期の選択は行わない。loss が非有限なら RuntimeFailure とし、rank ごとに backward の有無を分けない。
         """
 
-    def clip(self, parameters: Iterable[torch.nn.Parameter], max_norm: float) -> float:
-        """unscale のあと clip_grad_norm_ を行う。clip 前の norm を返す。
+    def clip(
+        self,
+        parameters: Iterable[torch.nn.Parameter],
+        max_norm: float,
+        *,
+        optimizer: torch.optim.Optimizer | None = None,
+    ) -> float:
+        """AMP は optimizer を unscale してから clip_grad_norm_ を行う。
 
+        返す値は unscale 後、clip 前の norm である。FP32 は optimizer を無視する。
         同じパラメータ集合に対する二度目の unscale は RuntimeFailure。
         """
 
     def step(self, optimizer: torch.optim.Optimizer) -> StepResult:
-        """scaler.step または optimizer.step を全 rank で同じ適用結果にする。
+        """optimizer.step を全 rank で同じ適用結果にする。
 
-        overflow の found_inf は all-reduce で OR を取り、いずれかの rank が溢れたら全 rank が applied False。
+        GradScaler.step は呼ばない。applied は、optimizer.step を包んだ関数が呼ばれたときだけ True である。
+        SGD と Adam は更新しても None を返す。その None を skip とみなさない。
+        AMP は found_inf を all-reduce の MAX で揃え、いずれかの rank が溢れたら全 rank が applied False。
+        fp32 は agree(True, identical) のあと更新する。
         このメソッドは scaler.update を呼ばない。zero_grad もしない。
         """
 

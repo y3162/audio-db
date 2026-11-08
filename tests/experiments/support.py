@@ -204,7 +204,9 @@ class InspectTrainer:
         }
         if optimizer_ids != set(raw_ids):
             raise RuntimeError("optimizer does not hold the prepared parameters")
-        if getattr(runtime, "backend", None) != "gloo":
+        device = getattr(runtime, "device", None)
+        expected = "nccl" if getattr(device, "type", "cpu") == "cuda" else "gloo"
+        if getattr(runtime, "backend", None) != expected:
             raise RuntimeError(f"backend is {getattr(runtime, 'backend', None)}")
         return self._trainer.run(runtime, checkpoint)  # type: ignore[arg-type]
 
@@ -296,3 +298,129 @@ class DropoutLinear(nn.Module):
     def forward(self, inputs: torch.Tensor) -> torch.Tensor:
         self.marker += 1
         return self.drop(self.linear(inputs))
+
+
+class AutocastLinear(nn.Module):
+    """Linear layer that records whether forward ran inside autocast."""
+
+    def __init__(self, in_features: int, out_features: int) -> None:
+        super().__init__()
+        self.linear = nn.Linear(in_features, out_features)
+        self.register_buffer("autocast_on", torch.zeros(()))
+
+    def forward(self, inputs: torch.Tensor) -> torch.Tensor:
+        if torch.is_autocast_enabled():
+            self.autocast_on.fill_(1)
+        return self.linear(inputs)
+
+
+class ScaleBumpTrainer:
+    """Raises the grad scale once, then optionally restores a finite scale.
+
+    ``bump_step`` is the logical step about to run. ``restore_step`` puts the
+    scale back before a later step so the batches after the skip stay finite.
+    """
+
+    def __init__(
+        self,
+        *args: object,
+        bump_step: int = 1,
+        bump_scale: float = 131072.0,
+        restore_step: int | None = None,
+        restore_scale: float | None = None,
+        **kwargs: object,
+    ) -> None:
+        from src.experiments.trainers import StandardTrainer
+
+        self._trainer = StandardTrainer(*args, **kwargs)  # type: ignore[arg-type]
+        self.bump_step = int(bump_step)
+        self.bump_scale = float(bump_scale)
+        self.restore_step = None if restore_step is None else int(restore_step)
+        self.restore_scale = None if restore_scale is None else float(restore_scale)
+
+    def run(self, runtime: object, checkpoint: object):  # type: ignore[no-untyped-def]
+        trainer = self._trainer
+
+        def before(runtime_arg: object) -> None:
+            if trainer.logical_step == self.bump_step:
+                runtime_arg.set_grad_scale(self.bump_scale)  # type: ignore[attr-defined]
+            if self.restore_step is not None and trainer.logical_step == self.restore_step:
+                runtime_arg.set_grad_scale(self.restore_scale)  # type: ignore[attr-defined]
+
+        trainer._before_logical_step = before  # type: ignore[method-assign]
+        return trainer.run(runtime, checkpoint)  # type: ignore[arg-type]
+
+    def state_dict(self) -> dict[str, object]:
+        return self._trainer.state_dict()
+
+    def load_state_dict(self, state: dict[str, object]) -> None:
+        self._trainer.load_state_dict(state)
+
+    def __getattr__(self, name: str) -> object:
+        return getattr(self._trainer, name)
+
+
+class RankOverflowTrainer:
+    """Makes rank 1's gradient non-finite on one logical step.
+
+    The loss stays finite. The hook runs before unscale, so only that rank's
+    GradScaler sees a local overflow.
+    """
+
+    def __init__(self, *args: object, overflow_step: int = 1, **kwargs: object) -> None:
+        from src.experiments.trainers import StandardTrainer
+
+        self._trainer = StandardTrainer(*args, **kwargs)  # type: ignore[arg-type]
+        self.overflow_step = int(overflow_step)
+
+    def run(self, runtime: object, checkpoint: object):  # type: ignore[no-untyped-def]
+        trainer = self._trainer
+
+        def before(runtime_arg: object) -> None:
+            if trainer.logical_step != self.overflow_step or int(getattr(runtime_arg, "rank", 0)) != 1:
+                return
+            parameter = trainer.model.parameters[0]
+            parameter.grad = torch.full_like(parameter, float("inf"))
+
+        trainer._before_optimizer_step = before  # type: ignore[method-assign]
+        return trainer.run(runtime, checkpoint)  # type: ignore[arg-type]
+
+    def state_dict(self) -> dict[str, object]:
+        return self._trainer.state_dict()
+
+    def load_state_dict(self, state: dict[str, object]) -> None:
+        self._trainer.load_state_dict(state)
+
+    def __getattr__(self, name: str) -> object:
+        return getattr(self._trainer, name)
+
+
+class CudaConsumeTrainer:
+    """Draws a different CUDA random count on each rank before every save."""
+
+    def __init__(self, *args: object, **kwargs: object) -> None:
+        from src.experiments.trainers import StandardTrainer
+
+        self._trainer = StandardTrainer(*args, **kwargs)  # type: ignore[arg-type]
+
+    def run(self, runtime: object, checkpoint: object):  # type: ignore[no-untyped-def]
+        trainer = self._trainer
+        original = trainer._before_checkpoint
+
+        def before(runtime_arg: object, checkpoint_arg: object) -> None:
+            device = getattr(runtime_arg, "device", None)
+            if getattr(device, "type", None) == "cuda":
+                torch.rand(2 + int(getattr(runtime_arg, "rank", 0)), device=device)
+            original(runtime_arg, checkpoint_arg)  # type: ignore[arg-type]
+
+        trainer._before_checkpoint = before  # type: ignore[method-assign]
+        return trainer.run(runtime, checkpoint)  # type: ignore[arg-type]
+
+    def state_dict(self) -> dict[str, object]:
+        return self._trainer.state_dict()
+
+    def load_state_dict(self, state: dict[str, object]) -> None:
+        self._trainer.load_state_dict(state)
+
+    def __getattr__(self, name: str) -> object:
+        return getattr(self._trainer, name)

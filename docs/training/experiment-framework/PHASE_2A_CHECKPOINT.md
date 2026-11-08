@@ -1,6 +1,6 @@
 # Phase 2-A checkpoint
 
-CPU / FP32、world size 1 の保存と再開だけを実装した。DDP、AMP、CUDA、複数 rank は未実装であり、この結果はそれらの成功ではない。
+CPU / FP32、world size 1 の保存と再開だけを、この文書の測定範囲にした。DDP は [PHASE_2B_DDP.md](PHASE_2B_DDP.md)、CUDA と AMP は [PHASE_2C_CUDA_AMP.md](PHASE_2C_CUDA_AMP.md)。この文書の数値はそれらの成功ではない。
 
 ## 復元順
 
@@ -27,6 +27,7 @@ CPU の `.to("cpu")` はパラメータの同一性を保つ。`load_state_dict`
 |---|---|
 | CPU / FP32（Phase 2-A） | Prepare と Optimizer 生成の後、同じ Parameter へ載せる |
 | CPU / Gloo DDP（Phase 2-B） | Prepare で wrap し、Optimizer を作ったあと、unwrapped の `state_module` へ全 rank が同じファイルを載せる。DDP は Parameter を置き換えない。記録は [PHASE_2B_DDP.md](PHASE_2B_DDP.md) |
+| CUDA / FP32 と CUDA / AMP FP16（Phase 2-C） | 単一 GPU の DDP も Parameter を置き換えないので、同じ順で unwrapped の `state_module` へ載せる。記録は [PHASE_2C_CUDA_AMP.md](PHASE_2C_CUDA_AMP.md) |
 | FSDP | prepare がパラメータを置き換えた後、FSDP の state API で載せる。Optimizer はその置換後のパラメータで作る。version 1 の単一ファイルは shard ではないので、FSDP へ resume しない |
 
 ## 形式

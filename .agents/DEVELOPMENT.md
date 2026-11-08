@@ -43,7 +43,8 @@
 .venvs/se/bin/python -m unittest discover -s tests/asr -v         # ASR。重みをダウンロードしない
 .venvs/se/bin/python -m unittest discover -s tests/evaluation -v  # 評価。一時 DB だけを書き、resource.duckdb は変更しない
 .venvs/se/bin/python -m unittest discover -s tests/training -v    # 学習。resource.duckdb は開かない。実モデルの step は見える GPU があれば使う。CUDA_VISIBLE_DEVICES が空なら CPU
-CUDA_VISIBLE_DEVICES="" .venvs/se/bin/python -m unittest discover -s tests/experiments -v  # Experiment Framework Phase 1、Phase 2-A、Phase 2-B（CPU Gloo）。GPU を使わない
+CUDA_VISIBLE_DEVICES="" .venvs/se/bin/python -m unittest discover -s tests/experiments -v  # Experiment Framework の CPU 回帰。Phase 1、Phase 2-A、Phase 2-B。CUDA を隠すと Phase 2-C は module ごと NOT_RUN になり、成功に数えない
+CUDA_VISIBLE_DEVICES=0,1 CUBLAS_WORKSPACE_CONFIG=:4096:8 .venvs/se/bin/python -m unittest tests.experiments.test_cuda_amp -v  # Phase 2-C。AUDIO_DB_CUDA_GPU0 と AUDIO_DB_CUDA_GPU1 で物理 GPU を選ぶ。使用メモリが 1024 MiB 以上の GPU は NOT_RUN
 .venvs/se/bin/python -m src.training.se.cli --config configs/training/reproduction/tf_gridnet_ms_snsd_full.yaml --preflight --world-size 2  # 学習は始めない。PASS は公式再現の成功ではない
 .venvs/official/bin/python -m unittest tests.training.test_chunk_official -v  # ピン留め ESPnet の chunk iterator との照合。PYTHONPATH に espnet の checkout を足す。`.venvs/se` は typeguard が無く、このテストは SKIP になる
 # P5 の実 DDP は tests/training/p5_gpu_job.sh。node_h=1 は 2 GPU、node_f=1 は 4 GPU。承認された h_rt の合計を超えて投入しない

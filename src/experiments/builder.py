@@ -54,7 +54,7 @@ class ExperimentBuilder:
         """Build through state registration. Do not run a learning step."""
 
         self._validate(config)
-        set_determinism(config.deterministic, cuda=False)
+        set_determinism(config.deterministic, cuda=runtime.device.type == "cuda")
         _seed(config.seed)
         registry = ComponentRegistry()
         for component_id, spec in config.components.items():

@@ -1,6 +1,6 @@
 # 状態と Checkpoint
 
-Phase 2-A は `audio-db-experiment-v1` を CPU / FP32、world size 1 で保存し、復元する。Phase 2-B は同じ形式のまま、CPU / Gloo の world size 2 で rank 0 が 1 ファイルを書く。shard は作らない。現行形式 `audio-db-training-v1` は `CheckpointError` で拒否する。CPU と CPU/Gloo の復元は Prepare と Optimizer 生成の後である。理由は [PHASE_2A_CHECKPOINT.md](PHASE_2A_CHECKPOINT.md) と [PHASE_2B_DDP.md](PHASE_2B_DDP.md)。以下は Phase 0 の仕様である。
+Phase 2-A は `audio-db-experiment-v1` を CPU / FP32、world size 1 で保存し、復元する。Phase 2-B は同じ形式のまま、CPU / Gloo の world size 2 で rank 0 が 1 ファイルを書く。Phase 2-C も同じ形式のまま、CUDA / FP32 と CUDA / AMP FP16 を world size 1 と NCCL の world size 2 で保存し、復元する。必須キーは足していない。shard は作らない。現行形式 `audio-db-training-v1` は `CheckpointError` で拒否する。CPU、CPU/Gloo、単一 GPU の CUDA DDP の復元は Prepare と Optimizer 生成の後である。理由は [PHASE_2A_CHECKPOINT.md](PHASE_2A_CHECKPOINT.md)、[PHASE_2B_DDP.md](PHASE_2B_DDP.md)、[PHASE_2C_CUDA_AMP.md](PHASE_2C_CUDA_AMP.md)。以下は Phase 0 の仕様である。
 
 ## 再現性の三層
 
@@ -147,7 +147,7 @@ RNG の 1 rank 分は、現行 `capture_rank_rng` と同じく Python、NumPy、
 
 ## 分散 Checkpoint
 
-Phase 2 は shard しない。全 rank のパラメータが一致している前提で、rank 0 の `state_dict` だけを module と optimizer に書く。Phase 2-B は保存前に、module の parameter と buffer、optimizer、scheduler、trainer、data の dtype、shape、値を all-gather して比べる。Python の `id()` は使わない。RNG は比べない。不一致なら `CheckpointError` で、完成ファイルは置き換えない。公式 DDP の重み割れをコピーした状態は、この検査で拒否する。それが目的である。
+Phase 2 は shard しない。全 rank のパラメータが一致している前提で、rank 0 の `state_dict` だけを module と optimizer に書く。Phase 2-B は保存前に、module の parameter と buffer、optimizer、scheduler、trainer、data の dtype、shape、値を all-gather して比べる。Phase 2-C は runtime の GradScaler も含める。比較前にテンソルを CPU へ写し、NCCL の object collective に GPU storage を載せない。この比較は Optimizer state 全体を全 rank へ pickle するので、本格 SE の保存方式にはしない。Python の `id()` は使わない。RNG はこの比較に入れず、rank ごとに集める。不一致なら `CheckpointError` で、完成ファイルは置き換えない。公式 DDP の重み割れをコピーした状態は、この検査で拒否する。それが目的である。
 
 RNG だけは rank ごとに違う。`rng_by_rank` の長さは world size と一致する。
 

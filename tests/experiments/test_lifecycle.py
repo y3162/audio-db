@@ -263,11 +263,22 @@ class LifecycleTests(unittest.TestCase):
         with self.assertRaises(StateError):
             experiment.build()
 
-    def test_runtime_refuses_cuda_amp_and_fsdp(self) -> None:
-        with self.assertRaises(PrepareError):
-            ProcessRuntime(device="cuda", precision="fp32")
-        with self.assertRaises(PrepareError):
+    def test_runtime_refuses_cpu_amp_unavailable_cuda_and_fsdp(self) -> None:
+        with self.assertRaises(PrepareError) as caught_cpu_amp:
             ProcessRuntime(device="cpu", precision="amp_fp16")
+        self.assertIn("refusing to fall back", str(caught_cpu_amp.exception))
+        with self.assertRaises(PrepareError):
+            ProcessRuntime(device="cuda", precision="amp_bf16")
+        if not torch.cuda.is_available():
+            with self.assertRaises(PrepareError) as caught_cuda:
+                ProcessRuntime(device="cuda", precision="fp32")
+            self.assertIn("refusing to fall back", str(caught_cuda.exception))
+        else:
+            runtime = ProcessRuntime(device="cuda", precision="fp32")
+            self.assertEqual(runtime.device.type, "cuda")
+            self.assertEqual(runtime.backend, "none")
+            self.assertIsNone(runtime.scaler_state())
+            runtime.shutdown()
         directory = self.enterContext(self._directory())
         distributed = write_config(
             directory,
