@@ -24,7 +24,7 @@
 - TSUBAME では長時間学習に `qsub`、短時間の開発・デバッグに `qrsh` を使う。資源と優先度の指定は `docs/envs/TSUBAME.md` を参照する。
 - DeepFilterNet3 の spectral loss は通常、公式と同じ反射パディングを使う。厳密な決定的 CUDA では backward の制約のため別のパディングを使い、勾配の加算順が変わり得る。比較結果は `docs/training/VERIFICATION.md`。
 - MP-SENet の学習 STFT は CPU と非決定的 CUDA では公式と同じ native centered reflection を使う。厳密な決定的 CUDA では reflection backward が使えないため明示的な反射に切り替え、値は一致しても勾配の加算順は変わり得る。公式 native 経路の検証と区別する。
-- DeepFilterNet3 の解析 FFT・ERB の `log10`・unit norm は、`libdf_rfft.so` があるとき `realfft` 3.3.0（libdf 0.5.6 と同じ版）で計算する。無いときは `torch.fft.rfft` / `torch.log10` / `torch.sqrt` に戻り、libdf とのビット一致は成り立たない。`DF_RFFT_REQUIRED=1` のときは欠落を `FileNotFoundError` にする。ABI が違う共有ライブラリは `RuntimeError` にする。構築はリポジトリルートの `make df-rfft`（`Cargo.lock`、`realfft =3.3.0`）。`Cargo.toml` の `rust-version` は 1.70（`OnceLock`）。出力先は `DF_RFFT_TARGET`、読込先の上書きは `DF_RFFT_LIBRARY`。どちらもホストの固定パスを既定にしない。実行時に libdf は import しない。`realfft` 3.3.0 は MIT、`rustfft` 6.4.1 は MIT OR Apache-2.0 で、共有ライブラリへ静的に入る。libdf 自体は再配布しない。
+- DeepFilterNet3 の解析 FFT・ERB の `log10`・unit norm は、`libdf_rfft.so` があるとき `realfft` 3.3.0（libdf 0.5.6 と同じ版）で計算する。無いときは `torch.fft.rfft` / `torch.log10` / `torch.sqrt` に戻り、libdf とのビット一致は成り立たない。`DF_RFFT_REQUIRED=1` のときは欠落を `FileNotFoundError` にする。ABI が違う共有ライブラリは `RuntimeError` にする。構築はリポジトリルートの `make df-rfft`（`Cargo.lock`、`realfft =3.3.0`）。`Cargo.toml` の `rust-version` は 1.70（`OnceLock`）。出力先は `DF_RFFT_TARGET`、読込先の上書きは `DF_RFFT_LIBRARY`。どちらもホストの固定パスを既定にしない。実行時に libdf は import しない。`pytest` は、追跡している `libdf_rfft.so` がこのホストで読めず `DF_RFFT_LIBRARY` が空のときだけ、`build/df-rfft/release/libdf_rfft.so` をその変数へ入れる。追跡ファイルは置き換えない。ビルドが無いときは変数を足さず、試験は失敗する。`realfft` 3.3.0 は MIT、`rustfft` 6.4.1 は MIT OR Apache-2.0 で、共有ライブラリへ静的に入る。libdf 自体は再配布しない。
 
 ## サーバーと GPU
 
@@ -46,8 +46,8 @@
 .venvs/se/bin/python -m src.training.se.cli --config configs/training/reproduction/tf_gridnet_ms_snsd_full.yaml --preflight --world-size 2  # 学習は始めない。PASS は公式再現の成功ではない
 .venvs/official/bin/python -m unittest tests.training.test_chunk_official -v  # ピン留め ESPnet の chunk iterator との照合。PYTHONPATH に espnet の checkout を足す。`.venvs/se` は typeguard が無く、このテストは SKIP になる
 # P5 の実 DDP は tests/training/p5_gpu_job.sh。node_h=1 は 2 GPU、node_f=1 は 4 GPU。承認された h_rt の合計を超えて投入しない
-.venvs/se/bin/python -m unittest discover -s tests/reproduction -v  # 再現 DB と固定ペア Pipeline。P1・P2 の単体テストは合成データ。P3 の実スナップショット試験と P4 の来歴スモークは data/db/snapshots を読む。resource.duckdb は読み取り専用。P4 の判定テストは tests/evaluation/test_provenance.py。P8 は tests/reproduction/test_p8_dfn3.py で、data/db/reproduction-p8.duckdb と代替素材のスナップショットを読む。分布試験は 4,000 混合で数分かかる。公式 libdf の波形照合はしない
-make reproduction-prepare STEP=all WORKERS=8  # VoiceBank オンデマンド固定ペアの登録とスナップショット。48 kHz を読み、16 kHz WAV は書かない。resource.duckdb は読み取り専用
+.venvs/se/bin/python -m unittest discover -s tests/reproduction -v  # 再現 DB と固定ペア Pipeline。P1・P2 の単体テストは合成データ。P3 の実スナップショット試験と P4 の来歴スモークは data/db/snapshots を読む。resource.duckdb は読み取り専用。P4 の判定テストは tests/evaluation/test_provenance.py。P8 は tests/reproduction/test_p8_dfn3.py で、data/db/reproduction-p8.duckdb と代替素材のスナップショットを読む。欠けるときは `make reproduction-register-p8` が同じ準備関数でその DB とスナップショットだけを作る。`reproduction.duckdb` と `resource.duckdb` は開かない。分布試験は 4,000 混合で数分かかる。公式 libdf の波形照合はしない
+make reproduction-prepare STEP=all WORKERS=8  # VoiceBank オンデマンド固定ペアの登録とスナップショット。48 kHz を読み、16 kHz WAV は書かない。resource.duckdb は読み取り専用。現行ファイルに eval があるため、safe の leak_check は eval.cases とのハッシュ重複で FAIL し、このコマンドは登録前に止まる。試験が読む safe スナップショットは、resource DB を開かずに作ったもので、leak_check は UNKNOWN である。PASS ではない
 make reproduction-plan-build   # MS-SNSD の計画だけ。既定は configs/data/builds/ms_snsd_tfgridnet_ondemand.yaml。音声は作らない。source_scan: full が無い上限なし設定は拒否する
 make reproduction-register     # オンデマンドの条件を reproduction.duckdb に足してスナップショットを書く。混合 WAV は作らない
 make reproduction-plan-dns     # DNS の計画だけ。既定は configs/data/builds/dns_tflocoformer_ondemand.yaml。音声は作らない

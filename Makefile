@@ -4,7 +4,8 @@
 	reproduction-rebuild-db reproduction-verify reproduction-prepare \
 	reproduction-plan-build reproduction-register \
 	reproduction-plan-dns reproduction-register-dns \
-	reproduction-benchmark-dns-accept reproduction-plan-dns-accept reproduction-register-dns-accept
+	reproduction-benchmark-dns-accept reproduction-plan-dns-accept reproduction-register-dns-accept \
+	reproduction-register-p8
 
 ROOT := $(abspath $(dir $(lastword $(MAKEFILE_LIST))))
 WITH_ENV := $(ROOT)/scripts/setup/with_env.sh
@@ -53,7 +54,8 @@ help:
 	  '  make reproduction-snapshot DATASET=name@version [ALLOW_UNKNOWN_LEAK_CHECK=1]' \
 	  '  make reproduction-rebuild-db OUT=path/to/new.duckdb' \
 	  '  make reproduction-prepare [STEP=all] [WORKERS=8]' \
-	  '  make reproduction-plan-dns-accept | reproduction-register-dns-accept | reproduction-benchmark-dns-accept'
+	  '  make reproduction-plan-dns-accept | reproduction-register-dns-accept | reproduction-benchmark-dns-accept' \
+	  '  make reproduction-register-p8'
 
 setup:
 	$(WITH_ENV) $(ROOT)/scripts/setup/setup.sh $(PLATFORM)
@@ -152,3 +154,6 @@ reproduction-plan-dns-accept:
 
 reproduction-register-dns-accept:
 	$(WITH_ENV) $(PYTHON) -m src.reproduction.cli dns --config "$(DNS_ACCEPT_CONFIG)" --step register
+
+reproduction-register-p8:
+	$(WITH_ENV) $(PYTHON) -c 'from src.reproduction.prepare.dfn3_online import register_p8; print(register_p8())'

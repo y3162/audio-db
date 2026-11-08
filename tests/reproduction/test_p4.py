@@ -35,11 +35,14 @@ from tests.training.support import cpu_process, paired_dataset, tiny_config
 SHA_A = "a" * 64
 SHA_B = "b" * 64
 SHA_C = "c" * 64
+# The historical 16 kHz names are not on this snapshot root. The on-demand
+# datasets are the current fixed-pair entry and keep the same profile, claim,
+# and selection_uses_test split.
 DATASETS = (
-    "mp_senet.vb28.official@1",
-    "mp_senet.vb28.safe@1",
-    "mossformergan.vb28.official@1",
-    "mossformergan.vb28.safe@1",
+    "mp_senet.vb28.ondemand.official@1",
+    "mp_senet.vb28.ondemand.safe@1",
+    "mossformergan.vb28.ondemand.official@1",
+    "mossformergan.vb28.ondemand.safe@1",
 )
 
 
@@ -288,15 +291,7 @@ class RealSnapshotSmokeTests(unittest.TestCase):
     def test_four_datasets_round_trip_provenance(self) -> None:
         resource = DEFAULT_RESOURCE_DB
         reproduction = ROOT / "data" / "db" / "reproduction.duckdb"
-        before = (_stat(resource), _stat(reproduction))
-        import duckdb
-
-        connection = duckdb.connect(str(resource), read_only=True)
-        try:
-            schemas = {row[0] for row in connection.execute("SELECT schema_name FROM information_schema.schemata").fetchall()}
-        finally:
-            connection.close()
-        self.assertNotIn("eval", schemas)
+        before = (_stat(resource), _stat(reproduction), _schema_catalog(resource))
         process = cpu_process()
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
@@ -340,8 +335,9 @@ class RealSnapshotSmokeTests(unittest.TestCase):
                 )
         self.assertEqual(_stat(resource), before[0])
         self.assertEqual(_stat(reproduction), before[1])
+        self.assertEqual(_schema_catalog(resource), before[2])
         by_name = {item["dataset"]: item for item in reports}
-        for name in ("mp_senet.vb28.official@1", "mossformergan.vb28.official@1"):
+        for name in ("mp_senet.vb28.ondemand.official@1", "mossformergan.vb28.ondemand.official@1"):
             self.assertIs(by_name[name]["selection_uses_test"], True)
             self.assertEqual(by_name[name]["profile"], "official_faithful")
             self.assertEqual(by_name[name]["claim_label"], "official_reproduction")
@@ -349,8 +345,11 @@ class RealSnapshotSmokeTests(unittest.TestCase):
             self.assertEqual(by_name[name]["independent"], UNKNOWN)
             self.assertEqual(by_name[name]["comparison"], "NOT_TESTED")
             self.assertEqual(by_name[name]["lineage_counts"]["unknown"], 0)
-            self.assertGreater(by_name[name]["lineage_counts"]["derived"], 0)
-        for name in ("mp_senet.vb28.safe@1", "mossformergan.vb28.safe@1"):
+            # On-demand pairs point at 48 kHz corpus files. The 16 kHz step is
+            # applied while training, so the snapshot lineage is source.
+            self.assertGreater(by_name[name]["lineage_counts"]["source"], 0)
+            self.assertEqual(by_name[name]["lineage_counts"]["derived"], 0)
+        for name in ("mp_senet.vb28.ondemand.safe@1", "mossformergan.vb28.ondemand.safe@1"):
             self.assertIs(by_name[name]["selection_uses_test"], False)
             self.assertEqual(by_name[name]["profile"], "leakage_safe")
             self.assertEqual(by_name[name]["claim_label"], "leakage_safe_comparison")
@@ -358,6 +357,8 @@ class RealSnapshotSmokeTests(unittest.TestCase):
             self.assertEqual(by_name[name]["independent"], UNKNOWN)
             self.assertEqual(by_name[name]["comparison"], "NOT_TESTED")
             self.assertEqual(by_name[name]["lineage_counts"]["unknown"], 0)
+            self.assertGreater(by_name[name]["lineage_counts"]["source"], 0)
+            self.assertEqual(by_name[name]["lineage_counts"]["derived"], 0)
         self.reports = reports
 
 
@@ -516,6 +517,23 @@ def _evaluate(root: Path, checkpoint: Path, sha: str, set_name: str) -> dict:
 def _stat(path: Path) -> tuple[int, int]:
     info = path.stat()
     return info.st_size, info.st_mtime_ns
+
+
+def _schema_catalog(path: Path) -> tuple[tuple[str, str], ...]:
+    import duckdb
+
+    connection = duckdb.connect(str(path), read_only=True)
+    try:
+        rows = connection.execute(
+            """
+            SELECT table_schema, table_name
+            FROM information_schema.tables
+            ORDER BY table_schema, table_name
+            """
+        ).fetchall()
+    finally:
+        connection.close()
+    return tuple((str(schema), str(name)) for schema, name in rows)
 
 
 def canonical_bytes_equal(raw: bytes, loaded: dict) -> bool:
