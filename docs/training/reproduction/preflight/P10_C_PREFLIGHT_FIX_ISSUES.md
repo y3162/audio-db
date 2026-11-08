@@ -11,17 +11,17 @@
 | P10P-A-002 | RESOLVED | 検証とプレビューは全長を Generator に入れる。長さ 1650 と切り詰め 1600 の magnitude 差は 1.5627。同じ重みの公式経路との差は 0。更新経路の長さ拒否は残る |
 | P10P-A-006 | RESOLVED | 残す重みは G1 と D4。担当テストは公式 state_dict との最大絶対差 0。`7729.488281` は正解にしていない |
 | P10P-A-007 / P10P-D-004 | MITIGATED | 1 GPU は失敗 micro-batch を backward せず、後続の成功で蓄積窓を埋める。`official_step` は失敗を含めて増え、`global_step` は Optimizer 更新だけ数える。データ epoch の末では更新回数がずれても検証し、plateau に損失を渡す。2 GPU は片 rank の失敗で全 rank がその micro-batch を backward しない。公式の片 rank スキップとは違うので RESOLVED ではない |
-| P10P-A-008 / P10P-D-002 | MITIGATED | 824 件は world 2 で 412 と 412。公式 DistributedSampler の epoch 0 と一致した。CUDA の world 2 以上だけ SyncBatchNorm。`find_unused_parameters=True`。Discriminator の `broadcast_buffers` は True。Fix.2-A で、公式の 3 forward と 2 backward は Discriminator の rank を割る。audio-db は増分を平均するので公式 2 GPU の重みとは一致しない。2 GPU の本格開始は NO-GO |
+| P10P-A-008 / P10P-D-002 | MITIGATED | 824 件は world 2 で 412 と 412。公式 DistributedSampler の epoch 0 と一致した。CUDA の world 2 以上だけ SyncBatchNorm。`find_unused_parameters=True`。Discriminator の `broadcast_buffers` は True。Fix.2-A で、公式の 3 forward と 2 backward は Discriminator の rank を割る。audio-db は増分を平均するので公式 2 GPU の重みとは一致しない。2026-11-07 の文は「2 GPU の本格開始は NO-GO」だった。Fix.2-D はこの意図した差を残したまま自己検証を暫定 GO にした。公式重みとの数値一致にはしない |
 | P10P-B-005 / P10P-F-001 | RESOLVED | 本格 YAML を新設した。p10b は上書きしていない。スモーク cap は本格 YAML に無い |
 | P10P-F-002 | RESOLVED | 本格 YAML の `checkpoint_interval` は 0。p10b の 2 はスモークのまま |
 | P10P-F-003 | RESOLVED | `required_world_size` が実プロセス数と違うときは `build_task` の前に拒否する |
-| P10P-F-007 | MITIGATED | 2026-11-08 に研究用 1,024 件を登録し、snapshot `e4495fa6ac0048c6346cc65bc66fd71114fd1523f95230537e799610c8092024` を発行した。DB は親 snapshot からの再構成で、元ファイルとの同一性は未検証。親 36,000 件は変えていない。本格 YAML の Preflight は PASS。150 epoch は始めていない。PASS は公式再現の成功ではない |
+| P10P-F-007 | MITIGATED | 2026-11-08 に研究用 1,024 件を登録し、snapshot `e4495fa6ac0048c6346cc65bc66fd71114fd1523f95230537e799610c8092024` を発行した。DB は親 snapshot からの再構成で、元ファイルとの同一性は未検証。親 36,000 件は変えていない。本格 YAML の Preflight は PASS。Fix.2-D で 1,024 件の validation を 1 回完走した。150 epoch は始めていない。PASS は公式再現の成功ではない |
 
 ## 開始を止めていなかったもの
 
 | ID | 状態 | 修正後 |
 |---|---|---|
-| P10P-A-003 / P10P-G-001 | RESOLVED | 公式損失は -1 を平均に残す。研究用集約は別名のまま欠損を外す。実 824 波形の失敗件数は NOT_TESTED。807 は失敗件数ではない |
+| P10P-A-003 / P10P-G-001 | RESOLVED | 公式損失は -1 を平均に残す。研究用集約は別名のまま欠損を外す。807 は失敗件数ではない。Fix.2-D の未学習 MP-SENet では 824 件の PESQ 集計が `ok`、count 824 だった。失敗件数の一般則を、この 1 回で証明したわけではない |
 | P10P-A-011 / P10P-G-004 | OPEN | 検証 crop の乱数源は変えていない |
 | P10P-B-003 | OPEN | `cv_synthetic_small` は UNKNOWN のまま。1,024 件はその名前ではない |
 | P10P-B-006 | OPEN | 標準偏差の扱いは変えていない |
@@ -73,3 +73,13 @@
 - TF-GridNet は固定 `mix_seed`。公式 WAV とのビット一致も、統計的同等の実証も、しない。
 - TF-Locoformer の 1,024 件は研究用の選択集合であり、公式再現の修正ではない。
 - MP-SENet と MossFormerGAN の `official_faithful` と `leakage_safe` は別 YAML、別 claim、別 checkpoint ディレクトリである。
+
+## Fix.2-D（2026-11-08）
+
+自己検証の正本は [P10_C_FIX2D_FINAL_GO](P10_C_FIX2D_FINAL_GO.md)。上の表の 2026-11-07 の文は消していない。
+
+- 4 モデルの本格 YAML Preflight は PASS。スモーク cap は本格 YAML に無い。
+- 研究用 1,024 件の validation は実行済みである。計画上の PASS とは別である。
+- `ave_5best` の数値一致は、150 epoch ではなく Trainer の正式な平均経路と実 TF-Locoformer state dict の fixture で確認した。GPU の 1 epoch smoke は有限な `valid.loss` が 1 件なので `ave_1best` だけを作る。
+- Leakage-safe の VoiceBank Dataset は、今回の DB にも snapshot 一覧にも無い。統合 GO の対象には入れていない。
+- DeepFilterNet3 の `libdf_rfft.so` がこのホストの glibc で読めない失敗は、4 モデルの開始条件にしない。

@@ -49,7 +49,9 @@ class ResumeTest(unittest.TestCase):
             events = EventAccumulator(str(root / 'True' / 'tensorboard')).Reload()
             errors = [tag for tag in events.Tags()['tensors'] if tag.startswith('preview_errors/')]
             self.assertEqual(len(errors), 1)
-            self.assertIn(b"spec", events.Tensors(errors[0])[0].tensor_proto.string_val[0])
+            message = events.Tensors(errors[0])[0].tensor_proto.string_val[0]
+            # The mock is named mp_senet, so preview calls task._generate and records that failure.
+            self.assertIn(b"_generate", message)
 
     def test_continue_rewind_and_rebuild(self):
         from tensorboard.backend.event_processing.event_accumulator import EventAccumulator

@@ -9,17 +9,38 @@ from __future__ import annotations
 
 import json
 import os
+import sys
 import tempfile
 import traceback
 import unittest
 from pathlib import Path
+
+def _prefer_repo_tests() -> None:
+    repo = Path(__file__).resolve().parents[2]
+    kept = []
+    for entry in list(sys.path):
+        base = Path(entry) if entry else Path.cwd()
+        foreign = base / "tests" / "__init__.py"
+        try:
+            drop = foreign.is_file() and base.resolve() != repo
+        except OSError:
+            drop = False
+        if not drop:
+            kept.append(entry)
+    sys.path[:] = kept
+    root = str(repo)
+    if root not in sys.path:
+        sys.path.insert(0, root)
+
+
+_prefer_repo_tests()
 
 import torch
 import torch.distributed as dist
 import torch.multiprocessing as mp
 from torch.nn.parallel import DistributedDataParallel as DDP
 
-from tests.training.support import free_tcp_port
+from tests.training.support import free_tcp_port, pin_repo_root_for_spawn
 
 
 class Gen(torch.nn.Module):
@@ -233,6 +254,7 @@ class MossFormerUpdateRuleTests(unittest.TestCase):
 
     def _run(self) -> dict:
         os.environ["CUDA_VISIBLE_DEVICES"] = ""
+        pin_repo_root_for_spawn()
         with tempfile.TemporaryDirectory() as directory:
             port = free_tcp_port()
             context = mp.get_context("spawn")

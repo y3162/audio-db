@@ -2,6 +2,27 @@
 
 本格学習はこの計画では開始しない。GPU 台数は公式プロトコルの要求である。どのマシンのどの GPU を使うかは、実行時の別指示に従う。
 
+## 現在の状態（2026-11-08 Fix.2-D）
+
+実装担当の自己検証は暫定 **GO** である。本格 400 / 121 / 35 / 150 epoch は始めていない。第三者検証も始めていない。判定と実行証拠は [P10_C_FIX2D_FINAL_GO](preflight/P10_C_FIX2D_FINAL_GO.md)。
+
+この節より下の表は、それ以前の計測と判定の履歴である。次の古い文は、この履歴の中の当時の判断であり、現在の開始判断ではない。
+
+- MossFormerGAN の「公式 2 GPU の本格開始は NO-GO」
+- TF-Locoformer の「未登録」「案 A が現行」
+- 研究用 1,024 件を毎 epoch 見る時間の、未実測の外挿だけを根拠にした記述
+
+Fix.2-D で取り直した validation の壁時計は次のとおりである。重みは未学習、または Optimizer 更新 1 回のあとであり、収束後の性能ではない。
+
+| モデル | 今回の validation | 壁時計 | 以前の記録 |
+|---|---|---:|---|
+| MP-SENet | 824 件、rank 0 | 192.8 秒 | 778.3 秒 |
+| MossFormerGAN | 824 件、rank あたり 412 | 103.2 秒 | 237.94 秒 |
+| TF-GridNet | 整列後 2,887 更新、重み 11,548 | 355.5 秒 | 約 592 秒 |
+| TF-Locoformer | 研究用 1,024 件、rank あたり 3,584 chunk | 628.9 秒 | 0.1602 秒/chunk からの外挿 574 秒 |
+
+学習側の 1 step 時間と、400 / 121 / 35 / 150 epoch の時間見積は、この validation の再計測では更新していない。
+
 2026-11-07 の preflight 修正で、検証方式は次に固定した。TF-Locoformer の checkpoint 選択は、親 validation 36,000 件から seed `20261107` で選んだ 1,024 件（`research_valid_fixed_v1`）を使う研究用 Protocol である。`cv_synthetic_small` ではなく、`leakage_safe` でもない。2026-11-08 に研究用 Dataset を登録した。dataset id は `e4a53415122aba24055f4ba7eef6367a7e41d062485d74de3d7ce94c07d7bdd0`、snapshot は `e4495fa6ac0048c6346cc65bc66fd71114fd1523f95230537e799610c8092024`。DB は親 snapshot からの再構成で、元ファイルとの同一性は未検証である。本格 YAML は `configs/training/reproduction/tf_locoformer_dns_research_valid_full.yaml` で、Preflight は PASS である。この PASS は公式再現の成功ではない。親 Dataset は変えていない。36,000 件を毎 epoch 見る案 A では 150 epoch を始めない。150 epoch 自体も始めていない。
 
 TF-GridNet の本格 YAML は `configs/training/reproduction/tf_gridnet_ms_snsd_full.yaml` である。生成は公式アルゴリズムに固定 `mix_seed` を足したもので、公式 WAV とのビット一致や統計的同等の実証ではない。Preflight の PASS は実行条件の確認であり、公式再現の成功ではない。
@@ -41,7 +62,7 @@ TF-GridNet の本格 YAML は `configs/training/reproduction/tf_gridnet_ms_snsd_
 | 上限の合計 | 学習 105.9 時間に 1.3 で 137.6 時間。検証 8.00 時間に 1.5 で 12.0 時間。確保の目安は約 150 時間 |
 | 中断 | 公式完了の前に止めるときは `interrupted.json`。12 更新の計測も `INTERRUPTED` で、`complete.json` は無かった |
 | 公式との差 | plateau の半減と 10 回停止は CPU の合成履歴で確認し、今回の GPU 検証は 1 回なので半減していない。初期化が公式リポジトリの乱数とビット一致するとは見ていない |
-| 開始条件 | Fix.1 の独立検証後、公式 2 GPU の本格開始は NO-GO。公式 2 GPU 学習との数値一致は未実施で、PESQ 失敗は全 rank スキップ、勾配は増分平均である。1 GPU は CONDITIONAL GO。上限を外して 2 GPU を始める条件は、その NO-GO が解消したあとである |
+| 開始条件 | 2026-11-07 時点の文は「公式 2 GPU の本格開始は NO-GO」だった。公式 2 GPU の重みとは、Discriminator 勾配を増分平均する仕様のため一致しない。Fix.2-D はこの差を残したまま、自己検証を暫定 GO にした。数値一致の解除ではない。PESQ 失敗は全 rank スキップのまま |
 
 10 回連続の非改善で 121 epoch より前に止まる。上の時間は止まらなかった場合の上限である。
 
@@ -64,7 +85,7 @@ TF-GridNet の本格 YAML は `configs/training/reproduction/tf_gridnet_ms_snsd_
 
 ## TF-Locoformer
 
-現行 Dataset の検証は案 A である。案 B と案 C の時間も併記する。YAML は切り替えていない。
+下の表は、研究用 1,024 件を登録する前の履歴である。当時の本文は案 A を現行と書いていた。現在の本格 YAML は研究用 1,024 件であり、案 A の 36,000 件を毎 epoch 見る実行はしない。案 C は実装しない。
 
 | 項目 | 値 |
 |---|---|

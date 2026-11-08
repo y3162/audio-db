@@ -6,18 +6,39 @@ import copy
 import json
 import math
 import os
+import sys
 import tempfile
 import traceback
 import unittest
 from pathlib import Path
 from unittest.mock import patch
 
+def _prefer_repo_tests() -> None:
+    repo = Path(__file__).resolve().parents[2]
+    kept = []
+    for entry in list(sys.path):
+        base = Path(entry) if entry else Path.cwd()
+        foreign = base / "tests" / "__init__.py"
+        try:
+            drop = foreign.is_file() and base.resolve() != repo
+        except OSError:
+            drop = False
+        if not drop:
+            kept.append(entry)
+    sys.path[:] = kept
+    root = str(repo)
+    if root not in sys.path:
+        sys.path.insert(0, root)
+
+
+_prefer_repo_tests()
+
 import torch
 import torch.distributed as dist
 
 from src.training.core.distributed import ProcessInfo
 from src.training.se.mossformergan import MossFormerGANTask
-from tests.training.support import free_tcp_port, paired_dataset
+from tests.training.support import free_tcp_port, paired_dataset, pin_repo_root_for_spawn
 from tests.training.test_mossformer_syncbn_collective import install_cpu_gloo_syncbn
 
 
@@ -367,6 +388,7 @@ class MossFormerPesqSkipTests(unittest.TestCase):
         import multiprocessing as mp
 
         os.environ["CUDA_VISIBLE_DEVICES"] = ""
+        pin_repo_root_for_spawn()
         with tempfile.TemporaryDirectory() as directory:
             port = free_tcp_port()
             ctx = mp.get_context("spawn")

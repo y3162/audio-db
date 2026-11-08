@@ -4,10 +4,31 @@ from __future__ import annotations
 
 import json
 import os
+import sys
 import tempfile
 import traceback
 import unittest
 from pathlib import Path
+
+def _prefer_repo_tests() -> None:
+    repo = Path(__file__).resolve().parents[2]
+    kept = []
+    for entry in list(sys.path):
+        base = Path(entry) if entry else Path.cwd()
+        foreign = base / "tests" / "__init__.py"
+        try:
+            drop = foreign.is_file() and base.resolve() != repo
+        except OSError:
+            drop = False
+        if not drop:
+            kept.append(entry)
+    sys.path[:] = kept
+    root = str(repo)
+    if root not in sys.path:
+        sys.path.insert(0, root)
+
+
+_prefer_repo_tests()
 
 import torch
 import torch.distributed as dist
@@ -16,7 +37,7 @@ import torch.nn as nn
 from src.training.core.distributed import ProcessInfo
 from src.training.se.mossformer_discriminator import Discriminator
 from src.training.se.mossformergan import MossFormerGANTask
-from tests.training.support import cpu_process, free_tcp_port
+from tests.training.support import cpu_process, free_tcp_port, pin_repo_root_for_spawn
 
 
 def _config(root: Path) -> dict:
@@ -208,6 +229,7 @@ class MossFormerSyncBatchNormTests(unittest.TestCase):
         import multiprocessing as mp
 
         os.environ["CUDA_VISIBLE_DEVICES"] = ""
+        pin_repo_root_for_spawn()
         with tempfile.TemporaryDirectory() as directory:
             port = free_tcp_port()
             ctx = mp.get_context("spawn")
@@ -247,6 +269,7 @@ class MossFormerSyncBatchNormTests(unittest.TestCase):
         import multiprocessing as mp
 
         os.environ["CUDA_VISIBLE_DEVICES"] = ""
+        pin_repo_root_for_spawn()
         with tempfile.TemporaryDirectory() as directory:
             port = free_tcp_port()
             ctx = mp.get_context("spawn")

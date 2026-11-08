@@ -3,10 +3,31 @@
 from __future__ import annotations
 
 import os
+import sys
 import tempfile
 import unittest
 from pathlib import Path
 from types import SimpleNamespace
+
+def _prefer_repo_tests() -> None:
+    repo = Path(__file__).resolve().parents[2]
+    kept = []
+    for entry in list(sys.path):
+        base = Path(entry) if entry else Path.cwd()
+        foreign = base / "tests" / "__init__.py"
+        try:
+            drop = foreign.is_file() and base.resolve() != repo
+        except OSError:
+            drop = False
+        if not drop:
+            kept.append(entry)
+    sys.path[:] = kept
+    root = str(repo)
+    if root not in sys.path:
+        sys.path.insert(0, root)
+
+
+_prefer_repo_tests()
 
 import torch
 import torch.distributed as dist
@@ -14,7 +35,7 @@ import torch.multiprocessing as mp
 
 from src.training.core.distributed import ProcessInfo
 from src.training.core.trainer import Trainer, request_training_stop, reset_training_stop
-from tests.training.support import free_tcp_port
+from tests.training.support import free_tcp_port, pin_repo_root_for_spawn
 
 
 def _worker(rank: int, world: int, port: int, result_dir: str, signal_rank0: bool) -> None:
@@ -44,6 +65,7 @@ def _worker(rank: int, world: int, port: int, result_dir: str, signal_rank0: boo
 
 class MossFormerStopAgreementTests(unittest.TestCase):
     def _run(self, signal_rank0: bool) -> list[str]:
+        pin_repo_root_for_spawn()
         port = free_tcp_port()
         with tempfile.TemporaryDirectory() as root:
             ctx = mp.get_context("spawn")

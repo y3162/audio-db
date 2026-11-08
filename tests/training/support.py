@@ -17,6 +17,21 @@ from src.training.core.distributed import ProcessInfo
 from src.training.data.dataset import RecipeDataset, TrainExample
 
 
+def pin_repo_root_for_spawn() -> None:
+    """Put this repository first on ``sys.path`` before ``spawn``.
+
+    Do not delete other entries here. Spawn copies this list into the child,
+    and the child drops foreign ``tests`` packages while it imports. Deleting
+    them in the parent would hide packages later tests still need.
+    """
+    import sys
+
+    root = str(Path(__file__).resolve().parents[2])
+    if root in sys.path:
+        sys.path.remove(root)
+    sys.path.insert(0, root)
+
+
 def isolated_worker_code(worker: Path) -> str:
     """Start a worker with the repo root on ``sys.path``.
 
