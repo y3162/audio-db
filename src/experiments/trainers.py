@@ -9,6 +9,7 @@ phases.
 from __future__ import annotations
 
 import json
+import os
 from pathlib import Path
 from typing import Any
 
@@ -16,7 +17,7 @@ import torch
 
 from src.experiments.checkpoint import CheckpointManager
 from src.experiments.data import Batch
-from src.experiments.errors import BuildError, ExperimentError, RuntimeFailure
+from src.experiments.errors import BuildError, CheckpointError, ExperimentError, RuntimeFailure
 from src.experiments.results import RunResult
 from src.experiments.runtime import PreparedModel, ProcessRuntime
 
@@ -35,6 +36,8 @@ class StandardTrainer:
         accumulation: int = 1,
         grad_clip: float | None = None,
         scheduler: Any | None = None,
+        stop_after_logical_steps: int | None = None,
+        checkpoint_interval: int = 1,
     ) -> None:
         if not isinstance(model, PreparedModel):
             raise BuildError("model must be a prepared module handle")
@@ -53,6 +56,18 @@ class StandardTrainer:
             isinstance(grad_clip, bool) or not isinstance(grad_clip, (int, float)) or grad_clip <= 0
         ):
             raise BuildError("grad_clip must be a positive number")
+        if stop_after_logical_steps is not None and (
+            isinstance(stop_after_logical_steps, bool)
+            or not isinstance(stop_after_logical_steps, int)
+            or stop_after_logical_steps < 1
+        ):
+            raise BuildError("stop_after_logical_steps must be a positive integer")
+        if (
+            isinstance(checkpoint_interval, bool)
+            or not isinstance(checkpoint_interval, int)
+            or checkpoint_interval < 1
+        ):
+            raise BuildError("checkpoint_interval must be a positive integer")
         self.model = model
         self.loss = loss
         self.data = data
@@ -62,23 +77,49 @@ class StandardTrainer:
         self.accumulation = accumulation
         self.grad_clip = None if grad_clip is None else float(grad_clip)
         self.scheduler = scheduler
+        self.stop_after_logical_steps = stop_after_logical_steps
+        self.checkpoint_interval = checkpoint_interval
         self.logical_step = 0
         self.optimizer_updates = {optimizer_id: 0}
         self.losses: list[float] = []
         self.stop_reason = "initialized"
+        self._restored = False
 
     def run(self, runtime: ProcessRuntime, checkpoint: CheckpointManager) -> RunResult:
-        """Run ``max_logical_steps`` updates. The loss is divided by accumulation."""
+        """Run until ``max_logical_steps``. A restored trainer continues.
+
+        The loss is divided by accumulation. A new run clears ``metrics.jsonl``.
+        Resume keeps rows at or before the restored logical step and drops
+        anything written past that commit.
+        """
 
         component_id = getattr(self, "_experiment_component_id", "trainer")
         metrics_path = Path(checkpoint.directory) / "metrics.jsonl"
-        metrics_path.write_text("", encoding="utf-8")
-        epoch = 0
-        index = 0
-        self.logical_step = 0
-        self.optimizer_updates = {self.optimizer_id: 0}
-        self.losses = []
+        if self._restored:
+            if not hasattr(self.data, "epoch") or not hasattr(self.data, "update_index"):
+                raise CheckpointError("resumed data has no epoch position")
+            self.losses = _rewind_metrics(metrics_path, self.logical_step)
+            epoch = int(self.data.epoch)
+            index = int(self.data.update_index)
+        else:
+            metrics_path.write_text("", encoding="utf-8")
+            epoch = 0
+            index = 0
+            self.logical_step = 0
+            self.optimizer_updates = {self.optimizer_id: 0}
+            self.losses = []
         while self.logical_step < self.max_logical_steps:
+            if (
+                self.stop_after_logical_steps is not None
+                and self.logical_step >= self.stop_after_logical_steps
+            ):
+                self.stop_reason = "interrupted"
+                return RunResult(
+                    stop_reason="interrupted",
+                    logical_step=self.logical_step,
+                    optimizer_updates=dict(self.optimizer_updates),
+                    output_dir=checkpoint.directory,
+                )
             view = self.data.train_epoch(epoch, start_update=index)
             if index >= view.updates:
                 epoch += 1
@@ -93,9 +134,11 @@ class StandardTrainer:
                 )
             self.optimizer.zero_grad(set_to_none=True)
             total: torch.Tensor | None = None
+            sample_ids: list[str] = []
             for offset in range(self.accumulation):
                 sync = offset == self.accumulation - 1
                 batches = view.batch(index + offset)
+                sample_ids.extend(batch.sample_id for batch in batches)
                 with runtime.sync_context([self.model], sync=sync):
                     with runtime.autocast():
                         micro = self._forward_loss(batches, component_id)
@@ -120,7 +163,9 @@ class StandardTrainer:
                 raise RuntimeFailure(f"component {component_id}: loss is not finite")
             loss_value = float(total)
             self.losses.append(loss_value)
-            self._append_metrics(metrics_path, loss_value, result.applied)
+            self._append_metrics(metrics_path, loss_value, result.applied, ",".join(sample_ids))
+            if self.logical_step % self.checkpoint_interval == 0:
+                checkpoint.save(checkpoint.directory, logical_step=self.logical_step, label="step")
         self.stop_reason = "completed"
         return RunResult(
             stop_reason="completed",
@@ -146,6 +191,7 @@ class StandardTrainer:
         stop_reason = state.get("stop_reason")
         if isinstance(stop_reason, str):
             self.stop_reason = stop_reason
+        self._restored = True
 
     def _forward_loss(self, batches: list[Batch], component_id: str) -> torch.Tensor:
         if not batches:
@@ -160,15 +206,45 @@ class StandardTrainer:
         assert total is not None
         return total / len(batches)
 
-    def _append_metrics(self, path: Path, loss_value: float, applied: bool) -> None:
+    def _append_metrics(self, path: Path, loss_value: float, applied: bool, sample_id: str) -> None:
         record = {
             "applied": applied,
             "logical_step": self.logical_step,
             "loss": loss_value,
             "optimizer_updates": dict(self.optimizer_updates),
+            "sample_id": sample_id,
         }
         with path.open("a", encoding="utf-8") as handle:
             handle.write(json.dumps(record, sort_keys=True) + "\n")
+
+
+def _rewind_metrics(path: Path, logical_step: int) -> list[float]:
+    """Drop metric rows committed past ``logical_step`` and return kept losses."""
+
+    if not path.is_file():
+        return []
+    kept: list[dict[str, Any]] = []
+    losses: list[float] = []
+    for line_number, line in enumerate(path.read_text(encoding="utf-8").splitlines(), start=1):
+        if not line:
+            continue
+        try:
+            record = json.loads(line)
+        except json.JSONDecodeError as exc:
+            raise CheckpointError(f"metrics.jsonl line {line_number} is not JSON") from exc
+        step = record.get("logical_step") if isinstance(record, dict) else None
+        loss = record.get("loss") if isinstance(record, dict) else None
+        if isinstance(step, bool) or not isinstance(step, int) or not isinstance(loss, (int, float)):
+            raise CheckpointError(f"metrics.jsonl line {line_number} has no logical step")
+        if step > logical_step:
+            continue
+        kept.append(record)
+        losses.append(float(loss))
+    body = "".join(json.dumps(record, sort_keys=True) + "\n" for record in kept)
+    temporary = path.with_name(".metrics.jsonl.tmp")
+    temporary.write_text(body, encoding="utf-8")
+    os.replace(temporary, path)
+    return losses
 
 
 class GanTrainer:

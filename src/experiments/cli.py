@@ -40,7 +40,7 @@ def _execute(args: argparse.Namespace) -> None:
         experiment = build_experiment(config)
         try:
             if args.resume is not None or args.initialize_from is not None:
-                raise CheckpointError("checkpoint restore is not implemented")
+                raise CheckpointError("preflight does not restore a checkpoint")
             preflight_experiment(experiment, args.preflight_dir)
         finally:
             experiment.close()

@@ -175,3 +175,20 @@ def write_config(
 
 def null_trainer() -> dict[str, object]:
     return {"role": "trainer", "class": "tests.experiments.support.NullTrainer"}
+
+
+class DropoutLinear(nn.Module):
+    """Linear layer whose dropout consumes the process RNG.
+
+    The buffer changes on every forward so a checkpoint has to restore it.
+    """
+
+    def __init__(self, in_features: int, out_features: int, p: float = 0.5) -> None:
+        super().__init__()
+        self.linear = nn.Linear(in_features, out_features)
+        self.drop = nn.Dropout(p)
+        self.register_buffer("marker", torch.zeros(1))
+
+    def forward(self, inputs: torch.Tensor) -> torch.Tensor:
+        self.marker += 1
+        return self.drop(self.linear(inputs))

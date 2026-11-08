@@ -7,7 +7,9 @@ from __future__ import annotations
 
 from typing import Any
 
-from src.experiments.errors import StateError
+import torch
+
+from src.experiments.errors import CheckpointError, StateError
 from src.experiments.runtime import PreparedModel, ProcessRuntime
 
 
@@ -38,7 +40,13 @@ class ComponentState:
         method = getattr(target, "load_state_dict", None)
         if not callable(method):
             raise StateError(f"state {self.state_id} has no load_state_dict")
-        method(state)
+        try:
+            if isinstance(target, torch.nn.Module):
+                method(state, strict=True)
+            else:
+                method(state)
+        except (RuntimeError, ValueError, TypeError) as exc:
+            raise CheckpointError(f"state {self.state_id} failed to load: {exc}") from exc
 
 
 class RuntimeState:

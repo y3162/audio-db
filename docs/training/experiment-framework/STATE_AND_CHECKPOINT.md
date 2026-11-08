@@ -1,6 +1,6 @@
 # 状態と Checkpoint
 
-Phase 1 は state id の登録と `status.json` までを実装している。新形式の checkpoint ファイルはまだ無く、保存と復元は `CheckpointError` である。現行形式 `audio-db-training-v1` はこの仕様の対象外であり、新ローダはそれを `CheckpointError` で拒否する。以下は Phase 0 の仕様である。
+Phase 2-A は `audio-db-experiment-v1` の保存と復元を CPU / FP32、world size 1 で実装している。現行形式 `audio-db-training-v1` はこの仕様の対象外であり、新ローダはそれを `CheckpointError` で拒否する。CPU の復元順は Phase 0 の「Prepare 前」とは違い、[PHASE_2A_CHECKPOINT.md](PHASE_2A_CHECKPOINT.md) に理由と、DDP / FSDP で戻すべき順を書いた。以下は Phase 0 の仕様である。
 
 ## 再現性の三層
 

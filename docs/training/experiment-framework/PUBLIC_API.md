@@ -1,6 +1,6 @@
 # Experiment Framework 公開 API
 
-Phase 1 の公開入口は `src/experiments/` にある。`load_experiment`、`build_experiment`、`Experiment.run`、`python -m src.experiments.cli` が対象である。checkpoint の保存と復元、DDP、AMP、CUDA は未実装で、呼ぶと `CheckpointError` または `PrepareError` になる。以下は Phase 0 の契約であり、現行 `src/training` の関数ではない。
+Phase 1 の公開入口と、Phase 2-A の CPU checkpoint は `src/experiments/` にある。`Experiment.run(resume=...)` と `--initialize-from` は CPU / FP32 で動作する。DDP、AMP、CUDA は未実装で、呼ぶと `PrepareError` になる。`audio-db-training-v1` は `CheckpointError` になる。以下は Phase 0 の契約であり、現行 `src/training` の関数ではない。
 
 例外の基底は `src.experiments.errors.ExperimentError`。呼び出し側が回復できる失敗はすべてこの基底に乗せる。`ImportError`、`TypeError`、`ValueError` をそのまま外へ出さない。
 

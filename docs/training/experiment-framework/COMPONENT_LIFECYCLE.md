@@ -1,6 +1,6 @@
 # コンポーネントのライフサイクル
 
-Phase 1 は下記の段階のうち、Configure から Run までを CPU / FP32 の `StandardTrainer` で実装している。checkpoint の保存と復元、DDP、AMP は未実装。以下は Phase 0 の仕様である。
+Phase 1 は Configure から Run までを CPU / FP32 の `StandardTrainer` で実装している。Phase 2-A は checkpoint の保存と復元を足した。CPU では Prepare と Optimizer 生成の後に重みを載せる。DDP と AMP は未実装。差異は [PHASE_2A_CHECKPOINT.md](PHASE_2A_CHECKPOINT.md)。以下は Phase 0 の仕様である。
 
 ## 段階
 

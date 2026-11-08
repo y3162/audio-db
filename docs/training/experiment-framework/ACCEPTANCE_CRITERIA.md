@@ -1,6 +1,6 @@
 # 受け入れ基準
 
-Phase 1 の試験は `tests/experiments/` にある。Phase 2 以降の受け入れ項目は未実装である。実装する Phase で、期待結果が満たされたことをテスト名とともに記録する。曖昧な「動くこと」は完了条件にしない。
+Phase 1 の試験と、Phase 2-A の CPU checkpoint 試験は `tests/experiments/` にある。DDP、AMP、複数 rank の受け入れ項目は未実装である。実装する Phase で、期待結果が満たされたことをテスト名とともに記録する。曖昧な「動くこと」は完了条件にしない。数値は [PHASE_2A_CHECKPOINT.md](PHASE_2A_CHECKPOINT.md)。
 
 既存テストのパスは、この設計作業では実行していない。回帰行は将来の Phase で実行する条件である。
 

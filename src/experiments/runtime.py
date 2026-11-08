@@ -15,6 +15,7 @@ from typing import Literal
 import torch
 
 from src.experiments.errors import PrepareError, RuntimeFailure
+from src.training.core.rng import capture_rank_rng, restore_rank_rng
 
 
 @dataclass(frozen=True)
@@ -173,6 +174,20 @@ class ProcessRuntime:
         """Average gradients across ranks. One rank has nothing to average."""
 
         del parameters
+
+    def capture_rng(self) -> dict[str, object]:
+        """Capture this rank's Python, NumPy, and Torch CPU generators.
+
+        CUDA generators are not read. Phase 2-A never initializes a device.
+        A later distributed runtime gathers one blob per rank before save.
+        """
+
+        return capture_rank_rng(cuda=False)
+
+    def restore_rng(self, state: dict[str, object]) -> None:
+        """Restore one rank blob. World size 1 uses ``rng_by_rank[0]``."""
+
+        restore_rank_rng(state, cuda=False)
 
     def agree(self, flag: bool, *, policy: str = "identical") -> bool:
         """Return ``flag``. One rank is already unanimous."""

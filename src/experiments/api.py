@@ -15,6 +15,7 @@ from src.experiments.checkpoint import (
     CheckpointManager,
     DirectoryLock,
     assert_output_allowed,
+    write_complete,
     write_status,
 )
 from src.experiments.config import ExperimentConfig, load_experiment
@@ -50,6 +51,7 @@ class Experiment:
         self._directory: Path | None = None
         self._lock: DirectoryLock | None = None
         self._checkpoint: CheckpointManager | None = None
+        self._running = False
 
     def build(self) -> Experiment:
         """Construct, prepare, and register state. A second call is an error."""
@@ -62,6 +64,8 @@ class Experiment:
         try:
             runtime = _create_runtime(self.config)
             self._graph = ExperimentBuilder().build(self.config, runtime)
+            if self._checkpoint is not None:
+                self._checkpoint.attach(self.config, self._graph)
         except Exception:
             self._mark_failed()
             raise
@@ -74,10 +78,11 @@ class Experiment:
         resume: str | Path | None = None,
         initialize_from: str | Path | None = None,
     ) -> RunResult:
-        """Build if needed, then run the entry trainer.
+        """Build if needed, restore when asked, then run the entry trainer.
 
-        ``resume`` and ``initialize_from`` cannot be combined. Phase 1 does
-        not restore checkpoints, so passing either one fails before training.
+        ``resume`` and ``initialize_from`` cannot be combined. A failed
+        restore does not start the trainer. CPU restore writes into the
+        prepared module in place, so the optimizer keeps those parameters.
         """
 
         if resume is not None and initialize_from is not None:
@@ -89,16 +94,27 @@ class Experiment:
         try:
             if not self._built:
                 self.build()
-            if resume is not None or initialize_from is not None:
-                raise CheckpointError("checkpoint restore is not implemented")
-            if self._graph is None or self._checkpoint is None:
+            if self._graph is None or self._checkpoint is None or self._directory is None:
                 raise BuildError("experiment is not built")
+            if resume is not None and (self._directory / "complete.json").is_file():
+                raise CheckpointError("resume refused because complete.json exists")
+            if resume is not None:
+                self._checkpoint.restore(Path(resume), mode="resume")
+            elif initialize_from is not None:
+                self._checkpoint.restore(Path(initialize_from), mode="initialize")
             self._graph.states.seal()
+            self._running = True
             self._write_status("RUNNING")
             result = self._graph.trainer.run(self._graph.runtime, self._checkpoint)  # type: ignore[attr-defined]
             if not isinstance(result, RunResult):
                 raise BuildError(f"component {self.config.entry}: trainer did not return RunResult")
-            self._write_status("COMPLETED")
+            if result.stop_reason == "completed":
+                write_complete(self._directory, result.logical_step)
+                self._write_status("COMPLETED")
+            elif result.stop_reason == "interrupted":
+                self._write_status("INTERRUPTED")
+            else:
+                raise BuildError(f"component {self.config.entry}: unknown stop reason {result.stop_reason}")
             self._ran = True
             return result
         except Exception:
@@ -162,10 +178,12 @@ class Experiment:
     def _mark_failed(self) -> None:
         if self._directory is None or self._closed:
             return
-        try:
-            self._write_status("FAILED")
-        except OSError:
-            pass
+        status_path = self._directory / "status.json"
+        if self._running or not status_path.is_file():
+            try:
+                self._write_status("FAILED")
+            except OSError:
+                pass
         self.close()
 
 

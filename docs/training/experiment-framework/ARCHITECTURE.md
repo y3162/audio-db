@@ -1,6 +1,6 @@
 # Experiment Framework アーキテクチャ
 
-Phase 1 は `src/experiments/` に実装済みである。対象は Factory、Builder、CPU / FP32 の Runtime、`TensorPairData`、`StandardTrainer`、CLI、`configs/experiments/linear_supervised.yaml`。Phase 2 以降（DDP、AMP、CUDA、checkpoint の保存と復元、本格 SE 学習）は未実装。以下は Phase 0 の設計仕様であり、`src/training/` と `src/reproduction/` は変更しない。
+Phase 1 と、CPU / FP32 の checkpoint 保存・再開（Phase 2-A）は `src/experiments/` に実装済みである。DDP、AMP、CUDA、本格 SE 学習は未実装。Phase 2-A の復元順は [PHASE_2A_CHECKPOINT.md](PHASE_2A_CHECKPOINT.md)。以下は Phase 0 の設計仕様であり、`src/training/` と `src/reproduction/` は変更しない。
 
 この文書の「現行」は、2026-11-08 に `feature/experiment-framework` のソースを読んだ事実である。「設計」は新しい枠組みの提案であり、現行コードにあるものとして扱わない。公式再現の数値的同等性は、この設計書では保証しない。
 

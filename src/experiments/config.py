@@ -5,8 +5,10 @@ Loading does not construct components and does not create directories.
 
 from __future__ import annotations
 
+import hashlib
+import json
 import re
-from dataclasses import dataclass
+from dataclasses import asdict, dataclass
 from pathlib import Path
 from typing import Any
 
@@ -407,6 +409,80 @@ def _reject_nested_ref(value: object, component_id: str) -> None:
 def _reject_differentiable(components: dict[str, ComponentConfig]) -> None:
     for spec in components.values():
         _reject_differentiable_value(spec.kwargs, spec.component_id)
+
+
+def config_sha256(config: ExperimentConfig) -> str:
+    """Hash the experiment identity.
+
+    ``output`` is excluded. Resume refuses a different directory by comparing
+    the stored path, not this hash. ``stop_after_logical_steps`` is an
+    execution cap, analogous to ``verification_max_updates``, and is excluded
+    so a capped run can continue under the same algorithm configuration.
+    """
+
+    payload = {
+        "components": {
+            component_id: _component_identity(spec)
+            for component_id, spec in config.components.items()
+        },
+        "deterministic": config.deterministic,
+        "entry": config.entry,
+        "runtime": {"class": config.runtime_class, "kwargs": _jsonable(config.runtime_kwargs)},
+        "schema": config.schema,
+        "seed": config.seed,
+    }
+    encoded = json.dumps(payload, ensure_ascii=True, separators=(",", ":"), sort_keys=True)
+    return hashlib.sha256(encoded.encode("utf-8")).hexdigest()
+
+
+def _component_identity(spec: ComponentConfig) -> dict[str, Any]:
+    if spec.ref is not None:
+        return {"ref": spec.ref}
+    kwargs = _jsonable(spec.kwargs)
+    if isinstance(kwargs, dict):
+        kwargs.pop("stop_after_logical_steps", None)
+    payload: dict[str, Any] = {
+        "class": spec.class_path,
+        "kwargs": kwargs,
+        "role": spec.role,
+    }
+    if spec.inject:
+        payload["inject"] = {
+            name: _inject_identity(value) for name, value in spec.inject.items()
+        }
+    if spec.parameters_of is not None:
+        payload["parameters_flat"] = spec.parameters_flat
+        payload["parameters_of"] = [
+            {
+                "component": binding.component,
+                "lr": binding.lr,
+                "weight_decay": binding.weight_decay,
+            }
+            for binding in spec.parameters_of
+        ]
+    if spec.prepare is not None:
+        payload["prepare"] = asdict(spec.prepare)
+    if spec.save_state is not None:
+        payload["state"] = {"save": spec.save_state}
+    return payload
+
+
+def _inject_identity(value: InjectRef | tuple[InjectRef, ...]) -> dict[str, str] | list[dict[str, str]]:
+    if isinstance(value, InjectRef):
+        return {"ref": value.ref}
+    return [{"ref": item.ref} for item in value]
+
+
+def _jsonable(value: object) -> object:
+    if isinstance(value, dict):
+        return {str(key): _jsonable(item) for key, item in value.items()}
+    if isinstance(value, (list, tuple)):
+        return [_jsonable(item) for item in value]
+    if isinstance(value, Path):
+        return str(value)
+    if value is None or isinstance(value, (str, int, float, bool)):
+        return value
+    raise ConfigError(f"config identity cannot encode {type(value).__name__}")
 
 
 def _reject_differentiable_value(value: object, component_id: str) -> None:
