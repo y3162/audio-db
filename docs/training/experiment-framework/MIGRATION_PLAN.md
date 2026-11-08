@@ -16,8 +16,8 @@ Phase 1 は `src/experiments/` を並行パッケージとして追加した。P
 | `src/training/core/rng.py` | 再利用 | rank 別 RNG の capture と restore は試験済みの実装である。新 Runtime がこの関数を呼ぶ |
 | `src/training/core/checkpoint.py` の `save_atomic` の手順 | 手順を再利用してよい。形式文字列は共有しない | 原子的置換は同じで、payload の schema は別である |
 | `src/training/core/distributed.py` | 手順を Runtime が再実装してよい。現行モジュールは残す | 新 API の `PreparePolicy` を現行関数に押し込むと、現行呼び出し側が変わる |
-| `src/reproduction/pipeline/` 一式 | アダプタ | DataModule が `open_training_data`、`open_chunk_datasets`、online クラスを呼ぶ。式は移さない |
-| `src/reproduction/protocols/` | 再利用。分割しない | オンライン混合の順序が仕様である |
+| `src/reproduction/pipeline/` の供給クラス（`ReproductionTrainingData`、online、chunk dataset） | 現行 CLI に残す。新 DataModule からはインスタンス化しない | Phase 3-A でアダプタ必須を撤回した。クラスは `train_epoch` と再開単位に合わない。詳細は [DATA_MIGRATION_PLAN.md](DATA_MIGRATION_PLAN.md) |
+| `src/reproduction/pipeline/` と `protocols/` の純関数 | 再利用。式は移さない | `rank_order`、`plan_chunk_epoch`、`plan_online_epoch`、`render_sample`、`render_mixture`、`render_example`、両 `render_realization` を新コードが呼ぶ。オンライン混合は分割しない |
 | `RecipeDataset` と `epoch_indices` | アダプタ | legacy 経路の crop と順序を変えない。新研究の既定データ経路にはしない |
 | `load_training_config` と `configs/training/**` | 残す | 公式再現 YAML は現行スキーマのまま実行できる必要がある |
 | `src.asr.load_recognizer` | アダプタ | 勾配を通さない FrozenRecognizer だけが呼ぶ。`transcribe()` の意味は変えない |
@@ -77,7 +77,7 @@ Phase 4 で各モデルについて、次を別々に記録する。
 | 0 | このディレクトリの設計書 | 実装が無い。本 Phase は完了扱い |
 | 1 | Factory、Builder、`Experiment`、CPU の `ProcessRuntime`（DDP も AMP も未実装で、`distribute: none` と `fp32` だけ）、`TensorPairData`、`StandardTrainer`、CLI の `--preflight` と短い `--config` 実行 | [ACCEPTANCE_CRITERIA.md](ACCEPTANCE_CRITERIA.md) の Phase 1 項目が単体テストで満たされる。スナップショットも GPU も使わない |
 | 2 | DDP、AMP、StateRegistry、`audio-db-experiment-v1`、rank 別 RNG、原子的保存、resume | Phase 2 の受け入れ。まだ SE モデルを接続しない。Phase 2-A の CPU checkpoint、Phase 2-B の CPU / Gloo DDP、Phase 2-C の CUDA / NCCL / AMP FP16 は実装済み。FSDP、sharded checkpoint、AMP BF16 は残っている |
-| 3 | DataModule アダプタ。固定ペア、chunk、オンライン混合を既存関数のまま包む。`src.se.build_model` で MP-SENet の Generator を 1 step 進める | 公式損失の数値一致はまだ要求しない。既存 pipeline テストが引き続き通る。アダプタが DuckDB を開かない |
+| 3 | 音声 Data System。3-A は設計のみで完了扱いの文書である。3-B 以降の実装順は [DATA_MIGRATION_PLAN.md](DATA_MIGRATION_PLAN.md)。旧行の「既存クラスを包むアダプタ」は作らない。MP-SENet の 1 step は Phase 4 の最初の接続に移した | 公式損失の数値一致はまだ要求しない。新 DataModule は DuckDB を開かない。既存 pipeline テストが引き続き通る |
 | 4 | 四モデルの Trainer。現行入口と並走させ、上の回帰検証を記録する | 記録が `docs/training/experiment-framework/` の検証文書に残り、未測定を一致と書いていない |
 | 5 | LoRA、難例 Sampler、複数 Expert の動的枠、Distillation、勾配を通す ASR が別クラスとして必要ならその設計の実装 | 各拡張が YAML の DSL ではなく Trainer クラスである。公式再現の入口が変わっていない |
 

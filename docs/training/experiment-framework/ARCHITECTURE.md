@@ -1,6 +1,6 @@
 # Experiment Framework アーキテクチャ
 
-Phase 1、CPU / FP32 の checkpoint（Phase 2-A）、CPU / Gloo の DDP（Phase 2-B）、CUDA / NCCL / AMP FP16（Phase 2-C）は `src/experiments/` に実装済みである。FSDP、sharded checkpoint、AMP BF16、本格 SE 学習は未実装。Phase 2-A の単一プロセス復元は [PHASE_2A_CHECKPOINT.md](PHASE_2A_CHECKPOINT.md)、Phase 2-B の DDP と world size 2 の再開は [PHASE_2B_DDP.md](PHASE_2B_DDP.md)、Phase 2-C の CUDA と AMP は [PHASE_2C_CUDA_AMP.md](PHASE_2C_CUDA_AMP.md)。以下は Phase 0 の設計仕様であり、`src/training/` と `src/reproduction/` は変更しない。
+Phase 1、CPU / FP32 の checkpoint（Phase 2-A）、CPU / Gloo の DDP（Phase 2-B）、CUDA / NCCL / AMP FP16（Phase 2-C）は `src/experiments/` に実装済みである。FSDP、sharded checkpoint、AMP BF16、本格 SE 学習は未実装。Phase 2-A の単一プロセス復元は [PHASE_2A_CHECKPOINT.md](PHASE_2A_CHECKPOINT.md)、Phase 2-B の DDP と world size 2 の再開は [PHASE_2B_DDP.md](PHASE_2B_DDP.md)、Phase 2-C の CUDA と AMP は [PHASE_2C_CUDA_AMP.md](PHASE_2C_CUDA_AMP.md)。Data System の Phase 3-A は設計だけが採用済みで、コードは無い。供給 API は [DATA_ARCHITECTURE.md](DATA_ARCHITECTURE.md) と [DATA_PUBLIC_API.md](DATA_PUBLIC_API.md)。以下のうちデータ供給の配置は Phase 3-A で更新した。それ以外は Phase 0 の設計仕様であり、`src/training/` と `src/reproduction/` は変更しない。
 
 この文書の「現行」は、2026-11-08 に `feature/experiment-framework` のソースを読んだ事実である。「設計」は新しい枠組みの提案であり、現行コードにあるものとして扱わない。公式再現の数値的同等性は、この設計書では保証しない。
 
@@ -199,10 +199,10 @@ flowchart TD
 
 依存の向きは次だけを許す。
 
-- `experiments` は `se.build_model`、`asr` の推論ローダ、`reproduction.pipeline` の読み取り API、純粋な損失関数を呼んでよい。
+- `experiments` は `se.build_model`、`asr` の推論ローダ、純粋な損失関数を呼んでよい。Data System の実装に入ってからは、`reproduction` の snapshot 読み取りと、順序・描画の純関数も呼んでよい。`reproduction.db` は呼んではならない。Phase 3-A の時点では、この import はまだ無い。
 - `experiments` は現行 `Trainer` クラスを継承しない。
-- `se` と `asr` は `experiments` を知らない。
-- 公式プロトコルの数値計算は `reproduction` に残し、`experiments` はそれを包む。
+- `se` と `asr` は `experiments` を知らない。`reproduction` も `experiments` を import しない。
+- 公式プロトコルの数値計算は `reproduction` の純関数に残す。`experiments` はその関数を呼ぶ。`ReproductionTrainingData` などの供給クラスは包まない。
 
 ### コンポーネントの責務
 
@@ -264,7 +264,7 @@ flowchart LR
 | `accumulation_scope` | Runtime の forward 同期スコープ。契約は「forward の前に sync を決める」 |
 | `setup_process` / `wrap_module` | Runtime.`prepare_model` |
 | `audio-db-training-v1` | 現行経路が読み続ける。新形式は `audio-db-experiment-v1`。相互の無変換再開はしない |
-| `RecipeDataset`、`ReproductionTrainingData`、chunk、online | DataModule アダプタがそのまま呼ぶ。式は再実装しない |
+| `RecipeDataset`、`ReproductionTrainingData`、chunk、online のクラス | 現行 CLI に残す。新 DataModule はインスタンス化しない。数値は同じモジュールの純関数を呼ぶ |
 | `data_provenance.json` | 新 checkpoint も同じファイル名とハッシュ契約を、reproduction データに対して維持する |
 | `metrics.jsonl` | 新 Trainer も rank 0 の JSONL を正本にする |
 
@@ -350,7 +350,7 @@ Optimizer は `parameters` を掴む。Trainer の forward は `module` を呼�
 
 ### データ
 
-採用: 公式計算は既存 Renderer をアダプタの中で呼ぶ。DataModule の最小メソッドは [PUBLIC_API.md](PUBLIC_API.md) の Data API で固定する。Phase 1 はテンソルを返す実験用 DataModule だけを想定し、スナップショットは開かない。
+採用: 登録と snapshot 生成は `src/reproduction` に残し、学習供給は `src/experiments/data/` の公開 API にする。数値は既存の純関数を呼び、供給クラスは包まない。Trainer から見た最小メソッドは [PUBLIC_API.md](PUBLIC_API.md) の Data API で、音声の型と YAML は [DATA_PUBLIC_API.md](DATA_PUBLIC_API.md)。Phase 1 から 2-C はテンソルを返す `TensorPairData` だけを使い、スナップショットは開かない。この段落は Phase 3-A で、直下の「DataModule の範囲」の旧推奨を置き換えた。
 
 ### 固定 ASR
 
@@ -391,12 +391,14 @@ Phase 1 の実装範囲では、下表の推奨を既定としてよい。表の
 
 ### DataModule の範囲
 
+Phase 3-A で決定した。旧推奨は残す。
+
 - 論点: Sampler と Renderer を Phase 3 で必ず別クラスにするか。
-- 選択肢: 公式データセットごとに既存クラスを 1 つの DataModule アダプタへ包む。最初から五段に分割する。
-- 推奨: アダプタ 1 枚。公開メソッドだけ共通化する。公式のオンライン混合は分割しない。
-- 理由: 計算順が仕様である。
-- 既存コードへの影響: アダプタは既存関数を呼ぶだけで、既存関数は変えない。
-- Phase 1 開始前に決定が必要か: いいえ。Phase 3 前に必要。Phase 1 はテンソル DataModule だけを使う。
+- 旧選択肢: 公式データセットごとに既存クラスを 1 つの DataModule アダプタへ包む。最初から五段に分割する。
+- 旧推奨: アダプタ 1 枚。公開メソッドだけ共通化する。公式のオンライン混合は分割しない。
+- 決定: アダプタは作らない。`SnapshotSource`、平坦 policy の `OrderSampler`、chunk 用と DFN3 用の専用 Sampler、方式ごとの Protocol、`MicroBatcher`、`SnapshotDataModule` に分ける。公式の混合と劣化は Protocol の 1 呼び出しのままにし、Transform の列には分けない。登録 DB は `src/reproduction` に残す。
+- 理由: 旧クラスは `train_epoch` と micro-batch 単位の再開に合わず、Sampler の重みを外から変えられない。数値の本体はクラスではなく純関数である。調査は [PHASE_3A_DATA_AUDIT.md](PHASE_3A_DATA_AUDIT.md)。
+- 既存コードへの影響: Phase 3-A はコードを変えない。実装段で純関数の公開委譲を足すときも、式は変えない。
 
 ### 設定検証の厳しさ
 

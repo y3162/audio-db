@@ -1,6 +1,6 @@
 # 受け入れ基準
 
-Phase 1、Phase 2-A の CPU checkpoint、Phase 2-B の CPU / Gloo DDP、Phase 2-C の CUDA / NCCL / AMP FP16 の試験は `tests/experiments/` にある。FSDP と AMP BF16 は未実装である。数値は [PHASE_2A_CHECKPOINT.md](PHASE_2A_CHECKPOINT.md)、[PHASE_2B_DDP.md](PHASE_2B_DDP.md)、[PHASE_2C_CUDA_AMP.md](PHASE_2C_CUDA_AMP.md)。
+Phase 1、Phase 2-A の CPU checkpoint、Phase 2-B の CPU / Gloo DDP、Phase 2-C の CUDA / NCCL / AMP FP16 の試験は `tests/experiments/` にある。FSDP と AMP BF16 は未実装である。数値は [PHASE_2A_CHECKPOINT.md](PHASE_2A_CHECKPOINT.md)、[PHASE_2B_DDP.md](PHASE_2B_DDP.md)、[PHASE_2C_CUDA_AMP.md](PHASE_2C_CUDA_AMP.md)。音声 Data System の受け入れは [DATA_ACCEPTANCE_CRITERIA.md](DATA_ACCEPTANCE_CRITERIA.md) で、Phase 3-A では未実施である。
 
 既存テストのパスは、この設計作業では実行していない。回帰行は将来の Phase で実行する条件である。
 
@@ -150,9 +150,11 @@ Phase 1、Phase 2-A の CPU checkpoint、Phase 2-B の CPU / Gloo DDP、Phase 2-
 
 ### 既存データ関数を包む
 
+Phase 3-A で撤回した。代替の受け入れは [DATA_ACCEPTANCE_CRITERIA.md](DATA_ACCEPTANCE_CRITERIA.md)。旧文は次のとおりで、実装の指示には使わない。
+
 - 方法: 合成スナップショットに対する既存 pipeline テストと同じ fixture で、DataModule アダプタの `train_epoch.batch(0)` を、直接 `open_training_data` した batch と比較する。対象は固定ペアのアダプタ 1 種。chunk と online は各 1 種の形状と `sample_id` の一致までを別テストにする。
 - 期待: 波形の最大絶対誤差が 0。アダプタのプロセスが DuckDB を import して接続していないことを、開いたファイルの検査か、import 禁止の単体テストで示す。公式プロトコルのソースファイルはこの Phase の差分に含まれない。
-- Phase: 3
+- 撤回の理由: 供給クラスは `train_epoch` を持たず、chunk の再開状態は dataset の外にある。比較対象は `open_training_data` のインスタンスではなく、同じ純関数の波形である。
 
 ### SE モデルへの接続
 

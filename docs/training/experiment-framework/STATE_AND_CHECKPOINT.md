@@ -92,7 +92,7 @@ validation_pending: dict | null
 
 `dataset_identity` は DataModule.`identity()` のコピーである。`resume` 時に現在の identity と不一致なら `CheckpointError`。データが無い実験では null であり、現在も null でなければならない。
 
-reproduction 経路の DataModule は、現行と同じ `data_provenance.json` を rank 0 が一度だけ排他作成する。checkpoint の `provenance_sha256` とそのファイルが不一致なら再開しない。来歴の意味は現行 `src/training/provenance.py` に従い、新仕様はハッシュの紐付けだけを継承する。評価の `independent` 判定は現行のまま、この JSON を読む。新形式だからといって判定を変えない。
+モデルを接続したあとの Trainer は、現行と同じ `data_provenance.json` を rank 0 が一度だけ排他作成する。Phase 3-B の DataModule はこのファイルを書かず、`lineage()` が部品の辞書を返す。checkpoint の `provenance_sha256` とそのファイルが不一致なら再開しない。来歴の意味は現行 `src/training/provenance.py` に従い、新仕様はハッシュの紐付けだけを継承する。評価の `independent` 判定は現行のまま、この JSON を読む。新形式だからといって判定を変えない。音声の `plan_hash` の中身は [DATA_PUBLIC_API.md](DATA_PUBLIC_API.md)。`TensorPairData` の `plan_hash` はテンソルバイトから作る現行のままである。
 
 ## Schema Version
 

@@ -12,6 +12,7 @@ Phase 1 の公開入口、Phase 2-A の CPU checkpoint、Phase 2-B の CPU / Glo
 | `StateError` | 二重登録、未登録 ID、`resume` と現在グラフの状態 ID 不一致 |
 | `CheckpointError` | 形式違い、原子的保存の検証失敗、world size 不一致、破損 |
 | `RuntimeFailure` | rank 間で skip が一致しない、AMP の段取り違反。組み込み `RuntimeError` とは別名 |
+| `DataError` | snapshot や batch 仕様が供給できない。Phase 3-B で `errors.py` に足す。Phase 3-A の時点では未実装 |
 
 ## CLI
 
@@ -229,6 +230,8 @@ class Trainer(Protocol):
 
 ## Data API
 
+Phase 1 から 2-C の実装はこの節の `TensorPairData` である。音声の Source、Sampler、Protocol、Batch、identity、`plan_hash`、YAML は [DATA_PUBLIC_API.md](DATA_PUBLIC_API.md) を正とする。Phase 3-A は、既存の供給クラスをアダプタで包む案を撤回した。Trainer から見たメソッド名は、この節と音声契約で同じである。
+
 ```python
 class DataModule(Protocol):
     def identity(self) -> dict[str, Any]:
@@ -257,7 +260,7 @@ class DataModule(Protocol):
 
 Sample identity はバッチに `sample_id: str` として入る。Realization identity は `realization_id: str` として入る。固定ペアで crop が epoch に依存するときは、両者は異なる。オンライン混合で波形が `(seed, epoch, index)` の純関数であるとき、Sampler の乱数状態は `state_dict` に入れない。
 
-学習結果で Sampler の分布を変える処理は、Trainer が Sampler の公開メソッド `update_weights(sample_id, weight)` を呼ぶ形にする。Phase 1 から 4 の DataModule はこのメソッドを持たなくてよい。持つ実装は、変更後の重みを `state_dict` に含め、含めない状態からの `resume` は `StateError` にする。
+学習結果で Sampler の分布を変える処理は、Trainer が DataModule の `set_sampling_weights(mapping)` を呼ぶ形にする。Phase 3-F より前の DataModule はこのメソッドを持たない。持つ実装は、変更後の重みを `state_dict` に含め、含めない状態からの `resume` は `StateError` にする。平坦 policy 以外には掛けない。旧文の `update_weights(sample_id, weight)` はこのメソッドに置き換えた。
 
 ## StateRegistry と Checkpoint
 
