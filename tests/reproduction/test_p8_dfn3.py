@@ -336,7 +336,9 @@ class TrainerSmokeTests(unittest.TestCase):
             self.assertIn(1, again.task.positions)
 
     def test_one_deepfilternet_step_is_finite(self):
+        from src.training.core.rng import set_determinism
         from src.training.se.deepfilternet import DeepFilterNetTask
+        from tests.training.support import accelerator_device, prepare_accelerator_numerics
         from tests.training.test_model_tasks import _base
 
         data = _smoke(1, 1)
@@ -354,8 +356,14 @@ class TrainerSmokeTests(unittest.TestCase):
                 grad_clip=1.0,
                 scheduler={"name": "exponential", "gamma": 0.99},
             )
-            task = DeepFilterNetTask(config, torch.device("cpu"))
-            metrics = task.train_update([{"clean": clean, "noisy": noisy, "case_id": ["x"]}], 1)
+            device = accelerator_device()
+            previous = torch.are_deterministic_algorithms_enabled()
+            prepare_accelerator_numerics(device)
+            try:
+                task = DeepFilterNetTask(config, device)
+                metrics = task.train_update([{"clean": clean, "noisy": noisy, "case_id": ["x"]}], 1)
+            finally:
+                set_determinism(previous, cuda=False)
         for value in metrics.values():
             self.assertTrue(np.isfinite(value))
 

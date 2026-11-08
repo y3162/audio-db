@@ -138,6 +138,8 @@ class OtherModelPreviewTest(unittest.TestCase):
         from src.training.se.semambapp import SEMambaTask
         from src.training.se.deepfilternet import DeepFilterNetTask
         from src.training.se.mossformergan import MossFormerGANTask
+        from src.training.core.rng import set_determinism
+        from tests.training.support import accelerator_device, prepare_accelerator_numerics
         from tests.training.test_model_tasks import _base
         from tests.se.test_tf_locoformer import TINY
         grid = dict(n_fft=32, stride=16, n_layers=1, lstm_hidden_units=8, attn_n_head=1,
@@ -153,11 +155,25 @@ class OtherModelPreviewTest(unittest.TestCase):
             ('deepfilternet3', DeepFilterNetTask, dict(architecture=df, grad_clip=1.0), 1024),
             ('mossformergan', MossFormerGANTask, dict(variant='se_16k', architecture={'n_fft': 400, 'win_len': 400, 'hop': 100, 'num_channel': 64}, grad_clip=10.0), 8000),
         ]
+        device = accelerator_device()
+        previous = torch.are_deterministic_algorithms_enabled()
+        prepare_accelerator_numerics(device)
+        try:
+            self._forward_cases(cases, device)
+        finally:
+            set_determinism(previous, cuda=False)
+
+    def _forward_cases(self, cases, device):
+        import tempfile
+        from pathlib import Path
+        import torch
+        from src.training.se.preview import predict
+        from tests.training.test_model_tasks import _base
         with tempfile.TemporaryDirectory() as tmp:
             for name, cls, params, length in cases:
                 with self.subTest(model=name):
                     config = _base(Path(tmp), name, segment_size=length, **params)
-                    task = cls(config, torch.device('cpu'))
+                    task = cls(config, device)
                     task.eval_mode()
                     batch = {'clean': torch.randn(1, length), 'noisy': torch.randn(1, length)}
                     with torch.inference_mode():

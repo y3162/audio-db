@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import math
+import os
 import socket
 import subprocess
 import tempfile
@@ -101,6 +102,61 @@ def run_distributed_workers(argv_for_port, *, cwd: Path, timeout: float = 180, a
 
 def cpu_process() -> ProcessInfo:
     return ProcessInfo(rank=0, world_size=1, local_rank=0, device=torch.device("cpu"), distributed=False)
+
+
+def _prepare_cublas_workspace() -> None:
+    """Set the deterministic cuBLAS workspace before the first CUDA call."""
+    os.environ.setdefault("CUBLAS_WORKSPACE_CONFIG", ":4096:8")
+
+
+def accelerator_device() -> torch.device:
+    """Device for a real-model step.
+
+    A visible GPU is used. An empty ``CUDA_VISIBLE_DEVICES`` or a machine
+    without CUDA keeps the CPU path.
+    """
+    _prepare_cublas_workspace()
+    if torch.cuda.is_available() and torch.cuda.device_count() > 0:
+        return torch.device("cuda", torch.cuda.current_device())
+    return torch.device("cpu")
+
+
+def accelerator_name(*, ranks: int = 1) -> str:
+    """``cuda`` when enough devices are visible for ``ranks`` processes."""
+    _prepare_cublas_workspace()
+    if torch.cuda.is_available() and torch.cuda.device_count() >= max(ranks, 1):
+        return "cuda"
+    return "cpu"
+
+
+def resolved_env_device(env_var: str, *, ranks: int = 1) -> str:
+    """Environment override, otherwise :func:`accelerator_name`."""
+    chosen = os.environ.get(env_var, "").strip()
+    if chosen:
+        return chosen
+    return accelerator_name(ranks=ranks)
+
+
+def prepare_accelerator_numerics(device: torch.device) -> None:
+    """Keep the CPU deterministic settings. Let a GPU step run.
+
+    ``reflection_pad1d`` and ``adaptive_max_pool2d`` have no deterministic CUDA
+    backward. These tests check that the step finishes, reloads, and stays
+    finite. They do not claim bitwise CUDA reproducibility. A production run
+    with ``deterministic: true`` is a separate path.
+    """
+    from src.training.core.rng import set_determinism
+
+    if device.type == "cuda":
+        set_determinism(False)
+        return
+    set_determinism(True, cuda=False)
+
+
+def enable_accelerator_determinism() -> torch.device:
+    device = accelerator_device()
+    prepare_accelerator_numerics(device)
+    return device
 
 
 def tiny_config(checkpoint_dir: Path, **overrides) -> dict:

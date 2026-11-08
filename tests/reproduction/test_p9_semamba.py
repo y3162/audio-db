@@ -532,7 +532,9 @@ class TrainerTests(unittest.TestCase):
             self.assertIn("train", (root / "ckpt" / "metrics.jsonl").read_text())
 
     def test_one_reduced_generator_step_is_finite(self):
+        from src.training.core.rng import set_determinism
         from src.training.se.semambapp import SEMambaTask
+        from tests.training.support import accelerator_device, prepare_accelerator_numerics
         from tests.training.test_model_tasks import _base
 
         data = _open(2, 1)
@@ -560,11 +562,17 @@ class TrainerTests(unittest.TestCase):
                 sampling_rate=16000,
                 grad_clip=1.0,
             )
-            task = SEMambaTask(config, torch.device("cpu"))
-            metrics = task.train_update(
-                [{"clean": clean, "noisy": noisy, "case_id": ["x"]}],
-                1,
-            )
+            device = accelerator_device()
+            previous = torch.are_deterministic_algorithms_enabled()
+            prepare_accelerator_numerics(device)
+            try:
+                task = SEMambaTask(config, device)
+                metrics = task.train_update(
+                    [{"clean": clean, "noisy": noisy, "case_id": ["x"]}],
+                    1,
+                )
+            finally:
+                set_determinism(previous, cuda=False)
         for value in metrics.values():
             self.assertTrue(np.isfinite(value), metrics)
 

@@ -42,7 +42,7 @@
 .venvs/se/bin/python -m unittest discover -s tests/se -v          # SE
 .venvs/se/bin/python -m unittest discover -s tests/asr -v         # ASR。重みをダウンロードしない
 .venvs/se/bin/python -m unittest discover -s tests/evaluation -v  # 評価。一時 DB だけを書き、resource.duckdb は変更しない
-.venvs/se/bin/python -m unittest discover -s tests/training -v    # 学習。CPU。resource.duckdb は開かない
+.venvs/se/bin/python -m unittest discover -s tests/training -v    # 学習。resource.duckdb は開かない。実モデルの step は見える GPU があれば使う。CUDA_VISIBLE_DEVICES が空なら CPU
 .venvs/se/bin/python -m src.training.se.cli --config configs/training/reproduction/tf_gridnet_ms_snsd_full.yaml --preflight --world-size 2  # 学習は始めない。PASS は公式再現の成功ではない
 .venvs/official/bin/python -m unittest tests.training.test_chunk_official -v  # ピン留め ESPnet の chunk iterator との照合。PYTHONPATH に espnet の checkout を足す。`.venvs/se` は typeguard が無く、このテストは SKIP になる
 # P5 の実 DDP は tests/training/p5_gpu_job.sh。node_h=1 は 2 GPU、node_f=1 は 4 GPU。承認された h_rt の合計を超えて投入しない
@@ -59,6 +59,8 @@ make reproduction-benchmark-dns-accept # 同じ設定の短い性能計測。全
 .venvs/se/bin/python -m src.evaluation.cli --config configs/evaluation/smoke.yaml --limit 2 --device cpu   # 合成音声 + mock
 .venvs/asr/bin/python -m tests.asr_smoke.run_smoke parakeet whisper wav2vec2   # 実 ASR のスモーク（GPU）
 ```
+
+`tests/training/test_model_tasks.py`、TensorBoard の実モデル統合、`test_p8_dfn3.py` の DeepFilterNet3 1 step、`test_p9_semamba.py` の SEMamba++ 1 step は、プロセスから GPU が見えるときその GPU で forward / backward / optimizer を実行する。2 rank は見える GPU が 2 枚以上のとき NCCL、1 枚以下のとき従来の CPU gloo である。`AUDIO_DB_TB_DEVICE` と `AUDIO_DB_TB_DDP_DEVICE` を置いたときはその指定が優先する。公式 CPU 数値照合、mock、gloo の集団通信試験、DB、snapshot は CPU のままである。GPU が無い、または `CUDA_VISIBLE_DEVICES` が空のときは、変更前の CPU 経路になる。GPU 上のこの試験は `use_deterministic_algorithms` を有効にしない。`reflection_pad1d` と `adaptive_max_pool2d` の CUDA backward に決定的実装が無く、試験の確認は step の完走、再読込、有限値、rank の一致である。`deterministic: true` の本番学習とは別である。SEMamba++ の micro-batch と 1 batch の勾配比較は CPU のままである。同じ seed の CUDA では generator 勾配の相対差が約 2 になり、許容誤差を広げると比較の意味が残らない。SEMamba++ の micro-batch と 1 batch の勾配比較は CPU のままである。同じ seed の CUDA では generator 勾配の相対差が約 2 になり、許容誤差を広げると比較の意味が残らない。
 
 学習の実行は `docs/training/MP_SENET.md`。決定的な CUDA 行列積には、プロセス起動前に `CUBLAS_WORKSPACE_CONFIG=:4096:8` を置く。複数 GPU は `CUDA_VISIBLE_DEVICES` と `torchrun` で、使用メモリが 1024 MiB 未満の GPU だけを見せる。
 

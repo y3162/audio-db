@@ -8,9 +8,9 @@ import torch.distributed as dist
 
 from src.training.core.batch import plan_batches
 from src.training.core.distributed import setup_process
+from tests.training.support import paired_dataset, prepare_accelerator_numerics, resolved_env_device
 from src.training.core.trainer import Trainer
 from src.training.se.tf_gridnet import TFGridNetTask
-from tests.training.support import paired_dataset
 from tests.training.test_model_tasks import _base
 
 
@@ -18,7 +18,9 @@ def main():
     rank, port, root = int(sys.argv[1]), sys.argv[2], Path(sys.argv[3])
     os.environ.update(MASTER_ADDR='127.0.0.1', MASTER_PORT=port, RANK=str(rank),
                       WORLD_SIZE='2', LOCAL_RANK=str(rank))
-    process = setup_process(os.environ.get('AUDIO_DB_TB_DDP_DEVICE', 'cpu'))
+    device_name = resolved_env_device('AUDIO_DB_TB_DDP_DEVICE', ranks=2)
+    prepare_accelerator_numerics(torch.device('cuda' if device_name == 'cuda' else 'cpu'))
+    process = setup_process(device_name)
     architecture = dict(n_fft=32, stride=16, n_layers=1, lstm_hidden_units=8, attn_n_head=1,
                         attn_approx_qk_dim=8, emb_dim=8, emb_ks=1, emb_hs=1)
     config = _base(root, 'tf_gridnet', variant='ms-snsd', architecture=architecture, segment_size=800)

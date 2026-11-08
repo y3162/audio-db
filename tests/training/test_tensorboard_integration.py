@@ -21,7 +21,7 @@ from src.training.se.semambapp import SEMambaTask
 from src.training.se.tf_gridnet import TFGridNetTask
 from src.training.se.tf_locoformer import TFLocoformerTask
 from tests.se.test_tf_locoformer import TINY
-from tests.training.support import paired_dataset
+from tests.training.support import paired_dataset, resolved_env_device
 from tests.training.test_model_tasks import _base
 
 
@@ -42,59 +42,68 @@ def model_cases():
 
 
 def check_model(name, device_name):
+    from src.training.core.rng import set_determinism
+
     cls, params, length = model_cases()[name]
-    with tempfile.TemporaryDirectory(prefix='audio-db-tb-test-') as tmp:
-        root = Path(tmp)
-        config = _base(root, name, segment_size=length, **params)
-        config['logging'] = {'tensorboard': {'enabled': True, 'scalar_interval': 1,
-            'audio': {'enabled': True, 'max_cases': 1, 'max_seconds': 1}, 'spectrogram': True}}
-        train = paired_dataset(root / 'train', 1, frames=length, segment_size=length, seed=config['seed'])
-        valid = paired_dataset(root / 'valid', 1, frames=length, segment_size=length, seed=config['seed'] + 1)
-        device = torch.device(device_name)
-        process = ProcessInfo(0, 1, 0, device, False)
-        task = cls(config, device)
-        trainer = Trainer(task, plan_batches(1, 1, 1), process, max_steps=1, seed=config['seed'],
-                          checkpoint_dir=root / 'ckpt', checkpoint_interval=0, validation_interval=1, config=config)
-        trainer.fit(train, valid)
-        records = [json.loads(line) for line in (root / 'ckpt' / 'metrics.jsonl').read_text().splitlines()]
-        train_record = next(r for r in records if r['type'] == 'train')
-        valid_record = next(r for r in records if r['type'] == 'validation')
-        events = EventAccumulator(str(root / 'ckpt' / 'tensorboard')).Reload()
-        for key, value in train_record['losses'].items():
-            logged = events.Scalars('train/loss/' + key)
-            assert len(logged) == 1 and logged[0].step == 1 and math.isclose(logged[0].value, value, rel_tol=1e-6, abs_tol=1e-7), (name, key, logged, value)
-        for key, value in valid_record['losses'].items():
-            tag = 'validation/loss/' + key
-            if value['status'] == 'ok' and value['value'] is not None and math.isfinite(value['value']):
-                logged = events.Scalars(tag)
-                assert len(logged) == 1 and logged[0].step == 1 and math.isclose(logged[0].value, value['value'], rel_tol=1e-6, abs_tol=1e-7), (name, key)
-            else:
-                assert tag not in events.Tags()['scalars'], (name, key)
-        for key in ('pesq', 'stoi', 'si_sdr', 'si_snr'):
-            value = valid_record.get(key)
-            tag = 'validation/' + key
-            if value and value.get('status') == 'ok' and value.get('value') is not None and math.isfinite(value['value']):
-                logged = events.Scalars(tag)
-                assert len(logged) == 1 and logged[0].step == 1 and math.isclose(logged[0].value, value['value'], rel_tol=1e-6, abs_tol=1e-7), (name, key)
-            else:
-                assert tag not in events.Tags()['scalars'], (name, key)
-        for key, value in train_record['learning_rate'].items():
-            logged = events.Scalars('learning_rate/after_update/' + key)
-            assert len(logged) == 1 and logged[0].step == 1 and math.isclose(logged[0].value, value, rel_tol=1e-6, abs_tol=1e-8), (name, key)
-        assert len(events.Tags()['audio']) == 3, (name, events.Tags())
-        assert len(events.Tags()['images']) == 1, (name, events.Tags())
-        errors = [x for x in events.Tags()['tensors'] if x.startswith('preview_errors/')]
-        assert not errors, [(x, events.Tensors(x)[0].tensor_proto.string_val) for x in errors]
-        if device.type == 'cuda':
-            assert events.Scalars('performance/cuda_allocated_bytes_rank0')[0].value > 0
-        print(f'PASS {name} device={device_name} losses={list(train_record["losses"])}', flush=True)
+    from tests.training.support import prepare_accelerator_numerics
+
+    previous = torch.are_deterministic_algorithms_enabled()
+    prepare_accelerator_numerics(torch.device(device_name))
+    try:
+        with tempfile.TemporaryDirectory(prefix='audio-db-tb-test-') as tmp:
+            root = Path(tmp)
+            config = _base(root, name, segment_size=length, **params)
+            config['logging'] = {'tensorboard': {'enabled': True, 'scalar_interval': 1,
+                'audio': {'enabled': True, 'max_cases': 1, 'max_seconds': 1}, 'spectrogram': True}}
+            train = paired_dataset(root / 'train', 1, frames=length, segment_size=length, seed=config['seed'])
+            valid = paired_dataset(root / 'valid', 1, frames=length, segment_size=length, seed=config['seed'] + 1)
+            device = torch.device(device_name)
+            process = ProcessInfo(0, 1, 0, device, False)
+            task = cls(config, device)
+            trainer = Trainer(task, plan_batches(1, 1, 1), process, max_steps=1, seed=config['seed'],
+                              checkpoint_dir=root / 'ckpt', checkpoint_interval=0, validation_interval=1, config=config)
+            trainer.fit(train, valid)
+            records = [json.loads(line) for line in (root / 'ckpt' / 'metrics.jsonl').read_text().splitlines()]
+            train_record = next(r for r in records if r['type'] == 'train')
+            valid_record = next(r for r in records if r['type'] == 'validation')
+            events = EventAccumulator(str(root / 'ckpt' / 'tensorboard')).Reload()
+            for key, value in train_record['losses'].items():
+                logged = events.Scalars('train/loss/' + key)
+                assert len(logged) == 1 and logged[0].step == 1 and math.isclose(logged[0].value, value, rel_tol=1e-6, abs_tol=1e-7), (name, key, logged, value)
+            for key, value in valid_record['losses'].items():
+                tag = 'validation/loss/' + key
+                if value['status'] == 'ok' and value['value'] is not None and math.isfinite(value['value']):
+                    logged = events.Scalars(tag)
+                    assert len(logged) == 1 and logged[0].step == 1 and math.isclose(logged[0].value, value['value'], rel_tol=1e-6, abs_tol=1e-7), (name, key)
+                else:
+                    assert tag not in events.Tags()['scalars'], (name, key)
+            for key in ('pesq', 'stoi', 'si_sdr', 'si_snr'):
+                value = valid_record.get(key)
+                tag = 'validation/' + key
+                if value and value.get('status') == 'ok' and value.get('value') is not None and math.isfinite(value['value']):
+                    logged = events.Scalars(tag)
+                    assert len(logged) == 1 and logged[0].step == 1 and math.isclose(logged[0].value, value['value'], rel_tol=1e-6, abs_tol=1e-7), (name, key)
+                else:
+                    assert tag not in events.Tags()['scalars'], (name, key)
+            for key, value in train_record['learning_rate'].items():
+                logged = events.Scalars('learning_rate/after_update/' + key)
+                assert len(logged) == 1 and logged[0].step == 1 and math.isclose(logged[0].value, value, rel_tol=1e-6, abs_tol=1e-8), (name, key)
+            assert len(events.Tags()['audio']) == 3, (name, events.Tags())
+            assert len(events.Tags()['images']) == 1, (name, events.Tags())
+            errors = [x for x in events.Tags()['tensors'] if x.startswith('preview_errors/')]
+            assert not errors, [(x, events.Tensors(x)[0].tensor_proto.string_val) for x in errors]
+            if device.type == 'cuda':
+                assert events.Scalars('performance/cuda_allocated_bytes_rank0')[0].value > 0
+            print(f'PASS {name} device={device_name} losses={list(train_record["losses"])}', flush=True)
+    finally:
+        set_determinism(previous, cuda=False)
 
 
 @unittest.skipIf(EventAccumulator is None, "tensorboard not installed")
 class TensorBoardModelIntegration(unittest.TestCase):
     def test_models(self):
         names = os.environ.get('AUDIO_DB_TB_MODELS', ','.join(model_cases())).split(',')
-        device = os.environ.get('AUDIO_DB_TB_DEVICE', 'cpu')
+        device = resolved_env_device('AUDIO_DB_TB_DEVICE', ranks=1)
         for name in names:
             with self.subTest(model=name):
                 check_model(name, device)
@@ -144,7 +153,7 @@ class TensorBoardDDPIntegration(unittest.TestCase):
                 code = isolated_worker_code(root_dir / 'tests/training/tensorboard_models_ddp_worker.py')
                 def arguments(port):
                     return [[sys.executable, '-c', code, str(rank), str(port), str(root), name] for rank in range(2)]
-                # Official-width MossFormerGAN took 669s on this CPU host.
+                # Two visible GPUs use NCCL. Fewer than two keeps this loop on CPU gloo.
                 run_distributed_workers(arguments, cwd=root_dir, timeout=1500)
                 left = torch.load(root / 'parameters-0.pt', map_location='cpu', weights_only=True)
                 right = torch.load(root / 'parameters-1.pt', map_location='cpu', weights_only=True)
@@ -185,7 +194,7 @@ class TensorBoardDDPIntegration(unittest.TestCase):
                 self.assertFalse([tag for tag in events.Tags()['tensors'] if tag.startswith('preview_errors/')])
                 evidence = (root / 'ddp-backend.txt').read_text().replace('\n', ' | ')
                 print(
-                    f'PASS DDP {name} device={os.environ.get("AUDIO_DB_TB_DDP_DEVICE", "cpu")} '
+                    f'PASS DDP {name} device={resolved_env_device("AUDIO_DB_TB_DDP_DEVICE", ranks=2)} '
                     f'max_abs_diff={max_diff} rtol=1e-6 atol=1e-7 checkpoints={checkpoints} '
                     f'train_steps={[r["global_step"] for r in train]} '
                     f'batch={train[0]["global_batch_size"]}/{train[0]["micro_batch_size"]} '
@@ -243,7 +252,7 @@ class TensorBoardDDPIntegration(unittest.TestCase):
             evidence = (root / 'ddp-backend.txt').read_text().replace('\n', ' | ')
             checkpoints = sorted(path.name for path in (root / 'ckpt').glob('step_*.pt'))
             print(
-                f'PASS DDP tf_gridnet device={os.environ.get("AUDIO_DB_TB_DDP_DEVICE", "cpu")} '
+                f'PASS DDP tf_gridnet device={resolved_env_device("AUDIO_DB_TB_DDP_DEVICE", ranks=2)} '
                 f'max_abs_diff={max_diff} rtol=1e-6 atol=1e-7 checkpoints={checkpoints} '
                 f'train_steps={[r["global_step"] for r in train]} '
                 f'batch={train[0]["global_batch_size"]}/{train[0]["micro_batch_size"]} '

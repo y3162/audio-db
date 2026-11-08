@@ -15,7 +15,11 @@ from src.training.se.deepfilternet import DeepFilterNetTask, deepfilter_cosine_s
 from src.training.se.mossformergan import MossFormerGANTask
 from src.training.se.semambapp import SEMambaTask
 from src.training.se.tf_gridnet import TFGridNetTask
-from tests.training.support import paired_dataset, tiny_config
+from tests.training.support import accelerator_device, enable_accelerator_determinism, paired_dataset, tiny_config
+
+
+def _device() -> torch.device:
+    return accelerator_device()
 
 
 def tearDownModule():
@@ -67,7 +71,7 @@ def _updated(task, dataset, *, require_gradients: bool = True) -> dict[str, floa
 class GridNetOfficialTests(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
-        set_determinism(True, cuda=False)
+        enable_accelerator_determinism()
 
     def test_ms_snsd_official_loss_reloads(self):
         architecture = {
@@ -86,17 +90,17 @@ class GridNetOfficialTests(unittest.TestCase):
             config = _base(root, "tf_gridnet", variant="ms-snsd", architecture=architecture, segment_size=800)
             config["scheduler"] = {"name": "plateau", "factor": 0.7, "patience": 1}
             with seed_model_init(config["seed"]):
-                task = TFGridNetTask(config, torch.device("cpu"))
+                task = TFGridNetTask(config, _device())
             data = paired_dataset(root / "wav", 1, frames=800, segment_size=800, seed=config["seed"])
             metrics = _updated(task, data)
             self.assertIn("mr_l1_tfd", metrics)
             path = root / "separator.pt"
             torch.save(task.export_for_inference(), path)
-            enhancer = load_enhancer("tf_gridnet", {"model": str(path)}, device="cpu", config=architecture, variant="ms-snsd")
+            enhancer = load_enhancer("tf_gridnet", {"model": str(path)}, device=_device().type, config=architecture, variant="ms-snsd")
             enhanced = enhancer.enhance(torch.randn(800), 16000)
             self.assertEqual(tuple(enhanced.shape), (800,))
             self.assertTrue(torch.isfinite(enhanced).all())
-            restored = TFGridNetTask(config, torch.device("cpu"))
+            restored = TFGridNetTask(config, _device())
             restored.load_state_dict(task.state_dict())
             self.assertTrue(torch.equal(next(restored.generator.parameters()), next(task.generator.parameters())))
 
@@ -120,7 +124,7 @@ class GridNetOfficialTests(unittest.TestCase):
                 segment_size=1024,
                 scheduler={"name": "steplr", "gamma": 0.5, "step_size": 2},
             )
-            task = TFGridNetTask(config, torch.device("cpu"))
+            task = TFGridNetTask(config, _device())
             data = paired_dataset(root / "wav", 1, frames=1024, segment_size=1024, seed=config["seed"])
             _updated(task, data)
             before = task.learning_rates()["generator"]
@@ -139,7 +143,7 @@ class GridNetOfficialTests(unittest.TestCase):
                 segment_size=1024,
                 scheduler={"name": "plateau", "factor": 0.7, "patience": 1},
             )
-            task = TFGridNetTask(config, torch.device("cpu"))
+            task = TFGridNetTask(config, _device())
             self.assertEqual(len(task.generator.blocks), 4)
             self.assertEqual(task.generator.n_fft, 512)
             data = paired_dataset(root / "wav", 1, frames=1024, segment_size=1024, seed=config["seed"])
@@ -147,11 +151,11 @@ class GridNetOfficialTests(unittest.TestCase):
             self.assertIn("mr_l1_tfd", metrics)
             path = root / "separator.pt"
             torch.save(task.export_for_inference(), path)
-            enhancer = load_enhancer("tf_gridnet", {"model": str(path)}, device="cpu", variant="ms-snsd")
+            enhancer = load_enhancer("tf_gridnet", {"model": str(path)}, device=_device().type, variant="ms-snsd")
             enhanced = enhancer.enhance(torch.randn(1024), 16000)
             self.assertEqual(tuple(enhanced.shape), (1024,))
             self.assertTrue(torch.isfinite(enhanced).all())
-            restored = TFGridNetTask(config, torch.device("cpu"))
+            restored = TFGridNetTask(config, _device())
             restored.load_state_dict(task.state_dict())
             self.assertTrue(torch.equal(next(restored.generator.parameters()), next(task.generator.parameters())))
 
@@ -159,7 +163,7 @@ class GridNetOfficialTests(unittest.TestCase):
 class SEMambaTests(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
-        set_determinism(True, cuda=False)
+        enable_accelerator_determinism()
 
     def test_official_step_is_finite_and_reloads(self):
         architecture = {
@@ -179,7 +183,7 @@ class SEMambaTests(unittest.TestCase):
                 stft={"hop": 100, "win": 400, "disc_windows": [256, 512]},
                 segment_size=2048,
             )
-            task = SEMambaTask(config, torch.device("cpu"))
+            task = SEMambaTask(config, _device())
             data = paired_dataset(root / "wav", 1, frames=2048, segment_size=2048, seed=config["seed"])
             metrics = _updated(task, data)
             self.assertIn("discriminator", metrics)
@@ -192,11 +196,14 @@ class SEMambaTests(unittest.TestCase):
             self.assertIn(report["pesq"]["status"], {"ok", "na", "unavailable", "error"})
             path = root / "generator.pt"
             torch.save(task.export_for_inference(), path)
-            enhancer = load_enhancer("semambapp", path, device="cpu", config=architecture)
+            enhancer = load_enhancer("semambapp", path, device=_device().type, config=architecture)
             enhanced = enhancer.enhance(torch.randn(2048), 16000)
             self.assertTrue(torch.isfinite(enhanced).all())
 
     def test_accumulated_microbatches_match_one_batch(self):
+        # Two reductions of one update. A CUDA run of the same seed produced
+        # generator gradients with relative gap about 2, so this comparison
+        # stays on CPU. The finite-step test above still uses a visible GPU.
         architecture = {
             "hid_feature": 8,
             "num_tfmamba": 1,
@@ -205,50 +212,56 @@ class SEMambaTests(unittest.TestCase):
             "expand": 2,
             "n_fft": 400,
         }
-        with tempfile.TemporaryDirectory() as directory:
-            root = Path(directory)
-            config = _base(
-                root,
-                "semambapp",
-                architecture=architecture,
-                stft={"hop": 100, "win": 400, "disc_windows": [256, 512]},
-                segment_size=1600,
-            )
-            full = SEMambaTask(config, torch.device("cpu"))
-            split = SEMambaTask(config, torch.device("cpu"))
-            data = paired_dataset(root / "wav", 2, frames=1600, segment_size=1600, seed=config["seed"])
-            full.capture_update = split.capture_update = True
-            full.capture_gradients = split.capture_gradients = True
-            full_metrics = full.train_update([data.collate([0, 1])], 1)
-            split_metrics = split.train_update([data.collate([0]), data.collate([1])], 2)
-            for name in ("generator", "discriminator", "magnitude", "phase", "complex", "consistency"):
-                self.assertAlmostEqual(full_metrics[name], split_metrics[name], places=4)
-            for kind in ("generator_grad", "discriminator_grad"):
-                left = full.last_capture[kind]
-                right = split.last_capture[kind]
-                self.assertEqual(set(left), set(right))
-                for key in left:
-                    self.assertTrue(torch.allclose(left[key], right[key], rtol=1e-4, atol=1e-5), key)
-            # AdamW's epsilon amplifies gradient elements below about 1e-6, so the
-            # weight check follows the gradient elements that actually match a step.
-            named = dict(full.last_capture["generator_grad"])
-            for name, left in full.generator.named_parameters():
-                key = f"{full.generator.__class__.__name__}.{name}"
-                right = dict(split.generator.named_parameters())[name]
-                grad = named[key]
-                mask = grad.abs() >= 1e-6
-                if int(mask.sum()) == 0:
-                    continue
-                self.assertTrue(
-                    torch.allclose(left.detach().cpu()[mask], right.detach().cpu()[mask], rtol=1e-4, atol=1e-5),
-                    name,
+        previous = torch.are_deterministic_algorithms_enabled()
+        set_determinism(True, cuda=False)
+        try:
+            with tempfile.TemporaryDirectory() as directory:
+                root = Path(directory)
+                config = _base(
+                    root,
+                    "semambapp",
+                    architecture=architecture,
+                    stft={"hop": 100, "win": 400, "disc_windows": [256, 512]},
+                    segment_size=1600,
                 )
+                cpu = torch.device("cpu")
+                full = SEMambaTask(config, cpu)
+                split = SEMambaTask(config, cpu)
+                data = paired_dataset(root / "wav", 2, frames=1600, segment_size=1600, seed=config["seed"])
+                full.capture_update = split.capture_update = True
+                full.capture_gradients = split.capture_gradients = True
+                full_metrics = full.train_update([data.collate([0, 1])], 1)
+                split_metrics = split.train_update([data.collate([0]), data.collate([1])], 2)
+                for name in ("generator", "discriminator", "magnitude", "phase", "complex", "consistency"):
+                    self.assertAlmostEqual(full_metrics[name], split_metrics[name], places=4)
+                for kind in ("generator_grad", "discriminator_grad"):
+                    left = full.last_capture[kind]
+                    right = split.last_capture[kind]
+                    self.assertEqual(set(left), set(right))
+                    for key in left:
+                        self.assertTrue(torch.allclose(left[key], right[key], rtol=1e-4, atol=1e-5), key)
+                # AdamW's epsilon amplifies gradient elements below about 1e-6, so the
+                # weight check follows the gradient elements that actually match a step.
+                named = dict(full.last_capture["generator_grad"])
+                for name, left in full.generator.named_parameters():
+                    key = f"{full.generator.__class__.__name__}.{name}"
+                    right = dict(split.generator.named_parameters())[name]
+                    grad = named[key]
+                    mask = grad.abs() >= 1e-6
+                    if int(mask.sum()) == 0:
+                        continue
+                    self.assertTrue(
+                        torch.allclose(left.detach().cpu()[mask], right.detach().cpu()[mask], rtol=1e-4, atol=1e-5),
+                        name,
+                    )
+        finally:
+            set_determinism(previous, cuda=False)
 
 
 class DeepFilterTests(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
-        set_determinism(True, cuda=False)
+        enable_accelerator_determinism()
 
     def test_shrinking_emb_layers_fails_in_erb_decoder(self):
         with self.assertRaises(ValueError):
@@ -291,12 +304,12 @@ class DeepFilterTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
             config = _base(root, "deepfilternet3", architecture=architecture, segment_size=1024, grad_clip=1.0)
-            task = DeepFilterNetTask(config, torch.device("cpu"))
+            task = DeepFilterNetTask(config, _device())
             data = paired_dataset(root / "wav", 1, frames=1024, segment_size=1024, seed=config["seed"])
             _updated(task, data)
             path = root / "model.pt"
             torch.save(task.export_for_inference(), path)
-            enhancer = load_enhancer("deepfilternet3", path, device="cpu", config=architecture)
+            enhancer = load_enhancer("deepfilternet3", path, device=_device().type, config=architecture)
             waveform = torch.randn(1024)
             first = enhancer.enhance(waveform, 16000)
             second = enhancer.enhance(waveform, 16000)
@@ -345,12 +358,12 @@ class DeepFilterTests(unittest.TestCase):
             task_config["optimizer"]["weight_decay"] = 1e-12
             task_config["optimizer"]["amsgrad"] = True
             task_config["scheduler"] = {"name": "deepfilter_cosine", **config["scheduler"]}
-            task = DeepFilterNetTask(task_config, torch.device("cpu"))
+            task = DeepFilterNetTask(task_config, _device())
             data = paired_dataset(root / "wav", 1, frames=1024, segment_size=1024, seed=task_config["seed"])
             _updated(task, data)
             self.assertAlmostEqual(task.optim_g.param_groups[0]["lr"], 1e-4)
             self.assertEqual(task._df_step, 1)
-            restored = DeepFilterNetTask(task_config, torch.device("cpu"))
+            restored = DeepFilterNetTask(task_config, _device())
             restored.load_state_dict(task.state_dict())
             self.assertEqual(restored._df_step, 1)
 
@@ -359,23 +372,23 @@ class DeepFilterTests(unittest.TestCase):
             root = Path(directory)
             config = _base(root, "deepfilternet3", architecture={}, segment_size=4800, sampling_rate=48000, grad_clip=1.0)
             config["optimizer"] = {"name": "adamw", "lr": 0.001, "betas": [0.9, 0.999], "weight_decay": 1e-12, "amsgrad": True}
-            task = DeepFilterNetTask(config, torch.device("cpu"))
+            task = DeepFilterNetTask(config, _device())
             self.assertEqual(task.generator.params.conv_ch, 64)
             self.assertEqual(task.generator.params.emb_num_layers, 3)
-            again = DeepFilterNetTask(config, torch.device("cpu"))
+            again = DeepFilterNetTask(config, _device())
             self.assertTrue(torch.equal(next(task.generator.parameters()), next(again.generator.parameters())))
             data = paired_dataset(root / "wav", 1, frames=4800, segment_size=4800, seed=config["seed"])
             metrics = _updated(task, data)
             self.assertTrue(all(value == value and abs(value) != float("inf") for value in metrics.values()))
             path = root / "model.pt"
             torch.save(task.export_for_inference(), path)
-            enhancer = load_enhancer("deepfilternet3", path, device="cpu")
+            enhancer = load_enhancer("deepfilternet3", path, device=_device().type)
             waveform = torch.randn(4800)
             first = enhancer.enhance(waveform, 48000)
             second = enhancer.enhance(waveform, 48000)
             self.assertTrue(torch.equal(first, second))
             self.assertTrue(torch.isfinite(first).all())
-            restored = DeepFilterNetTask(config, torch.device("cpu"))
+            restored = DeepFilterNetTask(config, _device())
             restored.load_state_dict(task.state_dict())
             self.assertTrue(torch.equal(next(restored.generator.parameters()), next(task.generator.parameters())))
 
@@ -383,7 +396,7 @@ class DeepFilterTests(unittest.TestCase):
 class MossFormerTests(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
-        set_determinism(True, cuda=False)
+        enable_accelerator_determinism()
 
     def test_official_width_step(self):
         with tempfile.TemporaryDirectory() as directory:
@@ -396,7 +409,7 @@ class MossFormerTests(unittest.TestCase):
                 segment_size=8000,
                 grad_clip=10.0,
             )
-            task = MossFormerGANTask(config, torch.device("cpu"))
+            task = MossFormerGANTask(config, _device())
             data = paired_dataset(root / "wav", 1, frames=8000, segment_size=8000, seed=config["seed"])
             metrics = _updated(task, data, require_gradients=False)
             self.assertGreater(task.learning_rates()["discriminator"], task.learning_rates()["generator"])
@@ -406,7 +419,7 @@ class MossFormerTests(unittest.TestCase):
             enhancer = load_enhancer(
                 "mossformergan",
                 path,
-                device="cpu",
+                device=_device().type,
                 config={"n_fft": 400, "num_channel": 64},
                 variant="se_16k",
             )

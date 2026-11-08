@@ -8,9 +8,9 @@ import torch.distributed as dist
 
 from src.training.core.batch import plan_batches
 from src.training.core.distributed import setup_process, unwrap
+from tests.training.support import paired_dataset, prepare_accelerator_numerics, resolved_env_device, tiny_config
 from src.training.core.trainer import Trainer
 from src.training.se.mp_senet import MPSENetTask
-from tests.training.support import paired_dataset, tiny_config
 from tests.training.test_model_tasks import _base
 from tests.training.test_tensorboard_integration import model_cases
 
@@ -34,7 +34,9 @@ def main():
     rank, port, root, name = int(sys.argv[1]), sys.argv[2], Path(sys.argv[3]), sys.argv[4]
     os.environ.update(MASTER_ADDR='127.0.0.1', MASTER_PORT=port, RANK=str(rank),
                       WORLD_SIZE='2', LOCAL_RANK=str(rank))
-    process = setup_process(os.environ.get('AUDIO_DB_TB_DDP_DEVICE', 'cpu'))
+    device_name = resolved_env_device('AUDIO_DB_TB_DDP_DEVICE', ranks=2)
+    prepare_accelerator_numerics(torch.device('cuda' if device_name == 'cuda' else 'cpu'))
+    process = setup_process(device_name)
     cls, config, length = case(name, root)
     global_batch = int(os.environ.get('AUDIO_DB_TB_DDP_GLOBAL_BATCH', '2'))
     config['global_batch_size'] = global_batch
