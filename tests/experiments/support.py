@@ -177,6 +177,110 @@ def null_trainer() -> dict[str, object]:
     return {"role": "trainer", "class": "tests.experiments.support.NullTrainer"}
 
 
+class InspectTrainer:
+    """Checks DDP parameter identity, then runs :class:`StandardTrainer`."""
+
+    def __init__(self, *args: object, **kwargs: object) -> None:
+        from src.experiments.trainers import StandardTrainer
+
+        self._trainer = StandardTrainer(*args, **kwargs)  # type: ignore[arg-type]
+
+    def run(self, runtime: object, checkpoint: object):  # type: ignore[no-untyped-def]
+        from torch.nn.parallel import DistributedDataParallel
+
+        handle = self._trainer.model
+        if not isinstance(handle.module, DistributedDataParallel):
+            raise RuntimeError("model was not wrapped with DistributedDataParallel")
+        if handle.module.module is not handle.state_module:
+            raise RuntimeError("checkpoint state is not the unwrapped module")
+        wrapped_ids = [id(parameter) for parameter in handle.module.parameters()]
+        raw_ids = [id(parameter) for parameter in handle.state_module.parameters()]
+        if wrapped_ids != raw_ids:
+            raise RuntimeError("DDP replaced parameter objects")
+        optimizer_ids = {
+            id(parameter)
+            for group in self._trainer.optimizer.param_groups
+            for parameter in group["params"]
+        }
+        if optimizer_ids != set(raw_ids):
+            raise RuntimeError("optimizer does not hold the prepared parameters")
+        if getattr(runtime, "backend", None) != "gloo":
+            raise RuntimeError(f"backend is {getattr(runtime, 'backend', None)}")
+        return self._trainer.run(runtime, checkpoint)  # type: ignore[arg-type]
+
+    def state_dict(self) -> dict[str, object]:
+        return self._trainer.state_dict()
+
+    def load_state_dict(self, state: dict[str, object]) -> None:
+        self._trainer.load_state_dict(state)
+
+    def __getattr__(self, name: str) -> object:
+        return getattr(self._trainer, name)
+
+
+class TamperTrainer:
+    """Runs the standard loop and corrupts rank 1 before the second save."""
+
+    def __init__(self, *args: object, tamper: str, **kwargs: object) -> None:
+        from src.experiments.trainers import StandardTrainer
+
+        if tamper not in {"weight", "buffer"}:
+            raise ValueError("tamper must be weight or buffer")
+        self._trainer = StandardTrainer(*args, **kwargs)  # type: ignore[arg-type]
+        self.tamper = tamper
+
+    def run(self, runtime: object, checkpoint: object):  # type: ignore[no-untyped-def]
+        self._trainer._before_checkpoint = self._before_checkpoint  # type: ignore[method-assign]
+        return self._trainer.run(runtime, checkpoint)  # type: ignore[arg-type]
+
+    def _before_checkpoint(self, runtime: object, checkpoint: object) -> None:
+        import hashlib
+
+        trainer = self._trainer
+        if trainer.logical_step != 2:
+            return
+        directory = checkpoint.directory  # type: ignore[attr-defined]
+        if int(getattr(runtime, "rank", 0)) == 0:
+            previous = directory / "step_00000001.pt"
+            digest = hashlib.sha256(previous.read_bytes()).hexdigest()
+            (directory / "previous.sha256").write_text(digest + "\n", encoding="utf-8")
+            return
+        module = trainer.model.state_module
+        with torch.no_grad():
+            if self.tamper == "weight":
+                module.linear.weight.add_(1)
+            else:
+                module.marker.add_(1)
+
+    def state_dict(self) -> dict[str, object]:
+        return self._trainer.state_dict()
+
+    def load_state_dict(self, state: dict[str, object]) -> None:
+        self._trainer.load_state_dict(state)
+
+    def __getattr__(self, name: str) -> object:
+        return getattr(self._trainer, name)
+
+
+class DisagreeTrainer:
+    """Calls ``agree`` with a different flag on each rank."""
+
+    def __init__(self, max_logical_steps: int = 1) -> None:
+        self.max_logical_steps = max_logical_steps
+
+    def run(self, runtime: object, checkpoint: object) -> None:
+        del checkpoint
+        flag = int(getattr(runtime, "rank", 0)) == 0
+        runtime.agree(flag, policy="identical")  # type: ignore[attr-defined]
+        raise RuntimeError("agree returned despite a disagreement")
+
+    def state_dict(self) -> dict[str, object]:
+        return {"logical_step": 0, "optimizer_updates": {}, "stop_reason": "initialized"}
+
+    def load_state_dict(self, state: dict[str, object]) -> None:
+        del state
+
+
 class DropoutLinear(nn.Module):
     """Linear layer whose dropout consumes the process RNG.
 

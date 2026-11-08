@@ -1,6 +1,6 @@
 # 状態と Checkpoint
 
-Phase 2-A は `audio-db-experiment-v1` の保存と復元を CPU / FP32、world size 1 で実装している。現行形式 `audio-db-training-v1` はこの仕様の対象外であり、新ローダはそれを `CheckpointError` で拒否する。CPU の復元順は Phase 0 の「Prepare 前」とは違い、[PHASE_2A_CHECKPOINT.md](PHASE_2A_CHECKPOINT.md) に理由と、DDP / FSDP で戻すべき順を書いた。以下は Phase 0 の仕様である。
+Phase 2-A は `audio-db-experiment-v1` を CPU / FP32、world size 1 で保存し、復元する。Phase 2-B は同じ形式のまま、CPU / Gloo の world size 2 で rank 0 が 1 ファイルを書く。shard は作らない。現行形式 `audio-db-training-v1` は `CheckpointError` で拒否する。CPU と CPU/Gloo の復元は Prepare と Optimizer 生成の後である。理由は [PHASE_2A_CHECKPOINT.md](PHASE_2A_CHECKPOINT.md) と [PHASE_2B_DDP.md](PHASE_2B_DDP.md)。以下は Phase 0 の仕様である。
 
 ## 再現性の三層
 
@@ -147,7 +147,7 @@ RNG の 1 rank 分は、現行 `capture_rank_rng` と同じく Python、NumPy、
 
 ## 分散 Checkpoint
 
-Phase 2 は shard しない。全 rank のパラメータが一致している前提で、rank 0 の `state_dict` だけを module と optimizer に書く。保存前に、パラメータのフィンガープリントハッシュを all-gather し、rank 間で違えば `CheckpointError`。MossFormerGAN の現行実装は増分を平均するので、この検査に通ることを期待する。公式 DDP の重み割れをコピーした状態は、この検査で拒否する。それが目的である。
+Phase 2 は shard しない。全 rank のパラメータが一致している前提で、rank 0 の `state_dict` だけを module と optimizer に書く。Phase 2-B は保存前に、module の parameter と buffer、optimizer、scheduler、trainer、data の dtype、shape、値を all-gather して比べる。Python の `id()` は使わない。RNG は比べない。不一致なら `CheckpointError` で、完成ファイルは置き換えない。公式 DDP の重み割れをコピーした状態は、この検査で拒否する。それが目的である。
 
 RNG だけは rank ごとに違う。`rng_by_rank` の長さは world size と一致する。
 

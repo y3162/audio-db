@@ -14,6 +14,7 @@ from src.experiments.builder import BuiltGraph, ExperimentBuilder
 from src.experiments.checkpoint import (
     CheckpointManager,
     DirectoryLock,
+    acquire_directory_lock,
     assert_output_allowed,
     write_complete,
     write_status,
@@ -51,6 +52,7 @@ class Experiment:
         self._directory: Path | None = None
         self._lock: DirectoryLock | None = None
         self._checkpoint: CheckpointManager | None = None
+        self._runtime: object | None = None
         self._running = False
 
     def build(self) -> Experiment:
@@ -60,9 +62,10 @@ class Experiment:
             raise StateError("experiment is already built")
         if self._closed:
             raise StateError("experiment is closed")
-        self._open_directory()
+        runtime = _create_runtime(self.config)
+        self._runtime = runtime
         try:
-            runtime = _create_runtime(self.config)
+            self._open_directory(runtime)
             self._graph = ExperimentBuilder().build(self.config, runtime)
             if self._checkpoint is not None:
                 self._checkpoint.attach(self.config, self._graph)
@@ -104,17 +107,22 @@ class Experiment:
                 self._checkpoint.restore(Path(initialize_from), mode="initialize")
             self._graph.states.seal()
             self._running = True
-            self._write_status("RUNNING")
+            if self._is_primary():
+                self._write_status("RUNNING")
+            self._barrier()
             result = self._graph.trainer.run(self._graph.runtime, self._checkpoint)  # type: ignore[attr-defined]
             if not isinstance(result, RunResult):
                 raise BuildError(f"component {self.config.entry}: trainer did not return RunResult")
             if result.stop_reason == "completed":
-                write_complete(self._directory, result.logical_step)
-                self._write_status("COMPLETED")
+                if self._is_primary():
+                    write_complete(self._directory, result.logical_step)
+                    self._write_status("COMPLETED")
             elif result.stop_reason == "interrupted":
-                self._write_status("INTERRUPTED")
+                if self._is_primary():
+                    self._write_status("INTERRUPTED")
             else:
                 raise BuildError(f"component {self.config.entry}: unknown stop reason {result.stop_reason}")
+            self._barrier()
             self._ran = True
             return result
         except Exception:
@@ -151,12 +159,17 @@ class Experiment:
                 close = getattr(component, "close", None)
                 if callable(close):
                     close()
+        runtime = self._runtime if self._runtime is not None else getattr(graph, "runtime", None)
+        shutdown = getattr(runtime, "shutdown", None)
+        if callable(shutdown):
+            shutdown()
+        else:
             _destroy_process_group()
         if self._lock is not None:
             self._lock.release()
             self._lock = None
 
-    def _open_directory(self) -> None:
+    def _open_directory(self, runtime: object) -> None:
         directory = self.config.output_directory
         if not directory.is_absolute():
             directory = Path.cwd() / directory
@@ -166,9 +179,13 @@ class Experiment:
             directory.mkdir(parents=True, exist_ok=True)
         except OSError as exc:
             raise CheckpointError(f"cannot create output directory {directory}: {exc}") from exc
-        self._directory = directory
-        self._lock = DirectoryLock(directory)
         self._checkpoint = CheckpointManager(directory)
+        try:
+            self._lock = acquire_directory_lock(directory, runtime)
+        except ExperimentError:
+            self._checkpoint = None
+            raise
+        self._directory = directory
 
     def _write_status(self, status: str) -> None:
         if self._directory is None:
@@ -176,15 +193,30 @@ class Experiment:
         write_status(self._directory, status)
 
     def _mark_failed(self) -> None:
-        if self._directory is None or self._closed:
+        if self._closed:
             return
-        status_path = self._directory / "status.json"
-        if self._running or not status_path.is_file():
-            try:
-                self._write_status("FAILED")
-            except OSError:
-                pass
+        if self._directory is not None and self._is_primary():
+            status_path = self._directory / "status.json"
+            if self._running or not status_path.is_file():
+                try:
+                    self._write_status("FAILED")
+                except OSError:
+                    pass
         self.close()
+
+    def _is_primary(self) -> bool:
+        runtime = self._runtime
+        if runtime is None and self._graph is not None:
+            runtime = self._graph.runtime
+        return int(getattr(runtime, "rank", 0)) == 0
+
+    def _barrier(self) -> None:
+        runtime = self._runtime
+        if runtime is None and self._graph is not None:
+            runtime = self._graph.runtime
+        barrier = getattr(runtime, "barrier", None)
+        if callable(barrier):
+            barrier()
 
 
 def build_experiment(config: ExperimentConfig) -> Experiment:
@@ -218,9 +250,14 @@ def preflight_experiment(experiment: Experiment, directory: str | Path | None = 
         "optimizer_updates": {},
     }
     path = target / "preflight.json"
-    temporary = target / ".preflight.json.tmp"
-    temporary.write_text(json.dumps(payload, indent=2, sort_keys=True) + "\n", encoding="utf-8")
-    os.replace(temporary, path)
+    runtime = graph.runtime
+    if int(getattr(runtime, "rank", 0)) == 0:
+        temporary = target / ".preflight.json.tmp"
+        temporary.write_text(json.dumps(payload, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+        os.replace(temporary, path)
+    barrier = getattr(runtime, "barrier", None)
+    if callable(barrier):
+        barrier()
     return path
 
 

@@ -1,6 +1,6 @@
 # コンポーネントのライフサイクル
 
-Phase 1 は Configure から Run までを CPU / FP32 の `StandardTrainer` で実装している。Phase 2-A は checkpoint の保存と復元を足した。CPU では Prepare と Optimizer 生成の後に重みを載せる。DDP と AMP は未実装。差異は [PHASE_2A_CHECKPOINT.md](PHASE_2A_CHECKPOINT.md)。以下は Phase 0 の仕様である。
+Phase 1 は Configure から Run までを CPU / FP32 の `StandardTrainer` で実装している。Phase 2-A は checkpoint の保存と復元を足した。Phase 2-B は CPU / Gloo の DDP を足した。CPU では Prepare と Optimizer 生成の後に重みを載せる。DDP も Parameter を置き換えないので、同じ公開 API のまま unwrapped の `state_module` へ載せる。AMP は未実装。差異は [PHASE_2A_CHECKPOINT.md](PHASE_2A_CHECKPOINT.md) と [PHASE_2B_DDP.md](PHASE_2B_DDP.md)。以下は Phase 0 の仕様である。
 
 ## 段階
 
@@ -98,7 +98,7 @@ resume の場合、optimizer と scheduler と trainer と data と RNG を載�
 
 DDP は `prepare_model` の中で掛ける。現行 Task は「Optimizer を先に作り、state を載せてから wrap する」。パラメータオブジェクトは wrap の前後で同じなので、現行の数値は保たれる。新契約が Optimizer を wrap の後で作るのは、FSDP がパラメータを置き換える場合に、空の Optimizer を捨てて作り直す手順を避けるためである。DDP だけの Phase 2 でもこの順に固定する。
 
-resume のモデル重みは wrap の前に載せる。現行 `load_state_dict` が DDP 済みモジュールを拒否するのと同じ理由で、DDP の `state_dict` キー接頭辞を新形式の通常経路にしない。wrap のあと rank 0 のパラメータを broadcast する処理は、PyTorch の DDP コンストラクタが行う。したがって resume 時は全 rank が同じ重みを wrap 前に載せる。rank 0 だけが読むファイルを、読み込み後に broadcast する実装でもよい。選ぶのは Runtime である。どちらの場合も、wrap の直前に全 rank の重みが一致していなければならない。不一致は `PrepareError`。
+Phase 2-B の CPU / Gloo は、`build_experiment` が wrap と Optimizer 生成を終えたあと、全 rank が同じ checkpoint を unwrapped の `state_module` へ載せる。DDP は Parameter オブジェクトを置き換えない。`state_dict` のキーに `module.` は付かない。Optimizer は wrap 前から同じ Parameter を持っている。この順で、world size 2 の連続実行と別プロセス再開の最大絶対誤差は 0 だった。FSDP はこの順を使えない。FSDP は prepare が Parameter を置き換えた後の state API が要る。
 
 `initialize_from` もモデル重みだけを wrap 前に載せる。Optimizer は初期状態のまま構築する。
 

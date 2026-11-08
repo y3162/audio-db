@@ -1,6 +1,6 @@
 # Experiment Framework アーキテクチャ
 
-Phase 1 と、CPU / FP32 の checkpoint 保存・再開（Phase 2-A）は `src/experiments/` に実装済みである。DDP、AMP、CUDA、本格 SE 学習は未実装。Phase 2-A の復元順は [PHASE_2A_CHECKPOINT.md](PHASE_2A_CHECKPOINT.md)。以下は Phase 0 の設計仕様であり、`src/training/` と `src/reproduction/` は変更しない。
+Phase 1、CPU / FP32 の checkpoint（Phase 2-A）、CPU / Gloo の DDP（Phase 2-B）は `src/experiments/` に実装済みである。AMP、CUDA、NCCL、FSDP、本格 SE 学習は未実装。Phase 2-A の単一プロセス復元は [PHASE_2A_CHECKPOINT.md](PHASE_2A_CHECKPOINT.md)、Phase 2-B の DDP と world size 2 の再開は [PHASE_2B_DDP.md](PHASE_2B_DDP.md)。以下は Phase 0 の設計仕様であり、`src/training/` と `src/reproduction/` は変更しない。
 
 この文書の「現行」は、2026-11-08 に `feature/experiment-framework` のソースを読んだ事実である。「設計」は新しい枠組みの提案であり、現行コードにあるものとして扱わない。公式再現の数値的同等性は、この設計書では保証しない。
 

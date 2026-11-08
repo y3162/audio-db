@@ -263,7 +263,7 @@ class LifecycleTests(unittest.TestCase):
         with self.assertRaises(StateError):
             experiment.build()
 
-    def test_phase1_runtime_refuses_cuda_amp_and_distribution(self) -> None:
+    def test_runtime_refuses_cuda_amp_and_fsdp(self) -> None:
         with self.assertRaises(PrepareError):
             ProcessRuntime(device="cuda", precision="fp32")
         with self.assertRaises(PrepareError):
@@ -281,9 +281,10 @@ class LifecycleTests(unittest.TestCase):
                 "trainer": null_trainer(),
             },
         )
-        with self.assertRaises(PrepareError) as caught:
-            build_experiment(load_experiment(distributed))
-        self.assertIn("ddp", str(caught.exception))
+        distributed_experiment = build_experiment(load_experiment(distributed))
+        handle = distributed_experiment.get("model")
+        self.assertIs(handle.module, handle.state_module)  # type: ignore[attr-defined]
+        distributed_experiment.close()
         sharded = write_config(
             directory,
             {
@@ -311,13 +312,14 @@ class LifecycleTests(unittest.TestCase):
             load_experiment(bf16)
         self.assertIn("amp_bf16", str(caught_bf16.exception))
 
-    def test_world_size_above_one_is_refused(self) -> None:
+    def test_incomplete_distributed_launch_is_refused(self) -> None:
         previous = os.environ.get("WORLD_SIZE")
         os.environ["WORLD_SIZE"] = "2"
         try:
             with self.assertRaises(PrepareError) as caught:
                 ProcessRuntime()
             self.assertIn("WORLD_SIZE", str(caught.exception))
+            self.assertIn("refusing to fall back", str(caught.exception))
         finally:
             if previous is None:
                 os.environ.pop("WORLD_SIZE", None)

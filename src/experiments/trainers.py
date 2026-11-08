@@ -94,20 +94,31 @@ class StandardTrainer:
         """
 
         component_id = getattr(self, "_experiment_component_id", "trainer")
+        rank = _rank(runtime)
         metrics_path = Path(checkpoint.directory) / "metrics.jsonl"
+        sample_path = _sample_path(checkpoint.directory, runtime)
         if self._restored:
             if not hasattr(self.data, "epoch") or not hasattr(self.data, "update_index"):
                 raise CheckpointError("resumed data has no epoch position")
-            self.losses = _rewind_metrics(metrics_path, self.logical_step)
+            if rank == 0:
+                self.losses = _rewind_metrics(metrics_path, self.logical_step)
+            if sample_path is not None:
+                sample_losses = _rewind_metrics(sample_path, self.logical_step)
+                if rank != 0:
+                    self.losses = sample_losses
             epoch = int(self.data.epoch)
             index = int(self.data.update_index)
         else:
-            metrics_path.write_text("", encoding="utf-8")
+            if rank == 0:
+                metrics_path.write_text("", encoding="utf-8")
+            if sample_path is not None:
+                sample_path.write_text("", encoding="utf-8")
             epoch = 0
             index = 0
             self.logical_step = 0
             self.optimizer_updates = {self.optimizer_id: 0}
             self.losses = []
+        runtime.barrier()
         while self.logical_step < self.max_logical_steps:
             if (
                 self.stop_after_logical_steps is not None
@@ -163,8 +174,20 @@ class StandardTrainer:
                 raise RuntimeFailure(f"component {component_id}: loss is not finite")
             loss_value = float(total)
             self.losses.append(loss_value)
-            self._append_metrics(metrics_path, loss_value, result.applied, ",".join(sample_ids))
+            sample_id = ",".join(sample_ids)
+            if rank == 0:
+                self._append_metrics(metrics_path, loss_value, result.applied, sample_id)
+            if sample_path is not None:
+                _append_jsonl(
+                    sample_path,
+                    {
+                        "logical_step": self.logical_step,
+                        "loss": loss_value,
+                        "sample_id": sample_id,
+                    },
+                )
             if self.logical_step % self.checkpoint_interval == 0:
+                self._before_checkpoint(runtime, checkpoint)
                 checkpoint.save(checkpoint.directory, logical_step=self.logical_step, label="step")
         self.stop_reason = "completed"
         return RunResult(
@@ -193,6 +216,11 @@ class StandardTrainer:
             self.stop_reason = stop_reason
         self._restored = True
 
+    def _before_checkpoint(self, runtime: ProcessRuntime, checkpoint: CheckpointManager) -> None:
+        """Hook for tests that change state after a step and before publish."""
+
+        del runtime, checkpoint
+
     def _forward_loss(self, batches: list[Batch], component_id: str) -> torch.Tensor:
         if not batches:
             raise RuntimeFailure(f"component {component_id}: empty micro-batch")
@@ -218,6 +246,23 @@ class StandardTrainer:
             handle.write(json.dumps(record, sort_keys=True) + "\n")
 
 
+def _rank(runtime: ProcessRuntime) -> int:
+    return int(getattr(runtime, "rank", 0))
+
+
+def _sample_path(directory: Path, runtime: ProcessRuntime) -> Path | None:
+    """Per-rank sample trace. World size 1 keeps sample ids in ``metrics.jsonl``."""
+
+    if int(getattr(runtime, "world_size", 1)) == 1:
+        return None
+    return directory / f"samples-rank{_rank(runtime)}.jsonl"
+
+
+def _append_jsonl(path: Path, record: dict[str, Any]) -> None:
+    with path.open("a", encoding="utf-8") as handle:
+        handle.write(json.dumps(record, sort_keys=True) + "\n")
+
+
 def _rewind_metrics(path: Path, logical_step: int) -> list[float]:
     """Drop metric rows committed past ``logical_step`` and return kept losses."""
 
@@ -231,17 +276,17 @@ def _rewind_metrics(path: Path, logical_step: int) -> list[float]:
         try:
             record = json.loads(line)
         except json.JSONDecodeError as exc:
-            raise CheckpointError(f"metrics.jsonl line {line_number} is not JSON") from exc
+            raise CheckpointError(f"{path.name} line {line_number} is not JSON") from exc
         step = record.get("logical_step") if isinstance(record, dict) else None
         loss = record.get("loss") if isinstance(record, dict) else None
         if isinstance(step, bool) or not isinstance(step, int) or not isinstance(loss, (int, float)):
-            raise CheckpointError(f"metrics.jsonl line {line_number} has no logical step")
+            raise CheckpointError(f"{path.name} line {line_number} has no logical step")
         if step > logical_step:
             continue
         kept.append(record)
         losses.append(float(loss))
     body = "".join(json.dumps(record, sort_keys=True) + "\n" for record in kept)
-    temporary = path.with_name(".metrics.jsonl.tmp")
+    temporary = path.with_name(f".{path.name}.tmp")
     temporary.write_text(body, encoding="utf-8")
     os.replace(temporary, path)
     return losses

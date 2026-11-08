@@ -1,17 +1,14 @@
 """Atomic ``audio-db-experiment-v1`` checkpoints.
 
-CPU / FP32 restore happens after ``build_experiment`` has prepared the module
-and constructed the optimizer. CPU ``.to(cpu)`` keeps parameter identity, so
-``load_state_dict`` updates the tensors the optimizer already holds.
+Restore happens after ``build_experiment`` has prepared the module and
+constructed the optimizer. CPU ``.to(cpu)`` keeps parameter identity, and
+CPU/Gloo DDP does not replace those parameter objects when it wraps the
+module. ``load_state_dict`` therefore writes into the unwrapped
+``state_module`` in place, which is the same storage the optimizer holds.
+Every rank loads the same file. Rank 0 writes it.
 
-Later strategies must not reuse that order:
-
-- DDP loads module weights onto the unwrapped module, then ``prepare_model``
-  wraps it, then the optimizer is built, then optimizer and the other owners
-  load. Every rank must hold the same weights before wrap.
-- FSDP may replace parameters inside ``prepare_model``. Weights load through
-  the FSDP state API after prepare, and the optimizer is built on those
-  replaced parameters. A version 1 file is not a sharded checkpoint.
+FSDP may replace parameters inside ``prepare_model``. That path is not
+implemented. A version 1 file is not a sharded checkpoint.
 
 ``audio-db-training-v1`` is a different format and is refused.
 """
@@ -117,6 +114,40 @@ class DirectoryLock:
         self.release()
 
 
+def acquire_directory_lock(directory: Path, runtime: object) -> DirectoryLock | None:
+    """Take the exclusive directory lock on rank 0 and tell the other ranks.
+
+    Other ranks do not take the same exclusive lock. They wait on one
+    collective for rank 0's result, then continue as members of this run. A
+    second experiment's rank 0 fails the non-blocking lock and every rank of
+    that launch raises. This function does not write ``status.json``.
+    """
+
+    world = int(getattr(runtime, "world_size", 1))
+    rank = int(getattr(runtime, "rank", 0))
+    if world == 1:
+        return DirectoryLock(directory)
+    status = ""
+    lock: DirectoryLock | None = None
+    if rank == 0:
+        try:
+            lock = DirectoryLock(directory)
+        except ExperimentError as exc:
+            status = str(exc)
+    statuses = runtime.gather_objects(status)  # type: ignore[attr-defined]
+    failure = statuses[0]
+    if not isinstance(failure, str):
+        failure = "rank 0 did not report a lock result"
+    if failure:
+        if lock is not None:
+            lock.release()
+        if rank == 0:
+            raise ExperimentError(failure)
+        raise ExperimentError(f"rank 0 failed to lock the experiment directory: {failure}")
+    runtime.barrier()  # type: ignore[attr-defined]
+    return lock
+
+
 class CheckpointManager:
     """Save and restore one experiment directory.
 
@@ -164,35 +195,55 @@ class CheckpointManager:
             raise CheckpointError("initialize.allow is only valid when label is init")
         else:
             allow = None
-        if runtime.world_size != 1:
-            raise CheckpointError("Phase 2-A saves world size 1 only")
-        payload = _payload(
-            config=config,
-            states=states,
-            components=self._components,
-            runtime=runtime,
-            directory=self.directory,
-            logical_step=logical_step,
-            label=label,
-            initialize_allow=allow,
-        )
         filename = _filename(label, logical_step)
         target = self.directory / filename
-        temporary = self.directory / f".{filename}.tmp"
+        error: BaseException | None = None
         try:
-            with temporary.open("wb") as stream:
-                torch.save(payload, stream)
-                stream.flush()
-                os.fsync(stream.fileno())
-            _verify_written(temporary, payload)
-        except Exception:
-            temporary.unlink(missing_ok=True)
-            raise
-        try:
-            os.replace(temporary, target)
+            _assert_replicated_states(states, runtime)
+            local_rng = dict(runtime.capture_rng())
+            local_rng["rank"] = int(runtime.rank)
+            rngs = runtime.gather_objects(local_rng)
+            if len(rngs) != runtime.world_size:
+                raise CheckpointError("rng_by_rank length does not match world size")
+            if int(runtime.rank) == 0:
+                payload = _payload(
+                    config=config,
+                    states=states,
+                    components=self._components,
+                    runtime=runtime,
+                    directory=self.directory,
+                    logical_step=logical_step,
+                    label=label,
+                    initialize_allow=allow,
+                    rngs=rngs,
+                )
+                temporary = self.directory / f".{filename}.tmp"
+                try:
+                    with temporary.open("wb") as stream:
+                        torch.save(payload, stream)
+                        stream.flush()
+                        os.fsync(stream.fileno())
+                    _verify_written(temporary, payload)
+                except Exception:
+                    temporary.unlink(missing_ok=True)
+                    raise
+                try:
+                    os.replace(temporary, target)
+                except Exception as exc:
+                    raise CheckpointError(f"checkpoint replace failed: {exc}") from exc
+                _fsync_directory(self.directory)
         except Exception as exc:
-            raise CheckpointError(f"checkpoint replace failed: {exc}") from exc
-        _fsync_directory(self.directory)
+            error = exc
+        if runtime.world_size > 1:
+            errors = runtime.gather_objects(None if error is None else f"{type(error).__name__}: {error}")
+            if error is not None:
+                raise error
+            if any(errors):
+                message = next(item for item in errors if item)
+                raise CheckpointError(str(message))
+            runtime.barrier()
+        elif error is not None:
+            raise error
         return target
 
     def restore(self, path: Path, *, mode: Literal["resume", "initialize"]) -> RestoreReport:
@@ -201,6 +252,35 @@ class CheckpointManager:
         config, states, runtime = self._bound()
         if mode not in {"resume", "initialize"}:
             raise CheckpointError(f"unknown restore mode {mode!r}")
+        failure: BaseException | None = None
+        report: RestoreReport | None = None
+        try:
+            report = self._restore_local(path, mode=mode, config=config, states=states, runtime=runtime)
+        except Exception as exc:
+            failure = exc
+        if runtime.world_size > 1:
+            errors = runtime.gather_objects(None if failure is None else f"{type(failure).__name__}: {failure}")
+            if failure is not None:
+                raise failure
+            if any(errors):
+                message = next(item for item in errors if item)
+                raise CheckpointError(str(message))
+            runtime.barrier()
+        elif failure is not None:
+            raise failure
+        if report is None:
+            raise CheckpointError("restore did not produce a report")
+        return report
+
+    def _restore_local(
+        self,
+        path: Path,
+        *,
+        mode: Literal["resume", "initialize"],
+        config: ExperimentConfig,
+        states: StateRegistry,
+        runtime: Any,
+    ) -> RestoreReport:
         source = Path(path)
         if source.name.startswith("."):
             raise CheckpointError(f"temporary checkpoint files cannot be restored: {source.name}")
@@ -259,6 +339,7 @@ def _payload(
     logical_step: int,
     label: str,
     initialize_allow: list[str] | None,
+    rngs: list[Any],
 ) -> dict[str, Any]:
     blobs: dict[str, Any] = {}
     for state_id in states.ids():
@@ -269,7 +350,8 @@ def _payload(
     updates = trainer_blob.get("optimizer_updates") if trainer_blob is not None else {}
     if not isinstance(updates, dict):
         raise CheckpointError("trainer optimizer_updates must be a mapping")
-    rng = runtime.capture_rng()
+    if len(rngs) != runtime.world_size:
+        raise CheckpointError("rng_by_rank length does not match world size")
     return {
         "aliases": dict(states.aliases()),
         "code_identity": _code_identity(),
@@ -284,13 +366,13 @@ def _payload(
         "output_directory": str(directory.resolve()),
         "parameter_ranks_agree": True,
         "provenance_sha256": None,
-        "rank_count_in_rng": 1,
-        "rng_by_rank": [rng],
+        "rank_count_in_rng": runtime.world_size,
+        "rng_by_rank": list(rngs),
         "schema_version": SCHEMA_VERSION,
         "state_ids": list(states.ids()),
         "states": blobs,
         "validation_pending": {"logical_step": logical_step} if label == "validation_pending" else None,
-        "world_size": 1,
+        "world_size": runtime.world_size,
     }
 
 
@@ -372,9 +454,16 @@ def _apply_resume(payload: dict[str, Any], states: StateRegistry, runtime: Any) 
             if kind == "runtime" and blob.get("grad_scaler") is not None:
                 raise CheckpointError("grad scaler restore is not implemented")
             owner.load_state_dict(blob)
-    rank = payload["rng_by_rank"][0]
+    index = int(getattr(runtime, "rank", 0))
+    ranks = payload["rng_by_rank"]
+    if index >= len(ranks):
+        raise CheckpointError("rng_by_rank has no blob for this rank")
+    rank = ranks[index]
     if not isinstance(rank, dict):
-        raise CheckpointError("rng_by_rank[0] is not a mapping")
+        raise CheckpointError(f"rng_by_rank[{index}] is not a mapping")
+    saved_rank = rank.get("rank")
+    if saved_rank is not None and saved_rank != index:
+        raise CheckpointError(f"rng_by_rank[{index}] belongs to rank {saved_rank}")
     try:
         runtime.restore_rng(rank)
     except (KeyError, RuntimeError, TypeError, ValueError) as exc:
@@ -514,6 +603,62 @@ def _code_identity() -> dict[str, Any]:
     except (OSError, subprocess.SubprocessError):
         return {"dirty": None, "git_commit": None}
     return {"dirty": dirty != 0, "git_commit": commit or None}
+
+
+def _assert_replicated_states(states: StateRegistry, runtime: Any) -> None:
+    """Refuse a checkpoint when replicated state differs across ranks.
+
+    RNG is not compared. It is gathered separately because each rank keeps
+    its own generators. Comparison uses dtype, shape, and values.
+    """
+
+    if runtime.world_size == 1:
+        return
+    local: dict[str, Any] = {}
+    for state_id in states.ids():
+        owner = states.owner(state_id)
+        if getattr(owner, "kind", None) == "runtime":
+            continue
+        local[state_id] = owner.state_dict()
+    gathered = runtime.gather_objects(local)
+    for rank, other in enumerate(gathered):
+        mismatch = _first_difference(gathered[0], other, "state")
+        if mismatch is not None:
+            raise CheckpointError(f"ranks disagree at {mismatch} on rank {rank}")
+
+
+def _first_difference(left: object, right: object, path: str) -> str | None:
+    if isinstance(left, torch.Tensor):
+        if not isinstance(right, torch.Tensor):
+            return path
+        if left.dtype != right.dtype or tuple(left.shape) != tuple(right.shape):
+            return path
+        if not torch.equal(left.detach().cpu(), right.detach().cpu()):
+            return path
+        return None
+    if isinstance(left, dict):
+        if not isinstance(right, dict) or set(left) != set(right):
+            return path
+        for key in left:
+            found = _first_difference(left[key], right[key], f"{path}.{key}")
+            if found is not None:
+                return found
+        return None
+    if isinstance(left, (list, tuple)):
+        if not isinstance(right, (list, tuple)) or len(left) != len(right):
+            return path
+        for index, (lhs, rhs) in enumerate(zip(left, right)):
+            found = _first_difference(lhs, rhs, f"{path}[{index}]")
+            if found is not None:
+                return found
+        return None
+    if isinstance(left, float) or isinstance(right, float):
+        if left != right:
+            return path
+        return None
+    if left != right:
+        return path
+    return None
 
 
 def _fsync_directory(directory: Path) -> None:

@@ -1,6 +1,6 @@
 # 受け入れ基準
 
-Phase 1 の試験と、Phase 2-A の CPU checkpoint 試験は `tests/experiments/` にある。DDP、AMP、複数 rank の受け入れ項目は未実装である。実装する Phase で、期待結果が満たされたことをテスト名とともに記録する。曖昧な「動くこと」は完了条件にしない。数値は [PHASE_2A_CHECKPOINT.md](PHASE_2A_CHECKPOINT.md)。
+Phase 1、Phase 2-A の CPU checkpoint、Phase 2-B の CPU / Gloo DDP の試験は `tests/experiments/` にある。AMP と CUDA の受け入れ項目は未実装である。数値は [PHASE_2A_CHECKPOINT.md](PHASE_2A_CHECKPOINT.md) と [PHASE_2B_DDP.md](PHASE_2B_DDP.md)。
 
 既存テストのパスは、この設計作業では実行していない。回帰行は将来の Phase で実行する条件である。
 
@@ -95,6 +95,7 @@ Phase 1 の試験と、Phase 2-A の CPU checkpoint 試験は `tests/experiments
 - 方法: CPU gloo、world size 2、`distribute: ddp`、global に相当する batch が両 rank で 1 micro-batch、`accumulation: 2`。最後の micro-batch だけ `sync=True`。2 logical step 進める。
 - 期待: 両 rank の重みの最大絶対誤差が 0。`update_applied` を rank 間で意図的にずらす試験用 Trainer は `RuntimeFailure` で止まり、その後のプロセスがハングしない（タイムアウト 30 秒以内に例外で終了する）。
 - Phase: 2
+- 記録: `tests/experiments/test_ddp.py` の `test_two_ranks_train_and_match_an_averaged_gradient` と `test_skip_disagreement_fails_without_hanging`。数値は [PHASE_2B_DDP.md](PHASE_2B_DDP.md)。
 
 ### AMP
 

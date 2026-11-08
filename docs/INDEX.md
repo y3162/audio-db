@@ -14,7 +14,7 @@
 | 比較した条件・数値・制限・結果の保存先、未解決事項 | [学習検証](training/VERIFICATION.md)、[短い再開と Whisper 評価](training/RESIDUAL_20261104.md) |
 | ジョブ継続の実装・未検証範囲 | [ジョブ継続の検証](training/JOB_CONTINUATION_AUDIT.md) |
 | 実験案と評価順序 | [実験計画](training/EXPERIMENT_PLAN.md)（案と実装済み事項を区別） |
-| Experiment Framework（Phase 1 と CPU checkpoint の Phase 2-A を実装。DDP、AMP、CUDA は未実装） | [構成](training/experiment-framework/ARCHITECTURE.md)、[API](training/experiment-framework/PUBLIC_API.md)、[ライフサイクル](training/experiment-framework/COMPONENT_LIFECYCLE.md)、[状態](training/experiment-framework/STATE_AND_CHECKPOINT.md)、[Phase 2-A](training/experiment-framework/PHASE_2A_CHECKPOINT.md)、[移行](training/experiment-framework/MIGRATION_PLAN.md)、[受け入れ](training/experiment-framework/ACCEPTANCE_CRITERIA.md) |
+| Experiment Framework（Phase 1、CPU checkpoint の Phase 2-A、CPU / Gloo DDP の Phase 2-B を実装。AMP、CUDA、FSDP は未実装） | [構成](training/experiment-framework/ARCHITECTURE.md)、[API](training/experiment-framework/PUBLIC_API.md)、[ライフサイクル](training/experiment-framework/COMPONENT_LIFECYCLE.md)、[状態](training/experiment-framework/STATE_AND_CHECKPOINT.md)、[Phase 2-A](training/experiment-framework/PHASE_2A_CHECKPOINT.md)、[Phase 2-B](training/experiment-framework/PHASE_2B_DDP.md)、[移行](training/experiment-framework/MIGRATION_PLAN.md)、[受け入れ](training/experiment-framework/ACCEPTANCE_CRITERIA.md) |
 | 6 モデルの公式再現: 再現対象、採用した方針 D-01〜D-09 | [TARGETS](training/reproduction/TARGETS.md)、[OVERVIEW](training/reproduction/OVERVIEW.md) |
 | 公式再現のデータ設計（P1〜P4 実装済み。P5 以降は未実装） | [Pipeline 設計](training/reproduction/DATA_PIPELINE_DESIGN.md)、[実装計画](training/reproduction/IMPLEMENTATION_PLAN.md)、[P4 検証](training/reproduction/P4_VERIFICATION.md) |
 

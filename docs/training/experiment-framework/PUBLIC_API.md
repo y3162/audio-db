@@ -1,6 +1,6 @@
 # Experiment Framework 公開 API
 
-Phase 1 の公開入口と、Phase 2-A の CPU checkpoint は `src/experiments/` にある。`Experiment.run(resume=...)` と `--initialize-from` は CPU / FP32 で動作する。DDP、AMP、CUDA は未実装で、呼ぶと `PrepareError` になる。`audio-db-training-v1` は `CheckpointError` になる。以下は Phase 0 の契約であり、現行 `src/training` の関数ではない。
+Phase 1 の公開入口、Phase 2-A の CPU checkpoint、Phase 2-B の CPU / Gloo DDP は `src/experiments/` にある。`Experiment.run(resume=...)` と `--initialize-from` は CPU / FP32 で動作する。world size 2 は `torchrun` の `RANK`、`LOCAL_RANK`、`WORLD_SIZE` と Gloo で動き、設定と起動環境が食い違うときは単一プロセスへ落とさない。AMP、CUDA、FSDP は `PrepareError` になる。`audio-db-training-v1` は `CheckpointError` になる。以下は Phase 0 の契約であり、現行 `src/training` の関数ではない。Phase 2-B の差分は [PHASE_2B_DDP.md](PHASE_2B_DDP.md)。
 
 例外の基底は `src.experiments.errors.ExperimentError`。呼び出し側が回復できる失敗はすべてこの基底に乗せる。`ImportError`、`TypeError`、`ValueError` をそのまま外へ出さない。
 

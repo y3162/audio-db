@@ -76,7 +76,7 @@ Phase 4 で各モデルについて、次を別々に記録する。
 |---|---|---|
 | 0 | このディレクトリの設計書 | 実装が無い。本 Phase は完了扱い |
 | 1 | Factory、Builder、`Experiment`、CPU の `ProcessRuntime`（DDP も AMP も未実装で、`distribute: none` と `fp32` だけ）、`TensorPairData`、`StandardTrainer`、CLI の `--preflight` と短い `--config` 実行 | [ACCEPTANCE_CRITERIA.md](ACCEPTANCE_CRITERIA.md) の Phase 1 項目が単体テストで満たされる。スナップショットも GPU も使わない |
-| 2 | DDP、AMP、StateRegistry、`audio-db-experiment-v1`、rank 別 RNG、原子的保存、resume | Phase 2 の受け入れ。まだ SE モデルを接続しない |
+| 2 | DDP、AMP、StateRegistry、`audio-db-experiment-v1`、rank 別 RNG、原子的保存、resume | Phase 2 の受け入れ。まだ SE モデルを接続しない。Phase 2-A の CPU checkpoint と Phase 2-B の CPU / Gloo DDP は実装済み。AMP と CUDA は残っている |
 | 3 | DataModule アダプタ。固定ペア、chunk、オンライン混合を既存関数のまま包む。`src.se.build_model` で MP-SENet の Generator を 1 step 進める | 公式損失の数値一致はまだ要求しない。既存 pipeline テストが引き続き通る。アダプタが DuckDB を開かない |
 | 4 | 四モデルの Trainer。現行入口と並走させ、上の回帰検証を記録する | 記録が `docs/training/experiment-framework/` の検証文書に残り、未測定を一致と書いていない |
 | 5 | LoRA、難例 Sampler、複数 Expert の動的枠、Distillation、勾配を通す ASR が別クラスとして必要ならその設計の実装 | 各拡張が YAML の DSL ではなく Trainer クラスである。公式再現の入口が変わっていない |
