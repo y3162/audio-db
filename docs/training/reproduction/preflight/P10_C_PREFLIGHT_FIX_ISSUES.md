@@ -15,7 +15,7 @@
 | P10P-B-005 / P10P-F-001 | RESOLVED | 本格 YAML を新設した。p10b は上書きしていない。スモーク cap は本格 YAML に無い |
 | P10P-F-002 | RESOLVED | 本格 YAML の `checkpoint_interval` は 0。p10b の 2 はスモークのまま |
 | P10P-F-003 | RESOLVED | `required_world_size` が実プロセス数と違うときは `build_task` の前に拒否する |
-| P10P-F-007 | BLOCKED | 選択集合は 1,024 件のまま。claim はスキーマに追加した。この作業木に `reproduction.duckdb` が無く、登録と snapshot は BLOCKED。親 36,000 件は変えていない。この YAML では学習を始めない |
+| P10P-F-007 | MITIGATED | 2026-11-08 に研究用 1,024 件を登録し、snapshot `e4495fa6ac0048c6346cc65bc66fd71114fd1523f95230537e799610c8092024` を発行した。DB は親 snapshot からの再構成で、元ファイルとの同一性は未検証。親 36,000 件は変えていない。本格 YAML の Preflight は PASS。150 epoch は始めていない。PASS は公式再現の成功ではない |
 
 ## 開始を止めていなかったもの
 
@@ -44,7 +44,7 @@
 | P10P-B-002 / P10P-G-003 | ACCEPTED_DIFFERENCE | 公式の選択は `valid.loss`。`valid.si_snr.best.pt` は公式成果物にしない |
 | P10P-B-004 | OPEN | 分割端の動かし方は変えていない |
 | P10P-B-007 | OPEN | README hash と recipe の対応は UNKNOWN |
-| P10P-C-001 | BLOCKED | この作業木に `reproduction.duckdb` が無い。学習は既存 snapshot を読む。DB と snapshot の同一性は未証明 |
+| P10P-C-001 | MITIGATED | 2026-11-08 の `reproduction.duckdb` は親 snapshot からの再構成である。親の論理 snapshot hash は再構成後も `3343a55efb4c57d9ffef9179fb2f39c3e0186d36f587a0f4ad9f0aa14e9926f5`。元 DB ファイルとの同一性は未検証。学習は snapshot を読む |
 | P10P-D-003 | OPEN | world 1 の並べ方は変えていない |
 | P10P-D-006 | OPEN | DeepFilterNet3 は今回の 4 モデルの修正対象ではない |
 | P10P-E-002 / P10P-F-008 | RESOLVED | `validation_pending` がある再開は、その epoch の Optimizer 更新をやり直さない。検証は先頭から。途中 batch の再開機構は無い |

@@ -2,7 +2,7 @@
 
 本格学習はこの計画では開始しない。GPU 台数は公式プロトコルの要求である。どのマシンのどの GPU を使うかは、実行時の別指示に従う。
 
-2026-11-07 の preflight 修正で、検証方式は次に固定した。TF-Locoformer の checkpoint 選択は、親 validation 36,000 件から seed `20261107` で選んだ 1,024 件（`research_valid_fixed_v1`）を使う研究用 Protocol である。`cv_synthetic_small` ではなく、`leakage_safe` でもない。登録と snapshot は、この作業木に `reproduction.duckdb` が無いため未発行である。本格 YAML は `configs/training/reproduction/tf_locoformer_dns_research_valid_full.yaml` で、Preflight は data gap により FAIL する。親 Dataset は変えていない。36,000 件を毎 epoch 見る案 A では 150 epoch を始めない。
+2026-11-07 の preflight 修正で、検証方式は次に固定した。TF-Locoformer の checkpoint 選択は、親 validation 36,000 件から seed `20261107` で選んだ 1,024 件（`research_valid_fixed_v1`）を使う研究用 Protocol である。`cv_synthetic_small` ではなく、`leakage_safe` でもない。2026-11-08 に研究用 Dataset を登録した。dataset id は `e4a53415122aba24055f4ba7eef6367a7e41d062485d74de3d7ce94c07d7bdd0`、snapshot は `e4495fa6ac0048c6346cc65bc66fd71114fd1523f95230537e799610c8092024`。DB は親 snapshot からの再構成で、元ファイルとの同一性は未検証である。本格 YAML は `configs/training/reproduction/tf_locoformer_dns_research_valid_full.yaml` で、Preflight は PASS である。この PASS は公式再現の成功ではない。親 Dataset は変えていない。36,000 件を毎 epoch 見る案 A では 150 epoch を始めない。150 epoch 自体も始めていない。
 
 TF-GridNet の本格 YAML は `configs/training/reproduction/tf_gridnet_ms_snsd_full.yaml` である。生成は公式アルゴリズムに固定 `mix_seed` を足したもので、公式 WAV とのビット一致や統計的同等の実証ではない。Preflight の PASS は実行条件の確認であり、公式再現の成功ではない。
 
@@ -76,7 +76,7 @@ TF-GridNet の本格 YAML は `configs/training/reproduction/tf_gridnet_ms_snsd_
 | Checkpoint | epoch 末に 150 個残すと 150 × 179,910,164 バイト = 25.1 GiB。書き込みは 1 回 2.29 秒。`ave_5best` は上位 5 epoch の追加ファイル |
 | 中断 | 12 更新は `INTERRUPTED`。`complete.json` は無い。学習率は step 番号に比例した。P10-B.1 の公式幅 4 GPU で、中断再開と連続ランの case id と plan hash は一致している |
 | 公式との差 | 平均 Checkpoint の拡張子は `.pt`。検証セット名は `cv_synthetic_small` ではない。`valid/si_snr` は公式 stats に無い |
-| 開始条件 | 選択は案 B。1,024 件の定義はある。snapshot が未発行なので、研究用本格 YAML の Preflight は FAIL であり、150 epoch は始めない。案 A の 36,000 件を毎 epoch 見る実行もしない |
+| 開始条件 | 選択は案 B。2026-11-08 に 1,024 件を登録し、研究用本格 YAML の Preflight は PASS。150 epoch は始めていない。案 A の 36,000 件を毎 epoch 見る実行もしない。DB は親 snapshot からの再構成で、元ファイルそのものではない |
 
 ### 検証案
 

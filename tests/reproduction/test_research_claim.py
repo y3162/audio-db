@@ -22,12 +22,12 @@ from tests.reproduction.support import fixed_pair_graph
 
 
 class ResearchClaimTests(unittest.TestCase):
-    def test_claim_is_named_and_this_worktree_has_no_production_database(self):
+    def test_claim_is_named_and_an_empty_root_stays_blocked(self):
         self.assertIn("research_checkpoint_selection", CLAIM_LABELS)
-        status = locate_reproduction_database()
+        with tempfile.TemporaryDirectory() as directory:
+            status = locate_reproduction_database(directory)
         self.assertEqual(status["registration"], "BLOCKED")
         self.assertEqual(status["found"], [])
-        self.assertFalse(Path(status["candidates"][0]).exists())
 
     def test_old_check_gains_the_label_without_rewriting_rows(self):
         from src.reproduction.db.schema import _STATEMENTS
