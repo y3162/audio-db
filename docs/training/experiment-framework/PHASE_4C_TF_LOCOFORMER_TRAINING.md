@@ -136,6 +136,6 @@ GPU は使っていない。比較と試験は CPU / FP32 である。`CUDA_VISI
 
 ## 16. Phase 4-D への残課題
 
-Phase 4-D は MP-SENet の公式 GAN 学習を扱う。今回の単一 Optimizer と warmup scheduler を、その GAN の更新順へ流用しない。
+Phase 4-D は MP-SENet の公式 GAN 学習を扱う。今回の単一 Optimizer と warmup scheduler を、その GAN の更新順へ流用しない。Phase 4-D は実装済みで、記録は [PHASE_4D_MP_SENET_GAN.md](PHASE_4D_MP_SENET_GAN.md)。
 
-残る未接続は、MP-SENet の公式 GAN、MossFormerGAN、DeepFilterNet3、SEMamba++、URGENT24 の TF-GridNet である。FSDP、sharded checkpoint、AMP BF16、`audio-db-training-v1` からの再開、公式 DNS 全量の学習も未実装である。
+残る未接続は、MossFormerGAN、DeepFilterNet3、SEMamba++、URGENT24 の TF-GridNet である。FSDP、sharded checkpoint、AMP BF16、`audio-db-training-v1` からの再開、公式 DNS 全量の学習も未実装である。

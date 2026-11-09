@@ -413,6 +413,26 @@ class ProcessRuntime:
             gradient.div_(self.world_size)
             parameter.grad = gradient
 
+    def broadcast_buffers(self, module: torch.nn.Module, *, src: int = 0) -> None:
+        """Copy one module's buffers from ``src`` to every rank.
+
+        World size 1 returns. A forward that updates buffers outside DDP
+        leaves ranks different; a later checkpoint compares those buffers.
+        Broadcasting after the optimizer step does not change parameters.
+        """
+
+        if not isinstance(module, torch.nn.Module):
+            raise RuntimeFailure("broadcast_buffers requires a module")
+        if isinstance(src, bool) or not isinstance(src, int) or src < 0 or src >= self.world_size:
+            raise RuntimeFailure("broadcast src is outside the process group")
+        if self.world_size == 1:
+            return
+        self._require_group()
+        for buffer in module.buffers():
+            if self.backend == "nccl" and buffer.device != self.device:
+                raise RuntimeFailure("nccl broadcast requires the rank's CUDA device")
+            dist.broadcast(buffer, src=src)
+
     def capture_rng(self) -> dict[str, object]:
         """Capture this rank's Python, NumPy, Torch, and current CUDA generators.
 

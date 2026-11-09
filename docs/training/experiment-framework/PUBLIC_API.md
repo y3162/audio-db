@@ -238,6 +238,8 @@ iSTFT の長さが入力と違うときは `RuntimeFailure` で、暗黙の crop
 
 この L1 は公式の複合損失ではない。設定例は `configs/experiments/mp_senet_l1.yaml`。検証は [Phase 4-A](PHASE_4A_MP_SENET_CONNECTION.md)。
 
+Phase 4-D の公式 GAN は別クラスである。Generator は `src.experiments.models.mp_senet_gan.MPSENetGANGenerator`、Discriminator は `src.experiments.models.mp_senet_gan.MPSENetMetricDiscriminator`、学習ループは `src.experiments.mp_senet.MPSENetGANTrainer`。Loss 関数は現行の `generator_losses` と `discriminator_loss` を Trainer が呼ぶ。`StandardTrainer` と `GanTrainer` には MP-SENet の分岐を足していない。`amp_fp16` はこの Trainer が拒否する。設定例は `configs/experiments/mp_senet_gan.yaml`。検証は [Phase 4-D](PHASE_4D_MP_SENET_GAN.md)。
+
 ## TF-GridNet MS-SNSD
 
 Phase 4-B のクラスは `src.experiments.models.tf_gridnet.TFGridNetModel` と `src.experiments.losses.MultiResolutionL1Loss` と `src.experiments.tf_gridnet.TFGridNetTrainer` である。Factory はクラスパスを呼ぶだけで、モデル名では分岐しない。
@@ -530,7 +532,7 @@ components:
       optim_d: {ref: optim_d}
 ```
 
-`GanTrainer` は Phase 1 の必須実装には含めない。この YAML は Builder がグラフを組めることの仕様例である。Phase 1 の受け入れは、この YAML に対して `build` が二つの Optimizer を別パラメータへ繋ぐところまでとする。`run` は `StandardTrainer` の例で確認する。
+`GanTrainer` は Phase 1 の必須実装には含めない。この YAML は Builder がグラフを組めることの仕様例である。Phase 1 の受け入れは、この YAML に対して `build` が二つの Optimizer を別パラメータへ繋ぐところまでとする。`run` は `StandardTrainer` の例で確認する。MP-SENet の公式 GAN は `GanTrainer` ではなく `MPSENetGANTrainer` である。
 
 ### 固定 ASR を持つ ASR-aware SE
 

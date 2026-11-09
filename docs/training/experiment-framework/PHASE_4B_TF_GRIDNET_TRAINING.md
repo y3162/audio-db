@@ -164,4 +164,4 @@ early stopping は現行 chunk 規則で、履歴に今の epoch を入れたあ
 
 TF-Locoformer は、この単一 Optimizer の Trainer を参照して、warmup と plateau を後で接続する。warmup は Phase 4-B では実装していない。その接続は [Phase 4-C](PHASE_4C_TF_LOCOFORMER_TRAINING.md) で、既存の `WarmupReduceLROnPlateau` を別の呼び出し順のまま実装した。`TFGridNetTrainer` の `ReduceLROnPlateau` の動きは変えていない。共通ループは切り出していない。
 
-Phase 4-B の時点で残っていた未接続のうち、TF-Locoformer の DNS 学習は Phase 4-C で接続した。残る未接続は、MP-SENet の公式 GAN、MossFormerGAN、DeepFilterNet3、SEMamba++、URGENT24 の TF-GridNet である。FSDP、sharded checkpoint、AMP BF16、`audio-db-training-v1` からの再開も未実装である。
+Phase 4-B の時点で残っていた未接続のうち、TF-Locoformer の DNS 学習は Phase 4-C で、MP-SENet の公式 GAN は Phase 4-D で接続した。残る未接続は、MossFormerGAN、DeepFilterNet3、SEMamba++、URGENT24 の TF-GridNet である。FSDP、sharded checkpoint、AMP BF16、`audio-db-training-v1` からの再開も未実装である。
