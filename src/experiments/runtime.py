@@ -250,10 +250,13 @@ class ProcessRuntime:
             raise RuntimeFailure("loss must be a scalar")
         if not bool(torch.isfinite(loss.detach()).all()):
             raise RuntimeFailure("loss is not finite")
-        if self._scaler is None:
-            loss.backward(retain_graph=retain_graph)
-            return
-        self._scaler.scale(loss).backward(retain_graph=retain_graph)
+        from src.experiments.profile import Span
+
+        with Span("backward", self.device):
+            if self._scaler is None:
+                loss.backward(retain_graph=retain_graph)
+                return
+            self._scaler.scale(loss).backward(retain_graph=retain_graph)
 
     def clip(
         self,
@@ -324,15 +327,19 @@ class ProcessRuntime:
             raise RuntimeFailure("optimizer must be a torch optimizer")
         if id(optimizer) in self._stepped:
             raise RuntimeFailure("optimizer was already stepped in this logical step")
+        from src.experiments.profile import Span
+
         if self._scaler is None:
             self.agree(True, policy="identical")
-            applied = self._call_optimizer_step(optimizer)
+            with Span("optimizer_step", self.device):
+                applied = self._call_optimizer_step(optimizer)
             self._stepped.add(id(optimizer))
             return StepResult(applied=applied)
         if id(optimizer) not in self._unscaled:
             self._unscale(optimizer)
         finite = self._coordinate_finite(optimizer)
-        applied = self._call_optimizer_step(optimizer) if finite else False
+        with Span("optimizer_step", self.device):
+            applied = self._call_optimizer_step(optimizer) if finite else False
         self._stepped.add(id(optimizer))
         return StepResult(applied=applied)
 

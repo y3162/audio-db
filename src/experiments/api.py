@@ -8,7 +8,10 @@ from __future__ import annotations
 
 import json
 import os
+import sys
 from pathlib import Path
+
+import torch
 
 from src.experiments.builder import BuiltGraph, ExperimentBuilder
 from src.experiments.checkpoint import (
@@ -117,6 +120,15 @@ class Experiment:
             if self._is_primary():
                 self._write_status("RUNNING")
             self._barrier()
+            from src.experiments.profile import enabled as profile_enabled
+            from src.experiments.profile import reset as reset_profile
+
+            if profile_enabled():
+                reset_profile()
+                runtime = self._graph.runtime
+                device = getattr(runtime, "device", None)
+                if device is not None and getattr(device, "type", None) == "cuda" and torch.cuda.is_available():
+                    torch.cuda.reset_peak_memory_stats(int(device.index or 0))
             result = self._graph.trainer.run(self._graph.runtime, self._checkpoint)  # type: ignore[attr-defined]
             if not isinstance(result, RunResult):
                 raise BuildError(f"component {self.config.entry}: trainer did not return RunResult")
@@ -136,6 +148,7 @@ class Experiment:
             self._mark_failed()
             raise
         finally:
+            self._dump_profile()
             self.close()
 
     def get(self, component_id: str) -> object:
@@ -202,6 +215,16 @@ class Experiment:
         if self._directory is None:
             return
         write_status(self._directory, status)
+
+    def _dump_profile(self) -> None:
+        from src.experiments.profile import dump, enabled
+
+        if not enabled() or self._directory is None or self._graph is None:
+            return
+        try:
+            dump(self._directory, self._graph.runtime)
+        except Exception as exc:
+            print(f"resource profile was not written: {exc}", file=sys.stderr)
 
     def _mark_failed(self) -> None:
         if self._closed:

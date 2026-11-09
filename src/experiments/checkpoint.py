@@ -201,44 +201,49 @@ class CheckpointManager:
         target = self.directory / filename
         error: BaseException | None = None
         try:
-            _assert_replicated_states(states, runtime)
+            from src.experiments.profile import Span
+
+            with Span("replicated_state_compare"):
+                _assert_replicated_states(states, runtime)
             local_rng = dict(runtime.capture_rng())
             local_rng["rank"] = int(runtime.rank)
             rngs = runtime.gather_objects(local_rng)
             if len(rngs) != runtime.world_size:
                 raise CheckpointError("rng_by_rank length does not match world size")
             if int(runtime.rank) == 0:
+                from src.experiments.profile import Span
                 from src.experiments.provenance import attach_provenance_sidecar, bind_provenance
 
-                raw, provenance = bind_provenance(self.directory, config, self._components, runtime)
-                payload = _payload(
-                    config=config,
-                    states=states,
-                    components=self._components,
-                    runtime=runtime,
-                    directory=self.directory,
-                    logical_step=logical_step,
-                    label=label,
-                    initialize_allow=allow,
-                    rngs=rngs,
-                    provenance_sha256=provenance,
-                )
-                temporary = self.directory / f".{filename}.tmp"
-                try:
-                    with temporary.open("wb") as stream:
-                        torch.save(payload, stream)
-                        stream.flush()
-                        os.fsync(stream.fileno())
-                    _verify_written(temporary, payload)
-                    attach_provenance_sidecar(target, raw)
-                except Exception:
-                    temporary.unlink(missing_ok=True)
-                    raise
-                try:
-                    os.replace(temporary, target)
-                except Exception as exc:
-                    raise CheckpointError(f"checkpoint replace failed: {exc}") from exc
-                _fsync_directory(self.directory)
+                with Span("checkpoint_write"):
+                    raw, provenance = bind_provenance(self.directory, config, self._components, runtime)
+                    payload = _payload(
+                        config=config,
+                        states=states,
+                        components=self._components,
+                        runtime=runtime,
+                        directory=self.directory,
+                        logical_step=logical_step,
+                        label=label,
+                        initialize_allow=allow,
+                        rngs=rngs,
+                        provenance_sha256=provenance,
+                    )
+                    temporary = self.directory / f".{filename}.tmp"
+                    try:
+                        with temporary.open("wb") as stream:
+                            torch.save(payload, stream)
+                            stream.flush()
+                            os.fsync(stream.fileno())
+                        _verify_written(temporary, payload)
+                        attach_provenance_sidecar(target, raw)
+                    except Exception:
+                        temporary.unlink(missing_ok=True)
+                        raise
+                    try:
+                        os.replace(temporary, target)
+                    except Exception as exc:
+                        raise CheckpointError(f"checkpoint replace failed: {exc}") from exc
+                    _fsync_directory(self.directory)
         except Exception as exc:
             error = exc
         if runtime.world_size > 1:
