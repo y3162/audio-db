@@ -1,6 +1,6 @@
 # Data System の構成
 
-Phase 3-A の採用案である。固定ペアは Phase 3-B、chunk は Phase 3-C、オンラインは Phase 3-D、CPU / Gloo の world size 2 は Phase 3-E で実装した。動的 Sampler は未実装である。根拠の調査は [PHASE_3A_DATA_AUDIT.md](PHASE_3A_DATA_AUDIT.md)。公開メソッドの契約は [DATA_PUBLIC_API.md](DATA_PUBLIC_API.md)。実装順は [DATA_MIGRATION_PLAN.md](DATA_MIGRATION_PLAN.md)。検証記録は [PHASE_3B_FIXED_PAIR.md](PHASE_3B_FIXED_PAIR.md)、[PHASE_3C_CHUNK.md](PHASE_3C_CHUNK.md)、[PHASE_3D_ONLINE.md](PHASE_3D_ONLINE.md)、[PHASE_3E_DISTRIBUTED_DATA.md](PHASE_3E_DISTRIBUTED_DATA.md)。
+Phase 3-A の採用案である。固定ペアは Phase 3-B、chunk は Phase 3-C、オンラインは Phase 3-D、CPU / Gloo の world size 2 は Phase 3-E、平坦 Sampler の動的重みは Phase 3-F で実装した。根拠の調査は [PHASE_3A_DATA_AUDIT.md](PHASE_3A_DATA_AUDIT.md)。公開メソッドの契約は [DATA_PUBLIC_API.md](DATA_PUBLIC_API.md)。実装順は [DATA_MIGRATION_PLAN.md](DATA_MIGRATION_PLAN.md)。検証記録は [PHASE_3B_FIXED_PAIR.md](PHASE_3B_FIXED_PAIR.md)、[PHASE_3C_CHUNK.md](PHASE_3C_CHUNK.md)、[PHASE_3D_ONLINE.md](PHASE_3D_ONLINE.md)、[PHASE_3E_DISTRIBUTED_DATA.md](PHASE_3E_DISTRIBUTED_DATA.md)、[PHASE_3F_WEIGHTED_SAMPLING.md](PHASE_3F_WEIGHTED_SAMPLING.md)。
 
 ## 旧方針からの変更
 
@@ -132,12 +132,12 @@ world size が違う再開は、checkpoint の既存規則で拒否する。Data
 
 ### 動的 Sampler
 
-Phase 3-F まで、重み変更のメソッドは無い。設計上の位置だけを固定する。
+Phase 3-F で、平坦 policy の `OrderSampler` に `weighted_categorical_v1` を足した。公式の `rank_order` は、重みを渡していない epoch ではそのままである。
 
 - 変えるのは平坦 policy の `OrderSampler` だけである。chunk の ESPnet iterator と DFN3 の順序関数に、暗黙の重みは掛けない。
 - 指示するのは Trainer である。Loss や Metric は Sampler を直接呼ばない。Trainer が `data.set_sampling_weights(mapping)` を呼ぶ。
-- 適用は、現在開いている `EpochView` ではなく、次の `train_epoch` からである。開いている view の最中の変更は `DataError`。
-- 重み表は DataModule の `state_dict` に入る。表が無い checkpoint を、重みを持つ DataModule へ載せるのは `StateError`。
+- 適用は、まだ計画していない epoch からである。開いている view の変更は `DataError` で、計画済み epoch は `close()` のあとも凍結する。
+- 重み表は DataModule の `state_dict` に入る。未設定は null である。表の有無や中身が違う再開は `StateError` で、checkpoint の表では実行側を上書きしない。
 - 重みを変えると、それ以降の epoch の `plan_hash` が変わる。既に保存した epoch のハッシュは遡って変えない。
 - 複数 Expert は、Expert ごとに DataModule を別 component にする。共有の可変重みストアは作らない。同じ snapshot ディレクトリを二つが読み取り専用で開くことは許す。
 

@@ -21,6 +21,12 @@ import torch
 
 from src.experiments.data.identity import comparable_identity
 from src.experiments.data.sample import Batch, Crop, SampleRef
+from src.experiments.data.weighted import (
+    ALGORITHM as WEIGHTED_ALGORITHM,
+    normalize_weight_table,
+    rank_sample_positions,
+    weighted_order_parameters,
+)
 from src.experiments.errors import DataError, StateError
 from src.reproduction.errors import ReproductionError
 from src.reproduction.ids import digest
@@ -41,6 +47,7 @@ from src.reproduction.pipeline.types import SampleRef as PlannedRef
 from src.reproduction.snapshot_reader import LoadedSnapshot, load_snapshot
 
 _IDENTITY_CLASS = "src.experiments.data.SnapshotDataModule"
+_MISSING = object()
 
 
 def _call(function: Any, *args: Any, **kwargs: Any) -> Any:
@@ -84,6 +91,8 @@ def _clone_batch(batch: Batch) -> Batch:
 class _EpochPlan:
     groups: tuple[tuple[tuple[SampleRef, ...], ...], ...]
     plan_hash: str
+    weights: dict[str, float] | None = None
+    weights_sha256: str = "none"
 
     def updates(self, rank: int) -> int:
         return len(self.groups[rank])
@@ -233,6 +242,7 @@ class OrderSampler:
         self._micro_batch: int | None = None
         self._group_size: int | None = None
         self._batch_warning: str | None = None
+        self._draw_weights: dict[str, float] | None = None
 
     def policy(self, world_size: int) -> str:
         rule = self.source.dataset().get("rule_json")
@@ -313,6 +323,30 @@ class OrderSampler:
             raise DataError("validation batch must be positive")
         return width, True, 1
 
+    def training_ids(self) -> tuple[str, ...]:
+        """Canonical training sample ids. Fixed pairs use case ids. SEMamba uses speech ids."""
+
+        if self._supply() == "online_semamba":
+            self.protocol.seed = self.seed
+            count = self.protocol.material_count(self.source.split)  # type: ignore[attr-defined]
+            ids = tuple(
+                self.protocol.reference(index, 0, self.source.split).sample_id  # type: ignore[attr-defined]
+                for index in range(count)
+            )
+        elif self._supply() == "fixed_pair":
+            ids = tuple(self.source.case_ids(f"{self.source.split}.cases"))
+        else:
+            raise DataError(f"OrderSampler cannot weight supply {self._supply()}")
+        if len(set(ids)) != len(ids):
+            raise DataError("training sample ids are not unique")
+        return ids
+
+    def normalize_weights(self, weights: object) -> dict[str, float]:
+        return normalize_weight_table(weights, self.training_ids())
+
+    def use_draw_weights(self, weights: dict[str, float] | None) -> None:
+        self._draw_weights = None if weights is None else dict(weights)
+
     def sequence(self, epoch: int, rank: int, world_size: int) -> tuple[SampleRef, ...]:
         return self._sequence(epoch, rank, world_size)
 
@@ -337,15 +371,18 @@ class OrderSampler:
 
     def _speech_sequence(self, epoch: int, rank: int, world_size: int) -> tuple[SampleRef, ...]:
         count = self.protocol.material_count(self.source.split)  # type: ignore[attr-defined]
-        positions = _call(
-            rank_order,
-            self.policy(world_size),
-            count,
-            seed=self.seed,
-            epoch=epoch,
-            world_size=world_size,
-            rank=rank,
-        )
+        if self._draw_weights is not None:
+            positions = self._weighted_positions(epoch, rank, world_size)
+        else:
+            positions = _call(
+                rank_order,
+                self.policy(world_size),
+                count,
+                seed=self.seed,
+                epoch=epoch,
+                world_size=world_size,
+                rank=rank,
+            )
         return tuple(
             self.protocol.reference(int(position), epoch, self.source.split)  # type: ignore[attr-defined]
             for position in positions
@@ -355,22 +392,29 @@ class OrderSampler:
         slot = f"{self.source.split}.cases"
         case_ids = self.source.case_ids(slot)
         policy = self.policy(world_size)
-        positions = _call(
-            rank_order,
-            policy,
-            len(case_ids),
-            seed=self.seed,
-            epoch=epoch,
-            world_size=world_size,
-            rank=rank,
-        )
+        weighted = self._draw_weights is not None
+        if weighted:
+            positions = self._weighted_positions(epoch, rank, world_size)
+        else:
+            positions = _call(
+                rank_order,
+                policy,
+                len(case_ids),
+                seed=self.seed,
+                epoch=epoch,
+                world_size=world_size,
+                rank=rank,
+            )
         self.protocol.seed = self.seed
         refs: list[SampleRef] = []
         for local, position in enumerate(positions):
             case_id = case_ids[position]
             length = _call(fixed_pair_case_length, self.source.store, case_id, self.protocol.normalize)
             crop = self.protocol.locate(case_id, length, epoch)
-            index = _call(fixed_pair_plan_index, policy, local, rank, world_size, len(case_ids))
+            if weighted:
+                index = int(position)
+            else:
+                index = _call(fixed_pair_plan_index, policy, local, rank, world_size, len(case_ids))
             refs.append(
                 SampleRef(
                     sample_id=case_id,
@@ -381,6 +425,22 @@ class OrderSampler:
                 )
             )
         return tuple(refs)
+
+    def _weighted_positions(self, epoch: int, rank: int, world_size: int) -> list[int]:
+        table = self._draw_weights
+        if table is None:
+            raise DataError("weighted sampling has no weight table")
+        ids = self.training_ids()
+        positions = rank_sample_positions(
+            [table[sample_id] for sample_id in ids],
+            self.seed,
+            epoch,
+            world_size,
+            rank,
+        )
+        if not positions:
+            raise DataError("weighted epoch has no samples for this rank")
+        return positions
 
 
 class FixedPairProtocol:
@@ -523,8 +583,20 @@ class SnapshotEpochView:
         self._epoch = epoch
         self._start = start_update
         self._groups = groups
+        self._closed = False
+        module._register_view(self)
+
+    def close(self) -> None:
+        """Release this view. Garbage collection is not the epoch boundary."""
+
+        if self._closed:
+            return
+        self._closed = True
+        self._module._release_view(self)
 
     def batch(self, update_index: int) -> list[Batch]:
+        if self._closed:
+            raise DataError("epoch view is closed")
         if isinstance(update_index, bool) or not isinstance(update_index, int):
             raise StateError(f"update index {update_index!r} is not an integer")
         if update_index < self._start:
@@ -592,6 +664,9 @@ class SnapshotDataModule:
         self._jobs: queue.Queue[tuple[int, int, tuple[SampleRef, ...]] | None] = queue.Queue()
         self._prefetch_error: BaseException | None = None
         self._batch_warned = False
+        self._weights: dict[str, float] | None = None
+        self._open_views = 0
+        self._runtime: object | None = None
 
     @property
     def group_size(self) -> int:
@@ -639,6 +714,7 @@ class SnapshotDataModule:
         if self._closed:
             raise DataError("data module is closed")
         self._accept_runtime(runtime)
+        self._runtime = runtime
         self.source.open()
         self._validate_dataset()
         self._ready = True
@@ -662,6 +738,22 @@ class SnapshotDataModule:
             plan.groups[self.rank],
             plan.plan_hash,
         )
+
+    def set_sampling_weights(self, weights: Mapping[str, float]) -> None:
+        """Apply ``weights`` to later epochs of a flat order sampler.
+
+        An open epoch view is refused. Epochs that already have a plan keep
+        that plan. Chunk and DeepFilterNet3 samplers are refused.
+        """
+
+        self._require_ready()
+        if self._open_views:
+            raise DataError("sampling weights cannot change while an epoch view is open")
+        if not isinstance(self.sampler, OrderSampler):
+            raise DataError("set_sampling_weights is only available for a flat order sampler")
+        normalized = self.sampler.normalize_weights(weights)
+        self._weights = normalized
+        self._stop_prefetch(propagate_error=False)
 
     def validation_epoch(self, epoch: int) -> Iterator[Batch]:
         self._require_ready()
@@ -715,12 +807,14 @@ class SnapshotDataModule:
 
     def state_dict(self) -> dict[str, Any]:
         self._require_ready()
+        plan = self._epoch_plan(self.epoch)
+        weights = None if plan.weights is None else dict(plan.weights)
         return {
             "epoch": self.epoch,
             "identity": self.identity(),
-            "plan_hash": self.plan_hash,
+            "plan_hash": plan.plan_hash,
             "update_index": self.update_index,
-            "weights": None,
+            "weights": weights,
             "world_size": self.world_size,
         }
 
@@ -736,8 +830,7 @@ class SnapshotDataModule:
             raise StateError("data state does not match this data module")
         if state.get("world_size") != self.world_size:
             raise StateError("data world_size does not match this data module")
-        if "weights" not in state or state.get("weights") is not None:
-            raise StateError("data weights do not match this data module")
+        self._require_saved_weights(state.get("weights") if "weights" in state else _MISSING)
         epoch = state.get("epoch")
         update_index = state.get("update_index")
         if isinstance(epoch, bool) or not isinstance(epoch, int) or epoch < 0:
@@ -815,17 +908,49 @@ class SnapshotDataModule:
         cached = self._plans.get(epoch)
         if cached is not None:
             return cached
+        table = self._weights
+        sha = "none" if table is None else _call(digest, table)
+        self._agree_weights(sha)
         self._bind_sampler()
-        grouped = tuple(self.batcher.groups(sequence) for sequence in self.sampler.all_ranks(epoch, self.world_size))
-        plan = _EpochPlan(groups=grouped, plan_hash=self._hash(epoch, grouped))
+        applied = False
+        try:
+            if table is not None:
+                use = getattr(self.sampler, "use_draw_weights", None)
+                if not callable(use):
+                    raise DataError("set_sampling_weights is only available for a flat order sampler")
+                use(table)
+                applied = True
+            grouped = tuple(
+                self.batcher.groups(sequence) for sequence in self.sampler.all_ranks(epoch, self.world_size)
+            )
+        finally:
+            if applied:
+                self.sampler.use_draw_weights(None)  # type: ignore[attr-defined]
+        plan = _EpochPlan(
+            groups=grouped,
+            plan_hash=self._hash(epoch, grouped, table),
+            weights=None if table is None else dict(table),
+            weights_sha256=sha,
+        )
         self._plans[epoch] = plan
         return plan
 
-    def _hash(self, epoch: int, groups: tuple[tuple[tuple[SampleRef, ...], ...], ...]) -> str:
+    def _hash(
+        self,
+        epoch: int,
+        groups: tuple[tuple[tuple[SampleRef, ...], ...], ...],
+        weights: dict[str, float] | None,
+    ) -> str:
         dataset = self.source.dataset()
-        policy = self.sampler.policy(self.world_size)
-        parameters = getattr(self.sampler, "order_parameters", None)
-        recorded = parameters() if callable(parameters) else _call(order_params, policy, self.sampler.seed)
+        if weights is None:
+            policy = self.sampler.policy(self.world_size)
+            parameters = getattr(self.sampler, "order_parameters", None)
+            recorded = parameters() if callable(parameters) else _call(order_params, policy, self.sampler.seed)
+            sha = "none"
+        else:
+            policy = WEIGHTED_ALGORITHM
+            recorded = weighted_order_parameters(self.sampler.seed)
+            sha = _call(digest, weights)
         payload = {
             "epoch": epoch,
             "group_size": self.batcher.group_size,
@@ -836,10 +961,45 @@ class SnapshotDataModule:
             "ranks": [[_ref_payload(sample) for group in rank_groups for sample in group] for rank_groups in groups],
             "seed": self.sampler.seed,
             "snapshot_hash": self.source.snapshot_hash,
-            "weights_sha256": "none",
+            "weights_sha256": sha,
             "world_size": self.world_size,
         }
         return _call(digest, payload)
+
+    def _require_saved_weights(self, saved: object) -> None:
+        if saved is _MISSING:
+            raise StateError("data weights do not match this data module")
+        if saved is None:
+            normalized = None
+        elif isinstance(self.sampler, OrderSampler):
+            try:
+                normalized = self.sampler.normalize_weights(saved)
+            except DataError as exc:
+                raise StateError("data weights do not match this data module") from exc
+        else:
+            raise StateError("data weights do not match this data module")
+        if normalized != self._weights:
+            raise StateError("data weights do not match this data module")
+
+    def _agree_weights(self, sha: str) -> None:
+        if self.world_size == 1 or self._runtime is None:
+            return
+        gather = getattr(self._runtime, "gather_objects", None)
+        if not callable(gather):
+            return
+        if not torch.distributed.is_available() or not torch.distributed.is_initialized():
+            return
+        gathered = gather(sha)
+        if any(item != sha for item in gathered):
+            raise DataError("ranks disagree on sampling weights")
+
+    def _register_view(self, view: SnapshotEpochView) -> None:
+        del view
+        self._open_views += 1
+
+    def _release_view(self, view: SnapshotEpochView) -> None:
+        del view
+        self._open_views = max(0, self._open_views - 1)
 
     def _validate_dataset(self) -> None:
         dataset = self.source.dataset()

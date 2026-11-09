@@ -1,6 +1,6 @@
 # Data System 公開 API
 
-Phase 3-A の契約である。固定ペアの Source、Sampler、Protocol、Batcher、`SnapshotDataModule` は Phase 3-B で `src/experiments/data/` にある。chunk の `ChunkSampler` と `ChunkProtocol` は Phase 3-C で同じ DataModule に載っている。オンラインの `Dfn3IndexSampler`、`Dfn3Protocol`、`SemambaProtocol` は Phase 3-D で同じ DataModule に載っている。world size 2 の正式受け入れは Phase 3-E で記録した。動的 Sampler は未実装である。構成の理由は [DATA_ARCHITECTURE.md](DATA_ARCHITECTURE.md)。Phase 2 まで実装済みの `TensorPairData` はこの契約の合成データ実装として残り、メソッドの意味は変えない。
+Phase 3-A の契約である。固定ペアの Source、Sampler、Protocol、Batcher、`SnapshotDataModule` は Phase 3-B で `src/experiments/data/` にある。chunk の `ChunkSampler` と `ChunkProtocol` は Phase 3-C で同じ DataModule に載っている。オンラインの `Dfn3IndexSampler`、`Dfn3Protocol`、`SemambaProtocol` は Phase 3-D で同じ DataModule に載っている。world size 2 の正式受け入れは Phase 3-E で記録した。平坦 Sampler の `set_sampling_weights` は Phase 3-F で実装した。構成の理由は [DATA_ARCHITECTURE.md](DATA_ARCHITECTURE.md)。Phase 2 まで実装済みの `TensorPairData` はこの契約の合成データ実装として残り、メソッドの意味は変えない。
 
 利用者は `SnapshotDataModule` と、YAML に書く Source / Sampler / Protocol / Batcher だけを触る。純関数のモジュールパスは component 間の API であり、実験 YAML のクラス名には出さない。`_crop` のような先頭が `_` の関数は、Phase 3-B で公開名の委譲を足すまで、新コードから呼ばない。
 
@@ -183,19 +183,21 @@ update_index: int          # 次に batch へ渡す micro-batch 添字
 plan_hash: str             # state["epoch"] の計画
 world_size: int
 identity: dict
-weights: null              # Phase 3-F まで null。辞書になったら sample_id から数値
+weights: null | dict       # 未設定は null。設定時はその epoch の実効重み
 ```
 
 `load_state_dict` は、現在の `identity()` と `world_size` と、`state["epoch"]` から再計算した `plan_hash` を比べる。prefetch のバッファは捨ててから比べる。古い先読みの例外は状態へ載せない。`update_index` が負、またはその epoch の `updates` を超えるときは `StateError`。等しいときは、次の `train_epoch` が epoch を繰り上げる現行 Trainer の動作に任せる。
 
 `prefetch=False` は `load_workers` を 0 にする。`prefetch=True` で `load_workers` を省略すると 1 である。`prefetch=True` かつ `load_workers < 1`、または `prefetch=False` かつ `load_workers` が 0 でないときは `ValueError`。先読みは `load_workers` 本の非 daemon スレッドが、次の micro-batch からその本数だけを CPU で描く。キャッシュは `max(1, load_workers + 1)` 件までである。`update_index` は先読みでは進まない。`join` が `worker_join_timeout`（既定 30 秒）を超えたスレッドは `DataError` で、成功として捨てない。worker 数と prefetch の有無は `plan_hash` と `identity()` に入らない。実験 YAML の kwargs なので `config_sha256` には入る。worker 数だけが違う再開は config identity の不一致で拒否する。波形が一致することと、その再開を許すことは別である。
 
-Phase 3-F で足すメソッドは次だけである。3-B から 3-E は定義しない。
+Phase 3-F のメソッドは次である。`SnapshotEpochView.close()` が epoch 境界で、二度呼んでも成功する。閉じた view の `batch` は `DataError` である。GC では閉じない。`StandardTrainer` は step の `finally` で `close` を呼ぶ。`close` が無い view は何もしない。
 
 ```python
 def set_sampling_weights(self, weights: Mapping[str, float]) -> None:
-    """次の train_epoch から平坦 Sampler に効く。開いている EpochView があれば DataError。"""
+    """まだ計画していない epoch の平坦 Sampler に効く。開いている view があれば DataError。"""
 ```
+
+表は学習 Sample ID を過不足なく含む。実効値は 6 桁で、hash と抽選で同じ値を使う。重み 0 は抽出しない。合計 0、bool、NaN、Inf、負数は `DataError` である。chunk と DFN3 も `DataError` である。計画済みの epoch は凍結する。`state_dict["weights"]` はその `epoch` の表で、再開時に DataModule の表と一致しなければ `StateError` である。checkpoint の表では上書きしない。重み付き epoch の plan hash の `order_policy` は `weighted_categorical_v1` で、`identity()` の `order_policy` は snapshot の policy のままである。詳細は [PHASE_3F_WEIGHTED_SAMPLING.md](PHASE_3F_WEIGHTED_SAMPLING.md)。
 
 ## component 間の API
 

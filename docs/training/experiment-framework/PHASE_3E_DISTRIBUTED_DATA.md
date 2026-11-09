@@ -147,4 +147,4 @@ CUDA_VISIBLE_DEVICES="" .venvs/se/bin/python -m unittest discover -s tests/repro
 
 GO。
 
-6 構成の CPU / Gloo world size 2 供給、rank 規則、plan hash、代表構成を含む再開、worker 数を変えた波形、rank 不一致が完成ファイルを残さないこと、既存回帰は満たした。本格 SE の学習再現ではない。Phase 3-F の動的 Sampler と、検証損失の rank 集計は残している。
+6 構成の CPU / Gloo world size 2 供給、rank 規則、plan hash、代表構成を含む再開、worker 数を変えた波形、rank 不一致が完成ファイルを残さないこと、既存回帰は満たした。本格 SE の学習再現ではない。検証損失の rank 集計は残している。平坦 Sampler の動的重みはその後の [PHASE_3F_WEIGHTED_SAMPLING.md](PHASE_3F_WEIGHTED_SAMPLING.md) で実装した。

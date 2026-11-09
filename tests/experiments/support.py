@@ -496,6 +496,55 @@ class RankBuildFailModule(SnapshotDataModule):
         super().setup(runtime)
 
 
+def research_weights(sample_ids: tuple[str, ...] | list[str]) -> dict[str, float]:
+    """One zero weight and a 1:3 pattern. The total stays positive when two or more ids exist."""
+
+    table: dict[str, float] = {}
+    for index, sample_id in enumerate(sample_ids):
+        if index == 0:
+            table[sample_id] = 0.0
+        elif index % 2:
+            table[sample_id] = 3.0
+        else:
+            table[sample_id] = 1.0
+    if len(sample_ids) == 1:
+        table[sample_ids[0]] = 1.0
+    return table
+
+
+class WeightedSnapshot(SnapshotDataModule):
+    """Sets the same research weight table on every rank during setup."""
+
+    def setup(self, runtime: object) -> None:
+        super().setup(runtime)
+        sample_ids = self.sampler.training_ids()  # type: ignore[attr-defined]
+        self.set_sampling_weights(research_weights(sample_ids))
+
+
+class SkewWeightModule(SnapshotDataModule):
+    """Rank 1 changes one positive weight. Ranks do not exchange the table."""
+
+    def setup(self, runtime: object) -> None:
+        super().setup(runtime)
+        sample_ids = self.sampler.training_ids()  # type: ignore[attr-defined]
+        table = research_weights(sample_ids)
+        if int(getattr(runtime, "rank", 0)) == 1:
+            table[sample_ids[1]] = 9.0
+        self.set_sampling_weights(table)
+
+
+class RankWeightFailModule(SnapshotDataModule):
+    """Rank 0 rejects an all-zero table before the epoch plan is gathered."""
+
+    def setup(self, runtime: object) -> None:
+        super().setup(runtime)
+        sample_ids = self.sampler.training_ids()  # type: ignore[attr-defined]
+        if int(getattr(runtime, "rank", 0)) == 0:
+            self.set_sampling_weights({sample_id: 0.0 for sample_id in sample_ids})
+        else:
+            self.set_sampling_weights(research_weights(sample_ids))
+
+
 class RankRenderFailModule(SnapshotDataModule):
     """Fails the first micro-batch on the rank named by ``AUDIO_DB_FAIL_RENDER_RANK``."""
 

@@ -135,64 +135,67 @@ class StandardTrainer:
                 )
             self._before_logical_step(runtime)
             view = self.data.train_epoch(epoch, start_update=index)
-            if index >= view.updates:
-                epoch += 1
-                index = 0
-                if epoch > self.max_logical_steps + 1:
-                    raise RuntimeFailure(f"component {component_id}: data has no updates")
-                continue
-            if index + self.accumulation > view.updates:
-                raise RuntimeFailure(
-                    f"component {component_id}: accumulation {self.accumulation} "
-                    f"does not fit at update {index}"
-                )
-            self.optimizer.zero_grad(set_to_none=True)
-            total: torch.Tensor | None = None
-            sample_ids: list[str] = []
-            for offset in range(self.accumulation):
-                sync = offset == self.accumulation - 1
-                batches = view.batch(index + offset)
-                sample_ids.extend(batch.sample_id for batch in batches)
-                with runtime.sync_context([self.model], sync=sync):
-                    with runtime.autocast():
-                        micro = self._forward_loss(batches, component_id, runtime)
-                    micro = micro / self.accumulation
-                    runtime.backward(micro)
-                detached = micro.detach()
-                total = detached if total is None else total + detached
-            self._before_optimizer_step(runtime)
-            if self.grad_clip is not None:
-                runtime.clip(self.model.parameters, self.grad_clip, optimizer=self.optimizer)
-            result = runtime.step(self.optimizer)
-            runtime.end_step()
-            if result.applied:
-                self.optimizer_updates[self.optimizer_id] += 1
-                if self.scheduler is not None:
-                    self.scheduler.step()
-            self.logical_step += 1
-            index += self.accumulation
-            if hasattr(self.data, "epoch") and hasattr(self.data, "update_index"):
-                self.data.epoch = epoch
-                self.data.update_index = index
-            if total is None or not bool(torch.isfinite(total).all()):
-                raise RuntimeFailure(f"component {component_id}: loss is not finite")
-            loss_value = float(total)
-            self.losses.append(loss_value)
-            sample_id = ",".join(sample_ids)
-            if rank == 0:
-                self._append_metrics(metrics_path, loss_value, result.applied, sample_id)
-            if sample_path is not None:
-                _append_jsonl(
-                    sample_path,
-                    {
-                        "logical_step": self.logical_step,
-                        "loss": loss_value,
-                        "sample_id": sample_id,
-                    },
-                )
-            if self.logical_step % self.checkpoint_interval == 0:
-                self._before_checkpoint(runtime, checkpoint)
-                checkpoint.save(checkpoint.directory, logical_step=self.logical_step, label="step")
+            try:
+                if index >= view.updates:
+                    epoch += 1
+                    index = 0
+                    if epoch > self.max_logical_steps + 1:
+                        raise RuntimeFailure(f"component {component_id}: data has no updates")
+                    continue
+                if index + self.accumulation > view.updates:
+                    raise RuntimeFailure(
+                        f"component {component_id}: accumulation {self.accumulation} "
+                        f"does not fit at update {index}"
+                    )
+                self.optimizer.zero_grad(set_to_none=True)
+                total: torch.Tensor | None = None
+                sample_ids: list[str] = []
+                for offset in range(self.accumulation):
+                    sync = offset == self.accumulation - 1
+                    batches = view.batch(index + offset)
+                    sample_ids.extend(batch.sample_id for batch in batches)
+                    with runtime.sync_context([self.model], sync=sync):
+                        with runtime.autocast():
+                            micro = self._forward_loss(batches, component_id, runtime)
+                        micro = micro / self.accumulation
+                        runtime.backward(micro)
+                    detached = micro.detach()
+                    total = detached if total is None else total + detached
+                self._before_optimizer_step(runtime)
+                if self.grad_clip is not None:
+                    runtime.clip(self.model.parameters, self.grad_clip, optimizer=self.optimizer)
+                result = runtime.step(self.optimizer)
+                runtime.end_step()
+                if result.applied:
+                    self.optimizer_updates[self.optimizer_id] += 1
+                    if self.scheduler is not None:
+                        self.scheduler.step()
+                self.logical_step += 1
+                index += self.accumulation
+                if hasattr(self.data, "epoch") and hasattr(self.data, "update_index"):
+                    self.data.epoch = epoch
+                    self.data.update_index = index
+                if total is None or not bool(torch.isfinite(total).all()):
+                    raise RuntimeFailure(f"component {component_id}: loss is not finite")
+                loss_value = float(total)
+                self.losses.append(loss_value)
+                sample_id = ",".join(sample_ids)
+                if rank == 0:
+                    self._append_metrics(metrics_path, loss_value, result.applied, sample_id)
+                if sample_path is not None:
+                    _append_jsonl(
+                        sample_path,
+                        {
+                            "logical_step": self.logical_step,
+                            "loss": loss_value,
+                            "sample_id": sample_id,
+                        },
+                    )
+                if self.logical_step % self.checkpoint_interval == 0:
+                    self._before_checkpoint(runtime, checkpoint)
+                    checkpoint.save(checkpoint.directory, logical_step=self.logical_step, label="step")
+            finally:
+                _close_epoch_view(view)
         self.stop_reason = "completed"
         return RunResult(
             stop_reason="completed",
@@ -269,6 +272,14 @@ class StandardTrainer:
         }
         with path.open("a", encoding="utf-8") as handle:
             handle.write(json.dumps(record, sort_keys=True) + "\n")
+
+
+def _close_epoch_view(view: object) -> None:
+    """Release an epoch view. Data modules without ``close`` stay unchanged."""
+
+    close = getattr(view, "close", None)
+    if callable(close):
+        close()
 
 
 def _batch_on_device(batch: Batch, device: torch.device) -> Batch:

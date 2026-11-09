@@ -260,7 +260,7 @@ class DataModule(Protocol):
 
 Sample identity はバッチに `sample_id: str` として入る。Realization identity は `realization_id: str` として入る。固定ペアで crop が epoch に依存するときは、両者は異なる。オンライン混合で波形が `(seed, epoch, index)` の純関数であるとき、Sampler の乱数状態は `state_dict` に入れない。
 
-学習結果で Sampler の分布を変える処理は、Trainer が DataModule の `set_sampling_weights(mapping)` を呼ぶ形にする。Phase 3-F より前の DataModule はこのメソッドを持たない。持つ実装は、変更後の重みを `state_dict` に含め、含めない状態からの `resume` は `StateError` にする。平坦 policy 以外には掛けない。旧文の `update_weights(sample_id, weight)` はこのメソッドに置き換えた。
+学習結果で Sampler の分布を変える処理は、Trainer が DataModule の `set_sampling_weights(mapping)` を呼ぶ形にする。`SnapshotDataModule` は Phase 3-F でこのメソッドを持つ。開いている view の変更は `DataError` で、`close()` のあと、まだ計画していない epoch から効く。変更後の重みを、その epoch の `state_dict` に含め、表の有無や中身が違う `resume` は `StateError` にする。checkpoint の表では上書きしない。平坦 policy 以外には掛けない。旧文の `update_weights(sample_id, weight)` はこのメソッドに置き換えた。
 
 ## StateRegistry と Checkpoint
 
