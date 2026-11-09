@@ -261,6 +261,29 @@ Phase 4-B のクラスは `src.experiments.models.tf_gridnet.TFGridNetModel` と
 
 `group_size` が `accumulation` と違うときは `RuntimeFailure`。early stopping の既定 patience は None で、宣言 YAML は 5。停止理由は `completed` である。設定例は `configs/experiments/tf_gridnet_ms_snsd.yaml`。この YAML の `max_logical_steps` は 1 で、公式規模の学習は起動しない。検証は [Phase 4-B](PHASE_4B_TF_GRIDNET_TRAINING.md)。
 
+## TF-Locoformer DNS
+
+Phase 4-C のクラスは `src.experiments.models.tf_locoformer.TFLocoformerModel` と、既存の `MultiResolutionL1Loss` と、`src.experiments.tf_locoformer.TFLocoformerTrainer` である。Factory はクラスパスを呼ぶだけで、モデル名では分岐しない。Scheduler は既存の `src.training.se.optim.WarmupReduceLROnPlateau` をそのまま使う。
+
+`TFLocoformerModel` は `variant="dns"` の `src.se.build_model("tf_locoformer")` を 1 組だけ持つ。構築は `seed_model_init` の中で行い、戻る前に `apply_espnet_initialization` の `xavier_uniform` を掛ける。Optimizer はその後に同じ Parameter を受け取る。`forward` は `[batch, time]` を受け、同じ形状の有限な波形を返す。長さが `n_fft // 2` 以下、無音、分散が極端に小さい入力は `RuntimeFailure` で、モデル本体の拒否を維持する。モデル内部の分散正規化は true のままで、Loss の `normalize_variance` は false のままである。
+
+`TFLocoformerTrainer` は `TFGridNetTrainer` の Scheduler 更新を流用しない。lifecycle は次である。
+
+1. `plan_chunk_epoch` の micro-batch 列を 1 epoch とする。
+2. 各 logical step は train、`zero_grad`、蓄積、`runtime.backward`、`runtime.clip`、`runtime.step`、`runtime.end_step` である。`optimizer.step()` は呼ばない。
+3. `runtime.step` の `applied` が true のときだけ `WarmupReduceLROnPlateau.step_batch` を呼ぶ。最初の更新はコンストラクタの学習率を使う。`step_batch` は次の更新の学習率を warmup 式で書く。
+4. epoch の途中で `max_logical_steps` に達しても、validation、`step_validation`、n-best は走らない。
+5. epoch の最後の更新と `step_batch` のあと、label `validation_pending` の checkpoint を書く。
+6. `model.eval()` と `torch.no_grad()` で検証する。学習 cursor と学習 RNG は進めない。Loss と SI-SNR は、波形数で重み付けした全 rank の和を件数で割る。
+7. 学習ログの `si_sdr` は負の SI-SDR loss である。Validation の `si_snr` は SI-SDR（dB）である。同じ数として比較しない。
+8. warmup 中も含め、検証損失で `step_validation` を 1 回呼ぶ。この呼び出しは `step_num` を進めない。warmup 中に plateau が学習率を下げても、次の `step_batch` が warmup 式で上書きする。
+9. `valid.loss` は最小、`valid.si_snr` は最大で n-best を分ける。同点は早い epoch を残す。Loss の平均だけが `average_state_dicts` を使う。選択結果には validation profile を書く。宣言の profile は `tf_locoformer.dns.accept_recipe.research_valid_fixed@1` で、`cv_synthetic_small` ではない。
+10. 同じ logical step のファイルを label `step` で置き換える。`validation_pending` からの再開は、検証、plateau、選択を一度だけやり直す。Optimizer 更新と `step_batch` はやり直さない。
+
+`export_for_inference` は Generator の state dict である。キーは `separator.` で始まる。推論 loader はその接頭辞を外して `separator` へ載せる。接頭辞の無い辞書も `separator` へ載る。学習 checkpoint とは別である。
+
+設定例は `configs/experiments/tf_locoformer_dns.yaml`。この YAML の `max_logical_steps` は 1 で、公式規模の DNS 学習は起動しない。検証は [Phase 4-C](PHASE_4C_TF_LOCOFORMER_TRAINING.md)。
+
 ## Data API
 
 Phase 1 から 2-C の実装はこの節の `TensorPairData` である。音声の Source、Sampler、Protocol、Batch、identity、`plan_hash`、YAML は [DATA_PUBLIC_API.md](DATA_PUBLIC_API.md) を正とする。Phase 3-A は、既存の供給クラスをアダプタで包む案を撤回した。Trainer から見たメソッド名は、この節と音声契約で同じである。

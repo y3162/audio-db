@@ -1,0 +1,137 @@
+# Phase 4-C TF-Locoformer DNS training algorithm.
+# This declares the research DNS recipe. It is not a full run:
+# max_logical_steps is 1, so an epoch does not finish and validation does not run.
+# The validation profile is tf_locoformer.dns.accept_recipe.research_valid_fixed@1.
+# That set is the research 1,024-case selection profile. It is not cv_synthetic_small.
+# global_batch 4 with micro_batch 1 matches required world size 4.
+# Acceptance tests use a tiny architecture and a synthetic snapshot.
+schema: audio-db-experiment/v1
+seed: 0
+deterministic: true
+entry: trainer
+runtime:
+  class: src.experiments.runtime.ProcessRuntime
+  kwargs:
+    device: cpu
+    precision: fp32
+output:
+  directory: runs/tf-locoformer-dns
+components:
+  model:
+    role: module
+    class: src.experiments.models.tf_locoformer.TFLocoformerModel
+    kwargs:
+      seed: 0
+      variant: dns
+      init: xavier_uniform
+      architecture:
+        n_fft: 256
+        hop_length: 128
+        normalize_variance: true
+        num_spk: 1
+        n_layers: 6
+        emb_dim: 128
+        norm_type: rmsgroupnorm
+        num_groups: 4
+        tf_order: ft
+        n_heads: 4
+        flash_attention: false
+        attention_dim: 128
+        pos_enc: rope
+        ffn_type: [swiglu_conv1d, swiglu_conv1d]
+        ffn_hidden_dim: [384, 384]
+        conv1d_kernel: 4
+        conv1d_shift: 1
+        dropout: 0.0
+        eps: 1.0e-5
+    prepare: {trainable: true, distribute: none}
+  loss:
+    role: loss
+    class: src.experiments.losses.MultiResolutionL1Loss
+    kwargs:
+      windows: [256, 512, 768, 1024]
+      time_domain_weight: 0.5
+      normalize_variance: false
+  source:
+    role: other
+    class: src.experiments.data.SnapshotSource
+    kwargs:
+      snapshot: tf_locoformer.dns.accept_recipe.research_valid_fixed@1
+      snapshot_root: data/db/snapshots
+      split: train
+  sampler:
+    role: other
+    class: src.experiments.data.ChunkSampler
+    kwargs:
+      seed: 0
+      num_samples_per_epoch: 1000
+      chunk_length: 64000
+      shift_ratio: 0.5
+      num_cache_chunks: 1024
+      shuffle: true
+      global_batch: 4
+    inject:
+      source: {ref: source}
+  protocol:
+    role: other
+    class: src.experiments.data.ChunkProtocol
+    kwargs: {}
+    inject:
+      source: {ref: source}
+  batcher:
+    role: other
+    class: src.experiments.data.MicroBatcher
+    kwargs:
+      micro_batch: 1
+      group_size: 1
+  data:
+    role: data
+    class: src.experiments.data.SnapshotDataModule
+    kwargs:
+      prefetch: false
+    inject:
+      source: {ref: source}
+      sampler: {ref: sampler}
+      protocol: {ref: protocol}
+      batcher: {ref: batcher}
+  optimizer:
+    role: optimizer
+    class: torch.optim.AdamW
+    parameters_of: model
+    kwargs:
+      lr: 0.001
+      betas: [0.9, 0.999]
+      weight_decay: 0.01
+  scheduler:
+    role: scheduler
+    class: src.training.se.optim.WarmupReduceLROnPlateau
+    kwargs:
+      warmup_steps: 4000
+      mode: min
+      factor: 0.5
+      patience: 3
+      threshold: 1.0e-4
+      threshold_mode: rel
+      cooldown: 0
+      min_lr: 0.0
+      eps: 1.0e-8
+    inject:
+      optimizer: {ref: optimizer}
+  trainer:
+    role: trainer
+    class: src.experiments.tf_locoformer.TFLocoformerTrainer
+    kwargs:
+      max_logical_steps: 1
+      accumulation: 1
+      grad_clip: 5.0
+      keep_nbest: 5
+      max_epochs: 150
+      early_stopping_patience: 10
+      checkpoint_interval: 1
+      validation_profile: tf_locoformer.dns.accept_recipe.research_valid_fixed@1
+    inject:
+      model: {ref: model}
+      loss: {ref: loss}
+      data: {ref: data}
+      optimizer: {ref: optimizer}
+      scheduler: {ref: scheduler}
