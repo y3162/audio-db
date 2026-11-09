@@ -317,6 +317,26 @@ Phase 4-C のクラスは `src.experiments.models.tf_locoformer.TFLocoformerMode
 
 設定例は `configs/experiments/tf_locoformer_dns.yaml`。module の `distribute` は `ddp` で、`global_batch` 4 と `micro_batch` 1 は world size 4 を要求する。world size 1 は `global_batch` 不一致で拒否する。world size 1 は DDP で包まない。この YAML の `max_logical_steps` は 1 で、公式規模の DNS 学習は起動しない。検証は [Phase 4-C](PHASE_4C_TF_LOCOFORMER_TRAINING.md) と [Phase 4-F](PHASE_4F_INTEGRATION.md)。
 
+## DeepFilterNet3
+
+Phase 4-G のクラスは `src.experiments.models.deepfilternet3.DeepFilterNet3Model` と、`src.experiments.deepfilternet3.DeepFilterNet3Trainer` である。Factory はクラスパスを呼ぶだけで、モデル名では分岐しない。損失は既存の `_multi_resolution_spectral`、`_local_snr_db`、`_vorbis_istft` を関数として呼ぶ。`DeepFilterNetTask.train_update` は呼ばない。cosine は既存の `deepfilter_cosine_schedules` を呼ぶ。Scheduler コンポーネントは作らない。
+
+`DeepFilterNet3Model` は `src.se.build_model("deepfilternet3")` の `DfNet` を 1 組だけ持つ。`DFStream` は Trainer が持つ。波形ごとに `reset()` してから clean、そのあと noisy を解析する。`enhance()` は呼ばない。`df_fc_a` は state dict に残り、forward では未使用なので、prepare の `find_unused_parameters` は true である。
+
+`DeepFilterNet3Trainer` の lifecycle は次である。
+
+1. 1 epoch は `plan_online_epoch` の更新列である。`steps_per_epoch` が変わると cosine 表を作り直す。
+2. index は `epoch * steps_per_epoch + index_in_epoch` で、Optimizer 更新の前に適用する。過去 epoch の更新数の累積ではない。
+3. 各 logical step は train、`zero_grad`、蓄積、`runtime.backward`、`runtime.clip`、`runtime.step`、`runtime.end_step` である。
+4. epoch の途中では validation、best、early stopping は走らない。
+5. epoch の最後は label `validation_pending` を書き、rank 0 が valid 全体を発話ごとの等重み平均で見る。Optimizer は更新しない。
+6. best は validation loss の厳密な改善だけである。非改善が patience に達すると止まり、改善するとカウンタを 0 に戻す。
+7. 同じ logical step のファイルを label `step` で置き換える。
+8. batch schedule があるとき、world size 1 かつ epoch の先頭だけで `Dfn3IndexSampler` の micro-batch を付け替える。world size が 1 でないときは拒否する。
+9. resume は、保存された `micro_batch` 以外の identity が一致するときだけ、その幅へ戻してから identity と plan hash を比べる。
+
+`export_for_inference` は `DfNet` の state dict で、`df_fc_a` を含む。設定例は `configs/experiments/deepfilternet3.yaml`。この YAML の `max_logical_steps` は 1 で、`dfn3.online.official@1` は起動しない。検証は [Phase 4-G](PHASE_4G_DEEPFILTERNET3_TRAINING.md)。
+
 ## Data API
 
 Phase 1 から 2-C の実装はこの節の `TensorPairData` である。音声の Source、Sampler、Protocol、Batch、identity、`plan_hash`、YAML は [DATA_PUBLIC_API.md](DATA_PUBLIC_API.md) を正とする。Phase 3-A は、既存の供給クラスをアダプタで包む案を撤回した。Trainer から見たメソッド名は、この節と音声契約で同じである。

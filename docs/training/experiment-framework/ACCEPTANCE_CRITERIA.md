@@ -174,6 +174,14 @@ Phase 3-A で撤回した。代替の受け入れは [DATA_ACCEPTANCE_CRITERIA.m
 - 測定: 4 モデル横断は [PHASE_4F_INTEGRATION.md](PHASE_4F_INTEGRATION.md)。CPU / FP32 の最大絶対誤差 0 は各 Phase の試験をこのセッションで再実行して維持した。公式 chunk YAML は `distribute: ddp` で、TF-GridNet は world size 2、TF-Locoformer は world size 4 でしか構築しない。world size 1 は `global_batch` 不一致で拒否する。TF-GridNet MS-SNSD は [PHASE_4B_TF_GRIDNET_TRAINING.md](PHASE_4B_TF_GRIDNET_TRAINING.md)。CPU / FP32、seed 0、1 micro-batch、小さい合法構成で、forward、loss、勾配、クリップ後勾配、Adam 更新後の重み、Adam state の最大絶対誤差は 0。TF-Locoformer DNS は [PHASE_4C_TF_LOCOFORMER_TRAINING.md](PHASE_4C_TF_LOCOFORMER_TRAINING.md)。同じ CPU / FP32 で、forward、loss、勾配、クリップ後勾配、AdamW 更新後の重み、AdamW state、warmup 後の 2 更新目の最大絶対誤差は 0。`step_batch` は更新のあと、`step_validation` は epoch 末で、warmup 中も呼ぶ。MP-SENet の Waveform L1 は Phase 4-A。公式 GAN は [PHASE_4D_MP_SENET_GAN.md](PHASE_4D_MP_SENET_GAN.md)。CPU / FP32、seed 7、公式 STFT の小さい Generator で、初期 G/D、スタブ PESQ の 1 更新と蓄積 2、実 PESQ の 16,000 サンプル 1 更新について、損失、勾配、更新後 Parameter、両 AdamW state の最大絶対誤差は 0。MossFormerGAN は [PHASE_4E_MOSSFORMERGAN_TRAINING.md](PHASE_4E_MOSSFORMERGAN_TRAINING.md)。CPU / FP32、seed 7、公式 STFT で、初期 G1/D4、スタブ PESQ の蓄積 1 と 2、skip の混在、非有限入力、実 PESQ の 8,000 サンプル 1 更新について、損失、勾配、更新後 Parameter、両 AdamW state の最大絶対誤差は 0。
 - 非目標: 公式論文のスコアとの一致。本項目は現行 audio-db 実装との一致である。公式公開実装との一致は、既存の検証記録が既に分けている範囲を超えたいときだけ別実験にする。
 
+### DeepFilterNet3
+
+- 方法: 現行 `DeepFilterNetTask` と `DeepFilterNet3Trainer` を、同じ初期化 seed、同じ波形、CPU、同じ FFT 経路で 1 optimizer update 進める。
+- 期待: 同じ経路での損失、更新後 Parameter、AdamW state の最大絶対誤差が 0。native FFT と PyTorch FFT の差は別記録で、fallback の一致を native 再現と呼ばない。
+- Phase: 4-G
+- 測定: [PHASE_4G_DEEPFILTERNET3_TRAINING.md](PHASE_4G_DEEPFILTERNET3_TRAINING.md)。小さい合法構成、4,800 サンプル、CPU / FP32 で、ローカル native kernel とライブラリ欠落の PyTorch fallback のどちらでも差は 0。追跡中の `libdf_rfft.so` はこの glibc 2.31 では読めない。`dfn3.online.official@1` は blocked のままである。
+- 非目標: 公式 DNS4 全量と論文スコア。
+
 ### 既存テストの回帰
 
 - 方法: 次を、Phase 4 の差分を入れた作業ツリーで実行する。

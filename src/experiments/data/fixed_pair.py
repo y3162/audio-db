@@ -855,6 +855,51 @@ class SnapshotDataModule:
             raise StateError("data epoch is invalid")
         return self._epoch_plan(epoch).plan_hash
 
+    def rebind_micro_batch(self, micro_batch: int) -> None:
+        """Point a DeepFilterNet3 sampler at a new micro-batch width.
+
+        Cached plans for the previous width are dropped. Chunk, fixed-pair,
+        and SEMamba samplers are refused, so their plan hashes stay put.
+        An open epoch view is refused.
+        """
+
+        self._require_ready()
+        if self._open_views:
+            raise DataError("micro_batch cannot change while an epoch view is open")
+        from src.experiments.data.online import Dfn3IndexSampler
+
+        if not isinstance(self.sampler, Dfn3IndexSampler):
+            raise DataError("scheduled micro_batch is only available for DeepFilterNet3")
+        width = _positive("micro_batch", micro_batch)
+        if width == self.batcher.micro_batch:
+            return
+        self._stop_prefetch(propagate_error=False)
+        self._plans.clear()
+        self.batcher.micro_batch = width
+        self.sampler.global_batch = width * self.world_size
+        self._bind_sampler()
+
+    def align_scheduled_batch(self, saved_identity: Mapping[str, Any]) -> None:
+        """Restore the micro-batch width stored in a DeepFilterNet3 checkpoint.
+
+        Other algorithms are left alone. A mismatch other than ``micro_batch``
+        is also left alone, so the normal identity check still fails.
+        """
+
+        from src.experiments.data.online import Dfn3IndexSampler
+
+        if not isinstance(self.sampler, Dfn3IndexSampler) or not isinstance(saved_identity, Mapping):
+            return
+        saved_width = saved_identity.get("micro_batch")
+        if isinstance(saved_width, bool) or not isinstance(saved_width, int) or saved_width < 1:
+            return
+        live = comparable_identity(self.identity())
+        saved = comparable_identity(dict(saved_identity))
+        saved["micro_batch"] = live.get("micro_batch")
+        if saved != live:
+            return
+        self.rebind_micro_batch(int(saved_identity["micro_batch"]))
+
     def lineage(self) -> dict[str, Any]:
         self._require_ready()
         return _call(snapshot_provenance_parts, self.source.store, workers=1)

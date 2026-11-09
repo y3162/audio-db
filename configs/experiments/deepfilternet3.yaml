@@ -1,0 +1,105 @@
+# Phase 4-G DeepFilterNet3. Official DfNet, AdamW, and the shipped cosine.
+# The snapshot is dfn3.online.smoke@1, a ready substitute. dfn3.online.official@1
+# stays blocked. max_logical_steps is 1, so this file does not train the
+# 120-epoch schedule and does not claim a paper score.
+# global_batch 16 is epoch 0 of the shipped batch schedule. World size 1 is
+# required: the schedule is refused for any other world size. World size 1
+# does not wrap DDP. find_unused_parameters stays on because df_fc_a is unused.
+schema: audio-db-experiment/v1
+seed: 7
+deterministic: true
+entry: trainer
+runtime:
+  class: src.experiments.runtime.ProcessRuntime
+  kwargs:
+    device: cpu
+    precision: fp32
+output:
+  directory: runs/deepfilternet3
+components:
+  model:
+    role: module
+    class: src.experiments.models.deepfilternet3.DeepFilterNet3Model
+    kwargs:
+      seed: 7
+      variant: deepfilternet3
+      architecture: {}
+    prepare:
+      trainable: true
+      distribute: ddp
+      find_unused_parameters: true
+  source:
+    role: other
+    class: src.experiments.data.SnapshotSource
+    kwargs:
+      snapshot: dfn3.online.smoke@1
+      snapshot_root: data/db/snapshots
+      split: train
+  sampler:
+    role: other
+    class: src.experiments.data.Dfn3IndexSampler
+    kwargs:
+      seed: 7
+      global_batch: 16
+    inject:
+      source: {ref: source}
+  protocol:
+    role: other
+    class: src.experiments.data.Dfn3Protocol
+    kwargs: {}
+    inject:
+      source: {ref: source}
+  batcher:
+    role: other
+    class: src.experiments.data.MicroBatcher
+    kwargs:
+      micro_batch: 16
+      group_size: 1
+      keep_partial: true
+  data:
+    role: data
+    class: src.experiments.data.SnapshotDataModule
+    kwargs:
+      prefetch: false
+    inject:
+      source: {ref: source}
+      sampler: {ref: sampler}
+      protocol: {ref: protocol}
+      batcher: {ref: batcher}
+  optimizer:
+    role: optimizer
+    class: torch.optim.AdamW
+    parameters_of: model
+    kwargs:
+      lr: 0.001
+      betas: [0.9, 0.999]
+      weight_decay: 1.0e-12
+      amsgrad: true
+  trainer:
+    role: trainer
+    class: src.experiments.deepfilternet3.DeepFilterNet3Trainer
+    kwargs:
+      max_logical_steps: 1
+      accumulation: 1
+      grad_clip: 1.0
+      max_epochs: 120
+      early_stopping_patience: 25
+      steps_per_epoch: 1
+      epochs: 120
+      lr_min: 1.0e-6
+      lr_warmup: 1.0e-4
+      warmup_epochs: 3
+      weight_decay_end: 0.01
+      batch_size_limit: 64
+      batch_schedule:
+        - [0, 16]
+        - [2, 24]
+        - [5, 32]
+        - [10, 64]
+        - [20, 128]
+        - [40, 9999]
+      checkpoint_interval: 1
+    inject:
+      model: {ref: model}
+      data: {ref: data}
+      optimizer: {ref: optimizer}

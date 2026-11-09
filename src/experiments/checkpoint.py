@@ -423,6 +423,7 @@ def _validate_payload(
             raise CheckpointError("resume from a different directory is not supported")
         if payload.get("config_sha256") != config_sha256(config):
             raise CheckpointError("checkpoint config identity does not match this experiment")
+        _align_scheduled_batches(payload, components)
         if not _dataset_identities_match(payload.get("dataset_identity"), _dataset_identity(config, components)):
             raise CheckpointError("checkpoint dataset identity does not match this experiment")
         if payload.get("provenance_sha256") is not None:
@@ -501,6 +502,30 @@ def _require_plan_hashes(payload: dict[str, Any], states: StateRegistry) -> None
             live = getattr(owner.target, "plan_hash", None)
         if not isinstance(saved, str) or saved != live:
             raise CheckpointError(f"data plan_hash does not match state {state_id}")
+
+
+def _align_scheduled_batches(payload: dict[str, Any], components: Any) -> None:
+    """Rebind DeepFilterNet3 to the micro-batch stored in the checkpoint.
+
+    The YAML width is the width at construction. A later epoch may have been
+    saved at another width. Aligning before the identity compare keeps that
+    width from being treated as a different dataset. Other samplers have no
+    ``align_scheduled_batch`` and are not rebound.
+    """
+
+    saved = payload.get("dataset_identity")
+    if not isinstance(saved, dict) or components is None:
+        return
+    for component_id, identity in saved.items():
+        if not isinstance(identity, dict):
+            continue
+        try:
+            component = components.get(component_id)
+        except ExperimentError:
+            continue
+        align = getattr(component, "align_scheduled_batch", None)
+        if callable(align):
+            align(identity)
 
 
 def _dataset_identity(config: ExperimentConfig, components: Any) -> dict[str, Any] | None:

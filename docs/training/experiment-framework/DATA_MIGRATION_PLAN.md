@@ -49,7 +49,7 @@ Phase 3-A は文書だけである。`src/`、`tests/`、学習 YAML、`src/se/o
 
 3-B の時点では SE の `build_model` を呼ばない。合成スナップショットまたは既存の試験 fixture で、波形が `render_sample` と一致することまでである。実在の大規模 snapshot を必須にしない。fixture が無い環境では、その試験を skip と記録する。skip は成功ではない。
 
-DeepFilterNet3 と SEMamba++ の新 Trainer は、四モデルの回帰記録が終わるまで作らない、という現行の移行計画を維持する。3-D はデータ供給の試験であり、モデルの学習開始ではない。
+四モデルの回帰記録は Phase 4-F で終わり、DeepFilterNet3 の Trainer は Phase 4-G で接続した。3-D の時点ではデータ供給の試験であり、モデルの学習開始ではなかった。SEMamba++ の Trainer はまだ作らない。
 
 ## 並走
 
