@@ -1,6 +1,6 @@
 # Data System の構成
 
-Phase 3-A の採用案である。固定ペアは Phase 3-B、chunk は Phase 3-C、オンラインは Phase 3-D で実装した。DDP の data 検証、動的 Sampler は未実装である。根拠の調査は [PHASE_3A_DATA_AUDIT.md](PHASE_3A_DATA_AUDIT.md)。公開メソッドの契約は [DATA_PUBLIC_API.md](DATA_PUBLIC_API.md)。実装順は [DATA_MIGRATION_PLAN.md](DATA_MIGRATION_PLAN.md)。検証記録は [PHASE_3B_FIXED_PAIR.md](PHASE_3B_FIXED_PAIR.md)、[PHASE_3C_CHUNK.md](PHASE_3C_CHUNK.md)、[PHASE_3D_ONLINE.md](PHASE_3D_ONLINE.md)。
+Phase 3-A の採用案である。固定ペアは Phase 3-B、chunk は Phase 3-C、オンラインは Phase 3-D、CPU / Gloo の world size 2 は Phase 3-E で実装した。動的 Sampler は未実装である。根拠の調査は [PHASE_3A_DATA_AUDIT.md](PHASE_3A_DATA_AUDIT.md)。公開メソッドの契約は [DATA_PUBLIC_API.md](DATA_PUBLIC_API.md)。実装順は [DATA_MIGRATION_PLAN.md](DATA_MIGRATION_PLAN.md)。検証記録は [PHASE_3B_FIXED_PAIR.md](PHASE_3B_FIXED_PAIR.md)、[PHASE_3C_CHUNK.md](PHASE_3C_CHUNK.md)、[PHASE_3D_ONLINE.md](PHASE_3D_ONLINE.md)、[PHASE_3E_DISTRIBUTED_DATA.md](PHASE_3E_DISTRIBUTED_DATA.md)。
 
 ## 旧方針からの変更
 
@@ -116,9 +116,9 @@ Transform という独立クラスは置かない。固定ペアのリサンプ�
 
 `StandardTrainer` は forward の前に、`inputs` と `targets` と `lengths` が `runtime.device` と違うときだけその device へ移す。Phase 3-B で入れた。`TensorPairData.setup` が既に device 上へ置いたテンソルは、同じ device への移動で値は変わらない。
 
-prefetch は DataModule の内部スレッドが、次の micro-batch の CPU テンソルを描くことだけを許す。CUDA をそのスレッドから呼ばない。checkpoint には描いた配列を入れない。`state_dict` の `update_index` は、Trainer が消費を終えて書いた次の添字である。
+prefetch は DataModule の非 daemon スレッドが、次の `load_workers` 件の micro-batch を CPU で描くことだけを許す。CUDA をそのスレッドから呼ばない。checkpoint には描いた配列を入れない。`state_dict` の `update_index` は、Trainer が消費を終えて書いた次の添字である。`join` が終わらないスレッドは成功にしない。
 
-Worker 数は plan hash に入れない。Renderer と Sampler は、スレッドローカルな未 seed のグローバル乱数を読まない。既存関数はこの性質を持っている。新しい描画コードもこれに従う。
+Worker 数は plan hash と `identity()` に入れない。実験の `config_sha256` には kwargs として入る。Renderer と Sampler は、スレッドローカルな未 seed のグローバル乱数を読まない。オンラインの clip キャッシュはロックで守る。描画ごとに新しい `Generator` を作る。既存関数はこの性質を持っている。新しい描画コードもこれに従う。
 
 ### DDP
 

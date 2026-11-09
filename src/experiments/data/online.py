@@ -6,6 +6,7 @@ Neither constructs ``OnlineDFN3TrainingData`` or ``OnlineSemambaTrainingData``.
 
 from __future__ import annotations
 
+import threading
 from typing import Any
 
 import numpy as np
@@ -275,6 +276,7 @@ class Dfn3Protocol:
         self.verify_on_read = verify_on_read
         self.spec = DFN3OnlineSpec.shipped()
         self._clips: dict[str, tuple[Dfn3Clip, ...]] = {}
+        self._clip_lock = threading.Lock()
 
     def prepare(self) -> None:
         rule = self._rule()
@@ -358,21 +360,25 @@ class Dfn3Protocol:
     def _role(self, split: str, role: str) -> list[Dfn3Clip]:
         slot = f"{split}.{role}"
         cached = self._clips.get(slot)
-        if cached is None:
-            if role == "rir":
-                try:
+        if cached is not None:
+            return list(cached)
+        with self._clip_lock:
+            cached = self._clips.get(slot)
+            if cached is None:
+                if role == "rir":
+                    try:
+                        ids = self.source.material_ids(slot)
+                    except DataError:
+                        ids = ()
+                else:
                     ids = self.source.material_ids(slot)
-                except DataError:
-                    ids = ()
-            else:
-                ids = self.source.material_ids(slot)
-            if not ids and role != "rir":
-                raise DataError(f"snapshot is missing {slot}")
-            try:
-                cached = tuple(Dfn3Clip(self.source.store, asset_id) for asset_id in ids)
-            except ReproductionError as exc:
-                raise DataError(str(exc)) from exc
-            self._clips[slot] = cached
+                if not ids and role != "rir":
+                    raise DataError(f"snapshot is missing {slot}")
+                try:
+                    cached = tuple(Dfn3Clip(self.source.store, asset_id) for asset_id in ids)
+                except ReproductionError as exc:
+                    raise DataError(str(exc)) from exc
+                self._clips[slot] = cached
         return list(cached)
 
     def _factor(self) -> float:
@@ -406,6 +412,7 @@ class SemambaProtocol:
         self.verify_on_read = verify_on_read
         self.seed: int | None = None
         self._clips: dict[str, tuple[SemambaClip, ...]] = {}
+        self._clip_lock = threading.Lock()
 
     def prepare(self) -> None:
         rule = self._rule()
@@ -504,15 +511,19 @@ class SemambaProtocol:
     def _role(self, split: str, role: str) -> list[SemambaClip]:
         slot = f"{split}.{role}"
         cached = self._clips.get(slot)
-        if cached is None:
-            ids = self.source.material_ids(slot)
-            if not ids:
-                raise DataError(f"snapshot is missing {slot}")
-            try:
-                cached = tuple(SemambaClip(self.source.store, asset_id) for asset_id in ids)
-            except ReproductionError as exc:
-                raise DataError(str(exc)) from exc
-            self._clips[slot] = cached
+        if cached is not None:
+            return list(cached)
+        with self._clip_lock:
+            cached = self._clips.get(slot)
+            if cached is None:
+                ids = self.source.material_ids(slot)
+                if not ids:
+                    raise DataError(f"snapshot is missing {slot}")
+                try:
+                    cached = tuple(SemambaClip(self.source.store, asset_id) for asset_id in ids)
+                except ReproductionError as exc:
+                    raise DataError(str(exc)) from exc
+                self._clips[slot] = cached
         return list(cached)
 
     def _protocol_id(self) -> str:

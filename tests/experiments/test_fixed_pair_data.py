@@ -688,6 +688,9 @@ def _write_snapshot(
     claim_label: str,
     validation_crop: str,
     delivery: str | None = "on_demand",
+    train_count: int = 8,
+    valid_count: int = 2,
+    test_count: int = 2,
 ) -> dict[str, object]:
     corpora = derived.parent / "corpora"
     generated = derived.parent / "generated"
@@ -695,7 +698,7 @@ def _write_snapshot(
     generated.mkdir(parents=True, exist_ok=True)
     assets = []
     cases = []
-    total = 12
+    total = train_count + valid_count + test_count
     for index in range(total):
         frames = 4 if index == 0 else 16
         noisy = np.linspace(-0.2, 0.5, frames, dtype=np.float32) * ((index % 5) + 1)
@@ -736,9 +739,9 @@ def _write_snapshot(
                 "utterance_key": None,
             }
         )
-    train_ids = [f"{name}-case-{index:02d}" for index in range(8)]
-    valid_ids = [f"{name}-case-{index:02d}" for index in range(8, 10)]
-    test_ids = [f"{name}-case-{index:02d}" for index in range(10, 12)]
+    train_ids = [f"{name}-case-{index:02d}" for index in range(train_count)]
+    valid_ids = [f"{name}-case-{index:02d}" for index in range(train_count, train_count + valid_count)]
+    test_ids = [f"{name}-case-{index:02d}" for index in range(train_count + valid_count, total)]
     items = []
     bindings = []
     for slot, ids in (("train.cases", train_ids), ("valid.cases", valid_ids), ("test.cases", test_ids)):

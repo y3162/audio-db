@@ -66,7 +66,7 @@ Phase 3-A では試験を追加しない。この表は 3-B 以降の実装が�
 ## DDP
 
 - 方法: world size 2、CPU Gloo、固定ペアと chunk と DFN3 と SEMamba のそれぞれで、両 rank の `plan_hash` を比べる。rank 0 の micro-batch 0 と rank 1 の micro-batch 0 の `sample_id` 集合を比べる。保存前に rank 1 の data `plan_hash` だけを変えた試験ダブルで `save` する。
-- 期待: 両 rank の `plan_hash` は一致する。固定ペアの `torch_distributed_sampler_v1` と `rank_mod_fixed_v1` では、同じ micro-batch 添字の sample id が rank 間で交差しない。SEMamba の `per_rank_independent_v1` は交差してよい。交差の有無を試験が記録し、交差を失敗にしない。改竄した保存は完成ファイルを置換しない。world size 1 の checkpoint を world size 2 で開くと `CheckpointError`。
+- 期待: 両 rank の `plan_hash` は一致する。`torch_distributed_sampler_v1` は `drop_last` で、件数 8 の world size 2 は各 rank 4 件で互いに素、件数 7 は各 rank 3 件で欠番 1 である。欠番は並べ替え後の添字で、全件一意の被覆にはしない。`rank_mod_fixed_v1` の件数 7 は各 rank 4 件、`dropped_tail=1`、`padded_duplicates=2` で、epoch 全体は重なる。重なりを消すために式は変えない。SEMamba の `per_rank_independent_v1` は重なりと欠番を許す。交差の有無を試験が記録し、交差を失敗にしない。改竄した保存は完成ファイルを置換しない。world size 1 の checkpoint を world size 2 で開くと `CheckpointError`。worker 数 0、1、2 の同じ添字は sample id、realization id、波形の最大絶対誤差 0 である。worker 数だけが違う再開は config identity の不一致で拒否する。
 - Phase: 3-E
 - 非目標: NCCL 上のビット一致。通信が必要な検査は Phase 2-C の試験が既にカバーしている Runtime 側であり、この行は data の列が rank 間で矛盾しないことである。
 

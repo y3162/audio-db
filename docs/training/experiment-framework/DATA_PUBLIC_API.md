@@ -1,6 +1,6 @@
 # Data System 公開 API
 
-Phase 3-A の契約である。固定ペアの Source、Sampler、Protocol、Batcher、`SnapshotDataModule` は Phase 3-B で `src/experiments/data/` にある。chunk の `ChunkSampler` と `ChunkProtocol` は Phase 3-C で同じ DataModule に載っている。オンラインの `Dfn3IndexSampler`、`Dfn3Protocol`、`SemambaProtocol` は Phase 3-D で同じ DataModule に載っている。world size 2 の正式受け入れ、動的 Sampler は未実装である。構成の理由は [DATA_ARCHITECTURE.md](DATA_ARCHITECTURE.md)。Phase 2 まで実装済みの `TensorPairData` はこの契約の合成データ実装として残り、メソッドの意味は変えない。
+Phase 3-A の契約である。固定ペアの Source、Sampler、Protocol、Batcher、`SnapshotDataModule` は Phase 3-B で `src/experiments/data/` にある。chunk の `ChunkSampler` と `ChunkProtocol` は Phase 3-C で同じ DataModule に載っている。オンラインの `Dfn3IndexSampler`、`Dfn3Protocol`、`SemambaProtocol` は Phase 3-D で同じ DataModule に載っている。world size 2 の正式受け入れは Phase 3-E で記録した。動的 Sampler は未実装である。構成の理由は [DATA_ARCHITECTURE.md](DATA_ARCHITECTURE.md)。Phase 2 まで実装済みの `TensorPairData` はこの契約の合成データ実装として残り、メソッドの意味は変えない。
 
 利用者は `SnapshotDataModule` と、YAML に書く Source / Sampler / Protocol / Batcher だけを触る。純関数のモジュールパスは component 間の API であり、実験 YAML のクラス名には出さない。`_crop` のような先頭が `_` の関数は、Phase 3-B で公開名の委譲を足すまで、新コードから呼ばない。
 
@@ -186,7 +186,9 @@ identity: dict
 weights: null              # Phase 3-F まで null。辞書になったら sample_id から数値
 ```
 
-`load_state_dict` は、現在の `identity()` と `world_size` と、`state["epoch"]` から再計算した `plan_hash` を比べる。prefetch のバッファは捨ててから比べる。`update_index` が負、またはその epoch の `updates` を超えるときは `StateError`。等しいときは、次の `train_epoch` が epoch を繰り上げる現行 Trainer の動作に任せる。
+`load_state_dict` は、現在の `identity()` と `world_size` と、`state["epoch"]` から再計算した `plan_hash` を比べる。prefetch のバッファは捨ててから比べる。古い先読みの例外は状態へ載せない。`update_index` が負、またはその epoch の `updates` を超えるときは `StateError`。等しいときは、次の `train_epoch` が epoch を繰り上げる現行 Trainer の動作に任せる。
+
+`prefetch=False` は `load_workers` を 0 にする。`prefetch=True` で `load_workers` を省略すると 1 である。`prefetch=True` かつ `load_workers < 1`、または `prefetch=False` かつ `load_workers` が 0 でないときは `ValueError`。先読みは `load_workers` 本の非 daemon スレッドが、次の micro-batch からその本数だけを CPU で描く。キャッシュは `max(1, load_workers + 1)` 件までである。`update_index` は先読みでは進まない。`join` が `worker_join_timeout`（既定 30 秒）を超えたスレッドは `DataError` で、成功として捨てない。worker 数と prefetch の有無は `plan_hash` と `identity()` に入らない。実験 YAML の kwargs なので `config_sha256` には入る。worker 数だけが違う再開は config identity の不一致で拒否する。波形が一致することと、その再開を許すことは別である。
 
 Phase 3-F で足すメソッドは次だけである。3-B から 3-E は定義しない。
 
@@ -253,7 +255,7 @@ chunk と DFN3 は `locate` を持たない。座標と添字は、それぞれ�
 | `online.dfn3` | `plan_online_epoch` を world size 1 として全件。呼び出し rank が 0 のときだけ返す | 波形の epoch key は 0。並びの seed には引数 `epoch` を入れる。整数の `sampling_factor` では発話キーも epoch 0。非整数では既存の `speech_key_positions` が検証 epoch で発話を入れ替える |
 | `online.semambapp_gsr` | 素材順の全件。rank 0 だけが返す | epoch key は 0 |
 
-空の iterator はエラーではない。Trainer がどの rank で検証を呼ぶかは Trainer の責務である。Phase 3-B は固定ペアの 2 行を実装した。Phase 3-C は `pregenerated.*` の行を実装した。Phase 3-D はオンラインの 2 行を実装した。整数因子の検証波形は epoch が違っても index ごとに最大絶対誤差 0 である。非整数因子の発話キーは epoch で変わる。これは既存関数に合わせた結果で、波形一致の測定は整数因子で行った。
+空の iterator はエラーではない。Trainer がどの rank で検証を呼ぶかは Trainer の責務である。検証損失を rank 間で集める処理は、Phase 3-E では入れていない。公式の検証損失とモデル選択も入れていない。集計は後続 Trainer の責務である。Phase 3-B は固定ペアの 2 行を実装した。Phase 3-C は `pregenerated.*` の行を実装した。Phase 3-D はオンラインの 2 行を実装した。Phase 3-E は同じ分担を CPU / Gloo の 2 プロセスで測った。整数因子の検証波形は epoch が違っても index ごとに最大絶対誤差 0 である。非整数因子の発話キーは epoch で変わる。これは既存関数に合わせた結果で、波形一致の測定は整数因子で行った。固定ペアの `realization_id` は epoch を含むので、波形が同じでも文字列は epoch で変わる。
 
 ## 内部だけの API
 
@@ -271,9 +273,9 @@ chunk と DFN3 は `locate` を持たない。座標と添字は、それぞれ�
 1. Factory が Source、Sampler、Protocol、Batcher、DataModule を作る。この時点ではファイルを開かない。
 2. Builder が DataModule.`setup(runtime)` を呼ぶ。Source を開き、protocol の `delivery` が `on_demand` でなければ `DataError`。`require_profile` が kwargs にあり profile が違えば `DataError`。blocked dataset は snapshot が無いので、パス解決の失敗として `DataError`。
 3. Trainer が `train_epoch` を得る。計画は `SampleRef` の列で、波形はまだ無い。
-4. `batch(i)` が描画と collation を CPU で行う。prefetch が次の添字を先に描いても、`update_index` は Trainer が書き込むまで進まない。
+4. `batch(i)` が描画と collation を CPU で行う。prefetch が次の添字を先に描いても、`update_index` は Trainer が書き込むまで進まない。描画中の例外は次の `materialize` へ伝播する。
 5. checkpoint は DataModule の `state_dict` だけを data 状態として書く。
-6. `close` は `Experiment.close()` だけが呼ぶ。正常終了、例外、preflight 後、`setup` 失敗、Builder が完成グラフを返す前の失敗、二重 close をこの一箇所で扱う。`StandardTrainer` は DataModule を閉じない。構築途中で失敗したときは、Builder が保持する部分レジストリを Experiment が閉じる。
+6. `close` は `Experiment.close()` だけが呼ぶ。正常終了、例外、preflight 後、`setup` 失敗、Builder が完成グラフを返す前の失敗、二重 close をこの一箇所で扱う。prefetch スレッドが timeout 以内に終わらないときは `DataError` で、ファイルを閉じたあともそのスレッドを成功扱いにしない。`StandardTrainer` は DataModule を閉じない。構築途中で失敗したときは、Builder が保持する部分レジストリを Experiment が閉じる。
 
 `initialize_from` は data の `update_index` を戻さない。現行の initialize 契約のまま、データ位置は初期値である。
 

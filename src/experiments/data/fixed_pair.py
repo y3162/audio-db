@@ -8,7 +8,9 @@ from __future__ import annotations
 
 import json
 import logging
+import queue
 import threading
+import time
 from collections.abc import Iterator, Mapping, Sequence
 from dataclasses import dataclass, replace
 from pathlib import Path
@@ -543,27 +545,51 @@ class SnapshotDataModule:
         batcher: MicroBatcher,
         require_profile: str | None = None,
         prefetch: bool = False,
+        load_workers: int | None = None,
+        worker_join_timeout: float = 30.0,
     ) -> None:
         if require_profile is not None and not isinstance(require_profile, str):
             raise ValueError("require_profile must be a string")
         if not isinstance(prefetch, bool):
             raise ValueError("prefetch must be a boolean")
+        if load_workers is None:
+            resolved_workers = 1 if prefetch else 0
+        elif isinstance(load_workers, bool) or not isinstance(load_workers, int) or load_workers < 0:
+            raise ValueError("load_workers must be an integer >= 0")
+        else:
+            resolved_workers = load_workers
+        if prefetch and resolved_workers < 1:
+            raise ValueError("prefetch requires load_workers >= 1")
+        if not prefetch and resolved_workers != 0:
+            raise ValueError("load_workers must be 0 when prefetch is disabled")
+        if (
+            isinstance(worker_join_timeout, bool)
+            or not isinstance(worker_join_timeout, (int, float))
+            or float(worker_join_timeout) <= 0
+        ):
+            raise ValueError("worker_join_timeout must be a positive number")
         self.source = source
         self.sampler = sampler
         self.protocol = protocol
         self.batcher = batcher
         self.require_profile = require_profile
         self.prefetch = prefetch
+        self.load_workers = resolved_workers
+        self.worker_join_timeout = float(worker_join_timeout)
         self.epoch = 0
         self.update_index = 0
         self.world_size = 1
         self.rank = 0
         self._ready = False
         self._closed = False
+        self._source_closed = False
         self._plans: dict[int, _EpochPlan] = {}
         self._cache: dict[tuple[int, int], Batch] = {}
         self._lock = threading.Lock()
-        self._thread: threading.Thread | None = None
+        self._workers: list[threading.Thread] = []
+        self._inflight: set[tuple[int, int]] = set()
+        self._stop = threading.Event()
+        self._jobs: queue.Queue[tuple[int, int, tuple[SampleRef, ...]] | None] = queue.Queue()
         self._prefetch_error: BaseException | None = None
         self._batch_warned = False
 
@@ -700,7 +726,7 @@ class SnapshotDataModule:
 
     def load_state_dict(self, state: dict[str, Any]) -> None:
         self._require_ready()
-        self._stop_prefetch()
+        self._stop_prefetch(propagate_error=False)
         if not isinstance(state, dict):
             raise StateError("data state is not a mapping")
         saved_identity = state.get("identity")
@@ -741,26 +767,35 @@ class SnapshotDataModule:
         return _call(snapshot_provenance_parts, self.source.store, workers=1)
 
     def close(self) -> None:
-        if self._closed:
+        if self._closed and not self._workers:
             return
         self._closed = True
         self._ready = False
-        self._stop_prefetch()
-        close = getattr(self.source, "close", None)
-        if callable(close):
-            close()
+        try:
+            self._stop_prefetch(propagate_error=True)
+        finally:
+            if not self._source_closed:
+                self._source_closed = True
+                close = getattr(self.source, "close", None)
+                if callable(close):
+                    close()
 
     def materialize(self, epoch: int, index: int, groups: tuple[tuple[SampleRef, ...], ...]) -> Batch:
         key = (epoch, index)
-        with self._lock:
-            if self._prefetch_error is not None:
-                error = self._prefetch_error
-                self._prefetch_error = None
-                raise error
-            cached = self._cache.get(key)
-            if cached is None:
-                cached = self._collate(groups[index])
-                self._cache[key] = cached
+        self._raise_prefetch_error()
+        cached = self._cached(key)
+        if cached is None and key in self._inflight_snapshot():
+            self._wait_for(key)
+            self._raise_prefetch_error()
+            cached = self._cached(key)
+        if cached is None:
+            cached = self._collate(groups[index])
+            with self._lock:
+                existing = self._cache.get(key)
+                if existing is None:
+                    self._remember_locked(key, cached)
+                else:
+                    cached = existing
         if self.prefetch and not self._closed:
             self._start_prefetch(epoch, index, groups)
         return _clone_batch(cached)
@@ -882,38 +917,120 @@ class SnapshotDataModule:
         if not self._ready:
             raise DataError("data module is not set up")
 
+    def _cached(self, key: tuple[int, int]) -> Batch | None:
+        with self._lock:
+            return self._cache.get(key)
+
+    def _inflight_snapshot(self) -> set[tuple[int, int]]:
+        with self._lock:
+            return set(self._inflight)
+
+    def _raise_prefetch_error(self) -> None:
+        with self._lock:
+            error = self._prefetch_error
+            self._prefetch_error = None
+        if error is not None:
+            raise error
+
+    def _wait_for(self, key: tuple[int, int]) -> None:
+        deadline = time.monotonic() + max(self.worker_join_timeout, 30.0)
+        while time.monotonic() < deadline:
+            with self._lock:
+                if key in self._cache or key not in self._inflight or self._prefetch_error is not None:
+                    return
+            if self._stop.is_set():
+                return
+            time.sleep(0.01)
+        raise DataError(f"prefetch worker timed out for micro-batch {key[0]}:{key[1]}")
+
+    def _remember_locked(self, key: tuple[int, int], batch: Batch) -> None:
+        self._cache[key] = batch
+        limit = max(1, self.load_workers + 1)
+        while len(self._cache) > limit:
+            victims = [item for item in self._cache if item != key]
+            if not victims:
+                break
+            del self._cache[min(victims)]
+
+    def _ensure_workers(self) -> None:
+        if self._workers or self._closed or self.load_workers < 1:
+            return
+        for index in range(self.load_workers):
+            thread = threading.Thread(
+                target=self._worker_loop,
+                name=f"audio-db-prefetch-{index}",
+                daemon=False,
+            )
+            thread.start()
+            self._workers.append(thread)
+
+    def _worker_loop(self) -> None:
+        while not self._stop.is_set():
+            try:
+                item = self._jobs.get(timeout=0.05)
+            except queue.Empty:
+                continue
+            if item is None or self._stop.is_set():
+                return
+            epoch, index, group = item
+            key = (epoch, index)
+            try:
+                if self._closed or self._stop.is_set():
+                    return
+                batch = self._collate(group)
+                with self._lock:
+                    if not self._closed and not self._stop.is_set() and key not in self._cache:
+                        self._remember_locked(key, batch)
+            except Exception as exc:
+                with self._lock:
+                    if self._prefetch_error is None:
+                        self._prefetch_error = exc
+            finally:
+                with self._lock:
+                    self._inflight.discard(key)
+
     def _start_prefetch(
         self,
         epoch: int,
         index: int,
         groups: tuple[tuple[SampleRef, ...], ...],
     ) -> None:
-        nxt = index + 1
-        if nxt >= len(groups) or (epoch, nxt) in self._cache:
+        if self._closed or self.load_workers < 1:
             return
-        if self._thread is not None and self._thread.is_alive():
-            return
+        self._ensure_workers()
+        with self._lock:
+            for offset in range(1, self.load_workers + 1):
+                nxt = index + offset
+                key = (epoch, nxt)
+                if nxt >= len(groups) or key in self._cache or key in self._inflight:
+                    continue
+                self._inflight.add(key)
+                self._jobs.put((epoch, nxt, groups[nxt]))
 
-        def work() -> None:
-            if self._closed:
-                return
-            try:
-                with self._lock:
-                    if (epoch, nxt) not in self._cache and not self._closed:
-                        self._cache[(epoch, nxt)] = self._collate(groups[nxt])
-            except Exception as exc:
-                self._prefetch_error = exc
-
-        self._thread = threading.Thread(target=work, name="audio-db-prefetch", daemon=True)
-        self._thread.start()
-
-    def _stop_prefetch(self) -> None:
-        thread = self._thread
-        self._thread = None
-        if thread is not None and thread is not threading.current_thread():
-            thread.join(timeout=30)
+    def _stop_prefetch(self, *, propagate_error: bool) -> None:
+        workers = list(self._workers)
+        self._stop.set()
+        for _ in workers:
+            self._jobs.put(None)
+        stuck: list[str] = []
+        for thread in workers:
+            if thread is threading.current_thread():
+                continue
+            thread.join(timeout=self.worker_join_timeout)
+            if thread.is_alive():
+                stuck.append(thread.name)
+        self._workers = [thread for thread in workers if thread.is_alive() and thread is not threading.current_thread()]
+        self._jobs = queue.Queue()
+        self._inflight.clear()
         self._cache.clear()
+        error = self._prefetch_error
         self._prefetch_error = None
+        if not self._workers:
+            self._stop.clear()
+        if stuck:
+            raise DataError("prefetch workers did not exit: " + ", ".join(stuck))
+        if propagate_error and error is not None:
+            raise error
 
 
 def _selector(selector: str) -> tuple[str, int | None]:

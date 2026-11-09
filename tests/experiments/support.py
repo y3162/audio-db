@@ -2,13 +2,17 @@
 
 from __future__ import annotations
 
+import os
 from pathlib import Path
 
 import torch
 import yaml
 from torch import nn
 
+from src.experiments.data.fixed_pair import SnapshotDataModule
+from src.experiments.errors import DataError
 from src.experiments.runtime import PreparePolicy, PreparedModel, ProcessRuntime
+from src.experiments.trainers import StandardTrainer
 
 
 class Timeline:
@@ -443,3 +447,59 @@ class BoomLoss(nn.Module):
     def forward(self, prediction: torch.Tensor, target: torch.Tensor) -> torch.Tensor:
         del prediction, target
         raise RuntimeError("boom")
+
+
+class GainWave(nn.Module):
+    """Length-independent gain. Phase 3-E uses it instead of an SE model."""
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.gain = nn.Parameter(torch.tensor(0.5))
+
+    def forward(self, inputs: torch.Tensor) -> torch.Tensor:
+        return inputs * self.gain
+
+
+class CursorSkewTrainer(StandardTrainer):
+    """Moves rank 1's data cursor before the first checkpoint."""
+
+    def _before_checkpoint(self, runtime: ProcessRuntime, checkpoint: object) -> None:
+        del checkpoint
+        if int(runtime.rank) == 1 and self.logical_step == 1:
+            self.data.update_index = int(self.data.update_index) + 1
+
+
+class PlanSkewTrainer(StandardTrainer):
+    """Reports a different plan hash from rank 1 at the first checkpoint."""
+
+    def _before_checkpoint(self, runtime: ProcessRuntime, checkpoint: object) -> None:
+        del checkpoint
+        if int(runtime.rank) != 1 or self.logical_step != 1:
+            return
+        original = self.data.state_dict
+
+        def skewed() -> dict[str, object]:
+            payload = dict(original())
+            payload["plan_hash"] = "0" * 64
+            return payload
+
+        self.data.state_dict = skewed  # type: ignore[method-assign]
+
+
+class RankBuildFailModule(SnapshotDataModule):
+    """Fails setup on the rank named by ``AUDIO_DB_FAIL_BUILD_RANK``."""
+
+    def setup(self, runtime: object) -> None:
+        rank = int(getattr(runtime, "rank", 0))
+        if os.environ.get("AUDIO_DB_FAIL_BUILD_RANK") == str(rank):
+            raise DataError(f"injected build failure on rank {rank}")
+        super().setup(runtime)
+
+
+class RankRenderFailModule(SnapshotDataModule):
+    """Fails the first micro-batch on the rank named by ``AUDIO_DB_FAIL_RENDER_RANK``."""
+
+    def materialize(self, epoch: int, index: int, groups: tuple[tuple[object, ...], ...]) -> object:
+        if os.environ.get("AUDIO_DB_FAIL_RENDER_RANK") == str(self.rank) and index == 0:
+            raise DataError(f"injected render failure on rank {self.rank}")
+        return super().materialize(epoch, index, groups)
