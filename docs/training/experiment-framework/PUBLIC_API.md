@@ -238,6 +238,29 @@ iSTFT の長さが入力と違うときは `RuntimeFailure` で、暗黙の crop
 
 この L1 は公式の複合損失ではない。設定例は `configs/experiments/mp_senet_l1.yaml`。検証は [Phase 4-A](PHASE_4A_MP_SENET_CONNECTION.md)。
 
+## TF-GridNet MS-SNSD
+
+Phase 4-B のクラスは `src.experiments.models.tf_gridnet.TFGridNetModel` と `src.experiments.losses.MultiResolutionL1Loss` と `src.experiments.tf_gridnet.TFGridNetTrainer` である。Factory はクラスパスを呼ぶだけで、モデル名では分岐しない。
+
+`TFGridNetModel` は `variant="ms-snsd"` の `src.se.build_model("tf_gridnet")` を 1 組だけ持つ。構築は `seed_model_init` の中で行い、戻る前に `apply_espnet_initialization` の `xavier_uniform` を掛ける。Optimizer はその後に同じ Parameter を受け取る。`urgent24` は `BuildError`。`forward` は `[batch, time]` を受け、同じ形状の有限な波形を返す。長さが `n_fft // 2` 以下、または出力長が違うときは `RuntimeFailure` で、crop も pad もしない。
+
+`MultiResolutionL1Loss.forward(estimate, target)` は既存の `multi_resolution_l1` を、窓 `(256, 512, 768, 1024)`、時間重み 0.5、`normalize_variance=False` で呼ぶ。`normalize_variance=True` は `BuildError`。SI-SDR は足さない。
+
+`TFGridNetTrainer` は `StandardTrainer` の特殊ケースではない。lifecycle は次である。
+
+1. `plan_chunk_epoch` の micro-batch 列を 1 epoch とする。固定の Optimizer 回数ではない。
+2. 各 logical step は train、`zero_grad`、蓄積、`runtime.backward`、`runtime.clip`、`runtime.step`、`runtime.end_step` である。`optimizer.step()` は呼ばない。
+3. epoch の途中で `max_logical_steps` に達しても、validation、scheduler、n-best は走らない。checkpoint の label は `step` である。
+4. epoch の最後の更新のあと、label `validation_pending` の checkpoint を書く。このファイル名は閉じた `step_XXXXXXXX.pt` と同じである。
+5. `model.eval()` と `torch.no_grad()` で検証する。学習 cursor と学習 RNG は進めない。forward は `state_module` で、DDP の forward では all-reduce しない。
+6. 検証損失は batch 平均に波形数を掛けた和を、全 rank の件数で割る。rank 平均の平均は使わない。
+7. そのスカラーで `ReduceLROnPlateau.step` を 1 回だけ呼ぶ。Optimizer 更新のたびには進めない。
+8. `valid.loss` の最小だけで n-best を書く。`valid.si_snr` は選択に使わない。平均は `average_state_dicts`（浮動小数は平均、整数は和）である。
+9. 同じ logical step のファイルを label `step` で置き換える。検証、scheduler、選択が揃う前の別ファイルは作らない。再開時の二重 step を避けるためである。
+10. `validation_pending` からの再開は、ループの前に 5 から 9 を一度だけやり直す。Optimizer 更新はやり直さない。
+
+`group_size` が `accumulation` と違うときは `RuntimeFailure`。early stopping の既定 patience は None で、宣言 YAML は 5。停止理由は `completed` である。設定例は `configs/experiments/tf_gridnet_ms_snsd.yaml`。この YAML の `max_logical_steps` は 1 で、公式規模の学習は起動しない。検証は [Phase 4-B](PHASE_4B_TF_GRIDNET_TRAINING.md)。
+
 ## Data API
 
 Phase 1 から 2-C の実装はこの節の `TensorPairData` である。音声の Source、Sampler、Protocol、Batch、identity、`plan_hash`、YAML は [DATA_PUBLIC_API.md](DATA_PUBLIC_API.md) を正とする。Phase 3-A は、既存の供給クラスをアダプタで包む案を撤回した。Trainer から見たメソッド名は、この節と音声契約で同じである。

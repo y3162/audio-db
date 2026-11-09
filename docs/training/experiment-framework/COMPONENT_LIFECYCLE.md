@@ -1,6 +1,6 @@
 # コンポーネントのライフサイクル
 
-Phase 1 は Configure から Run までを CPU / FP32 の `StandardTrainer` で実装している。Phase 2-A は checkpoint の保存と復元を足した。Phase 2-B は CPU / Gloo の DDP を足した。Phase 2-C は CUDA / NCCL と AMP FP16 を足した。CPU と単一 GPU の DDP では Prepare と Optimizer 生成の後に重みを載せる。DDP は Parameter を置き換えないので、同じ公開 API のまま unwrapped の `state_module` へ載せる。差異は [PHASE_2A_CHECKPOINT.md](PHASE_2A_CHECKPOINT.md)、[PHASE_2B_DDP.md](PHASE_2B_DDP.md)、[PHASE_2C_CUDA_AMP.md](PHASE_2C_CUDA_AMP.md)。以下は Phase 0 の仕様である。
+Phase 1 は Configure から Run までを CPU / FP32 の `StandardTrainer` で実装している。Phase 4-B の `TFGridNetTrainer` は `ReduceLROnPlateau` を Optimizer 更新のたびには進めず、chunk epoch の検証のあと一度だけ進める。詳細は [PUBLIC_API.md](PUBLIC_API.md) と [PHASE_4B_TF_GRIDNET_TRAINING.md](PHASE_4B_TF_GRIDNET_TRAINING.md)。Phase 2-A は checkpoint の保存と復元を足した。Phase 2-B は CPU / Gloo の DDP を足した。Phase 2-C は CUDA / NCCL と AMP FP16 を足した。CPU と単一 GPU の DDP では Prepare と Optimizer 生成の後に重みを載せる。DDP は Parameter を置き換えないので、同じ公開 API のまま unwrapped の `state_module` へ載せる。差異は [PHASE_2A_CHECKPOINT.md](PHASE_2A_CHECKPOINT.md)、[PHASE_2B_DDP.md](PHASE_2B_DDP.md)、[PHASE_2C_CUDA_AMP.md](PHASE_2C_CUDA_AMP.md)。以下は Phase 0 の仕様である。
 
 ## 段階
 

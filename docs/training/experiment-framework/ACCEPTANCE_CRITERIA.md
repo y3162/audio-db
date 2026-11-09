@@ -171,6 +171,7 @@ Phase 3-A で撤回した。代替の受け入れは [DATA_ACCEPTANCE_CRITERIA.m
 - 方法: 現行 Task と新 Trainer を、同じ初期化 seed、同じ 1 micro-batch、CPU、`deterministic: true` で 1 optimizer update 進める。MP-SENet は `loss: reconstruction` と公式損失を別記録にする。MossFormerGAN、TF-GridNet、TF-Locoformer は現行の公式損失で 1 update。
 - 期待: 各記録に device、seed、ステップ数、最大絶対誤差が書いてある。CPU 決定的条件の重みの最大絶対誤差が 0。0 でない場合は完了にせず、差分の原因を記録する。GPU の結果をこの期待の代替にしない。
 - Phase: 4
+- 測定: TF-GridNet MS-SNSD は [PHASE_4B_TF_GRIDNET_TRAINING.md](PHASE_4B_TF_GRIDNET_TRAINING.md)。CPU / FP32、seed 0、1 micro-batch、小さい合法構成で、forward、loss、勾配、クリップ後勾配、Adam 更新後の重み、Adam state の最大絶対誤差は 0。MP-SENet の Waveform L1 は Phase 4-A。公式複合損失、MossFormerGAN、TF-Locoformer はこの項のまま未了である。
 - 非目標: 公式論文のスコアとの一致。本項目は現行 audio-db 実装との一致である。公式公開実装との一致は、既存の検証記録が既に分けている範囲を超えたいときだけ別実験にする。
 
 ### 既存テストの回帰
@@ -188,6 +189,7 @@ Phase 3-A で撤回した。代替の受け入れは [DATA_ACCEPTANCE_CRITERIA.m
 - 方法: TF-GridNet の新 Trainer で CPU 決定的に 2 update 進め、1 update 後の checkpoint から再開した 2 update 目の重みを、連続実行と比較する。
 - 期待: 最大絶対誤差が 0。logical step と、その単一 Optimizer の update count がどちらも 2。現行形式の checkpoint を新 CLI で resume すると `CheckpointError`。
 - Phase: 4
+- 測定: [PHASE_4B_TF_GRIDNET_TRAINING.md](PHASE_4B_TF_GRIDNET_TRAINING.md)。epoch 途中の 1 step 再開と、epoch 境界の `validation_pending` を別プロセスから閉じた実行は、連続実行と model、optimizer、scheduler、trainer、data、RNG、loss 列、learning rate 列が一致した。`audio-db-training-v1` を新 CLI で読む経路は足していない。
 
 ## Phase 5
 

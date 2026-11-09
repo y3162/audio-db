@@ -1,6 +1,6 @@
 # Phase 3-C Chunk Data Pipeline
 
-TF-GridNet 向けの `pregenerated.ms_snsd_tfgridnet` と、TF-Locoformer 向けの `pregenerated.dns_tflocoformer` を、Phase 3-B の `SnapshotDataModule` から供給する。SE モデル、公式損失、公式 Trainer は移していない。公式規模の 360,000 件は走らせていない。world size 2 の Data System 正式受け入れは Phase 3-E のままである。
+TF-GridNet 向けの `pregenerated.ms_snsd_tfgridnet` と、TF-Locoformer 向けの `pregenerated.dns_tflocoformer` を、Phase 3-B の `SnapshotDataModule` から供給する。Phase 3-C では SE モデル、公式損失、公式 Trainer は移していない。TF-GridNet MS-SNSD の学習接続は [Phase 4-B](PHASE_4B_TF_GRIDNET_TRAINING.md) である。公式規模の 360,000 件は走らせていない。world size 2 の Data System 正式受け入れは Phase 3-E のままである。
 
 測定は 2026-11-09、`.venvs/se`、`CUDA_VISIBLE_DEVICES=""` である。GPU 試験は行っていない。
 
