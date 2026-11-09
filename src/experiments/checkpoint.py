@@ -208,6 +208,9 @@ class CheckpointManager:
             if len(rngs) != runtime.world_size:
                 raise CheckpointError("rng_by_rank length does not match world size")
             if int(runtime.rank) == 0:
+                from src.experiments.provenance import attach_provenance_sidecar, bind_provenance
+
+                raw, provenance = bind_provenance(self.directory, config, self._components, runtime)
                 payload = _payload(
                     config=config,
                     states=states,
@@ -218,6 +221,7 @@ class CheckpointManager:
                     label=label,
                     initialize_allow=allow,
                     rngs=rngs,
+                    provenance_sha256=provenance,
                 )
                 temporary = self.directory / f".{filename}.tmp"
                 try:
@@ -226,6 +230,7 @@ class CheckpointManager:
                         stream.flush()
                         os.fsync(stream.fileno())
                     _verify_written(temporary, payload)
+                    attach_provenance_sidecar(target, raw)
                 except Exception:
                     temporary.unlink(missing_ok=True)
                     raise
@@ -342,6 +347,7 @@ def _payload(
     label: str,
     initialize_allow: list[str] | None,
     rngs: list[Any],
+    provenance_sha256: str,
 ) -> dict[str, Any]:
     blobs: dict[str, Any] = {}
     for state_id in states.ids():
@@ -367,7 +373,7 @@ def _payload(
         "optimizer_updates": {str(key): int(value) for key, value in updates.items()},
         "output_directory": str(directory.resolve()),
         "parameter_ranks_agree": True,
-        "provenance_sha256": None,
+        "provenance_sha256": provenance_sha256,
         "rank_count_in_rng": runtime.world_size,
         "rng_by_rank": list(rngs),
         "schema_version": SCHEMA_VERSION,
@@ -426,9 +432,10 @@ def _validate_payload(
         _align_scheduled_batches(payload, components)
         if not _dataset_identities_match(payload.get("dataset_identity"), _dataset_identity(config, components)):
             raise CheckpointError("checkpoint dataset identity does not match this experiment")
-        if payload.get("provenance_sha256") is not None:
-            raise CheckpointError("checkpoint provenance does not match this experiment")
         _require_plan_hashes(payload, states)
+        from src.experiments.provenance import require_provenance
+
+        require_provenance(payload, source, config, components, mode="resume")
         return
     initialize = payload.get("initialize")
     if not isinstance(initialize, dict) or "allow" not in initialize:
@@ -442,6 +449,9 @@ def _validate_payload(
         owner = states.owner(state_id)
         if getattr(owner, "kind", None) != "module":
             raise CheckpointError(f"initialize.allow cannot include {state_id}")
+    from src.experiments.provenance import require_provenance
+
+    require_provenance(payload, source, config, components, mode="initialize")
 
 
 def _apply_resume(payload: dict[str, Any], states: StateRegistry, runtime: Any) -> None:

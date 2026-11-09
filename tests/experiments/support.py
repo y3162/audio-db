@@ -230,8 +230,8 @@ class TamperTrainer:
     def __init__(self, *args: object, tamper: str, **kwargs: object) -> None:
         from src.experiments.trainers import StandardTrainer
 
-        if tamper not in {"weight", "buffer"}:
-            raise ValueError("tamper must be weight or buffer")
+        if tamper not in {"weight", "buffer", "optimizer", "scheduler", "trainer"}:
+            raise ValueError("tamper must be weight, buffer, optimizer, scheduler, or trainer")
         self._trainer = StandardTrainer(*args, **kwargs)  # type: ignore[arg-type]
         self.tamper = tamper
 
@@ -255,8 +255,28 @@ class TamperTrainer:
         with torch.no_grad():
             if self.tamper == "weight":
                 module.linear.weight.add_(1)
-            else:
+            elif self.tamper == "buffer":
                 module.marker.add_(1)
+            elif self.tamper == "optimizer":
+                found = False
+                for parameter in module.parameters():
+                    slot = trainer.optimizer.state.get(parameter)
+                    if not slot:
+                        continue
+                    for key in ("exp_avg", "exp_avg_sq", "momentum_buffer"):
+                        value = slot.get(key)
+                        if torch.is_tensor(value):
+                            value.add_(1)
+                            found = True
+                            break
+                    if found:
+                        break
+                if not found:
+                    raise RuntimeError("optimizer has no tensor state to tamper")
+            elif self.tamper == "scheduler":
+                trainer.scheduler.last_epoch += 3
+            else:
+                trainer.logical_step += 7
 
     def state_dict(self) -> dict[str, object]:
         return self._trainer.state_dict()

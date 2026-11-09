@@ -224,7 +224,7 @@ class MossFormerGANTrainer:
                 continue
             if self.logical_step >= self.max_logical_steps:
                 return self._result(checkpoint, "completed")
-            if self._stop_requested():
+            if self._stop_requested(runtime):
                 return self._result(checkpoint, "interrupted")
             epoch = int(self.data.epoch)
             index = int(self.data.update_index)
@@ -838,10 +838,28 @@ class MossFormerGANTrainer:
         # checkpoint identical across ranks. World size 1 does not change them.
         runtime.broadcast_buffers(self.generator.state_module)
         runtime.broadcast_buffers(self.discriminator.state_module)
+        if runtime.world_size > 1:
+            # Each rank's accumulation window holds that rank's micro-batch loss.
+            # The gradient is already averaged. The lists are logs, so rank 0's
+            # copy is the one every rank stores. World size 1 does not enter.
+            gathered = runtime.gather_objects(
+                {
+                    "discriminator": list(self._window_discriminator),
+                    "generator": list(self._window_generator),
+                    "samples": list(self._window_samples),
+                }
+            )
+            chosen = gathered[0]
+            self._window_discriminator = [float(item) for item in chosen["discriminator"]]
+            self._window_generator = [float(item) for item in chosen["generator"]]
+            self._window_samples = [str(item) for item in chosen["samples"]]
         checkpoint.save(checkpoint.directory, logical_step=logical_step, label=label)
 
-    def _stop_requested(self) -> bool:
-        return self.stop_after_logical_steps is not None and self.logical_step >= self.stop_after_logical_steps
+    def _stop_requested(self, runtime: object | None = None) -> bool:
+        from src.experiments.signals import ranks_should_stop
+
+        capped = self.stop_after_logical_steps is not None and self.logical_step >= self.stop_after_logical_steps
+        return ranks_should_stop(runtime, extra=capped)
 
     def _result(self, checkpoint: CheckpointManager, reason: str) -> RunResult:
         if self.halt_reason in {"initialized", "running"}:

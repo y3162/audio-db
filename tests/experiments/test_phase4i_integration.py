@@ -2,8 +2,9 @@
 
 Numerical equality stays in the Phase 4-A through 4-H modules. This module
 checks the six committed YAML declarations, DeepFilterNet3 and SEMamba++
-inference export, and checkpoint refusal across the six trainers. It does
-not add a provenance sidecar.
+inference export, and checkpoint refusal across the six trainers. A saved
+checkpoint carries a provenance sidecar. A run that never writes a checkpoint
+does not.
 """
 
 from __future__ import annotations
@@ -20,7 +21,7 @@ from pathlib import Path
 import duckdb
 import torch
 
-from src.evaluation.provenance import UNKNOWN, judge_checkpoint
+from src.evaluation.provenance import judge_checkpoint
 from src.experiments.api import Experiment
 from src.experiments.checkpoint import FORMAT
 from src.experiments.config import load_experiment
@@ -356,12 +357,16 @@ class Phase4ICheckpointTests(unittest.TestCase):
         for directory in (self.dfn, self.semamba):
             payload = _load(directory / "step_00000001.pt")
             self.assertEqual(payload["format"], FORMAT)
-            self.assertIsNone(payload["provenance_sha256"])
-            self.assertFalse((directory / "data_provenance.json").exists())
+            digest = payload["provenance_sha256"]
+            self.assertIsInstance(digest, str)
+            self.assertEqual(len(digest), 64)
+            raw = (directory / "data_provenance.json").read_bytes()
+            sidecar = (directory / "step_00000001.data_provenance.json").read_bytes()
+            self.assertEqual(hashlib.sha256(raw).hexdigest(), digest)
+            self.assertEqual(sidecar, raw)
             judgment = judge_checkpoint(directory / "step_00000001.pt", [])
-            self.assertEqual(judgment["independent"], UNKNOWN)
+            self.assertNotEqual(judgment["independent"], True)
             self.assertFalse(judgment["confirmed_independent"])
-            self.assertIn("data_provenance.json is missing", judgment["reason"])
 
     def test_trainers_refuse_each_others_checkpoints(self) -> None:
         donors = {

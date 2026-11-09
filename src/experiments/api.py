@@ -110,6 +110,10 @@ class Experiment:
                 self._checkpoint.restore(Path(initialize_from), mode="initialize")
             self._graph.states.seal()
             self._running = True
+            from src.experiments.signals import clear_interrupt, install_interrupt_handler
+
+            clear_interrupt()
+            install_interrupt_handler()
             if self._is_primary():
                 self._write_status("RUNNING")
             self._barrier()

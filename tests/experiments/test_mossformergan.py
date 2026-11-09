@@ -138,15 +138,17 @@ def _yaml(directory: Path, **kwargs: object) -> Path:
     validate = "true" if kwargs.get("validate", False) else "false"
     distribute = str(kwargs.get("distribute", "none"))
     timeout = int(kwargs.get("timeout", 120))
+    device = str(kwargs.get("device", "cpu"))
+    deterministic = "true" if kwargs.get("deterministic", True) else "false"
     text = f"""
 schema: audio-db-experiment/v1
 seed: 7
-deterministic: true
+deterministic: {deterministic}
 entry: trainer
 runtime:
   class: src.experiments.runtime.ProcessRuntime
   kwargs:
-    device: cpu
+    device: {device}
     precision: fp32
     timeout_seconds: {timeout}
 output:

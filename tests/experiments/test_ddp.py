@@ -173,6 +173,7 @@ class DistributedTrainingTests(unittest.TestCase):
         copied["rng_by_rank"] = rng
         copied_path = output / "copied_rng.pt"
         torch.save(copied, copied_path)
+        _copy_provenance_sidecar(saved, copied_path)
         copied_run = _torchrun(resume_config, "--resume", str(copied_path))
         self.assertNotEqual(copied_run.returncode, 0)
         self.assertIn("belongs to rank", copied_run.stderr + copied_run.stdout)
@@ -181,6 +182,7 @@ class DistributedTrainingTests(unittest.TestCase):
         short["rank_count_in_rng"] = 1
         short_path = output / "short_rng.pt"
         torch.save(short, short_path)
+        _copy_provenance_sidecar(saved, short_path)
         short_run = _torchrun(resume_config, "--resume", str(short_path))
         self.assertNotEqual(short_run.returncode, 0)
         self.assertIn("rng_by_rank", short_run.stderr + short_run.stdout)
@@ -462,6 +464,12 @@ components:
     path.write_text(text, encoding="utf-8")
     yaml.safe_load(path.read_text(encoding="utf-8"))
     return path
+
+
+def _copy_provenance_sidecar(source: Path, dest: Path) -> None:
+    sidecar = source.with_suffix(".data_provenance.json")
+    if sidecar.is_file():
+        dest.with_suffix(".data_provenance.json").write_bytes(sidecar.read_bytes())
 
 
 def _torchrun(config: Path, *extra: str, timeout: int = 90) -> subprocess.CompletedProcess[str]:

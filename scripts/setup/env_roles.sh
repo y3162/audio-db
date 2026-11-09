@@ -244,7 +244,8 @@ build_df_rfft() {
   local tracked="src/se/models/deepfilternet3/libdf_rfft.so"
   if [[ -f "$tracked" ]] && ! cmp -s "$built" "$tracked"; then
     echo "The new libdf_rfft.so differs from the tracked file. The tracked file was not replaced." >&2
-    echo "Load the new build with DF_RFFT_LIBRARY=$PWD/$built" >&2
+    echo "A process that does not set DF_RFFT_LIBRARY uses this build when the tracked file does not load." >&2
+    echo "DF_RFFT_LIBRARY=$PWD/$built still overrides that choice." >&2
   fi
   return 0
 }

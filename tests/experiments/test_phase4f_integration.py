@@ -7,6 +7,7 @@ checkpoints, and export inference weights the existing loaders accept.
 
 from __future__ import annotations
 
+import hashlib
 import json
 import tempfile
 import unittest
@@ -15,6 +16,7 @@ from unittest.mock import patch
 
 import torch
 
+from src.evaluation.provenance import judge_checkpoint
 from src.experiments.api import Experiment
 from src.experiments.checkpoint import FORMAT
 from src.experiments.config import load_experiment
@@ -53,6 +55,18 @@ def _lines(path: Path) -> list[dict[str, object]]:
     if not text:
         return []
     return [json.loads(line) for line in text.splitlines()]
+
+
+def _assert_bound_provenance(directory: Path, payload: dict, name: str) -> None:
+    digest = payload["provenance_sha256"]
+    assert isinstance(digest, str) and len(digest) == 64, name
+    raw = (directory / "data_provenance.json").read_bytes()
+    sidecar = (directory / "step_00000002.data_provenance.json").read_bytes()
+    assert hashlib.sha256(raw).hexdigest() == digest, name
+    assert sidecar == raw, name
+    judgment = judge_checkpoint(directory / "step_00000002.pt", [])
+    assert judgment["independent"] is not True, name
+    assert judgment["confirmed_independent"] is False, name
 
 
 def _load(path: Path) -> dict:
@@ -175,13 +189,12 @@ class Phase4FCheckpointAndExportTests(unittest.TestCase):
             payload = _load(directory / "step_00000002.pt")
             self.assertEqual(payload["format"], FORMAT, name)
             self.assertEqual(payload["schema_version"], 1, name)
-            self.assertIsNone(payload["provenance_sha256"], name)
+            _assert_bound_provenance(directory, payload, name)
             self.assertIsInstance(payload["code_identity"]["git_commit"], str, name)
             self.assertIsInstance(payload["code_identity"]["dirty"], bool, name)
             self.assertIn("data", payload["dataset_identity"], name)
             self.assertIsInstance(payload["states"]["data"]["plan_hash"], str, name)
             self.assertGreaterEqual(len(payload["states"]["data"]["plan_hash"]), 8, name)
-            self.assertFalse((directory / "data_provenance.json").exists(), name)
             metrics = _lines(directory / "metrics.jsonl")
             self.assertEqual([row["logical_step"] for row in metrics], [1, 2], name)
             self.assertEqual(json.loads((directory / "status.json").read_text(encoding="utf-8"))["status"], "COMPLETED", name)

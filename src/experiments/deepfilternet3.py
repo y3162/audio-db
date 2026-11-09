@@ -237,13 +237,14 @@ class DeepFilterNet3Trainer:
             self.data.update_index = 0
         self._require_group_size(component_id)
         self._stream = _stream_for(self.model.state_module, runtime.device)
+        self._record_rfft(runtime, checkpoint)
         runtime.barrier()
         if self.phase == _PENDING:
             self._finish_boundary(runtime, checkpoint, component_id)
             if self.early_stopped or self._epoch_cap_reached():
                 return self._result(checkpoint, "completed")
         while self.logical_step < self.max_logical_steps:
-            if self._stop_requested():
+            if self._stop_requested(runtime):
                 return self._result(checkpoint, "interrupted")
             if self._epoch_cap_reached():
                 return self._result(checkpoint, "completed")
@@ -327,7 +328,7 @@ class DeepFilterNet3Trainer:
                 self.finished_epoch = epoch
                 self.boundary = {"epoch": epoch, "schedule_steps": steps}
                 self._save(runtime, checkpoint, "validation_pending")
-                if self._stop_requested():
+                if self._stop_requested(runtime):
                     return self._result(checkpoint, "interrupted")
                 self._finish_boundary(runtime, checkpoint, component_id)
                 if self.early_stopped or self._epoch_cap_reached():
@@ -563,8 +564,32 @@ class DeepFilterNet3Trainer:
                 f"does not match accumulation {self.accumulation}"
             )
 
-    def _stop_requested(self) -> bool:
-        return self.stop_after_logical_steps is not None and self.logical_step >= self.stop_after_logical_steps
+    def _record_rfft(self, runtime: ProcessRuntime, checkpoint: CheckpointManager) -> None:
+        """Write the kernel actually selected on this host. Rank 0 writes the file."""
+
+        problem = ""
+        if _rank(runtime) == 0:
+            try:
+                from src.se.models.deepfilternet3.dsp import rfft_runtime_record
+
+                record = rfft_runtime_record()
+                path = Path(checkpoint.directory) / "rfft.json"
+                temporary = path.with_name(".rfft.json.tmp")
+                temporary.write_text(json.dumps(record, sort_keys=True) + "\n", encoding="utf-8")
+                os.replace(temporary, path)
+            except Exception as exc:
+                problem = f"{type(exc).__name__}: {exc}"
+        if runtime.world_size > 1:
+            reported = runtime.gather_objects(problem)
+            problem = next((item for item in reported if item), "")
+        if problem:
+            raise RuntimeFailure(f"DeepFilterNet3 realfft kernel: {problem}")
+
+    def _stop_requested(self, runtime: object | None = None) -> bool:
+        from src.experiments.signals import ranks_should_stop
+
+        capped = self.stop_after_logical_steps is not None and self.logical_step >= self.stop_after_logical_steps
+        return ranks_should_stop(runtime, extra=capped)
 
     def _epoch_cap_reached(self) -> bool:
         return int(self.data.epoch) >= self.max_epochs

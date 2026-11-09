@@ -11,6 +11,8 @@ where ``torch.fft.rfft``, ``torch.log10``, and ``torch.sqrt`` disagree with
 libdf in float32. Without the library, analysis falls back to PyTorch.
 """
 import ctypes
+import hashlib
+import logging
 import math
 import os
 from dataclasses import dataclass
@@ -19,6 +21,10 @@ from pathlib import Path
 import torch
 
 _ABI_VERSION = 1
+_LOG = logging.getLogger(__name__)
+_SELECTION_CACHE: dict | None = None
+_SELECTION_KEY: tuple | None = None
+_SELECTION_LOGGED = False
 
 
 def freq_to_erb(freq_hz):
@@ -106,17 +112,167 @@ _KERNEL = None
 _KERNEL_KEY = None
 
 
+def _repo_root() -> Path:
+    return Path(__file__).resolve().parents[4]
+
+
+def _tracked_rfft_path() -> Path:
+    return Path(__file__).with_name("libdf_rfft.so")
+
+
+def _local_rfft_path() -> Path:
+    return _repo_root() / "build" / "df-rfft" / "release" / "libdf_rfft.so"
+
+
+def _file_sha256(path: Path) -> str | None:
+    if not path.is_file():
+        return None
+    digest = hashlib.sha256()
+    with path.open("rb") as handle:
+        for chunk in iter(lambda: handle.read(1024 * 1024), b""):
+            digest.update(chunk)
+    return digest.hexdigest()
+
+
+def _glibc_version() -> str | None:
+    try:
+        value = os.confstr("CS_GNU_LIBC_VERSION")
+    except (OSError, ValueError):
+        return None
+    return value or None
+
+
+def _probe_library(path: Path) -> tuple[int | None, str]:
+    """Return ``(abi, reason)``. ``reason`` is ``ok`` only for ABI 1."""
+
+    if not path.is_file():
+        return None, "missing"
+    try:
+        library = ctypes.CDLL(str(path))
+    except OSError as error:
+        return None, f"load failed: {error}"
+    try:
+        abi = library.df_rfft_abi
+    except AttributeError:
+        return None, "df_rfft_abi is missing"
+    abi.argtypes = []
+    abi.restype = ctypes.c_int
+    try:
+        version = int(abi())
+    except OSError as error:
+        return None, f"abi call failed: {error}"
+    if version != _ABI_VERSION:
+        return version, f"ABI {version} is not {_ABI_VERSION}"
+    return version, "ok"
+
+
+def _selection_key() -> tuple:
+    tracked = _tracked_rfft_path()
+    local = _local_rfft_path()
+
+    def stamp(path: Path) -> tuple:
+        if not path.is_file():
+            return (str(path), None, None)
+        stat = path.stat()
+        return (str(path), stat.st_mtime_ns, stat.st_size)
+
+    return (os.environ.get("DF_RFFT_LIBRARY"), stamp(tracked), stamp(local))
+
+
+def rfft_selection() -> dict:
+    """Choose the native library for this process without replacing tracked files.
+
+    ``DF_RFFT_LIBRARY`` wins. Otherwise a loadable tracked file wins. If the
+    tracked file exists but does not load, the local ``make df-rfft`` output is
+    used when that file loads at ABI 1. An unloadable tracked file is not
+    turned into the PyTorch fallback while it still exists and no local build
+    loads. A missing file still falls back.
+    """
+
+    global _SELECTION_CACHE, _SELECTION_KEY
+    key = _selection_key()
+    if _SELECTION_CACHE is not None and key == _SELECTION_KEY:
+        return dict(_SELECTION_CACHE)
+    override = os.environ.get("DF_RFFT_LIBRARY")
+    if override:
+        path = Path(override)
+        version, reason = _probe_library(path)
+        source = "environment"
+    else:
+        tracked = _tracked_rfft_path()
+        version, reason = _probe_library(tracked)
+        if reason == "ok":
+            path = tracked
+            source = "tracked"
+        else:
+            local = _local_rfft_path()
+            local_version, local_reason = _probe_library(local)
+            if local_reason == "ok":
+                path = local
+                version = local_version
+                reason = f"tracked library was not used: {reason}"
+                source = "local_build"
+            elif tracked.is_file():
+                path = tracked
+                source = "tracked_unreadable"
+            else:
+                path = tracked
+                source = "missing"
+                reason = "missing"
+    record = {
+        "abi": version,
+        "glibc": _glibc_version(),
+        "path": str(path),
+        "reason": reason,
+        "sha256": _file_sha256(path),
+        "source": source,
+    }
+    _SELECTION_CACHE = dict(record)
+    _SELECTION_KEY = key
+    return record
+
+
 def rfft_library_path():
     """Shared library used for libdf-matching float32 kernels.
 
-    ``DF_RFFT_LIBRARY`` overrides the path next to this module. The override is
-    for tests and for a build that has not been installed yet. It is not a
-    host-specific default.
+    ``DF_RFFT_LIBRARY`` overrides discovery. Discovery never rewrites the
+    tracked library and never treats an unloadable tracked file as permission
+    to fall back while that file exists.
     """
+
     override = os.environ.get("DF_RFFT_LIBRARY")
     if override:
         return Path(override)
-    return Path(__file__).with_name("libdf_rfft.so")
+    return Path(rfft_selection()["path"])
+
+
+def rfft_runtime_record() -> dict:
+    """Selection plus the kernel that analysis actually runs.
+
+    ``kernel`` is ``native``, ``fallback``, or ``unreadable``. ``unreadable``
+    means a file is present and was refused, not that PyTorch was substituted.
+    """
+
+    global _SELECTION_LOGGED
+    record = rfft_selection()
+    try:
+        kernel = _rfft_kernel()
+    except Exception as exc:
+        record["error"] = f"{type(exc).__name__}: {exc}"
+        record["kernel"] = "unreadable"
+    else:
+        record["kernel"] = "fallback" if kernel is None else "native"
+        if kernel is not None:
+            record["abi"] = int(kernel.df_rfft_abi())
+    if not _SELECTION_LOGGED:
+        _SELECTION_LOGGED = True
+        _LOG.info(
+            "realfft kernel=%s source=%s path=%s",
+            record["kernel"],
+            record["source"],
+            record["path"],
+        )
+    return record
 
 
 def _kernel_cache_key(path):

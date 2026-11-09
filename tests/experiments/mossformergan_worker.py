@@ -18,6 +18,20 @@ from src.experiments.errors import RuntimeFailure
 from src.experiments.runtime import PreparePolicy, ProcessRuntime
 
 
+_SEQUENCE_CALLS = 0
+
+
+def _pesq_sequence(clean: torch.Tensor, enhanced: torch.Tensor, sample_rate: int) -> torch.Tensor | None:
+    """Success, failure, success, repeating. Both ranks share the call pattern."""
+
+    global _SEQUENCE_CALLS
+    del enhanced, sample_rate
+    _SEQUENCE_CALLS += 1
+    if _SEQUENCE_CALLS % 3 == 2:
+        return None
+    return torch.full((clean.shape[0],), 0.4)
+
+
 def _pesq_split(clean: torch.Tensor, enhanced: torch.Tensor, sample_rate: int) -> torch.Tensor | None:
     del enhanced, sample_rate
     if os.environ.get("RANK", "0") == "0":
@@ -35,24 +49,43 @@ def _install_pesq(mode: str) -> None:
 
     if mode == "skip":
         mossformer.metric_targets = _pesq_split
+    elif mode == "sequence":
+        mossformer.metric_targets = _pesq_sequence
     elif mode == "run":
         mossformer.metric_targets = _pesq_constant
     else:
         raise RuntimeFailure(f"unknown train mode {mode}")
 
 
-def _train(directory: Path, mode: str) -> None:
+def _digest(module: torch.nn.Module) -> str:
+    import hashlib
+
+    digest = hashlib.sha256()
+    for tensor in list(module.parameters()) + list(module.buffers()):
+        digest.update(tensor.detach().cpu().contiguous().numpy().tobytes())
+    return digest.hexdigest()
+
+
+def _train(directory: Path, mode: str, resume: Path | None) -> None:
     _install_pesq(mode)
     experiment = build_experiment(load_experiment(directory / "experiment.yaml"))
-    result = experiment.run()
+    phase = os.environ.get("AUDIO_DB_MOSS_FAIL_PHASE")
+    if phase:
+        experiment.get("trainer").fail_phase = phase
+    result = experiment.run(resume=resume)
     trainer = experiment.get("trainer")
     runtime = experiment._graph.runtime
+    generator = experiment.get("generator").state_module
     discriminator = experiment.get("discriminator").state_module
     payload = {
         "accu_count": int(trainer._accu_count),
         "average_calls": int(trainer._average_calls),
         "counters": dict(trainer.counters),
+        "data_epoch": int(trainer.data.epoch),
+        "data_update_index": int(trainer.data.update_index),
         "device": str(runtime.device),
+        "discriminator_sha256": _digest(discriminator),
+        "generator_sha256": _digest(generator),
         "halt_reason": trainer.halt_reason,
         "logical_step": int(result.logical_step),
         "optimizer_updates": dict(result.optimizer_updates),
@@ -135,10 +168,11 @@ def _accumulate(runtime, prepared, patterns, scale: float, *, clip_each: bool) -
 def main() -> None:
     directory = Path(sys.argv[1])
     mode = sys.argv[2]
+    resume = Path(sys.argv[3]) if len(sys.argv) > 3 and sys.argv[3] else None
     if mode == "increment":
         _increment(directory)
         return
-    _train(directory, mode)
+    _train(directory, mode, resume)
 
 
 if __name__ == "__main__":

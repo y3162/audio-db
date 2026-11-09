@@ -8,6 +8,7 @@ libdf; it is a match between the old task and the new trainer on one path.
 
 from __future__ import annotations
 
+import hashlib
 import os
 import socket
 import subprocess
@@ -270,7 +271,11 @@ class DeepFilterNet3ExperimentTests(unittest.TestCase):
         self.assertEqual(resumed.logical_step, 2)
         payload = torch.load(checkpoint, map_location="cpu", weights_only=False)
         self.assertEqual(payload["format"], "audio-db-experiment-v1")
-        self.assertIsNone(payload["provenance_sha256"])
+        self.assertIsInstance(payload["provenance_sha256"], str)
+        self.assertEqual(
+            hashlib.sha256((directory / "data_provenance.json").read_bytes()).hexdigest(),
+            payload["provenance_sha256"],
+        )
         metrics = (directory / "metrics.jsonl").read_text(encoding="utf-8").strip().splitlines()
         self.assertEqual(len(metrics), 2)
 

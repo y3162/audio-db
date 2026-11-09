@@ -42,7 +42,7 @@ make db-link ONLY=LibriSpeech ALLOW_PARTIAL=1
 make test-setup
 ```
 
-`make setup` は `db-init`、`db-ingest`、`db-bootstrap` を呼ばない。
+`make setup` は `db-init`、`db-ingest`、`db-bootstrap` を呼ばない。役割の導入のあと `build_df_rfft` が `make df-rfft` と同じ Cargo ロックで `build/df-rfft/release/libdf_rfft.so` を作る。追跡中の `src/se/models/deepfilternet3/libdf_rfft.so` と内容が違うときは置き換えない。環境変数 `DF_RFFT_LIBRARY` が空で追跡ファイルがこのホストで読めないときは、そのローカル成果物が ABI 1 なら実行時にそれを使う。`make doctor` の `df_rfft` は、選ばれたファイルの source、ABI、SHA-256 を出す。
 
 ## 公式アセット
 

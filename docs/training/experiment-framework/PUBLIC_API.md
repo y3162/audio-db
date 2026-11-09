@@ -269,7 +269,7 @@ Phase 4-E のクラスは `src.experiments.models.mossformergan.MossFormerGANGen
 
 検証はデータ epoch の末尾である。Generator は `eval()`、Discriminator は `train()`。欠測 Loss は和に足さず、分母には残す。集計は rank 平均の等重み平均である。plateau は `mossformer_validation_decision` で、5 回目の非改善が Generator の学習率だけを半分にし、10 回目で停止する。Scheduler コンポーネントは作らない。
 
-`amp_fp16` は拒否する。設定例は `configs/experiments/mossformergan_se_16k.yaml`。`max_logical_steps` は 1 で、公式規模の学習は起動しない。検証は [Phase 4-E](PHASE_4E_MOSSFORMERGAN_TRAINING.md)。4 モデルの横断検証は [Phase 4-F](PHASE_4F_INTEGRATION.md)。実験 checkpoint は `data_provenance.json` を書かず、`provenance_sha256` は None のままである。None 以外の resume は拒否する。評価側は欠落を UNKNOWN とし、独立とは判定しない。
+`amp_fp16` は拒否する。設定例は `configs/experiments/mossformergan_se_16k.yaml`。`max_logical_steps` は 1 で、公式規模の学習は起動しない。検証は [Phase 4-E](PHASE_4E_MOSSFORMERGAN_TRAINING.md)。4 モデルの横断検証は [Phase 4-F](PHASE_4F_INTEGRATION.md)。新規の実験 checkpoint は `data_provenance.json` と sidecar の SHA-256 を `provenance_sha256` に持つ。None は来歴の無い旧 checkpoint で、再開できるが独立の証明にはならない。詳細は [Phase 4-J](PHASE_4J_OPERATIONS_AND_PROVENANCE.md)。
 
 ## TF-GridNet MS-SNSD
 
@@ -351,13 +351,13 @@ Phase 4-H のクラスは `src.experiments.models.semambapp.SEMambaPPGenerator`�
 4. `grad_clip` が null なら clip しない。値があるときは MRD、CQT、Generator を別々に clip する。
 5. `ExponentialLR` は epoch が終わったときだけ、G と D を 1 回ずつ進める。
 6. Validation は rank 0 だけが waveform L1、SI-SDR、PESQ、STOI を見る。`best_generator.pt` は書かない。
-7. Checkpoint は両 Optimizer の step のあとだけ書く。形式は `audio-db-experiment-v1` で、`data_provenance.json` は書かない。
+7. Checkpoint は両 Optimizer の step のあとだけ書く。形式は `audio-db-experiment-v1` で、新規保存は `data_provenance.json` を伴う。
 8. `amp_fp16` は拒否する。`scan_backend: fused` を CUDA で指定し `mamba-ssm` が無いときは、reference に落とさず失敗する。CPU の fused 指定は既存ネットワークが reference kernel を実行し、Trainer は設定名と実行 kernel を両方記録する。
 9. `group_size` は accumulation と一致させる。公式素材の `semambapp.gsr.official@1` は起動しない。
 
 設定例は `configs/experiments/semambapp_gsr.yaml`。この YAML の `max_logical_steps` は 1 で、snapshot は `semambapp.gsr.smoke@1` である。検証は [Phase 4-H](PHASE_4H_SEMAMBAPP_TRAINING.md)。
 
-6 モデルの統合判定は [Phase 4-I](PHASE_4I_SIX_MODEL_INTEGRATION.md) である。新しい Trainer は足していない。実験 checkpoint は `data_provenance.json` を書かず、`provenance_sha256` は None のままである。全体は CONDITIONAL GO で、DeepFilterNet3 の追跡 native library が読めないホストを無条件 GO にしない。
+6 モデルの統合判定は [Phase 4-I](PHASE_4I_SIX_MODEL_INTEGRATION.md) である。新しい Trainer は足していない。Phase 4-J の運用と provenance は [PHASE_4J_OPERATIONS_AND_PROVENANCE.md](PHASE_4J_OPERATIONS_AND_PROVENANCE.md) で、全体は CONDITIONAL GO である。追跡中の DeepFilterNet3 native library が読めないホストは、ローカル再ビルドが ABI 1 で読めるときそれを自動で使う。無条件 GO にはしない。
 
 ## Data API
 

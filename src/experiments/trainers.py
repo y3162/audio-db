@@ -122,10 +122,13 @@ class StandardTrainer:
         self._require_group_size(component_id)
         runtime.barrier()
         while self.logical_step < self.max_logical_steps:
-            if (
+            from src.experiments.signals import ranks_should_stop
+
+            capped = (
                 self.stop_after_logical_steps is not None
                 and self.logical_step >= self.stop_after_logical_steps
-            ):
+            )
+            if ranks_should_stop(runtime, extra=capped):
                 self.stop_reason = "interrupted"
                 return RunResult(
                     stop_reason="interrupted",

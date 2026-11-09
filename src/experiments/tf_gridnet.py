@@ -217,7 +217,7 @@ class TFGridNetTrainer:
             if self.early_stopped or self._epoch_cap_reached():
                 return self._result(checkpoint, "completed")
         while self.logical_step < self.max_logical_steps:
-            if self._stop_requested():
+            if self._stop_requested(runtime):
                 return self._result(checkpoint, "interrupted")
             if self._epoch_cap_reached():
                 return self._result(checkpoint, "completed")
@@ -299,7 +299,7 @@ class TFGridNetTrainer:
                     logical_step=self.logical_step,
                     label="validation_pending",
                 )
-                if self._stop_requested():
+                if self._stop_requested(runtime):
                     return self._result(checkpoint, "interrupted")
                 self._finish_boundary(runtime, checkpoint, component_id)
                 if self.early_stopped or self._epoch_cap_reached():
@@ -492,11 +492,11 @@ class TFGridNetTrainer:
                 f"does not match accumulation {self.accumulation}"
             )
 
-    def _stop_requested(self) -> bool:
-        return (
-            self.stop_after_logical_steps is not None
-            and self.logical_step >= self.stop_after_logical_steps
-        )
+    def _stop_requested(self, runtime: object | None = None) -> bool:
+        from src.experiments.signals import ranks_should_stop
+
+        capped = self.stop_after_logical_steps is not None and self.logical_step >= self.stop_after_logical_steps
+        return ranks_should_stop(runtime, extra=capped)
 
     def _epoch_cap_reached(self) -> bool:
         return self.max_epochs is not None and int(self.data.epoch) >= self.max_epochs

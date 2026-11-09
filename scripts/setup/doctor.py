@@ -5,6 +5,7 @@ Required failures exit non-zero. Dataset paths from .env are not printed.
 
 from __future__ import annotations
 
+import json
 import os
 import subprocess
 import sys
@@ -160,15 +161,44 @@ def check_native(report: Report) -> None:
             report.add("FAIL", "libdf.import", "official libdf did not import", required=True)
     se = _python("se")
     if se.is_file():
-        ran = _run(se, "from src.se.models.deepfilternet3.dsp import _rfft_unnormalized\n"
-                   "import torch\n"
-                   "y = _rfft_unnormalized(torch.zeros(320))\n"
-                   "print(int(torch.isfinite(y).all()))\n",
-                   env={"DF_RFFT_REQUIRED": "1"})
-        if ran.returncode == 0 and ran.stdout.strip() == "1":
-            report.add("PASS", "df_rfft", "libdf_rfft.so produced a finite spectrum", required=True)
+        ran = _run(
+            se,
+            "import json\n"
+            "import os\n"
+            "os.environ.pop('DF_RFFT_LIBRARY', None)\n"
+            "from src.se.models.deepfilternet3.dsp import _rfft_unnormalized, rfft_runtime_record\n"
+            "import torch\n"
+            "record = rfft_runtime_record()\n"
+            "y = _rfft_unnormalized(torch.zeros(320))\n"
+            "record['finite'] = bool(torch.isfinite(y).all())\n"
+            "print(json.dumps(record, sort_keys=True))\n",
+            env={"DF_RFFT_REQUIRED": "1"},
+        )
+        detail = ran.stdout.strip().splitlines()[-1] if ran.stdout.strip() else ran.stderr.strip().splitlines()[-1:]
+        detail_text = detail if isinstance(detail, str) else " ".join(detail)
+        record = {}
+        if ran.returncode == 0 and ran.stdout.strip():
+            try:
+                record = json.loads(ran.stdout.strip().splitlines()[-1])
+            except json.JSONDecodeError:
+                record = {}
+        native = (
+            ran.returncode == 0
+            and record.get("kernel") == "native"
+            and record.get("abi") == 1
+            and record.get("finite") is True
+            and isinstance(record.get("sha256"), str)
+        )
+        if native:
+            report.add(
+                "PASS",
+                "df_rfft",
+                f"source={record.get('source')} abi=1 sha256={record.get('sha256')} path={record.get('path')}",
+                required=True,
+            )
         else:
-            report.add("FAIL", "df_rfft", "Rust FFT was required and did not run", required=True)
+            reason = record.get("reason") or record.get("error") or detail_text or "Rust FFT did not run"
+            report.add("FAIL", "df_rfft", str(reason), required=True)
     else:
         report.add("NOT_TESTED", "df_rfft", "se environment missing", required=False)
 

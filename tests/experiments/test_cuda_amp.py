@@ -199,6 +199,7 @@ class CudaWorldTests(unittest.TestCase):
         copied["rng_by_rank"][0]["cuda_device_identity"] = dict(identity, uuid="not-this-gpu")
         tampered = interrupted / "run" / "step_00000002_tampered.pt"
         torch.save(copied, tampered)
+        _copy_sidecar(saved, tampered)
         refused = _cli(resume, "--resume", str(tampered), devices=_DEVICES_ONE)
         self.assertNotEqual(refused.returncode, 0)
         self.assertIn("CUDA device", refused.stderr + refused.stdout)
@@ -244,6 +245,7 @@ class CudaWorldTests(unittest.TestCase):
         broken["states"]["runtime"] = dict(mid["states"]["runtime"], grad_scaler=None)
         bad = interrupted / "run" / "step_00000002_noscaler.pt"
         torch.save(broken, bad)
+        _copy_sidecar(interrupted / "run" / "step_00000002.pt", bad)
         refused = _cli(resume, "--resume", str(bad), devices=_DEVICES_ONE)
         self.assertNotEqual(refused.returncode, 0)
         self.assertIn("grad scaler", refused.stderr + refused.stdout)
@@ -293,6 +295,7 @@ class CudaWorldTests(unittest.TestCase):
         swapped["rng_by_rank"] = [dict(payload["rng_by_rank"][0]), dict(payload["rng_by_rank"][0])]
         swapped_path = output / "step_00000002_swapped.pt"
         torch.save(swapped, swapped_path)
+        _copy_sidecar(saved, swapped_path)
         refused = _torchrun(resume, "--resume", str(swapped_path), devices=_DEVICES_TWO)
         self.assertNotEqual(refused.returncode, 0)
         self.assertIn("rank", (refused.stderr + refused.stdout).lower())
@@ -401,6 +404,12 @@ class CudaWorldTests(unittest.TestCase):
 
     def _check(self, completed: subprocess.CompletedProcess[str], label: str) -> None:
         self.assertEqual(completed.returncode, 0, f"{label}\n{completed.stderr}\n{completed.stdout}")
+
+
+def _copy_sidecar(source: Path, dest: Path) -> None:
+    sidecar = source.with_suffix(".data_provenance.json")
+    if sidecar.is_file():
+        dest.with_suffix(".data_provenance.json").write_bytes(sidecar.read_bytes())
 
 
 def _require_devices(count: int) -> None:
@@ -723,6 +732,241 @@ class SEMambaCudaTests(unittest.TestCase):
                         self.assertEqual(row["generator_reforwards"], 2)
 
 
+class Phase4JCudaTests(unittest.TestCase):
+    """MossFormerGAN skip mixing and SEMamba++ fused NCCL resume.
+
+    These stay in this module so a CPU regression with CUDA hidden does not
+    count them as new skips.
+    """
+
+    def test_mossformer_skip_patterns_on_nccl(self) -> None:
+        _require_devices(2)
+        from tests.experiments.test_mossformergan import _yaml
+
+        with tempfile.TemporaryDirectory(prefix="phase4j-moss-nccl-") as raw:
+            root = Path(raw)
+            success = root / "success"
+            success.mkdir()
+            _yaml(
+                success,
+                partial=False,
+                steps=1,
+                updates=2,
+                accumulation=2,
+                validate=False,
+                distribute="ddp",
+                timeout=180,
+                device="cuda",
+                deterministic=False,
+            )
+            ran = _moss_nccl(success, "run", timeout=240)
+            self.assertEqual(ran.returncode, 0, ran.stderr[-2500:] + ran.stdout[-800:])
+            ranks = _moss_ranks(success)
+            self.assertEqual([row["logical_step"] for row in ranks], [1, 1])
+            self.assertEqual([row["counters"]["optimizer_updates"] for row in ranks], [1, 1])
+            self.assertGreater(ranks[0]["sync_batchnorm"], 0)
+            self.assertEqual(ranks[0]["generator_sha256"], ranks[1]["generator_sha256"])
+            self.assertEqual(ranks[0]["discriminator_sha256"], ranks[1]["discriminator_sha256"])
+            self.assertEqual([row["data_epoch"] for row in ranks], [1, 1])
+            self.assertGreaterEqual(ranks[0]["average_calls"], 2)
+
+            skipped = root / "skipped"
+            skipped.mkdir()
+            _yaml(
+                skipped,
+                partial=False,
+                steps=1,
+                updates=2,
+                accumulation=2,
+                validate=False,
+                distribute="ddp",
+                timeout=180,
+                device="cuda",
+                deterministic=False,
+            )
+            skip = _moss_nccl(skipped, "skip", timeout=240)
+            self.assertEqual(skip.returncode, 0, skip.stderr[-2500:])
+            skip_ranks = _moss_ranks(skipped)
+            self.assertEqual([row["logical_step"] for row in skip_ranks], [0, 0])
+            self.assertEqual([row["average_calls"] for row in skip_ranks], [0, 0])
+            self.assertEqual([row["counters"]["micro_batches_failed"] for row in skip_ranks], [2, 2])
+            self.assertEqual([row["data_epoch"] for row in skip_ranks], [1, 1])
+            self.assertEqual(skip_ranks[0]["generator_sha256"], skip_ranks[1]["generator_sha256"])
+
+            sequence = root / "sequence"
+            sequence.mkdir()
+            _yaml(
+                sequence,
+                partial=False,
+                steps=2,
+                updates=6,
+                accumulation=2,
+                validate=False,
+                distribute="ddp",
+                timeout=180,
+                device="cuda",
+                deterministic=False,
+            )
+            sequenced = _moss_nccl(sequence, "sequence", timeout=300)
+            self.assertEqual(sequenced.returncode, 0, sequenced.stderr[-2500:])
+            seq_ranks = _moss_ranks(sequence)
+            self.assertEqual([row["logical_step"] for row in seq_ranks], [2, 2])
+            self.assertEqual([row["counters"]["micro_batches_failed"] for row in seq_ranks], [2, 2])
+            self.assertEqual([row["counters"]["micro_batches_succeeded"] for row in seq_ranks], [4, 4])
+            self.assertGreater(seq_ranks[0]["counters"]["official_step"], seq_ranks[0]["logical_step"])
+            self.assertEqual(seq_ranks[0]["generator_sha256"], seq_ranks[1]["generator_sha256"])
+            self.assertEqual(seq_ranks[0]["discriminator_sha256"], seq_ranks[1]["discriminator_sha256"])
+
+            partial = root / "partial"
+            partial.mkdir()
+            _yaml(
+                partial,
+                partial=True,
+                steps=1,
+                updates=4,
+                accumulation=2,
+                validate=False,
+                distribute="ddp",
+                timeout=180,
+                device="cuda",
+                deterministic=False,
+            )
+            failed = _moss_nccl(partial, "run", timeout=240, fail_phase="after_generator_step")
+            self.assertNotEqual(failed.returncode, 0)
+            self.assertTrue((partial / "step_00000000.pt").is_file())
+            self.assertFalse((partial / "step_00000001.pt").is_file())
+            resumed = _moss_nccl(partial, "run", timeout=240, resume=partial / "step_00000000.pt")
+            self.assertEqual(resumed.returncode, 0, resumed.stderr[-2500:])
+            resumed_ranks = _moss_ranks(partial)
+            self.assertEqual([row["logical_step"] for row in resumed_ranks], [1, 1])
+            self.assertEqual([row["accu_count"] for row in resumed_ranks], [0, 0])
+            self.assertEqual(resumed_ranks[0]["generator_sha256"], resumed_ranks[1]["generator_sha256"])
+            self.assertEqual(resumed_ranks[0]["discriminator_sha256"], resumed_ranks[1]["discriminator_sha256"])
+
+    def test_semamba_fused_nccl_resume(self) -> None:
+        _require_devices(2)
+        from tests.experiments.test_semambapp import _yaml
+
+        python = str(ROOT / ".venvs" / "semambapp" / "bin" / "python")
+        self.assertTrue(Path(python).is_file())
+        with tempfile.TemporaryDirectory(prefix="phase4j-semamba-fused-") as raw:
+            root = Path(raw)
+            first = _yaml(
+                root / "a",
+                steps=2,
+                count=2,
+                accumulation=1,
+                validation_interval=0,
+                scan_backend="fused",
+                device="cuda",
+                deterministic=False,
+            )
+            second = _yaml(
+                root / "b",
+                steps=2,
+                count=2,
+                accumulation=1,
+                validation_interval=0,
+                scan_backend="fused",
+                device="cuda",
+                deterministic=False,
+            )
+            stopped = _yaml(
+                root / "stop",
+                steps=2,
+                count=2,
+                accumulation=1,
+                validation_interval=0,
+                stop_after=1,
+                scan_backend="fused",
+                device="cuda",
+                deterministic=False,
+            )
+            for config in (first, second, stopped):
+                completed = _torchrun_worker(config, devices=_DEVICES_TWO, timeout=240, python=python)
+                self.assertEqual(completed.returncode, 0, completed.stderr[-2500:])
+            continued = _yaml(
+                root / "stop",
+                steps=2,
+                count=2,
+                accumulation=1,
+                validation_interval=0,
+                scan_backend="fused",
+                device="cuda",
+                deterministic=False,
+            )
+            resumed = _torchrun_worker(
+                continued,
+                devices=_DEVICES_TWO,
+                timeout=240,
+                python=python,
+                resume=root / "stop" / "step_00000001.pt",
+            )
+            self.assertEqual(resumed.returncode, 0, resumed.stderr[-2500:])
+            Phase4ICudaTests._assert_ranks(self, root / "a", logical_step=2)
+            Phase4ICudaTests._assert_ranks(self, root / "stop", logical_step=2)
+            self_gap = _checkpoint_gap(root / "a" / "step_00000002.pt", root / "b" / "step_00000002.pt")
+            resume_gap = _checkpoint_gap(root / "a" / "step_00000002.pt", root / "stop" / "step_00000002.pt")
+            payload = torch.load(root / "stop" / "step_00000002.pt", map_location="cpu", weights_only=False)
+            row = payload["states"]["trainer"]["step_log"][-1]
+            self.assertEqual(row["scan_configured"], "fused")
+            self.assertEqual(row["scan_executed"], "fused")
+            for name in ("generator", "mrd", "cqt", "optim_g", "optim_d", "scheduler_g", "scheduler_d"):
+                self.assertIn(name, payload["states"])
+            self.assertIn("rng_by_rank", payload)
+            Path("/tmp/phase4j-semamba-fused-gaps.txt").write_text(
+                f"self_rerun {self_gap}\nresume {resume_gap}\n",
+                encoding="utf-8",
+            )
+            self.assertLess(resume_gap, max(self_gap, 1e-6) * 5 + 1e-3)
+
+
+def _moss_nccl(
+    directory: Path,
+    mode: str,
+    *,
+    timeout: int,
+    resume: Path | None = None,
+    fail_phase: str | None = None,
+) -> subprocess.CompletedProcess[str]:
+    command = [
+        sys.executable,
+        "-m",
+        "torch.distributed.run",
+        "--standalone",
+        "--nproc_per_node",
+        "2",
+        "--master_port",
+        str(_free_port()),
+        "-m",
+        "tests.experiments.mossformergan_worker",
+        str(directory),
+        mode,
+    ]
+    if resume is not None:
+        command.append(str(resume))
+    env = _base_env(_DEVICES_TWO)
+    if fail_phase is not None:
+        env["AUDIO_DB_MOSS_FAIL_PHASE"] = fail_phase
+    env["PYTHONPATH"] = str(ROOT) + (os.pathsep + env["PYTHONPATH"] if env.get("PYTHONPATH") else "")
+    return subprocess.run(
+        command,
+        cwd=ROOT,
+        env=env,
+        check=False,
+        capture_output=True,
+        text=True,
+        timeout=timeout,
+    )
+
+
+def _moss_ranks(directory: Path) -> list[dict]:
+    return [
+        json.loads((directory / "worker-rank0.json").read_text(encoding="utf-8")),
+        json.loads((directory / "worker-rank1.json").read_text(encoding="utf-8")),
+    ]
+
+
 def _semamba_probe(mode: str, python: str) -> dict:
     directory = Path(tempfile.mkdtemp(prefix="semamba-cuda-"))
     out = directory / "report.json"
@@ -773,8 +1017,11 @@ class Phase4ICudaTests(unittest.TestCase):
             self._assert_ranks(target, logical_step=1)
             payload = torch.load(target / "step_00000001.pt", map_location="cpu", weights_only=False)
             self.assertTrue(any("df_fc_a" in key for key in payload["states"]["model"]))
-            self.assertIsNone(payload["provenance_sha256"])
-            self.assertFalse((target / "data_provenance.json").exists())
+            self.assertIsInstance(payload["provenance_sha256"], str)
+            self.assertEqual(
+                __import__("hashlib").sha256((target / "data_provenance.json").read_bytes()).hexdigest(),
+                payload["provenance_sha256"],
+            )
             self.assertEqual(payload["world_size"], 2)
             metrics = [
                 json.loads(line)
@@ -934,10 +1181,11 @@ def _torchrun_worker(
     devices: str,
     timeout: int,
     resume: Path | None = None,
+    python: str | None = None,
 ) -> subprocess.CompletedProcess[str]:
     visible = [item for item in devices.split(",") if item != ""]
     command = [
-        sys.executable,
+        python or sys.executable,
         "-m",
         "torch.distributed.run",
         "--standalone",
