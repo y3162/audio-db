@@ -33,7 +33,7 @@ Phase 3-A では試験を追加しない。この表は 3-B 以降の実装が�
 ## オンライン混合と劣化
 
 - 方法: 合成の素材リストで、DFN3 は `plan_online_epoch` の添字と `render_mixture` の波形を、新 Sampler / Protocol と比較する。SEMamba は `rank_order("per_rank_independent_v1")` の添字と `render_example` の波形を比較する。world size 1。valid の波形を epoch 0 と epoch 1 で比較する。
-- 期待: 添字と波形の最大絶対誤差が 0。valid の波形は epoch が違っても最大絶対誤差 0。DFN3 の valid の並びは epoch が違うと変わってよい。変わったかどうかは試験が添字列を記録し、波形一致と別に書く。`group_size` が 2 の DFN3 は `DataError`。SEMamba の `group_size` 2 は、micro-batch 列の長さが 2 の倍数になり、余った 1 件を捨てる。
+- 期待: 添字と波形の最大絶対誤差が 0。整数の `sampling_factor` では、valid の波形は epoch が違っても index ごとに最大絶対誤差 0。非整数では `speech_key_positions` が検証 epoch で発話を入れ替えるので、同じ index の波形は一致しない。Phase 3-D はその既存関数に従い、波形一致は整数因子で測った。DFN3 の valid の並びは epoch が違うと変わってよい。変わったかどうかは試験が添字列を記録し、波形一致と別に書く。`group_size` が 2 の DFN3 は `DataError`。SEMamba の `group_size` 2 は、micro-batch 列の長さが 2 の倍数になり、余った 1 件を捨てる。
 - Phase: 3-D
 - 非目標: Rust `StdRng`、公式のプロセス全体の乱数消費、論文の 24,000 サンプル設定。
 

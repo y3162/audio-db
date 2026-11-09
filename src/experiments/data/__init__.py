@@ -14,6 +14,7 @@ from src.experiments.data.fixed_pair import (
     SnapshotDataModule,
     SnapshotSource,
 )
+from src.experiments.data.online import Dfn3IndexSampler, Dfn3Protocol, SemambaProtocol
 from src.experiments.data.sample import Batch, ChunkSpan, Crop, SampleRef
 from src.experiments.data.tensor import EpochView, TensorPairData
 
@@ -23,11 +24,14 @@ __all__ = [
     "ChunkSampler",
     "ChunkSpan",
     "Crop",
+    "Dfn3IndexSampler",
+    "Dfn3Protocol",
     "EpochView",
     "FixedPairProtocol",
     "MicroBatcher",
     "OrderSampler",
     "SampleRef",
+    "SemambaProtocol",
     "SnapshotDataModule",
     "SnapshotSource",
     "TensorPairData",

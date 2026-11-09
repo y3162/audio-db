@@ -11,7 +11,6 @@ from pathlib import Path
 from typing import Any
 
 import numpy as np
-import soundfile as sf
 
 from src.reproduction.errors import ReproductionError
 from src.reproduction.ids import digest
@@ -22,6 +21,7 @@ from src.reproduction.paths import (
     DEFAULT_SNAPSHOTS,
 )
 from src.reproduction.pipeline.assemble import assemble
+from src.reproduction.pipeline.clips import Dfn3Clip as _AssetClip
 from src.reproduction.pipeline.loader import GroupLoader
 from src.reproduction.pipeline.provenance import snapshot_provenance_parts
 from src.reproduction.pipeline.seeds import mix_seed
@@ -40,21 +40,6 @@ from src.reproduction.protocols.online_dfn3 import (
 from src.reproduction.snapshot_reader import load_snapshot
 
 POLICY = "dfn3_online_ceil_v1"
-
-
-class _AssetClip:
-    def __init__(self, store: AssetStore, asset_id: str) -> None:
-        row = store.asset(asset_id)
-        self.asset_id = asset_id
-        self.sample_rate = int(row["sample_rate"])
-        self.frames = int(row["frames"])
-        self.path = store.path(asset_id)
-
-    def read(self, start: int, stop: int) -> np.ndarray:
-        data, rate = sf.read(self.path, start=int(start), stop=int(stop), dtype="float32", always_2d=True)
-        if int(rate) != self.sample_rate:
-            raise ReproductionError(f"{self.asset_id} sample rate does not match the snapshot")
-        return np.ascontiguousarray(data[:, 0], dtype=np.float32)
 
 
 class OnlineDFN3TrainingData:

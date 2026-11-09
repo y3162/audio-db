@@ -1,6 +1,6 @@
 # Data System 公開 API
 
-Phase 3-A の契約である。固定ペアの Source、Sampler、Protocol、Batcher、`SnapshotDataModule` は Phase 3-B で `src/experiments/data/` にある。chunk の `ChunkSampler` と `ChunkProtocol` は Phase 3-C で同じ DataModule に載っている。オンライン、world size 2 の正式受け入れ、動的 Sampler は未実装である。構成の理由は [DATA_ARCHITECTURE.md](DATA_ARCHITECTURE.md)。Phase 2 まで実装済みの `TensorPairData` はこの契約の合成データ実装として残り、メソッドの意味は変えない。
+Phase 3-A の契約である。固定ペアの Source、Sampler、Protocol、Batcher、`SnapshotDataModule` は Phase 3-B で `src/experiments/data/` にある。chunk の `ChunkSampler` と `ChunkProtocol` は Phase 3-C で同じ DataModule に載っている。オンラインの `Dfn3IndexSampler`、`Dfn3Protocol`、`SemambaProtocol` は Phase 3-D で同じ DataModule に載っている。world size 2 の正式受け入れ、動的 Sampler は未実装である。構成の理由は [DATA_ARCHITECTURE.md](DATA_ARCHITECTURE.md)。Phase 2 まで実装済みの `TensorPairData` はこの契約の合成データ実装として残り、メソッドの意味は変えない。
 
 利用者は `SnapshotDataModule` と、YAML に書く Source / Sampler / Protocol / Batcher だけを触る。純関数のモジュールパスは component 間の API であり、実験 YAML のクラス名には出さない。`_crop` のような先頭が `_` の関数は、Phase 3-B で公開名の委譲を足すまで、新コードから呼ばない。
 
@@ -118,7 +118,7 @@ Sample と Realization:
 }
 ```
 
-`ref` は `sample_id`、`realization_id`、`index`、`case_id`、crop の 3 整数または null、chunk の start / stop または null である。`ranks` の長さは world size で、添字が rank である。各プロセスが全 rank の列を計算して同じ digest を得る。`update_index`、worker 数、prefetch、device は入れない。
+`ref` は `sample_id`、`realization_id`、`index`、`case_id`、crop の 3 整数または null、chunk の start / stop または null である。`split` と描画用の epoch は `ref` に入れない。`ranks` の長さは world size で、添字が rank である。各プロセスが全 rank の列を計算して同じ digest を得る。`update_index`、worker 数、prefetch、device は入れない。オンラインの dataset、sampling factor、発話キーが epoch で変わるかは、新しいトップレベルキーではなく `order_params` に入れる。トップレベルを足すと固定ペアと chunk の hash が変わる。固定ペアの `order_parameters` は `order_params` だけを返す。
 
 重み表の digest も `ids.digest` である。小数はレシピと同じ 6 桁へ丸まる。Phase 3-F で重みを導入するとき、試験ベクトルはこの正規化のあとで固定する。
 
@@ -250,10 +250,10 @@ chunk と DFN3 は `locate` を持たない。座標と添字は、それぞれ�
 | `fixed_pair.mp_senet` | rank 0 の呼び出しが全件。他 rank は空の iterator | `full_length`。crop 無し。realization の crop 部分は `full` |
 | `fixed_pair.mossformergan_se_16k` | `rank_mod_fixed_v1` の sampler epoch 0 | 窓は学習 `epoch` の `locate` |
 | `pregenerated.*` | `plan_chunk_epoch` を `shuffle=False`、`num_samples=None` で呼び、この rank の span | 保存済み realization の切り出し |
-| `online.dfn3` | `plan_online_epoch` を world size 1 として全件。呼び出し rank が 0 のときだけ返す | 波形の epoch key は 0。並びの seed には引数 `epoch` を入れる |
+| `online.dfn3` | `plan_online_epoch` を world size 1 として全件。呼び出し rank が 0 のときだけ返す | 波形の epoch key は 0。並びの seed には引数 `epoch` を入れる。整数の `sampling_factor` では発話キーも epoch 0。非整数では既存の `speech_key_positions` が検証 epoch で発話を入れ替える |
 | `online.semambapp_gsr` | 素材順の全件。rank 0 だけが返す | epoch key は 0 |
 
-空の iterator はエラーではない。Trainer がどの rank で検証を呼ぶかは Trainer の責務である。Phase 3-B は固定ペアの 2 行を実装した。Phase 3-C は `pregenerated.*` の行を実装した。オンラインの行は Phase 3-D の受け入れに残す。
+空の iterator はエラーではない。Trainer がどの rank で検証を呼ぶかは Trainer の責務である。Phase 3-B は固定ペアの 2 行を実装した。Phase 3-C は `pregenerated.*` の行を実装した。Phase 3-D はオンラインの 2 行を実装した。整数因子の検証波形は epoch が違っても index ごとに最大絶対誤差 0 である。非整数因子の発話キーは epoch で変わる。これは既存関数に合わせた結果で、波形一致の測定は整数因子で行った。
 
 ## 内部だけの API
 

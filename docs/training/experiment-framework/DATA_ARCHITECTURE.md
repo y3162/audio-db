@@ -1,6 +1,6 @@
 # Data System の構成
 
-Phase 3-A の採用案である。固定ペアは Phase 3-B、chunk は Phase 3-C で実装した。オンライン、DDP の data 検証、動的 Sampler は未実装である。根拠の調査は [PHASE_3A_DATA_AUDIT.md](PHASE_3A_DATA_AUDIT.md)。公開メソッドの契約は [DATA_PUBLIC_API.md](DATA_PUBLIC_API.md)。実装順は [DATA_MIGRATION_PLAN.md](DATA_MIGRATION_PLAN.md)。検証記録は [PHASE_3B_FIXED_PAIR.md](PHASE_3B_FIXED_PAIR.md) と [PHASE_3C_CHUNK.md](PHASE_3C_CHUNK.md)。
+Phase 3-A の採用案である。固定ペアは Phase 3-B、chunk は Phase 3-C、オンラインは Phase 3-D で実装した。DDP の data 検証、動的 Sampler は未実装である。根拠の調査は [PHASE_3A_DATA_AUDIT.md](PHASE_3A_DATA_AUDIT.md)。公開メソッドの契約は [DATA_PUBLIC_API.md](DATA_PUBLIC_API.md)。実装順は [DATA_MIGRATION_PLAN.md](DATA_MIGRATION_PLAN.md)。検証記録は [PHASE_3B_FIXED_PAIR.md](PHASE_3B_FIXED_PAIR.md)、[PHASE_3C_CHUNK.md](PHASE_3C_CHUNK.md)、[PHASE_3D_ONLINE.md](PHASE_3D_ONLINE.md)。
 
 ## 旧方針からの変更
 
@@ -101,7 +101,7 @@ Transform という独立クラスは置かない。固定ペアのリサンプ�
 
 ### 依存の向き
 
-許す import は次だけである。Phase 3-B は固定ペアに必要な `snapshot_reader`、順序、crop、描画、来歴、`ids.digest` を import した。Phase 3-C はこれに `pipeline.chunking` の `plan_chunk_epoch`、`chunk_case_length`、MS-SNSD と DNS の realization 描画を足した。オンラインの関数は 3-D まで import しない。
+許す import は次だけである。Phase 3-B は固定ペアに必要な `snapshot_reader`、順序、crop、描画、来歴、`ids.digest` を import した。Phase 3-C はこれに `pipeline.chunking` の `plan_chunk_epoch`、`chunk_case_length`、MS-SNSD と DNS の realization 描画を足した。Phase 3-D は `plan_online_epoch`、`speech_key_positions`、両 protocol の `sample_seed`、`render_mixture`、`render_example`、`rank_order` を import した。オンライン供給クラスは作らない。
 
 - `src.experiments.data` は `snapshot_reader`、`pipeline.store`、`pipeline.order`、`pipeline.seeds`、`pipeline.renderer`、`pipeline.planner` の crop 公開関数、`pipeline.chunking`、`pipeline.online_dfn3` の計画関数、`protocols/online_dfn3`、`protocols/online_semamba`、両 build の `render_realization`、`ids.digest` を呼んでよい。
 - `src.experiments.data` は `src.reproduction.db`、DuckDB、`src.training` の Trainer、`src.se`、`src.asr`、`src.evaluation` を import しない。

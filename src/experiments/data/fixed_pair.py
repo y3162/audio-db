@@ -7,6 +7,7 @@ does not open DuckDB and does not construct ``ReproductionTrainingData``.
 from __future__ import annotations
 
 import json
+import logging
 import threading
 from collections.abc import Iterator, Mapping, Sequence
 from dataclasses import dataclass, replace
@@ -216,12 +217,20 @@ class SnapshotSource:
 
 
 class OrderSampler:
-    """Flat fixed-pair order. Crop coordinates come from the protocol."""
+    """Rank order for a fixed pair or for SEMamba++ speech indexes.
 
-    def __init__(self, source: SnapshotSource, protocol: FixedPairProtocol, seed: int = 0) -> None:
+    Fixed-pair rows call ``protocol.locate``. Online SEMamba++ rows do not.
+    """
+
+    def __init__(self, source: SnapshotSource, protocol: FixedPairProtocol, seed: int = 0, global_batch: int | None = None) -> None:
         self.source = source
         self.protocol = protocol
         self.seed = _non_negative("seed", seed)
+        self.global_batch = None if global_batch is None else _positive("global_batch", global_batch)
+        self._bound_world: int | None = None
+        self._micro_batch: int | None = None
+        self._group_size: int | None = None
+        self._batch_warning: str | None = None
 
     def policy(self, world_size: int) -> str:
         rule = self.source.dataset().get("rule_json")
@@ -229,13 +238,118 @@ class OrderSampler:
             raise DataError("snapshot rule has no order")
         return _call(resolve_order_policy, rule["order"], world_size)
 
+    def order_parameters(self) -> dict[str, Any]:
+        """Permutation parameters. Fixed-pair returns the existing ``order_params`` dict."""
+
+        if self._bound_world is None:
+            raise DataError("order sampler has no world size")
+        recorded = dict(_call(order_params, self.policy(self._bound_world), self.seed))
+        if self._supply() != "online_semamba":
+            return recorded
+        recorded["dataset_id"] = str(self.source.dataset().get("dataset_id"))
+        recorded["group_size"] = self._group_size
+        recorded["micro_batch"] = self._micro_batch
+        return recorded
+
+    def bind_batch(self, batcher: object, world_size: int) -> None:
+        """Record the batch the DataModule will apply. Fixed pairs are unchanged."""
+
+        if isinstance(world_size, bool) or not isinstance(world_size, int) or world_size < 1:
+            raise DataError("world_size must be a positive integer")
+        self._bound_world = world_size
+        if self._supply() != "online_semamba":
+            return
+        self.protocol.seed = self.seed  # type: ignore[attr-defined]
+        group_size = getattr(batcher, "group_size", None)
+        micro_batch = getattr(batcher, "micro_batch", None)
+        if isinstance(group_size, bool) or not isinstance(group_size, int) or group_size < 1:
+            raise DataError("group_size must be a positive integer")
+        if isinstance(micro_batch, bool) or not isinstance(micro_batch, int) or micro_batch < 1:
+            raise DataError("micro_batch must be a positive integer")
+        effective = micro_batch * world_size * group_size
+        if self.global_batch is not None and self.global_batch != effective:
+            raise DataError(
+                f"global_batch {self.global_batch} does not equal "
+                f"micro_batch * world_size * group_size ({effective})"
+            )
+        self._micro_batch = micro_batch
+        self._group_size = group_size
+        shipped = int(self._rule()["global_batch"])
+        if effective != shipped:
+            self._batch_warning = (
+                f"warning: global_batch_size {effective} differs from the shipped batch {shipped}"
+            )
+        else:
+            self._batch_warning = None
+
+    def batch_warning(self) -> str | None:
+        return self._batch_warning
+
+    def validation_ranks(self, epoch: int, world_size: int) -> tuple[tuple[SampleRef, ...], ...]:
+        """SEMamba++ validation is speech order on rank 0. It is not the training shuffle."""
+
+        if self._supply() != "online_semamba":
+            raise DataError("validation_ranks on OrderSampler is only for online SEMamba++")
+        if isinstance(epoch, bool) or not isinstance(epoch, int) or epoch < 0:
+            raise DataError("epoch must be a non-negative integer")
+        if isinstance(world_size, bool) or not isinstance(world_size, int) or world_size < 1:
+            raise DataError("world_size must be a positive integer")
+        count = self.protocol.material_count("valid")  # type: ignore[attr-defined]
+        rows = tuple(
+            self.protocol.reference(index, epoch, "valid")  # type: ignore[attr-defined]
+            for index in range(count)
+        )
+        return tuple(rows if rank == 0 else () for rank in range(world_size))
+
+    def validation_batch(self) -> tuple[int, bool, int]:
+        """Validation width, keep the tail, and do not apply the training group drop."""
+
+        if self._supply() != "online_semamba":
+            raise DataError("validation_batch on OrderSampler is only for online SEMamba++")
+        width = int(self._rule()["validation"]["batch"])
+        if width < 1:
+            raise DataError("validation batch must be positive")
+        return width, True, 1
+
     def sequence(self, epoch: int, rank: int, world_size: int) -> tuple[SampleRef, ...]:
         return self._sequence(epoch, rank, world_size)
 
     def all_ranks(self, epoch: int, world_size: int) -> tuple[tuple[SampleRef, ...], ...]:
         return tuple(self._sequence(epoch, rank, world_size) for rank in range(world_size))
 
+    def _supply(self) -> str:
+        return str(getattr(self.protocol, "supply", "fixed_pair"))
+
+    def _rule(self) -> Mapping[str, Any]:
+        rule = self.source.dataset().get("rule_json")
+        if not isinstance(rule, dict):
+            raise DataError("snapshot rule_json is missing")
+        return rule
+
     def _sequence(self, epoch: int, rank: int, world_size: int) -> tuple[SampleRef, ...]:
+        if self._supply() == "online_semamba":
+            return self._speech_sequence(epoch, rank, world_size)
+        if self._supply() != "fixed_pair":
+            raise DataError(f"OrderSampler cannot order supply {self._supply()}")
+        return self._fixed_sequence(epoch, rank, world_size)
+
+    def _speech_sequence(self, epoch: int, rank: int, world_size: int) -> tuple[SampleRef, ...]:
+        count = self.protocol.material_count(self.source.split)  # type: ignore[attr-defined]
+        positions = _call(
+            rank_order,
+            self.policy(world_size),
+            count,
+            seed=self.seed,
+            epoch=epoch,
+            world_size=world_size,
+            rank=rank,
+        )
+        return tuple(
+            self.protocol.reference(int(position), epoch, self.source.split)  # type: ignore[attr-defined]
+            for position in positions
+        )
+
+    def _fixed_sequence(self, epoch: int, rank: int, world_size: int) -> tuple[SampleRef, ...]:
         slot = f"{self.source.split}.cases"
         case_ids = self.source.case_ids(slot)
         policy = self.policy(world_size)
@@ -356,22 +470,15 @@ class FixedPairProtocol:
 class MicroBatcher:
     """Pack one rank's sample list into micro-batches. It does not shard ranks."""
 
-    def __init__(self, micro_batch: int, group_size: int) -> None:
+    def __init__(self, micro_batch: int, group_size: int, keep_partial: bool = False) -> None:
+        if not isinstance(keep_partial, bool):
+            raise ValueError("keep_partial must be a boolean")
         self.micro_batch = _positive("micro_batch", micro_batch)
         self.group_size = _positive("group_size", group_size)
+        self.keep_partial = keep_partial
 
     def groups(self, samples: Sequence[SampleRef]) -> tuple[tuple[SampleRef, ...], ...]:
-        rows = tuple(samples)
-        if not rows:
-            raise DataError("epoch sample list is empty")
-        width = self.micro_batch
-        packed = [rows[start : start + width] for start in range(0, len(rows) - len(rows) % width, width)]
-        if not packed:
-            raise DataError("epoch does not contain a full micro-batch")
-        keep = len(packed) - (len(packed) % self.group_size)
-        if keep < 1:
-            raise DataError("epoch does not contain a full update group")
-        return tuple(packed[:keep])
+        return _group_samples(samples, self.micro_batch, self.group_size, self.keep_partial)
 
     def collate(self, rendered: Sequence[tuple[np.ndarray, np.ndarray, int, SampleRef]]) -> Batch:
         if not rendered:
@@ -458,6 +565,7 @@ class SnapshotDataModule:
         self._lock = threading.Lock()
         self._thread: threading.Thread | None = None
         self._prefetch_error: BaseException | None = None
+        self._batch_warned = False
 
     @property
     def group_size(self) -> int:
@@ -534,7 +642,16 @@ class SnapshotDataModule:
         if isinstance(epoch, bool) or not isinstance(epoch, int) or epoch < 0:
             raise StateError(f"epoch {epoch!r} is not a valid index")
         validation_ranks = getattr(self.sampler, "validation_ranks", None)
-        if callable(validation_ranks):
+        supply = getattr(self.protocol, "supply", "fixed_pair")
+        if callable(validation_ranks) and supply in {"online_dfn3", "online_semamba"}:
+            self._bind_sampler()
+            samples = validation_ranks(epoch, self.world_size)[self.rank]
+            if not samples:
+                return iter(())
+            width, keep_partial, group_size = self.sampler.validation_batch()
+            grouped = _group_samples(samples, width, group_size, keep_partial)
+            return iter(self._collate(group) for group in grouped)
+        if callable(validation_ranks) and supply == "chunk":
             self._bind_sampler()
             grouped = self.batcher.groups(validation_ranks(epoch, self.world_size)[self.rank])
             return iter(self._collate(group) for group in grouped)
@@ -705,6 +822,22 @@ class SnapshotDataModule:
             prepare = getattr(self.protocol, "prepare", None)
             if callable(prepare):
                 prepare()
+        elif supply == "online_dfn3":
+            if algorithm != "online.dfn3":
+                raise DataError(f"DeepFilterNet3 protocol cannot read algorithm {algorithm}")
+            self._bind_sampler()
+            self._warn_batch_once()
+            prepare = getattr(self.protocol, "prepare", None)
+            if callable(prepare):
+                prepare()
+        elif supply == "online_semamba":
+            if algorithm != "online.semambapp_gsr":
+                raise DataError(f"SEMamba protocol cannot read algorithm {algorithm}")
+            self._bind_sampler()
+            self._warn_batch_once()
+            prepare = getattr(self.protocol, "prepare", None)
+            if callable(prepare):
+                prepare()
         elif supply == "fixed_pair":
             if not algorithm.startswith("fixed_pair."):
                 raise DataError(f"fixed-pair protocol cannot read algorithm {algorithm}")
@@ -723,6 +856,15 @@ class SnapshotDataModule:
         bind = getattr(self.sampler, "bind_batch", None)
         if callable(bind):
             bind(self.batcher, self.world_size)
+
+    def _warn_batch_once(self) -> None:
+        if self.rank != 0 or self._batch_warned:
+            return
+        warning = getattr(self.sampler, "batch_warning", None)
+        message = warning() if callable(warning) else None
+        self._batch_warned = True
+        if message:
+            logging.getLogger("src.experiments.data").warning("%s", message)
 
     def _accept_runtime(self, runtime: object) -> None:
         world_size = getattr(runtime, "world_size", 1)
@@ -799,6 +941,36 @@ def _validation_sample(sample: PlannedRef, epoch: int) -> SampleRef:
         case_id=case_id,
         crop=crop,
     )
+
+
+def _group_samples(
+    samples: Sequence[SampleRef],
+    micro_batch: int,
+    group_size: int,
+    keep_partial: bool,
+) -> tuple[tuple[SampleRef, ...], ...]:
+    """Pack one rank. Incomplete micro-batches are dropped unless ``keep_partial``."""
+
+    rows = tuple(samples)
+    if not rows:
+        raise DataError("epoch sample list is empty")
+    if isinstance(micro_batch, bool) or not isinstance(micro_batch, int) or micro_batch < 1:
+        raise DataError("micro_batch must be a positive integer")
+    if isinstance(group_size, bool) or not isinstance(group_size, int) or group_size < 1:
+        raise DataError("group_size must be a positive integer")
+    if keep_partial:
+        packed = [rows[start : start + micro_batch] for start in range(0, len(rows), micro_batch)]
+    else:
+        packed = [
+            rows[start : start + micro_batch]
+            for start in range(0, len(rows) - len(rows) % micro_batch, micro_batch)
+        ]
+    if not packed:
+        raise DataError("epoch does not contain a full micro-batch")
+    keep = len(packed) - (len(packed) % group_size)
+    if keep < 1:
+        raise DataError("epoch does not contain a full update group")
+    return tuple(packed[:keep])
 
 
 def _fit(wave: np.ndarray, width: int) -> np.ndarray:

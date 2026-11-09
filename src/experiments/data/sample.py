@@ -30,6 +30,8 @@ class SampleRef:
     case_id: str | None = None
     crop: Crop | None = None
     chunk: ChunkSpan | None = None
+    split: str | None = None
+    plan_epoch: int | None = None
 
 
 @dataclass(frozen=True)

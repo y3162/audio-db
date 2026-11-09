@@ -22,6 +22,7 @@ from src.reproduction.paths import (
     DEFAULT_SNAPSHOTS,
 )
 from src.reproduction.pipeline.assemble import assemble
+from src.reproduction.pipeline.clips import SemambaClip as _AssetClip
 from src.reproduction.pipeline.loader import GroupLoader
 from src.reproduction.pipeline.order import order_params, rank_order
 from src.reproduction.pipeline.provenance import snapshot_provenance_parts
@@ -38,24 +39,6 @@ from src.reproduction.protocols.online_semamba import (
 from src.reproduction.snapshot_reader import load_snapshot
 
 POLICY = "per_rank_independent_v1"
-
-
-class _AssetClip:
-    def __init__(self, store: AssetStore, asset_id: str) -> None:
-        row = store.asset(asset_id)
-        self.asset_id = asset_id
-        self.sample_rate = int(row["sample_rate"])
-        self.path = store.path(asset_id)
-
-    def read(self) -> np.ndarray:
-        import librosa
-
-        audio, rate = librosa.load(self.path, sr=SAMPLE_RATE, mono=True)
-        if int(rate) != SAMPLE_RATE:
-            raise ReproductionError(f"{self.asset_id} did not load at 16000 Hz")
-        if audio.size < 1:
-            raise ReproductionError(f"{self.asset_id} is empty")
-        return np.asarray(audio, dtype=np.float64)
 
 
 class OnlineSemambaTrainingData:
