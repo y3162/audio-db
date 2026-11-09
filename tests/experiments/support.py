@@ -424,3 +424,22 @@ class CudaConsumeTrainer:
 
     def __getattr__(self, name: str) -> object:
         return getattr(self._trainer, name)
+
+
+class IdentityWave(nn.Module):
+    """Passes a waveform through. ``anchor`` gives the optimizer one parameter."""
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.anchor = nn.Parameter(torch.zeros(()))
+
+    def forward(self, inputs: torch.Tensor) -> torch.Tensor:
+        return inputs + self.anchor
+
+
+class BoomLoss(nn.Module):
+    """Raises on the first forward so lifecycle tests can leave the run."""
+
+    def forward(self, prediction: torch.Tensor, target: torch.Tensor) -> torch.Tensor:
+        del prediction, target
+        raise RuntimeError("boom")

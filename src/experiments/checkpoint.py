@@ -26,6 +26,7 @@ from typing import Any, Literal
 import torch
 
 from src.experiments.config import ExperimentConfig, config_sha256
+from src.experiments.data.identity import comparable_identity
 from src.experiments.errors import CheckpointError, ExperimentError, StateError
 from src.training.errors import TrainingError
 from src.experiments.registry import StateRegistry
@@ -422,7 +423,7 @@ def _validate_payload(
             raise CheckpointError("resume from a different directory is not supported")
         if payload.get("config_sha256") != config_sha256(config):
             raise CheckpointError("checkpoint config identity does not match this experiment")
-        if payload.get("dataset_identity") != _dataset_identity(config, components):
+        if not _dataset_identities_match(payload.get("dataset_identity"), _dataset_identity(config, components)):
             raise CheckpointError("checkpoint dataset identity does not match this experiment")
         if payload.get("provenance_sha256") is not None:
             raise CheckpointError("checkpoint provenance does not match this experiment")
@@ -488,7 +489,16 @@ def _require_plan_hashes(payload: dict[str, Any], states: StateRegistry) -> None
             continue
         blob = blobs[state_id]
         saved = blob.get("plan_hash") if isinstance(blob, dict) else None
-        live = getattr(owner.target, "plan_hash", None)
+        recompute = getattr(owner.target, "plan_hash_for_state", None)
+        if callable(recompute) and isinstance(blob, dict):
+            try:
+                live = recompute(blob)
+            except StateError:
+                raise
+            except ExperimentError as exc:
+                raise CheckpointError(f"data plan_hash does not match state {state_id}: {exc}") from exc
+        else:
+            live = getattr(owner.target, "plan_hash", None)
         if not isinstance(saved, str) or saved != live:
             raise CheckpointError(f"data plan_hash does not match state {state_id}")
 
@@ -504,6 +514,26 @@ def _dataset_identity(config: ExperimentConfig, components: Any) -> dict[str, An
     if not found:
         return None
     return found
+
+
+def _dataset_identities_match(saved: object, live: object) -> bool:
+    """Compare dataset identity without display-only snapshot fields.
+
+    ``TensorPairData`` identities have no ``dataset_id``, so they stay on
+    full equality. Snapshot identities ignore ``dataset_name`` and
+    ``dataset_version`` and still require the dataset id and snapshot hash.
+    """
+
+    return _comparable_dataset_identity(saved) == _comparable_dataset_identity(live)
+
+
+def _comparable_dataset_identity(value: object) -> object:
+    if not isinstance(value, dict):
+        return value
+    converted: dict[str, Any] = {}
+    for key, item in value.items():
+        converted[str(key)] = comparable_identity(item) if isinstance(item, dict) else item
+    return converted
 
 
 def _trainer_blob(states: StateRegistry, blobs: dict[str, Any]) -> dict[str, Any] | None:

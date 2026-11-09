@@ -1,6 +1,6 @@
 # Data System の受け入れ
 
-Phase 3-A では試験を追加しない。この表は 3-B 以降の実装が、何を測れば完了と書いてよいかを固定する。未実行の行を成功と書かない。skip は成功ではない。公式リポジトリとの一致は、この表の期待に含まれない。
+Phase 3-A では試験を追加しない。この表は 3-B 以降の実装が、何を測れば完了と書いてよいかを固定する。未実行の行を成功と書かない。skip は成功ではない。公式リポジトリとの一致は、この表の期待に含まれない。固定ペアの Phase 3-B で測った行と、測っていない行は [PHASE_3B_FIXED_PAIR.md](PHASE_3B_FIXED_PAIR.md) に分けて記録する。
 
 方法の「合成 snapshot」は、`tests/reproduction` が既に使っている小さな fixture を読む。新しい大規模データの生成はしない。`resource.duckdb` と `reproduction.duckdb` は開かない。
 

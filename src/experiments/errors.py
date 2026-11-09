@@ -33,3 +33,7 @@ class CheckpointError(ExperimentError):
 
 class RuntimeFailure(ExperimentError):
     """A learning step cannot continue without diverging across ranks."""
+
+
+class DataError(ExperimentError):
+    """A snapshot, sampler, or batch specification cannot supply this run."""

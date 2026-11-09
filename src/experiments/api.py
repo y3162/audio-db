@@ -54,6 +54,7 @@ class Experiment:
         self._checkpoint: CheckpointManager | None = None
         self._runtime: object | None = None
         self._running = False
+        self._partial_components: object | None = None
 
     def build(self) -> Experiment:
         """Construct, prepare, and register state. A second call is an error."""
@@ -64,12 +65,14 @@ class Experiment:
             raise StateError("experiment is closed")
         runtime = _create_runtime(self.config)
         self._runtime = runtime
+        builder = ExperimentBuilder()
         try:
             self._open_directory(runtime)
-            self._graph = ExperimentBuilder().build(self.config, runtime)
+            self._graph = builder.build(self.config, runtime)
             if self._checkpoint is not None:
                 self._checkpoint.attach(self.config, self._graph)
         except Exception:
+            self._partial_components = builder.components
             self._mark_failed()
             raise
         self._built = True
@@ -151,11 +154,15 @@ class Experiment:
             return
         self._closed = True
         graph = self._graph
-        if graph is not None:
+        registry = graph.components if graph is not None else self._partial_components
+        if registry is not None:
             for component_id, spec in self.config.components.items():
                 if spec.ref is not None or spec.role != "data":
                     continue
-                component = graph.components.get(component_id)
+                try:
+                    component = registry.get(component_id)  # type: ignore[attr-defined]
+                except BuildError:
+                    continue
                 close = getattr(component, "close", None)
                 if callable(close):
                     close()

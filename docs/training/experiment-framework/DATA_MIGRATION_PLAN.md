@@ -40,7 +40,7 @@ Phase 3-A は文書だけである。`src/`、`tests/`、学習 YAML、`src/se/o
 | 段 | 実装 | 完了の見え方 |
 |---|---|---|
 | 3-A | このディレクトリの設計書。コードは無い | 本計画の文書が揃っている。この段はそれで完了 |
-| 3-B | `data.py` をパッケージへ移す。`SnapshotSource`、`OrderSampler`、`FixedPairProtocol`、`MicroBatcher`、`SnapshotDataModule`。固定ペアの world size 1。`StandardTrainer` の device 移動、`group_size` 検査、`close`。`DataError` | [DATA_ACCEPTANCE_CRITERIA.md](DATA_ACCEPTANCE_CRITERIA.md) の 3-B。GPU は使わない。現行 CLI のファイルは差分が無い |
+| 3-B | `data.py` をパッケージへ移す。`SnapshotSource`、`OrderSampler`、`FixedPairProtocol`、`MicroBatcher`、`SnapshotDataModule`。固定ペアの world size 1。`StandardTrainer` の device 移動と `group_size` 検査。`close` は `Experiment.close()`。`DataError` | [DATA_ACCEPTANCE_CRITERIA.md](DATA_ACCEPTANCE_CRITERIA.md) の 3-B。GPU は使わない。現行 CLI のファイルは差分が無い。記録は [PHASE_3B_FIXED_PAIR.md](PHASE_3B_FIXED_PAIR.md) |
 | 3-C | `ChunkSampler` と `ChunkProtocol`。MS-SNSD と DNS は描画関数の選択だけが違う。world size 1 の短い `num_samples_per_epoch` | chunk の受け入れ。公式規模の 360,000 件は走らせない |
 | 3-D | `Dfn3IndexSampler`、`Dfn3Protocol`、`SemambaProtocol`。world size 1。`group_size` の規則は公開 API のとおり | オンラインの受け入れ。公式素材の blocked dataset は開かない |
 | 3-E | world size 2。検証分担。prefetch スレッド。worker 数を変えても realization が同じこと | DDP の受け入れ。NCCL の試験は Phase 2-C の GPU 条件に従い、使用メモリが 1024 MiB 未満の GPU だけを使う。CPU の Gloo で足りる項目は GPU を使わない |

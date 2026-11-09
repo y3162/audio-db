@@ -12,7 +12,7 @@ Phase 1 の公開入口、Phase 2-A の CPU checkpoint、Phase 2-B の CPU / Glo
 | `StateError` | 二重登録、未登録 ID、`resume` と現在グラフの状態 ID 不一致 |
 | `CheckpointError` | 形式違い、原子的保存の検証失敗、world size 不一致、破損 |
 | `RuntimeFailure` | rank 間で skip が一致しない、AMP の段取り違反。組み込み `RuntimeError` とは別名 |
-| `DataError` | snapshot や batch 仕様が供給できない。Phase 3-B で `errors.py` に足す。Phase 3-A の時点では未実装 |
+| `DataError` | snapshot や batch 仕様が供給できない。`src.experiments.errors.DataError`。`setup` の失敗は Builder が `BuildError` で包む |
 
 ## CLI
 

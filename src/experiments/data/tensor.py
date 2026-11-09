@@ -11,21 +11,11 @@ block by rank. A second sampler must not shard the same pairs again.
 from __future__ import annotations
 
 import hashlib
-from dataclasses import dataclass
 
 import torch
 
+from src.experiments.data.sample import Batch
 from src.experiments.errors import StateError
-
-
-@dataclass(frozen=True)
-class Batch:
-    """One collated micro-batch."""
-
-    inputs: torch.Tensor
-    targets: torch.Tensor
-    sample_id: str
-    realization_id: str
 
 
 class EpochView:

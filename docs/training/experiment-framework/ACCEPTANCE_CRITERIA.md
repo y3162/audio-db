@@ -1,6 +1,6 @@
 # 受け入れ基準
 
-Phase 1、Phase 2-A の CPU checkpoint、Phase 2-B の CPU / Gloo DDP、Phase 2-C の CUDA / NCCL / AMP FP16 の試験は `tests/experiments/` にある。FSDP と AMP BF16 は未実装である。数値は [PHASE_2A_CHECKPOINT.md](PHASE_2A_CHECKPOINT.md)、[PHASE_2B_DDP.md](PHASE_2B_DDP.md)、[PHASE_2C_CUDA_AMP.md](PHASE_2C_CUDA_AMP.md)。音声 Data System の受け入れは [DATA_ACCEPTANCE_CRITERIA.md](DATA_ACCEPTANCE_CRITERIA.md) で、Phase 3-A では未実施である。
+Phase 1、Phase 2-A の CPU checkpoint、Phase 2-B の CPU / Gloo DDP、Phase 2-C の CUDA / NCCL / AMP FP16 の試験は `tests/experiments/` にある。固定ペア Data System の Phase 3-B も同じディレクトリの `test_fixed_pair_data.py` にある。FSDP と AMP BF16 は未実装である。数値は [PHASE_2A_CHECKPOINT.md](PHASE_2A_CHECKPOINT.md)、[PHASE_2B_DDP.md](PHASE_2B_DDP.md)、[PHASE_2C_CUDA_AMP.md](PHASE_2C_CUDA_AMP.md)、[PHASE_3B_FIXED_PAIR.md](PHASE_3B_FIXED_PAIR.md)。音声 Data System の受け入れ表は [DATA_ACCEPTANCE_CRITERIA.md](DATA_ACCEPTANCE_CRITERIA.md)。Phase 3-B が測ったのはその表の固定ペア行である。
 
 既存テストのパスは、この設計作業では実行していない。回帰行は将来の Phase で実行する条件である。
 

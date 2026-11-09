@@ -1,6 +1,6 @@
 # Data System 公開 API
 
-Phase 3-A の契約である。コードはまだ無い。構成の理由は [DATA_ARCHITECTURE.md](DATA_ARCHITECTURE.md)。Phase 2 まで実装済みの `TensorPairData` はこの契約の合成データ実装として残り、メソッドの意味は変えない。
+Phase 3-A の契約である。固定ペアの Source、Sampler、Protocol、Batcher、`SnapshotDataModule` は Phase 3-B で `src/experiments/data/` にある。chunk、オンライン、world size 2 の正式受け入れ、動的 Sampler は未実装である。構成の理由は [DATA_ARCHITECTURE.md](DATA_ARCHITECTURE.md)。Phase 2 まで実装済みの `TensorPairData` はこの契約の合成データ実装として残り、メソッドの意味は変えない。
 
 利用者は `SnapshotDataModule` と、YAML に書く Source / Sampler / Protocol / Batcher だけを触る。純関数のモジュールパスは component 間の API であり、実験 YAML のクラス名には出さない。`_crop` のような先頭が `_` の関数は、Phase 3-B で公開名の委譲を足すまで、新コードから呼ばない。
 
@@ -253,7 +253,7 @@ chunk と DFN3 は `locate` を持たない。座標と添字は、それぞれ�
 | `online.dfn3` | `plan_online_epoch` を world size 1 として全件。呼び出し rank が 0 のときだけ返す | 波形の epoch key は 0。並びの seed には引数 `epoch` を入れる |
 | `online.semambapp_gsr` | 素材順の全件。rank 0 だけが返す | epoch key は 0 |
 
-空の iterator はエラーではない。Trainer がどの rank で検証を呼ぶかは Trainer の責務である。Phase 3-B は MP-SENet の検証だけを実装する。他の行は、その protocol を実装する Phase の受け入れに入れる。
+空の iterator はエラーではない。Trainer がどの rank で検証を呼ぶかは Trainer の責務である。Phase 3-B は固定ペアの 2 行、MP-SENet と MossFormerGAN の検証を実装する。chunk とオンラインの行は、その protocol を実装する Phase の受け入れに入れる。
 
 ## 内部だけの API
 
@@ -273,7 +273,7 @@ chunk と DFN3 は `locate` を持たない。座標と添字は、それぞれ�
 3. Trainer が `train_epoch` を得る。計画は `SampleRef` の列で、波形はまだ無い。
 4. `batch(i)` が描画と collation を CPU で行う。prefetch が次の添字を先に描いても、`update_index` は Trainer が書き込むまで進まない。
 5. checkpoint は DataModule の `state_dict` だけを data 状態として書く。
-6. `close` は実行の finally で Trainer が呼ぶ。Phase 3-B で `StandardTrainer` の finally に足す。現在の Trainer は `close` を呼んでいない。未実装のまま新しいファイルハンドルを開かない。
+6. `close` は `Experiment.close()` だけが呼ぶ。正常終了、例外、preflight 後、`setup` 失敗、Builder が完成グラフを返す前の失敗、二重 close をこの一箇所で扱う。`StandardTrainer` は DataModule を閉じない。構築途中で失敗したときは、Builder が保持する部分レジストリを Experiment が閉じる。
 
 `initialize_from` は data の `update_index` を戻さない。現行の initialize 契約のまま、データ位置は初期値である。
 

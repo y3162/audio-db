@@ -1,6 +1,6 @@
 # Data System の構成
 
-Phase 3-A の採用案である。実装は無い。根拠の調査は [PHASE_3A_DATA_AUDIT.md](PHASE_3A_DATA_AUDIT.md)。公開メソッドの契約は [DATA_PUBLIC_API.md](DATA_PUBLIC_API.md)。実装順は [DATA_MIGRATION_PLAN.md](DATA_MIGRATION_PLAN.md)。
+Phase 3-A の採用案である。固定ペアは Phase 3-B で実装した。chunk、オンライン、DDP の data 検証、動的 Sampler は未実装である。根拠の調査は [PHASE_3A_DATA_AUDIT.md](PHASE_3A_DATA_AUDIT.md)。公開メソッドの契約は [DATA_PUBLIC_API.md](DATA_PUBLIC_API.md)。実装順は [DATA_MIGRATION_PLAN.md](DATA_MIGRATION_PLAN.md)。検証記録は [PHASE_3B_FIXED_PAIR.md](PHASE_3B_FIXED_PAIR.md)。
 
 ## 旧方針からの変更
 
@@ -93,7 +93,7 @@ flowchart TD
 | `Dfn3Protocol` | `render_mixture`。1 呼び出しが 3 秒の混合 | reverb や SNR を別 Transform に分けること |
 | `SemambaProtocol` | `render_example`。1 呼び出しが劣化と peak 正規化と窓 | 劣化段の YAML 列 |
 | `MicroBatcher` | rank 内の `SampleRef` 列を micro-batch に区切る。描画後に末尾 0 で揃える | rank 間の再分割、Optimizer |
-| `SnapshotDataModule` | 上記を組み立て、`train_epoch`、`state_dict`、検証、close を Trainer に出す | device 上の全データ常駐、DuckDB、`state_dict` 以外の再開入口 |
+| `SnapshotDataModule` | 上記を組み立て、`train_epoch`、`state_dict`、検証を公開する。`close` は `Experiment.close()` が呼ぶ | device 上の全データ常駐、DuckDB、`state_dict` 以外の再開入口 |
 
 `role: data` は `SnapshotDataModule` だけが持つ。Source、Sampler、Protocol、Batcher は `role: other` である。StateRegistry は `other` を保存しない。再開に必要なものは DataModule の `state_dict` に集約する。
 
@@ -101,7 +101,7 @@ Transform という独立クラスは置かない。固定ペアのリサンプ�
 
 ### 依存の向き
 
-許す import は次だけである。Phase 3-B でコードに入ったときに、`.agents/PROJECT.md` の現状節を更新する。Phase 3-A の時点では、この import はまだ無い。
+許す import は次だけである。Phase 3-B は固定ペアに必要な `snapshot_reader`、順序、crop、描画、来歴、`ids.digest` を import し、`.agents/PROJECT.md` の現状節を更新した。chunk とオンラインの関数は、3-C と 3-D まで import しない。
 
 - `src.experiments.data` は `snapshot_reader`、`pipeline.store`、`pipeline.order`、`pipeline.seeds`、`pipeline.renderer`、`pipeline.planner` の crop 公開関数、`pipeline.chunking`、`pipeline.online_dfn3` の計画関数、`protocols/online_dfn3`、`protocols/online_semamba`、両 build の `render_realization`、`ids.digest` を呼んでよい。
 - `src.experiments.data` は `src.reproduction.db`、DuckDB、`src.training` の Trainer、`src.se`、`src.asr`、`src.evaluation` を import しない。
@@ -114,7 +114,7 @@ Transform という独立クラスは置かない。固定ペアのリサンプ�
 
 波形の生成と collation は CPU である。`setup` はランクと world size を覚え、snapshot を開く。コーパス全体は GPU へ移さない。
 
-`StandardTrainer` は forward の前に、`inputs` と `targets` と `lengths` が `runtime.device` と違うときだけその device へ移す。Phase 3-B の実装項目であり、Phase 3-A ではコードを変えない。`TensorPairData.setup` が既に device 上へ置いたテンソルは、同じ device への移動で値は変わらない。
+`StandardTrainer` は forward の前に、`inputs` と `targets` と `lengths` が `runtime.device` と違うときだけその device へ移す。Phase 3-B で入れた。`TensorPairData.setup` が既に device 上へ置いたテンソルは、同じ device への移動で値は変わらない。
 
 prefetch は DataModule の内部スレッドが、次の micro-batch の CPU テンソルを描くことだけを許す。CUDA をそのスレッドから呼ばない。checkpoint には描いた配列を入れない。`state_dict` の `update_index` は、Trainer が消費を終えて書いた次の添字である。
 

@@ -49,14 +49,17 @@ class ExperimentBuilder:
 
     def __init__(self, factory: ComponentFactory | None = None) -> None:
         self._factory = factory or ComponentFactory()
+        self.components: ComponentRegistry | None = None
 
     def build(self, config: ExperimentConfig, runtime: ProcessRuntime) -> BuiltGraph:
         """Build through state registration. Do not run a learning step."""
 
+        self.components = None
         self._validate(config)
         set_determinism(config.deterministic, cuda=runtime.device.type == "cuda")
         _seed(config.seed)
         registry = ComponentRegistry()
+        self.components = registry
         for component_id, spec in config.components.items():
             if spec.ref is not None:
                 registry.add_alias(component_id, spec.ref)

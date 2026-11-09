@@ -1,6 +1,6 @@
 # Experiment Framework アーキテクチャ
 
-Phase 1、CPU / FP32 の checkpoint（Phase 2-A）、CPU / Gloo の DDP（Phase 2-B）、CUDA / NCCL / AMP FP16（Phase 2-C）は `src/experiments/` に実装済みである。FSDP、sharded checkpoint、AMP BF16、本格 SE 学習は未実装。Phase 2-A の単一プロセス復元は [PHASE_2A_CHECKPOINT.md](PHASE_2A_CHECKPOINT.md)、Phase 2-B の DDP と world size 2 の再開は [PHASE_2B_DDP.md](PHASE_2B_DDP.md)、Phase 2-C の CUDA と AMP は [PHASE_2C_CUDA_AMP.md](PHASE_2C_CUDA_AMP.md)。Data System の Phase 3-A は設計だけが採用済みで、コードは無い。供給 API は [DATA_ARCHITECTURE.md](DATA_ARCHITECTURE.md) と [DATA_PUBLIC_API.md](DATA_PUBLIC_API.md)。以下のうちデータ供給の配置は Phase 3-A で更新した。それ以外は Phase 0 の設計仕様であり、`src/training/` と `src/reproduction/` は変更しない。
+Phase 1、CPU / FP32 の checkpoint（Phase 2-A）、CPU / Gloo の DDP（Phase 2-B）、CUDA / NCCL / AMP FP16（Phase 2-C）は `src/experiments/` に実装済みである。固定ペアの Data System（Phase 3-B）も実装済みで、記録は [PHASE_3B_FIXED_PAIR.md](PHASE_3B_FIXED_PAIR.md)。FSDP、sharded checkpoint、AMP BF16、本格 SE 学習、chunk、オンライン供給、world size 2 の Data System 正式検証は未実装。Phase 2-A の単一プロセス復元は [PHASE_2A_CHECKPOINT.md](PHASE_2A_CHECKPOINT.md)、Phase 2-B の DDP と world size 2 の再開は [PHASE_2B_DDP.md](PHASE_2B_DDP.md)、Phase 2-C の CUDA と AMP は [PHASE_2C_CUDA_AMP.md](PHASE_2C_CUDA_AMP.md)。供給 API は [DATA_ARCHITECTURE.md](DATA_ARCHITECTURE.md) と [DATA_PUBLIC_API.md](DATA_PUBLIC_API.md)。以下のうちデータ供給の配置は Phase 3-A で更新し、固定ペアは Phase 3-B でコードにした。それ以外は Phase 0 の設計仕様であり、`src/training/` の学習ループは変更しない。`src/reproduction/pipeline/planner.py` には固定ペアの crop、長さ、pad、plan index の公開委譲だけを足し、式は変えていない。
 
 この文書の「現行」は、2026-11-08 に `feature/experiment-framework` のソースを読んだ事実である。「設計」は新しい枠組みの提案であり、現行コードにあるものとして扱わない。公式再現の数値的同等性は、この設計書では保証しない。
 
@@ -199,7 +199,7 @@ flowchart TD
 
 依存の向きは次だけを許す。
 
-- `experiments` は `se.build_model`、`asr` の推論ローダ、純粋な損失関数を呼んでよい。Data System の実装に入ってからは、`reproduction` の snapshot 読み取りと、順序・描画の純関数も呼んでよい。`reproduction.db` は呼んではならない。Phase 3-A の時点では、この import はまだ無い。
+- `experiments` は `se.build_model`、`asr` の推論ローダ、純粋な損失関数を呼んでよい。固定ペアの DataModule は `reproduction` の snapshot 読み取りと、順序・描画の純関数を呼ぶ。`reproduction.db` と DuckDB は呼んではならない。
 - `experiments` は現行 `Trainer` クラスを継承しない。
 - `se` と `asr` は `experiments` を知らない。`reproduction` も `experiments` を import しない。
 - 公式プロトコルの数値計算は `reproduction` の純関数に残す。`experiments` はその関数を呼ぶ。`ReproductionTrainingData` などの供給クラスは包まない。

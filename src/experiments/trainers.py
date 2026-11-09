@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import json
 import os
+from dataclasses import replace
 from pathlib import Path
 from typing import Any
 
@@ -118,6 +119,7 @@ class StandardTrainer:
             self.logical_step = 0
             self.optimizer_updates = {self.optimizer_id: 0}
             self.losses = []
+        self._require_group_size(component_id)
         runtime.barrier()
         while self.logical_step < self.max_logical_steps:
             if (
@@ -153,7 +155,7 @@ class StandardTrainer:
                 sample_ids.extend(batch.sample_id for batch in batches)
                 with runtime.sync_context([self.model], sync=sync):
                     with runtime.autocast():
-                        micro = self._forward_loss(batches, component_id)
+                        micro = self._forward_loss(batches, component_id, runtime)
                     micro = micro / self.accumulation
                     runtime.backward(micro)
                 detached = micro.detach()
@@ -233,11 +235,22 @@ class StandardTrainer:
 
         del runtime, checkpoint
 
-    def _forward_loss(self, batches: list[Batch], component_id: str) -> torch.Tensor:
+    def _require_group_size(self, component_id: str) -> None:
+        group_size = getattr(self.data, "group_size", None)
+        if group_size is None:
+            return
+        if group_size != self.accumulation:
+            raise RuntimeFailure(
+                f"component {component_id}: data group_size {group_size} "
+                f"does not match accumulation {self.accumulation}"
+            )
+
+    def _forward_loss(self, batches: list[Batch], component_id: str, runtime: ProcessRuntime) -> torch.Tensor:
         if not batches:
             raise RuntimeFailure(f"component {component_id}: empty micro-batch")
         total: torch.Tensor | None = None
         for batch in batches:
+            batch = _batch_on_device(batch, runtime.device)
             prediction = self.model.module(batch.inputs)
             value = self.loss(prediction, batch.targets)
             if not isinstance(value, torch.Tensor):
@@ -256,6 +269,27 @@ class StandardTrainer:
         }
         with path.open("a", encoding="utf-8") as handle:
             handle.write(json.dumps(record, sort_keys=True) + "\n")
+
+
+def _batch_on_device(batch: Batch, device: torch.device) -> Batch:
+    """Move model inputs to ``device``. Leave them in place when they already match."""
+
+    inputs = batch.inputs
+    targets = batch.targets
+    lengths = batch.lengths
+    changed = False
+    if inputs.device != device:
+        inputs = inputs.to(device)
+        changed = True
+    if targets.device != device:
+        targets = targets.to(device)
+        changed = True
+    if lengths is not None and lengths.device != device:
+        lengths = lengths.to(device)
+        changed = True
+    if not changed:
+        return batch
+    return replace(batch, inputs=inputs, targets=targets, lengths=lengths)
 
 
 def _rank(runtime: ProcessRuntime) -> int:

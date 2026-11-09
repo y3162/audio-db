@@ -283,6 +283,37 @@ def _pad_name(normalize: str) -> str:
     raise ReproductionError(f"normalization {normalize} is not implemented")
 
 
+def fixed_pair_crop(
+    case_id: str,
+    length: int,
+    window: int,
+    seed: int,
+    epoch: int | str,
+    pad: str,
+) -> CropSpec:
+    """Public name for the fixed-pair crop. The formula remains ``_crop``."""
+
+    return _crop(case_id, length, window, seed, epoch, pad)
+
+
+def fixed_pair_case_length(store: AssetStore, case_id: str, normalize: str) -> int:
+    """Public name for the fixed-pair case length. The formula remains ``_pair_length``."""
+
+    return _pair_length(store, case_id, normalize)
+
+
+def fixed_pair_pad_name(normalize: str) -> str:
+    """Public name for the pad mode selected by normalization."""
+
+    return _pad_name(normalize)
+
+
+def fixed_pair_plan_index(policy: str, local: int, rank: int, world_size: int, size: int) -> int:
+    """Public name for a sample's plan index. The formula remains ``_plan_index``."""
+
+    return _plan_index(policy, local, rank, world_size, size)
+
+
 def _plan_index(policy: str, local: int, rank: int, world_size: int, size: int) -> int:
     if policy == "rank_mod_fixed_v1":
         num_samples = (size + world_size - 1) // world_size
