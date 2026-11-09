@@ -143,7 +143,7 @@ world size を変えた再開は拒否する。
 
 設計が壊してはいけない現行の契約である。
 
-**MP-SENet。** Generator は `src.se.build_model("mp_senet")`。Discriminator と損失は `src/training/se/`。`enhance()` は学習中に呼ばない。ExponentialLR は、その epoch の使える micro-batch を終えたときだけ進む。公式損失の検証 PESQ 失敗は -1 として平均に残す。研究用再構成損失は欠損を平均から外す。
+**MP-SENet。** Generator は `src.se.build_model("mp_senet")`。Discriminator と損失は `src/training/se/`。`enhance()` は学習中に呼ばない。ExponentialLR は、その epoch の使える micro-batch を終えたときだけ進む。公式損失の検証 PESQ 失敗は -1 として平均に残す。研究用再構成損失は欠損を平均から外す。Phase 4-A の実験経路は、同じ Generator を `MPSENetWaveformAdapter` が波形入出力に包み、`StandardTrainer` と Waveform L1 だけで更新する。公式 GAN と Discriminator はこの経路に無い。詳細は [Phase 4-A](PHASE_4A_MP_SENET_CONNECTION.md)。
 
 **MossFormerGAN。** 初期化は公式 `train.py` が残す G1 と D4 の並びを再現するため、捨てるモジュールを同じ順で構築する。検証はデータ epoch 末。Discriminator は検証中も `train()`。plateau の回数と最良 snapshot は Task の state に残る。PESQ が計算できないバッチは Optimizer を進めない。
 

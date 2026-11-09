@@ -228,6 +228,16 @@ class Trainer(Protocol):
 7. `applied` が True のときだけ update count と、必要なら per-step Scheduler を進める。
 8. logical step を 1 進める。`applied` が False でも AMP overflow の反復は消費したデータとして logical step を進める。PESQ のような「更新しないがデータは進む」判定は `StandardTrainer` に入れない。
 
+## MP-SENet の波形アダプタ
+
+Phase 4-A のクラスは `src.experiments.models.mp_senet.MPSENetWaveformAdapter` である。`torch.nn.Module` で、`forward` は `[batch, time]` の波形を受け、同じ形状の波形を返す。中で `src.se.build_model("mp_senet")` の MPNet を 1 組だけ持ち、`mag_pha_stft` と `mag_pha_istft` を呼ぶ。Loss、Optimizer、データ取得は持たない。`enhance()` と `load_enhancer()` は呼ばない。
+
+checkpoint の module state では、Generator のキーが `generator.` で始まる。Optimizer は `parameters_of` でこの module の Parameter を受け取る。別のモジュールへ同じ Parameter を登録しない。
+
+iSTFT の長さが入力と違うときは `RuntimeFailure` で、暗黙の crop や pad はしない。`sampling_rate` は 16000 以外を `BuildError` にする。入力と教師の sample rate は、固定ペアの rule が両方を同じ rate で描く契約であり、Adapter は教師波形を受け取らない。`StandardTrainer` は `model(batch.inputs)` と `loss(prediction, batch.targets)` のままである。MP-SENet 専用の分岐は Trainer に無い。
+
+この L1 は公式の複合損失ではない。設定例は `configs/experiments/mp_senet_l1.yaml`。検証は [Phase 4-A](PHASE_4A_MP_SENET_CONNECTION.md)。
+
 ## Data API
 
 Phase 1 から 2-C の実装はこの節の `TensorPairData` である。音声の Source、Sampler、Protocol、Batch、identity、`plan_hash`、YAML は [DATA_PUBLIC_API.md](DATA_PUBLIC_API.md) を正とする。Phase 3-A は、既存の供給クラスをアダプタで包む案を撤回した。Trainer から見たメソッド名は、この節と音声契約で同じである。

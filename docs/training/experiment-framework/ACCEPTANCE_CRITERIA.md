@@ -160,7 +160,7 @@ Phase 3-A で撤回した。代替の受け入れは [DATA_ACCEPTANCE_CRITERIA.m
 
 - 方法: `src.se.build_model("mp_senet", ...)` を module として構築し、ランダムな短い波形で `reconstruction` 相当の L1 を 1 step、CPU で進める。公式の複合損失はこの項目に含めない。
 - 期待: 損失が有限。Generator の少なくとも 1 パラメータが初期値と異なる。`enhance()` が呼ばれていないことを、テストが `enhance` を差し替えて呼び出し回数 0 で確認する。
-- Phase: 3
+- Phase: 3 の項として書いてあった。実装は Phase 4 の最初の接続へ移し、Phase 4-A で満たした。測定は [PHASE_4A_MP_SENET_CONNECTION.md](PHASE_4A_MP_SENET_CONNECTION.md)。公式複合損失の 1 update 比較は、下の Phase 4 の項のまま未了である。
 
 ## Phase 4
 
