@@ -19,6 +19,20 @@ from src.reproduction.pipeline.store import AssetStore
 from src.reproduction.pipeline.types import CropSpec, EpochPlan, MicroBatchPlan, SampleRef, UpdateGroup
 
 
+def chunk_case_length(store: AssetStore, case_id: str) -> int:
+    """Planned sample count from the realization document. The file is not decoded."""
+
+    case = store.case(case_id)
+    document = store.docs.get(case_id)
+    if document is None:
+        raise ReproductionError(f"case {case_id} has no realization document")
+    planned = int(document["output"]["length"])
+    recorded = int(case["frames"])
+    if planned != recorded or planned < 1:
+        raise ReproductionError(f"case {case_id} length is not the planned length")
+    return planned
+
+
 def plan_espnet_chunk(
     samples,
     *,

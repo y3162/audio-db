@@ -15,6 +15,7 @@ import torch
 from src.reproduction.build.ms_snsd import _pcm16_roundtrip, render_realization
 from src.reproduction.errors import ReproductionError
 from src.reproduction.ids import digest
+from src.reproduction.pipeline.planner import chunk_case_length
 from src.reproduction.pipeline.provenance import snapshot_provenance_parts
 from src.reproduction.pipeline.store import AssetStore
 from src.reproduction.snapshot_reader import LoadedSnapshot
@@ -37,10 +38,9 @@ class OnDemandChunkData:
         self.ids = store.case_ids(slot)
         self.lengths = [_length(store, case_id) for case_id in self.ids]
         self.split = "test" if slot == "test.cases" else "train"
-        self.speech = _source_map(store, "clean", self.split)
-        self.noise = _source_map(store, "noise", self.split)
         self.load_workers = int(settings.get("load_workers", 1))
         self.verify_on_read = bool(settings.get("verify_on_read", False))
+        self.speech, self.noise = ms_snsd_rendering(store, slot)
         self.algorithm = str(dataset["algorithm"])
         self.dataset_id = str(dataset["dataset_id"])
         self.name = str(dataset["name"])
@@ -124,19 +124,13 @@ class OnDemandChunkData:
         return None
 
     def _pair(self, case_id: str) -> tuple[np.ndarray, np.ndarray]:
-        document = self.store.docs.get(case_id)
-        if document is None:
-            raise ReproductionError(f"case {case_id} has no realization document")
-        if self.verify_on_read:
-            _check_source_hashes(self.store, document, self.speech, self.noise)
-        rendered = render_realization(document, {"speech": self.speech, "noise": self.noise})
-        clean = _pcm16_roundtrip(rendered["clean"]).astype(np.float32)
-        noisy = _pcm16_roundtrip(rendered["noisy"]).astype(np.float32)
-        if clean.shape != noisy.shape or int(clean.shape[0]) != self.lengths[self.ids.index(case_id)]:
-            raise ReproductionError(f"case {case_id} rendered length does not match the plan")
-        if not np.isfinite(clean).all() or not np.isfinite(noisy).all():
-            raise ReproductionError(f"case {case_id} rendered non-finite samples")
-        return clean, noisy
+        return render_ms_snsd_pair(
+            self.store,
+            case_id,
+            speech=self.speech,
+            noise=self.noise,
+            verify_on_read=self.verify_on_read,
+        )
 
 
 def open_ondemand_datasets(
@@ -175,16 +169,40 @@ def open_ondemand_datasets(
     )
 
 
-def _length(store: AssetStore, case_id: str) -> int:
-    case = store.case(case_id)
+def ms_snsd_rendering(store: AssetStore, slot: str) -> tuple[dict[str, Path], dict[str, Path]]:
+    """Speech and noise paths for one MS-SNSD slot. Validation uses the train files."""
+
+    split = "test" if slot == "test.cases" else "train"
+    return _source_map(store, "clean", split), _source_map(store, "noise", split)
+
+
+def render_ms_snsd_pair(
+    store: AssetStore,
+    case_id: str,
+    *,
+    speech: dict[str, Path],
+    noise: dict[str, Path],
+    verify_on_read: bool = False,
+) -> tuple[np.ndarray, np.ndarray]:
+    """PCM_16 clean and noisy for one realization. The caller slices the chunk."""
+
     document = store.docs.get(case_id)
     if document is None:
         raise ReproductionError(f"case {case_id} has no realization document")
-    planned = int(document["output"]["length"])
-    recorded = int(case["frames"])
-    if planned != recorded or planned < 1:
-        raise ReproductionError(f"case {case_id} length is not the planned length")
-    return planned
+    if verify_on_read:
+        _check_source_hashes(store, document, speech, noise)
+    rendered = render_realization(document, {"speech": speech, "noise": noise})
+    clean = _pcm16_roundtrip(rendered["clean"]).astype(np.float32)
+    noisy = _pcm16_roundtrip(rendered["noisy"]).astype(np.float32)
+    if clean.shape != noisy.shape or int(clean.shape[0]) != chunk_case_length(store, case_id):
+        raise ReproductionError(f"case {case_id} rendered length does not match the plan")
+    if not np.isfinite(clean).all() or not np.isfinite(noisy).all():
+        raise ReproductionError(f"case {case_id} rendered non-finite samples")
+    return clean, noisy
+
+
+def _length(store: AssetStore, case_id: str) -> int:
+    return chunk_case_length(store, case_id)
 
 
 def _source_map(store: AssetStore, kind: str, split: str) -> dict[str, Path]:

@@ -24,6 +24,7 @@ from src.reproduction.build.dns2020 import (
 )
 from src.reproduction.errors import ReproductionError
 from src.reproduction.ids import digest
+from src.reproduction.pipeline.planner import chunk_case_length
 from src.reproduction.pipeline.provenance import snapshot_provenance_parts
 from src.reproduction.pipeline.store import AssetStore
 from src.reproduction.snapshot_reader import LoadedSnapshot
@@ -44,20 +45,11 @@ class DnsOnDemandChunkData:
             raise ReproductionError(f"dataset {dataset.get('name')} is not ready")
         if rule.get("normalize") is not None:
             raise ReproductionError("DNS audio is not RMS-normalized at load time")
-        self.renderer = str(rule.get("renderer") or RENDERER_V1)
-        self.retry_policy = str(rule.get("retry_policy") or RETRY_NONE)
-        if self.renderer == RENDERER_V1 and self.retry_policy != RETRY_NONE:
-            raise ReproductionError(f"slot {slot} renderer {self.renderer} does not match {self.retry_policy}")
-        if self.renderer == RENDERER_ACCEPT and self.retry_policy != RETRY_ACCEPT:
-            raise ReproductionError(f"slot {slot} renderer {self.renderer} does not match {self.retry_policy}")
-        if self.renderer not in {RENDERER_V1, RENDERER_ACCEPT}:
-            raise ReproductionError(f"slot {slot} has unknown DNS renderer {self.renderer}")
         self.store = store
         self.slot = slot
         self.ids = store.case_ids(slot)
         self.lengths = [_length(store, case_id) for case_id in self.ids]
-        self.speech = _source_map(store, _CLEAN_PREFIX)
-        self.noise = _source_map(store, _NOISE_PREFIX)
+        self.speech, self.noise, self.renderer, self.retry_policy = dns_rendering(store, slot=slot)
         self.verify_on_read = bool(settings.get("verify_on_read", False))
         self.algorithm = str(dataset["algorithm"])
         self.dataset_id = str(dataset["dataset_id"])
@@ -147,24 +139,15 @@ class DnsOnDemandChunkData:
         return None
 
     def _pair(self, case_id: str) -> tuple[np.ndarray, np.ndarray]:
-        document = self.store.docs.get(case_id)
-        if document is None:
-            raise ReproductionError(f"case {case_id} has no realization document")
-        policy = str(document["draws"].get("retry_policy") or RETRY_NONE)
-        if policy != self.retry_policy:
-            raise ReproductionError(
-                f"case {case_id} retry policy {policy} does not match renderer {self.renderer}"
-            )
-        if self.verify_on_read:
-            _check_source_hashes(self.store, document, self.speech, self.noise)
-        rendered = render_realization(document, {"speech": self.speech, "noise": self.noise})
-        clean = np.asarray(rendered["clean"], dtype=np.float32)
-        noisy = np.asarray(rendered["noisy"], dtype=np.float32)
-        if clean.shape != noisy.shape or int(clean.shape[0]) != self.lengths[self.ids.index(case_id)]:
-            raise ReproductionError(f"case {case_id} rendered length does not match the plan")
-        if not np.isfinite(clean).all() or not np.isfinite(noisy).all():
-            raise ReproductionError(f"case {case_id} rendered non-finite samples")
-        return clean, noisy
+        return render_dns_pair(
+            self.store,
+            case_id,
+            speech=self.speech,
+            noise=self.noise,
+            retry_policy=self.retry_policy,
+            renderer=self.renderer,
+            verify_on_read=self.verify_on_read,
+        )
 
 
 def open_dns_datasets(
@@ -190,16 +173,58 @@ def open_dns_datasets(
     )
 
 
-def _length(store: AssetStore, case_id: str) -> int:
-    case = store.case(case_id)
+def dns_rendering(
+    store: AssetStore,
+    slot: str | None = None,
+) -> tuple[dict[str, Path], dict[str, Path], str, str]:
+    """Speech map, noise map, renderer name, and retry policy for one DNS snapshot."""
+
+    dataset = store.dataset
+    rule = dataset.get("rule_json") or {}
+    where = "snapshot" if slot is None else f"slot {slot}"
+    renderer = str(rule.get("renderer") or RENDERER_V1)
+    retry_policy = str(rule.get("retry_policy") or RETRY_NONE)
+    if renderer == RENDERER_V1 and retry_policy != RETRY_NONE:
+        raise ReproductionError(f"{where} renderer {renderer} does not match {retry_policy}")
+    if renderer == RENDERER_ACCEPT and retry_policy != RETRY_ACCEPT:
+        raise ReproductionError(f"{where} renderer {renderer} does not match {retry_policy}")
+    if renderer not in {RENDERER_V1, RENDERER_ACCEPT}:
+        raise ReproductionError(f"{where} has unknown DNS renderer {renderer}")
+    return _source_map(store, _CLEAN_PREFIX), _source_map(store, _NOISE_PREFIX), renderer, retry_policy
+
+
+def render_dns_pair(
+    store: AssetStore,
+    case_id: str,
+    *,
+    speech: dict[str, Path],
+    noise: dict[str, Path],
+    retry_policy: str,
+    renderer: str,
+    verify_on_read: bool = False,
+) -> tuple[np.ndarray, np.ndarray]:
+    """PCM_16 clean and noisy for one stored DNS plan. The caller slices the chunk."""
+
     document = store.docs.get(case_id)
     if document is None:
         raise ReproductionError(f"case {case_id} has no realization document")
-    planned = int(document["output"]["length"])
-    recorded = int(case["frames"])
-    if planned != recorded or planned < 1:
-        raise ReproductionError(f"case {case_id} length is not the planned length")
-    return planned
+    policy = str(document["draws"].get("retry_policy") or RETRY_NONE)
+    if policy != retry_policy:
+        raise ReproductionError(f"case {case_id} retry policy {policy} does not match renderer {renderer}")
+    if verify_on_read:
+        _check_source_hashes(store, document, speech, noise)
+    rendered = render_realization(document, {"speech": speech, "noise": noise})
+    clean = np.asarray(rendered["clean"], dtype=np.float32)
+    noisy = np.asarray(rendered["noisy"], dtype=np.float32)
+    if clean.shape != noisy.shape or int(clean.shape[0]) != chunk_case_length(store, case_id):
+        raise ReproductionError(f"case {case_id} rendered length does not match the plan")
+    if not np.isfinite(clean).all() or not np.isfinite(noisy).all():
+        raise ReproductionError(f"case {case_id} rendered non-finite samples")
+    return clean, noisy
+
+
+def _length(store: AssetStore, case_id: str) -> int:
+    return chunk_case_length(store, case_id)
 
 
 def _source_map(store: AssetStore, prefix: str) -> dict[str, Path]:

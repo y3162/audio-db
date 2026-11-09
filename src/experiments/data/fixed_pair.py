@@ -426,7 +426,7 @@ class SnapshotEpochView:
 
 
 class SnapshotDataModule:
-    """Assemble a fixed-pair snapshot into the experiment data contract."""
+    """Assemble one snapshot sampler and protocol into the experiment data contract."""
 
     def __init__(
         self,
@@ -474,9 +474,13 @@ class SnapshotDataModule:
         rule = dataset.get("rule_json")
         if not isinstance(rule, dict):
             raise DataError("snapshot rule_json is missing")
-        window = rule.get("window")
-        if window is None:
-            window = rule.get("chunk_length")
+        chunk_length = getattr(self.sampler, "chunk_length", None)
+        if chunk_length is not None:
+            window = int(chunk_length)
+        else:
+            window = rule.get("window")
+            if window is None:
+                window = rule.get("chunk_length")
         return {
             "algorithm": dataset.get("algorithm"),
             "claim_label": dataset.get("claim_label"),
@@ -529,6 +533,11 @@ class SnapshotDataModule:
         self._require_ready()
         if isinstance(epoch, bool) or not isinstance(epoch, int) or epoch < 0:
             raise StateError(f"epoch {epoch!r} is not a valid index")
+        validation_ranks = getattr(self.sampler, "validation_ranks", None)
+        if callable(validation_ranks):
+            self._bind_sampler()
+            grouped = self.batcher.groups(validation_ranks(epoch, self.world_size)[self.rank])
+            return iter(self._collate(group) for group in grouped)
         algorithm = str(self.source.dataset().get("algorithm"))
         if algorithm == "fixed_pair.mp_senet":
             if self.rank != 0:
@@ -654,6 +663,7 @@ class SnapshotDataModule:
         cached = self._plans.get(epoch)
         if cached is not None:
             return cached
+        self._bind_sampler()
         grouped = tuple(self.batcher.groups(sequence) for sequence in self.sampler.all_ranks(epoch, self.world_size))
         plan = _EpochPlan(groups=grouped, plan_hash=self._hash(epoch, grouped))
         self._plans[epoch] = plan
@@ -662,11 +672,13 @@ class SnapshotDataModule:
     def _hash(self, epoch: int, groups: tuple[tuple[tuple[SampleRef, ...], ...], ...]) -> str:
         dataset = self.source.dataset()
         policy = self.sampler.policy(self.world_size)
+        parameters = getattr(self.sampler, "order_parameters", None)
+        recorded = parameters() if callable(parameters) else _call(order_params, policy, self.sampler.seed)
         payload = {
             "epoch": epoch,
             "group_size": self.batcher.group_size,
             "micro_batch": self.batcher.micro_batch,
-            "order_params": _call(order_params, policy, self.sampler.seed),
+            "order_params": recorded,
             "order_policy": policy,
             "protocol_id": dataset.get("protocol_id"),
             "ranks": [[_ref_payload(sample) for group in rank_groups for sample in group] for rank_groups in groups],
@@ -685,8 +697,19 @@ class SnapshotDataModule:
         if not isinstance(rule, dict) or rule.get("delivery") != "on_demand":
             raise DataError("snapshot delivery is not on_demand")
         algorithm = str(dataset.get("algorithm"))
-        if not algorithm.startswith("fixed_pair."):
-            raise DataError(f"fixed-pair protocol cannot read algorithm {algorithm}")
+        supply = getattr(self.protocol, "supply", "fixed_pair")
+        if supply == "chunk":
+            if algorithm not in {"pregenerated.ms_snsd_tfgridnet", "pregenerated.dns_tflocoformer"}:
+                raise DataError(f"chunk protocol cannot read algorithm {algorithm}")
+            self._bind_sampler()
+            prepare = getattr(self.protocol, "prepare", None)
+            if callable(prepare):
+                prepare()
+        elif supply == "fixed_pair":
+            if not algorithm.startswith("fixed_pair."):
+                raise DataError(f"fixed-pair protocol cannot read algorithm {algorithm}")
+        else:
+            raise DataError(f"unsupported data supply {supply}")
         if self.require_profile is not None and dataset.get("profile") != self.require_profile:
             raise DataError(f"snapshot profile {dataset.get('profile')} is not {self.require_profile}")
         if dataset.get("profile") == "leakage_safe":
@@ -695,6 +718,11 @@ class SnapshotDataModule:
             test = set(self.source.case_ids("test.cases")) if "test.cases" in bindings else set()
             if valid & test:
                 raise DataError("leakage_safe validation shares cases with test")
+
+    def _bind_sampler(self) -> None:
+        bind = getattr(self.sampler, "bind_batch", None)
+        if callable(bind):
+            bind(self.batcher, self.world_size)
 
     def _accept_runtime(self, runtime: object) -> None:
         world_size = getattr(runtime, "world_size", 1)

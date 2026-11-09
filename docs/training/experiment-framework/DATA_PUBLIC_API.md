@@ -1,6 +1,6 @@
 # Data System 公開 API
 
-Phase 3-A の契約である。固定ペアの Source、Sampler、Protocol、Batcher、`SnapshotDataModule` は Phase 3-B で `src/experiments/data/` にある。chunk、オンライン、world size 2 の正式受け入れ、動的 Sampler は未実装である。構成の理由は [DATA_ARCHITECTURE.md](DATA_ARCHITECTURE.md)。Phase 2 まで実装済みの `TensorPairData` はこの契約の合成データ実装として残り、メソッドの意味は変えない。
+Phase 3-A の契約である。固定ペアの Source、Sampler、Protocol、Batcher、`SnapshotDataModule` は Phase 3-B で `src/experiments/data/` にある。chunk の `ChunkSampler` と `ChunkProtocol` は Phase 3-C で同じ DataModule に載っている。オンライン、world size 2 の正式受け入れ、動的 Sampler は未実装である。構成の理由は [DATA_ARCHITECTURE.md](DATA_ARCHITECTURE.md)。Phase 2 まで実装済みの `TensorPairData` はこの契約の合成データ実装として残り、メソッドの意味は変えない。
 
 利用者は `SnapshotDataModule` と、YAML に書く Source / Sampler / Protocol / Batcher だけを触る。純関数のモジュールパスは component 間の API であり、実験 YAML のクラス名には出さない。`_crop` のような先頭が `_` の関数は、Phase 3-B で公開名の委譲を足すまで、新コードから呼ばない。
 
@@ -253,7 +253,7 @@ chunk と DFN3 は `locate` を持たない。座標と添字は、それぞれ�
 | `online.dfn3` | `plan_online_epoch` を world size 1 として全件。呼び出し rank が 0 のときだけ返す | 波形の epoch key は 0。並びの seed には引数 `epoch` を入れる |
 | `online.semambapp_gsr` | 素材順の全件。rank 0 だけが返す | epoch key は 0 |
 
-空の iterator はエラーではない。Trainer がどの rank で検証を呼ぶかは Trainer の責務である。Phase 3-B は固定ペアの 2 行、MP-SENet と MossFormerGAN の検証を実装する。chunk とオンラインの行は、その protocol を実装する Phase の受け入れに入れる。
+空の iterator はエラーではない。Trainer がどの rank で検証を呼ぶかは Trainer の責務である。Phase 3-B は固定ペアの 2 行を実装した。Phase 3-C は `pregenerated.*` の行を実装した。オンラインの行は Phase 3-D の受け入れに残す。
 
 ## 内部だけの API
 
@@ -358,9 +358,11 @@ batcher:
     group_size: 1
 ```
 
-`ChunkSampler` は `plan_chunk_epoch` を、プロセスの world size のまま呼ぶ。shard した列を world size 1 として渡し直さない。`group_size` は 1。現行の chunk 状態が accumulation 1 であるためである。`num_samples_per_epoch` を省いた検証用の呼び出しは、公開メソッドではなく `validation_epoch` の内部である。
+`ChunkSampler` は `plan_chunk_epoch` を、プロセスの world size のまま呼ぶ。shard した列を world size 1 として渡し直さない。`group_size` は 1。現行の chunk 状態が accumulation 1 であるためである。`group_size` が 1 でないときは `DataError`。`num_samples_per_epoch` を省いた検証用の呼び出しは、公開メソッドではなく `validation_epoch` の内部である。
 
-MS-SNSD と DNS の違いは `ChunkProtocol` が snapshot の algorithm から描画関数を選ぶことである。YAML のクラスは同じである。`pregenerated.ms_snsd_tfgridnet` は `build/ms_snsd.py` の `render_realization`、`pregenerated.dns_tflocoformer` は `build/dns2020.py` の `render_realization`。選んだあと PCM_16 の扱いは、現行の `OnDemandChunkData._pair` と `DnsOnDemandChunkData._pair` が行っている処理を関数呼び出しで行う。式を DataModule に写さない。
+`global_batch` を kwargs に書いたときは、`micro_batch * world_size` と一致しなければならない。省略したときはその積を計画関数へ渡す。`plan_chunk_epoch` の `rank_batches` はすでに micro-batch である。Sampler は iterator stop のあとの batch を平坦な `SampleRef` 列にし、`MicroBatcher` が同じ `micro_batch` で区切り直す。`group_size` が 1 なので、この再区切りは元の batch 境界を保つ。二度目の shuffle と二度目の rank 分割はしない。
+
+MS-SNSD と DNS の違いは `ChunkProtocol` が snapshot の algorithm から描画関数を選ぶことである。YAML のクラスは同じである。`pregenerated.ms_snsd_tfgridnet` は `render_ms_snsd_pair`、`pregenerated.dns_tflocoformer` は `render_dns_pair` を呼ぶ。どちらも既存の `render_realization` と PCM_16 の順を使い、chunk の切り出しはその後である。`OnDemandChunkData` と `DnsOnDemandChunkData` は作らない。式を DataModule に写さない。
 
 ### オンライン混合と劣化
 
