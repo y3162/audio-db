@@ -203,6 +203,6 @@ GPU は使っていない。CPU / Gloo の成功を、GPU / NCCL の同じ同期
 
 ## 17. Phase 4-E への残課題
 
-Phase 4-E は MossFormerGAN の公式学習である。今回の D を先に更新して G のグラフを保持する順序を、MossFormerGAN の 3 forward と PESQ skip へ流用しない。
+この節を書いた時点では、Phase 4-E の MossFormerGAN は未実装だった。D を先に更新して G のグラフを保持する順序は、MossFormerGAN の 3 forward と PESQ skip へ流用しない。実装後の記録は [PHASE_4E_MOSSFORMERGAN_TRAINING.md](PHASE_4E_MOSSFORMERGAN_TRAINING.md)。
 
 残るものは、MossFormerGAN、DeepFilterNet3、SEMamba++、URGENT24 の TF-GridNet、FSDP、sharded checkpoint、AMP BF16、複数 Optimizer の AMP、`audio-db-training-v1` からの再開、MP-SENet の公式データ全量と論文スコアである。CPU / Gloo は NCCL の証明ではない。

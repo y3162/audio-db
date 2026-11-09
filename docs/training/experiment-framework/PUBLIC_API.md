@@ -169,6 +169,13 @@ class Runtime:
         同じパラメータ集合に対する二度目の unscale は RuntimeFailure。
         """
 
+    def clip_repeated(self, parameters: Iterable[torch.nn.Parameter], max_norm: float) -> float:
+        """同じパラメータを micro-batch ごとに clip する。
+
+        ``clip`` の一度きりの記録と AMP unscale は使わない。``amp_fp16`` は RuntimeFailure。
+        返す値は clip 前の総ノルムである。MossFormerGAN が使う。
+        """
+
     def step(self, optimizer: torch.optim.Optimizer) -> StepResult:
         """optimizer.step を全 rank で同じ適用結果にする。
 
@@ -186,6 +193,18 @@ class Runtime:
         """明示されたパラメータの grad を rank 間で平均する。
 
         DDP の自動 all-reduce の代わりに Trainer が呼ぶ。world size 1 では何もしない。
+        欠けた勾配はゼロとして参加する。
+        """
+
+    def average_new_gradients(
+        self,
+        parameters: Iterable[torch.nn.Parameter],
+        baselines: Mapping[int, torch.Tensor | None],
+    ) -> None:
+        """この backward で増えた勾配だけを rank 間で平均し、baselines の蓄積へ足す。
+
+        勾配が None の Parameter は None のままである。ゼロテンソルは作らない。
+        world size 1 では grad を書き換えない。``average_gradients`` の意味は変えない。
         """
 
     def agree(self, flag: bool, *, policy: str = "identical") -> bool:
@@ -239,6 +258,18 @@ iSTFT の長さが入力と違うときは `RuntimeFailure` で、暗黙の crop
 この L1 は公式の複合損失ではない。設定例は `configs/experiments/mp_senet_l1.yaml`。検証は [Phase 4-A](PHASE_4A_MP_SENET_CONNECTION.md)。
 
 Phase 4-D の公式 GAN は別クラスである。Generator は `src.experiments.models.mp_senet_gan.MPSENetGANGenerator`、Discriminator は `src.experiments.models.mp_senet_gan.MPSENetMetricDiscriminator`、学習ループは `src.experiments.mp_senet.MPSENetGANTrainer`。Loss 関数は現行の `generator_losses` と `discriminator_loss` を Trainer が呼ぶ。`StandardTrainer` と `GanTrainer` には MP-SENet の分岐を足していない。`amp_fp16` はこの Trainer が拒否する。設定例は `configs/experiments/mp_senet_gan.yaml`。検証は [Phase 4-D](PHASE_4D_MP_SENET_GAN.md)。
+
+## MossFormerGAN se_16k
+
+Phase 4-E のクラスは `src.experiments.models.mossformergan.MossFormerGANGenerator`、`src.experiments.models.mossformergan.MossFormerGANDiscriminator`、`src.experiments.mossformergan.MossFormerGANTrainer` である。Factory はクラスパスを呼ぶだけで、モデル名では分岐しない。Generator は `src.se.build_model("mossformergan", variant="se_16k")` の SyncANet を 1 組、Discriminator は既存の NISQA `Discriminator` を 1 組持つ。ネットワークは再実装しない。
+
+初期化は Builder の順に依存しない。Generator は G1 だけを作る。Discriminator は G1 から G4 と D1 から D3 を作って捨て、D4 を残す。捨てたモジュールは登録しない。
+
+学習順は MP-SENet と違う。Generator Loss の backward、増分平均、Generator の clip、Discriminator Loss の backward、増分平均、Discriminator の clip が終わってから、蓄積窓が埋まったときだけ Generator の AdamW、続いて Discriminator の AdamW を `runtime.step` する。PESQ 失敗は backward しない。data cursor と `official_step` は進み、`logical_step` と `accu_count` は進まない。clip は `clip_repeated` で micro-batch ごとである。`runtime.clip` の一度きりは残す。
+
+検証はデータ epoch の末尾である。Generator は `eval()`、Discriminator は `train()`。欠測 Loss は和に足さず、分母には残す。集計は rank 平均の等重み平均である。plateau は `mossformer_validation_decision` で、5 回目の非改善が Generator の学習率だけを半分にし、10 回目で停止する。Scheduler コンポーネントは作らない。
+
+`amp_fp16` は拒否する。設定例は `configs/experiments/mossformergan_se_16k.yaml`。`max_logical_steps` は 1 で、公式規模の学習は起動しない。検証は [Phase 4-E](PHASE_4E_MOSSFORMERGAN_TRAINING.md)。
 
 ## TF-GridNet MS-SNSD
 

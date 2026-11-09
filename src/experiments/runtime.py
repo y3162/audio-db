@@ -15,7 +15,7 @@ from __future__ import annotations
 
 import math
 import os
-from collections.abc import Iterable, Iterator
+from collections.abc import Iterable, Iterator, Mapping
 from contextlib import AbstractContextManager, ExitStack, contextmanager, nullcontext
 from dataclasses import dataclass
 from datetime import timedelta
@@ -283,6 +283,32 @@ class ProcessRuntime:
         norm = torch.nn.utils.clip_grad_norm_(params, float(max_norm))
         return float(norm)
 
+    def clip_repeated(self, parameters: Iterable[torch.nn.Parameter], max_norm: float) -> float:
+        """Clip gradients on every call.
+
+        :meth:`clip` still refuses a second clip of the same parameters in
+        one logical step, and it still unscales AMP at most once.
+        MossFormerGAN clips after every successful micro-batch, so one
+        accumulation window clips the same parameters more than once.
+        This method does not record a clip and does not unscale. It refuses
+        ``amp_fp16`` rather than weakening that one-unscale rule.
+        """
+
+        if self.precision == "amp_fp16":
+            raise RuntimeFailure("clip_repeated refuses amp_fp16; clip once per step after unscale")
+        params = [parameter for parameter in parameters if parameter.requires_grad]
+        if not params:
+            raise RuntimeFailure("clip_repeated received no trainable parameters")
+        if (
+            isinstance(max_norm, bool)
+            or not isinstance(max_norm, (int, float))
+            or not math.isfinite(float(max_norm))
+            or float(max_norm) <= 0
+        ):
+            raise RuntimeFailure("max_norm must be a positive finite number")
+        norm = torch.nn.utils.clip_grad_norm_(params, float(max_norm))
+        return float(norm)
+
     def step(self, optimizer: torch.optim.Optimizer) -> StepResult:
         """Apply one optimizer update, or skip it on every rank.
 
@@ -412,6 +438,58 @@ class ProcessRuntime:
             dist.all_reduce(gradient, op=dist.ReduceOp.SUM)
             gradient.div_(self.world_size)
             parameter.grad = gradient
+
+    def average_new_gradients(
+        self,
+        parameters: Iterable[torch.nn.Parameter],
+        baselines: Mapping[int, torch.Tensor | None],
+    ) -> None:
+        """Average only the gradient added since ``baselines``.
+
+        ``baselines`` maps ``id(parameter)`` to a detached clone of ``.grad``
+        taken before this backward, or None when ``.grad`` was None. That
+        running sum is not reduced again. A parameter that still has no
+        gradient stays None; this does not invent a zero tensor. Every rank
+        passes the same parameters in the same order and must agree on which
+        gradients exist. World size 1 returns without rewriting ``.grad``.
+        :meth:`average_gradients` is unchanged and still averages the stored
+        gradient, using zeros where it is missing.
+        """
+
+        if not isinstance(baselines, Mapping):
+            raise RuntimeFailure("baselines must map parameter ids to gradients")
+        params = [parameter for parameter in parameters if parameter.requires_grad]
+        for parameter in params:
+            if id(parameter) not in baselines:
+                raise RuntimeFailure("baseline is missing a parameter")
+        mask = tuple(parameter.grad is not None for parameter in params)
+        masks = self.gather_objects(mask)
+        if any(item != mask for item in masks):
+            raise RuntimeFailure("ranks disagree on which parameters received a new gradient")
+        if self.world_size == 1:
+            return
+        self._require_group()
+        for parameter, present in zip(params, mask, strict=True):
+            if not present:
+                continue
+            gradient = parameter.grad
+            if gradient is None:
+                raise RuntimeFailure("gradient disappeared after the rank check")
+            old = baselines[id(parameter)]
+            if old is None:
+                delta = gradient.detach().contiguous()
+            else:
+                if tuple(old.shape) != tuple(gradient.shape) or old.dtype != gradient.dtype:
+                    raise RuntimeFailure("baseline gradient does not match the parameter")
+                delta = (gradient - old.to(device=gradient.device, dtype=gradient.dtype)).detach().contiguous()
+            if self.backend == "nccl" and delta.device != self.device:
+                raise RuntimeFailure("nccl all_reduce requires the rank's CUDA device")
+            dist.all_reduce(delta, op=dist.ReduceOp.SUM)
+            delta.div_(self.world_size)
+            if old is None:
+                parameter.grad = delta
+            else:
+                parameter.grad = old.to(device=delta.device, dtype=delta.dtype) + delta
 
     def broadcast_buffers(self, module: torch.nn.Module, *, src: int = 0) -> None:
         """Copy one module's buffers from ``src`` to every rank.
