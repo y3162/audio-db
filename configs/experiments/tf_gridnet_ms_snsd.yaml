@@ -1,6 +1,8 @@
 # Phase 4-B TF-GridNet MS-SNSD training algorithm.
 # This declares the official single-optimizer recipe. It is not a full run:
 # max_logical_steps is 1, so an epoch does not finish and validation does not run.
+# global_batch 4 and micro_batch 2 require world size 2. World size 1 is refused.
+# distribute ddp lets that world size build. World size 1 does not wrap DDP.
 # Acceptance tests use a tiny architecture and a synthetic snapshot.
 schema: audio-db-experiment/v1
 seed: 0
@@ -33,7 +35,7 @@ components:
         emb_hs: 4
         activation: prelu
         eps: 1.0e-5
-    prepare: {trainable: true, distribute: none}
+    prepare: {trainable: true, distribute: ddp}
   loss:
     role: loss
     class: src.experiments.losses.MultiResolutionL1Loss

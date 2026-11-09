@@ -269,7 +269,7 @@ Phase 4-E のクラスは `src.experiments.models.mossformergan.MossFormerGANGen
 
 検証はデータ epoch の末尾である。Generator は `eval()`、Discriminator は `train()`。欠測 Loss は和に足さず、分母には残す。集計は rank 平均の等重み平均である。plateau は `mossformer_validation_decision` で、5 回目の非改善が Generator の学習率だけを半分にし、10 回目で停止する。Scheduler コンポーネントは作らない。
 
-`amp_fp16` は拒否する。設定例は `configs/experiments/mossformergan_se_16k.yaml`。`max_logical_steps` は 1 で、公式規模の学習は起動しない。検証は [Phase 4-E](PHASE_4E_MOSSFORMERGAN_TRAINING.md)。
+`amp_fp16` は拒否する。設定例は `configs/experiments/mossformergan_se_16k.yaml`。`max_logical_steps` は 1 で、公式規模の学習は起動しない。検証は [Phase 4-E](PHASE_4E_MOSSFORMERGAN_TRAINING.md)。4 モデルの横断検証は [Phase 4-F](PHASE_4F_INTEGRATION.md)。実験 checkpoint は `data_provenance.json` を書かず、`provenance_sha256` は None のままである。None 以外の resume は拒否する。評価側は欠落を UNKNOWN とし、独立とは判定しない。
 
 ## TF-GridNet MS-SNSD
 
@@ -292,7 +292,7 @@ Phase 4-B のクラスは `src.experiments.models.tf_gridnet.TFGridNetModel` と
 9. 同じ logical step のファイルを label `step` で置き換える。検証、scheduler、選択が揃う前の別ファイルは作らない。再開時の二重 step を避けるためである。
 10. `validation_pending` からの再開は、ループの前に 5 から 9 を一度だけやり直す。Optimizer 更新はやり直さない。
 
-`group_size` が `accumulation` と違うときは `RuntimeFailure`。early stopping の既定 patience は None で、宣言 YAML は 5。停止理由は `completed` である。設定例は `configs/experiments/tf_gridnet_ms_snsd.yaml`。この YAML の `max_logical_steps` は 1 で、公式規模の学習は起動しない。検証は [Phase 4-B](PHASE_4B_TF_GRIDNET_TRAINING.md)。
+`group_size` が `accumulation` と違うときは `RuntimeFailure`。early stopping の既定 patience は None で、宣言 YAML は 5。停止理由は `completed` である。設定例は `configs/experiments/tf_gridnet_ms_snsd.yaml`。module の `distribute` は `ddp` で、`global_batch` 4 と `micro_batch` 2 は world size 2 を要求する。world size 1 は `global_batch` 不一致で拒否する。world size 1 は DDP で包まない。この YAML の `max_logical_steps` は 1 で、公式規模の学習は起動しない。検証は [Phase 4-B](PHASE_4B_TF_GRIDNET_TRAINING.md) と [Phase 4-F](PHASE_4F_INTEGRATION.md)。
 
 ## TF-Locoformer DNS
 
@@ -315,7 +315,7 @@ Phase 4-C のクラスは `src.experiments.models.tf_locoformer.TFLocoformerMode
 
 `export_for_inference` は Generator の state dict である。キーは `separator.` で始まる。推論 loader はその接頭辞を外して `separator` へ載せる。接頭辞の無い辞書も `separator` へ載る。学習 checkpoint とは別である。
 
-設定例は `configs/experiments/tf_locoformer_dns.yaml`。この YAML の `max_logical_steps` は 1 で、公式規模の DNS 学習は起動しない。検証は [Phase 4-C](PHASE_4C_TF_LOCOFORMER_TRAINING.md)。
+設定例は `configs/experiments/tf_locoformer_dns.yaml`。module の `distribute` は `ddp` で、`global_batch` 4 と `micro_batch` 1 は world size 4 を要求する。world size 1 は `global_batch` 不一致で拒否する。world size 1 は DDP で包まない。この YAML の `max_logical_steps` は 1 で、公式規模の DNS 学習は起動しない。検証は [Phase 4-C](PHASE_4C_TF_LOCOFORMER_TRAINING.md) と [Phase 4-F](PHASE_4F_INTEGRATION.md)。
 
 ## Data API
 

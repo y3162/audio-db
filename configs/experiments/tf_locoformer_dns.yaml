@@ -4,6 +4,8 @@
 # The validation profile is tf_locoformer.dns.accept_recipe.research_valid_fixed@1.
 # That set is the research 1,024-case selection profile. It is not cv_synthetic_small.
 # global_batch 4 with micro_batch 1 matches required world size 4.
+# World size 1 is refused. distribute ddp lets world size 4 build.
+# World size 1 does not wrap DDP.
 # Acceptance tests use a tiny architecture and a synthetic snapshot.
 schema: audio-db-experiment/v1
 seed: 0
@@ -44,7 +46,7 @@ components:
         conv1d_shift: 1
         dropout: 0.0
         eps: 1.0e-5
-    prepare: {trainable: true, distribute: none}
+    prepare: {trainable: true, distribute: ddp}
   loss:
     role: loss
     class: src.experiments.losses.MultiResolutionL1Loss
