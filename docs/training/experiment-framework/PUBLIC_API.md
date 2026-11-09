@@ -337,6 +337,26 @@ Phase 4-G のクラスは `src.experiments.models.deepfilternet3.DeepFilterNet3M
 
 `export_for_inference` は `DfNet` の state dict で、`df_fc_a` を含む。設定例は `configs/experiments/deepfilternet3.yaml`。この YAML の `max_logical_steps` は 1 で、`dfn3.online.official@1` は起動しない。検証は [Phase 4-G](PHASE_4G_DEEPFILTERNET3_TRAINING.md)。
 
+## SEMamba++
+
+Phase 4-H のクラスは `src.experiments.models.semambapp.SEMambaPPGenerator`、`SEMambaPPMRD`、`SEMambaPPCQTDiscriminator` と、`src.experiments.semambapp.SEMambaPPTrainer` である。Factory はクラスパスを呼ぶだけで、モデル名では分岐しない。Generator は `src.se.build_model("semambapp")` の 1 組である。Discriminator は既存の MRD と CQT である。損失関数も既存のものを呼ぶ。
+
+初期化は Builder の順に依存しない。各クラスが同じ `seed_model_init` に入り、捨てるモジュールの乱数だけを消費する。捨てたモジュールは登録しない。
+
+`SEMambaPPTrainer` の lifecycle は次である。
+
+1. Accumulation 1 は Generator を 1 回 forward し、そのグラフを Discriminator 更新のあとまで保持する。
+2. Accumulation が 2 以上のときは preview を `no_grad` で行い、Discriminator 更新のあと、同じ micro-batch を再 forward する。DataModule は再消費しない。
+3. 両損失は accumulation で割って backward する。Generator 損失のあいだ MRD と CQT を freeze し、終了時に戻す。
+4. `grad_clip` が null なら clip しない。値があるときは MRD、CQT、Generator を別々に clip する。
+5. `ExponentialLR` は epoch が終わったときだけ、G と D を 1 回ずつ進める。
+6. Validation は rank 0 だけが waveform L1、SI-SDR、PESQ、STOI を見る。`best_generator.pt` は書かない。
+7. Checkpoint は両 Optimizer の step のあとだけ書く。形式は `audio-db-experiment-v1` で、`data_provenance.json` は書かない。
+8. `amp_fp16` は拒否する。`scan_backend: fused` を CUDA で指定し `mamba-ssm` が無いときは、reference に落とさず失敗する。CPU の fused 指定は既存ネットワークが reference kernel を実行し、Trainer は設定名と実行 kernel を両方記録する。
+9. `group_size` は accumulation と一致させる。公式素材の `semambapp.gsr.official@1` は起動しない。
+
+設定例は `configs/experiments/semambapp_gsr.yaml`。この YAML の `max_logical_steps` は 1 で、snapshot は `semambapp.gsr.smoke@1` である。検証は [Phase 4-H](PHASE_4H_SEMAMBAPP_TRAINING.md)。
+
 ## Data API
 
 Phase 1 から 2-C の実装はこの節の `TensorPairData` である。音声の Source、Sampler、Protocol、Batch、identity、`plan_hash`、YAML は [DATA_PUBLIC_API.md](DATA_PUBLIC_API.md) を正とする。Phase 3-A は、既存の供給クラスをアダプタで包む案を撤回した。Trainer から見たメソッド名は、この節と音声契約で同じである。

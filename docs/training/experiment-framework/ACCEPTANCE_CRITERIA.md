@@ -182,6 +182,14 @@ Phase 3-A で撤回した。代替の受け入れは [DATA_ACCEPTANCE_CRITERIA.m
 - 測定: [PHASE_4G_DEEPFILTERNET3_TRAINING.md](PHASE_4G_DEEPFILTERNET3_TRAINING.md)。小さい合法構成、4,800 サンプル、CPU / FP32 で、ローカル native kernel とライブラリ欠落の PyTorch fallback のどちらでも差は 0。追跡中の `libdf_rfft.so` はこの glibc 2.31 では読めない。`dfn3.online.official@1` は blocked のままである。
 - 非目標: 公式 DNS4 全量と論文スコア。
 
+### SEMamba++
+
+- 方法: 現行 `SEMambaTask` と `SEMambaPPTrainer` を、同じ初期化 seed、同じ波形、CPU / FP32、reference selective scan で 1 GAN 更新進める。蓄積 1 と 2 を分ける。
+- 期待: 各損失、勾配、更新後 Parameter、両 AdamW state の最大絶対誤差が 0。蓄積 1 は Generator を 1 回だけ forward し、蓄積 2 は preview のあと再 forward する。`best_generator.pt` は作らない。
+- Phase: 4-H
+- 測定: [PHASE_4H_SEMAMBAPP_TRAINING.md](PHASE_4H_SEMAMBAPP_TRAINING.md)。狭い構成、2,048 サンプルで差は 0。`semambapp.gsr.official@1` は blocked のままである。CUDA は `reflection_pad1d` backward が決定的でなく、bit 一致は主張しない。
+- 非目標: 公式 VCTK-GSR 全量と論文スコア。
+
 ### 既存テストの回帰
 
 - 方法: 次を、Phase 4 の差分を入れた作業ツリーで実行する。

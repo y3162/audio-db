@@ -37,7 +37,7 @@ Phase 4 で各モデルに新 Trainer を足すときの固定要件は [ARCHITE
 | TF-GridNet | `mr_l1_tfd`、RMS を掛けない公式モード、`espnet_chunk_v1`、最短 rank で停止、n-best は valid loss | chunk 計画の再実装 |
 | TF-Locoformer | 時間重み 0.5、clip 5、warmup は step の後、最初の step は構築時学習率、研究用 si_snr は dB の最大 | `cv_synthetic_small` という名前の検証集合。現行決定で未解決のままである |
 
-四モデルの数値比較は Phase 4-F で終わった。DeepFilterNet3 の Trainer は、その完了とは別の Phase 4-G である。SEMamba++ の Trainer はまだ作らない。本学習の開始条件は現行の P10 系決定に従い、この移行計画は本学習の承認にならない。
+四モデルの数値比較は Phase 4-F で終わった。DeepFilterNet3 の Trainer は、その完了とは別の Phase 4-G である。SEMamba++ の Trainer は Phase 4-H で接続した。本学習の開始条件は現行の P10 系決定に従い、この移行計画は本学習の承認にならない。
 
 ## 並行運用
 
@@ -78,7 +78,7 @@ Phase 4 で各モデルについて、次を別々に記録する。
 | 1 | Factory、Builder、`Experiment`、CPU の `ProcessRuntime`（DDP も AMP も未実装で、`distribute: none` と `fp32` だけ）、`TensorPairData`、`StandardTrainer`、CLI の `--preflight` と短い `--config` 実行 | [ACCEPTANCE_CRITERIA.md](ACCEPTANCE_CRITERIA.md) の Phase 1 項目が単体テストで満たされる。スナップショットも GPU も使わない |
 | 2 | DDP、AMP、StateRegistry、`audio-db-experiment-v1`、rank 別 RNG、原子的保存、resume | Phase 2 の受け入れ。まだ SE モデルを接続しない。Phase 2-A の CPU checkpoint、Phase 2-B の CPU / Gloo DDP、Phase 2-C の CUDA / NCCL / AMP FP16 は実装済み。FSDP、sharded checkpoint、AMP BF16 は残っている |
 | 3 | 音声 Data System。3-A は設計のみで完了扱いの文書である。3-B 以降の実装順は [DATA_MIGRATION_PLAN.md](DATA_MIGRATION_PLAN.md)。旧行の「既存クラスを包むアダプタ」は作らない。MP-SENet の 1 step は Phase 4 の最初の接続に移した | 公式損失の数値一致はまだ要求しない。新 DataModule は DuckDB を開かない。既存 pipeline テストが引き続き通る |
-| 4 | 四モデルの Trainer。現行入口と並走させ、上の回帰検証を記録する。Phase 4-A は MP-SENet Generator の Waveform L1 接続だけを実装した。Phase 4-B は TF-GridNet MS-SNSD の `mr_l1_tfd`、Adam、epoch 末の `ReduceLROnPlateau`、`valid.loss` の n-best を実装した。Phase 4-C は TF-Locoformer DNS の AdamW、既存 `WarmupReduceLROnPlateau`、研究用の `valid.loss` 最小と `valid.si_snr` 最大を実装した。Phase 4-D は MP-SENet の公式 GAN（D 先行、遅延 Generator backward、`ExponentialLR` の epoch 更新、公式 PESQ の best）を実装した。Phase 4-E は MossFormerGAN の公式 GAN（G1/D4、PESQ skip、micro-batch ごとの clip、増分平均、データ epoch の検証、独自 plateau）を実装した。Phase 4-F は 4 モデルの横断検証で、公式 chunk YAML の `distribute` を `ddp` にし、宣言した world size で構築できるようにした。Phase 4-G は DeepFilterNet3 の独立した追加移植である。SEMamba++ は未実装で、4 モデルの完了には含めない | 記録が `docs/training/experiment-framework/` の検証文書に残り、未測定を一致と書いていない。4-A の記録は [PHASE_4A_MP_SENET_CONNECTION.md](PHASE_4A_MP_SENET_CONNECTION.md)。4-B の記録は [PHASE_4B_TF_GRIDNET_TRAINING.md](PHASE_4B_TF_GRIDNET_TRAINING.md)。4-C の記録は [PHASE_4C_TF_LOCOFORMER_TRAINING.md](PHASE_4C_TF_LOCOFORMER_TRAINING.md)。4-D の記録は [PHASE_4D_MP_SENET_GAN.md](PHASE_4D_MP_SENET_GAN.md)。4-E の記録は [PHASE_4E_MOSSFORMERGAN_TRAINING.md](PHASE_4E_MOSSFORMERGAN_TRAINING.md)。4-F の記録は [PHASE_4F_INTEGRATION.md](PHASE_4F_INTEGRATION.md)。4-G の記録は [PHASE_4G_DEEPFILTERNET3_TRAINING.md](PHASE_4G_DEEPFILTERNET3_TRAINING.md) |
+| 4 | 四モデルの Trainer。現行入口と並走させ、上の回帰検証を記録する。Phase 4-A は MP-SENet Generator の Waveform L1 接続だけを実装した。Phase 4-B は TF-GridNet MS-SNSD の `mr_l1_tfd`、Adam、epoch 末の `ReduceLROnPlateau`、`valid.loss` の n-best を実装した。Phase 4-C は TF-Locoformer DNS の AdamW、既存 `WarmupReduceLROnPlateau`、研究用の `valid.loss` 最小と `valid.si_snr` 最大を実装した。Phase 4-D は MP-SENet の公式 GAN（D 先行、遅延 Generator backward、`ExponentialLR` の epoch 更新、公式 PESQ の best）を実装した。Phase 4-E は MossFormerGAN の公式 GAN（G1/D4、PESQ skip、micro-batch ごとの clip、増分平均、データ epoch の検証、独自 plateau）を実装した。Phase 4-F は 4 モデルの横断検証で、公式 chunk YAML の `distribute` を `ddp` にし、宣言した world size で構築できるようにした。Phase 4-G は DeepFilterNet3 の独立した追加移植である。Phase 4-H は SEMamba++ の公式 GAN を独立して追加した。4 モデルの完了には含めない | 記録が `docs/training/experiment-framework/` の検証文書に残り、未測定を一致と書いていない。4-A の記録は [PHASE_4A_MP_SENET_CONNECTION.md](PHASE_4A_MP_SENET_CONNECTION.md)。4-B の記録は [PHASE_4B_TF_GRIDNET_TRAINING.md](PHASE_4B_TF_GRIDNET_TRAINING.md)。4-C の記録は [PHASE_4C_TF_LOCOFORMER_TRAINING.md](PHASE_4C_TF_LOCOFORMER_TRAINING.md)。4-D の記録は [PHASE_4D_MP_SENET_GAN.md](PHASE_4D_MP_SENET_GAN.md)。4-E の記録は [PHASE_4E_MOSSFORMERGAN_TRAINING.md](PHASE_4E_MOSSFORMERGAN_TRAINING.md)。4-F の記録は [PHASE_4F_INTEGRATION.md](PHASE_4F_INTEGRATION.md)。4-G の記録は [PHASE_4G_DEEPFILTERNET3_TRAINING.md](PHASE_4G_DEEPFILTERNET3_TRAINING.md)。4-H の記録は [PHASE_4H_SEMAMBAPP_TRAINING.md](PHASE_4H_SEMAMBAPP_TRAINING.md) |
 | 5 | LoRA、難例 Sampler、複数 Expert の動的枠、Distillation、勾配を通す ASR が別クラスとして必要ならその設計の実装 | 各拡張が YAML の DSL ではなく Trainer クラスである。公式再現の入口が変わっていない |
 
 Phase 1 のゴールは `torch.nn.Linear` の数 step である。GAN の `run`、実 ASR、SE の重みは Phase 1 の完了条件に入れない。それらの YAML は Builder の構築試験にだけ使う。
@@ -92,7 +92,7 @@ Phase 1 のゴールは `torch.nn.Linear` の数 step である。GAN の `run`�
 
 完了は受け入れ表の該当行が、テスト名と結果の記録を持つことである。設計書が存在することは Phase 0 以外の完了条件にならない。
 
-Phase 4 の完了は、MP-SENet、MossFormerGAN、TF-GridNet、TF-Locoformer の 4 モデルについて回帰記録があることである。一モデルだけの記録では Phase 4 を完了にしない。Phase 4-F の横断記録で、この 4 モデルの移行検証は完了である。DeepFilterNet3 の接続は Phase 4-G で、この 4 モデルの完了とは別である。SEMamba++ は未実装である。記録の中で一致しなかった項目は、完了ではなく差分として残す。差分が既知の決定（MossFormerGAN の 2 GPU 平均）なら、その決定番号を記録に書く。
+Phase 4 の完了は、MP-SENet、MossFormerGAN、TF-GridNet、TF-Locoformer の 4 モデルについて回帰記録があることである。一モデルだけの記録では Phase 4 を完了にしない。Phase 4-F の横断記録で、この 4 モデルの移行検証は完了である。DeepFilterNet3 の接続は Phase 4-G で、この 4 モデルの完了とは別である。SEMamba++ の接続は Phase 4-H で、この 4 モデルの完了とは別である。記録の中で一致しなかった項目は、完了ではなく差分として残す。差分が既知の決定（MossFormerGAN の 2 GPU 平均）なら、その決定番号を記録に書く。
 
 ## ロールバック
 

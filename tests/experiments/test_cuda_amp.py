@@ -647,5 +647,137 @@ def _max_abs(left: object, right: object) -> float:
     return max(values) if values else 0.0
 
 
+class SEMambaCudaTests(unittest.TestCase):
+    """Short CUDA SEMamba++ steps. The module skip still covers a hidden GPU."""
+
+    def test_reference_cuda_matches_the_task(self) -> None:
+        _require_devices(1)
+        report = _semamba_probe("reference", sys.executable)
+        row = report["runs"][0]
+        self.assertEqual(row["scan_configured"], "reference")
+        self.assertEqual(row["scan_executed"], "reference")
+        self.assertTrue(row["finite"])
+        self.assertEqual(row["generator_forwards"], 1.0)
+        # reflection_pad1d CUDA backward has no deterministic kernel, so two
+        # runs of the same task already move weights by about 4e-4. The
+        # trainer stays inside that self-rerun.
+        self.assertLess(row["loss_max_abs"], 1e-4)
+        self.assertLess(row["generator_grad_max_abs"], 1e-3)
+        self.assertLess(row["generator_state_max_abs"], 1e-3)
+        Path("/tmp/phase4h-cuda-reference.json").write_text(json.dumps(row, indent=2, sort_keys=True), encoding="utf-8")
+
+    def test_fused_cuda_matches_the_task_and_records_the_reference_gap(self) -> None:
+        _require_devices(1)
+        python = ROOT / ".venvs" / "semambapp" / "bin" / "python"
+        self.assertTrue(python.is_file())
+        report = _semamba_probe("both", str(python))
+        by_name = {row["backend"]: row for row in report["runs"]}
+        fused = by_name["fused"]
+        self.assertEqual(fused["scan_configured"], "fused")
+        self.assertEqual(fused["scan_executed"], "fused")
+        self.assertNotEqual(fused["scan_executed"], "reference")
+        self.assertTrue(fused["finite"])
+        self.assertLess(fused["loss_max_abs"], 1e-4)
+        self.assertLess(fused["generator_state_max_abs"], 1e-3)
+        cross = by_name["reference_versus_fused"]
+        self.assertEqual(cross["reference_executed"], "reference")
+        self.assertEqual(cross["fused_executed"], "fused")
+        self.assertGreaterEqual(float(cross["generator_state_max_abs"]), 0.0)
+        Path("/tmp/phase4h-cuda-both.json").write_text(json.dumps(report, indent=2, sort_keys=True), encoding="utf-8")
+
+    def test_nccl_reference_and_fused_accumulation(self) -> None:
+        _require_devices(2)
+        from tests.experiments.test_semambapp import _yaml
+
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            for backend, python in (
+                ("reference", sys.executable),
+                ("fused", str(ROOT / ".venvs" / "semambapp" / "bin" / "python")),
+            ):
+                for accumulation in (1, 2):
+                    target = root / f"{backend}-{accumulation}"
+                    config = _yaml(
+                        target,
+                        steps=1,
+                        count=accumulation,
+                        group_size=accumulation,
+                        accumulation=accumulation,
+                        validation_interval=0,
+                        scan_backend=backend,
+                        device="cuda",
+                        deterministic=False,
+                    )
+                    completed = _torchrun_python(config, python=python, devices=_DEVICES_TWO, timeout=300)
+                    self.assertEqual(completed.returncode, 0, f"{backend} accum {accumulation}\n{completed.stderr[-2500:]}")
+                    payload = torch.load(target / "step_00000001.pt", map_location="cpu", weights_only=False)
+                    self.assertTrue(payload["parameter_ranks_agree"])
+                    self.assertEqual(payload["world_size"], 2)
+                    row = payload["states"]["trainer"]["step_log"][0]
+                    self.assertEqual(row["scan_configured"], backend)
+                    if accumulation == 1:
+                        self.assertEqual(row["generator_forwards"], 1)
+                        self.assertEqual(row["generator_reforwards"], 0)
+                    else:
+                        self.assertEqual(row["generator_previews"], 2)
+                        self.assertEqual(row["generator_reforwards"], 2)
+
+
+def _semamba_probe(mode: str, python: str) -> dict:
+    directory = Path(tempfile.mkdtemp(prefix="semamba-cuda-"))
+    out = directory / "report.json"
+    env = _base_env(_DEVICES_ONE)
+    env["PYTHONPATH"] = str(ROOT) + (os.pathsep + env["PYTHONPATH"] if env.get("PYTHONPATH") else "")
+    completed = subprocess.run(
+        [
+            python,
+            str(ROOT / "tests" / "experiments" / "semamba_cuda_probe.py"),
+            "--mode",
+            mode,
+            "--length",
+            "2048",
+            "--out",
+            str(out),
+            "--directory",
+            str(directory),
+        ],
+        cwd=ROOT,
+        env=env,
+        check=False,
+        capture_output=True,
+        text=True,
+        timeout=300,
+    )
+    if completed.returncode != 0:
+        raise AssertionError(f"semamba cuda probe {mode} failed\n{completed.stderr[-3000:]}\n{completed.stdout[-1500:]}")
+    return json.loads(out.read_text(encoding="utf-8"))
+
+
+def _torchrun_python(config: Path, *, python: str, devices: str, timeout: int) -> subprocess.CompletedProcess[str]:
+    visible = [item for item in devices.split(",") if item != ""]
+    return subprocess.run(
+        [
+            python,
+            "-m",
+            "torch.distributed.run",
+            "--standalone",
+            "--nproc_per_node",
+            str(len(visible)),
+            "--master_port",
+            str(_free_port()),
+            "-m",
+            "src.experiments.cli",
+            "--config",
+            str(config),
+        ],
+        cwd=ROOT,
+        env=_base_env(devices),
+        check=False,
+        capture_output=True,
+        text=True,
+        timeout=timeout,
+    )
+
+
 if __name__ == "__main__":
     unittest.main()
