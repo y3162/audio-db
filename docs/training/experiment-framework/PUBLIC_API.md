@@ -357,6 +357,8 @@ Phase 4-H のクラスは `src.experiments.models.semambapp.SEMambaPPGenerator`�
 
 設定例は `configs/experiments/semambapp_gsr.yaml`。この YAML の `max_logical_steps` は 1 で、snapshot は `semambapp.gsr.smoke@1` である。検証は [Phase 4-H](PHASE_4H_SEMAMBAPP_TRAINING.md)。
 
+6 モデルの統合判定は [Phase 4-I](PHASE_4I_SIX_MODEL_INTEGRATION.md) である。新しい Trainer は足していない。実験 checkpoint は `data_provenance.json` を書かず、`provenance_sha256` は None のままである。全体は CONDITIONAL GO で、DeepFilterNet3 の追跡 native library が読めないホストを無条件 GO にしない。
+
 ## Data API
 
 Phase 1 から 2-C の実装はこの節の `TensorPairData` である。音声の Source、Sampler、Protocol、Batch、identity、`plan_hash`、YAML は [DATA_PUBLIC_API.md](DATA_PUBLIC_API.md) を正とする。Phase 3-A は、既存の供給クラスをアダプタで包む案を撤回した。Trainer から見たメソッド名は、この節と音声契約で同じである。

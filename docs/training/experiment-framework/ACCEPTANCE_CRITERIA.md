@@ -190,6 +190,14 @@ Phase 3-A で撤回した。代替の受け入れは [DATA_ACCEPTANCE_CRITERIA.m
 - 測定: [PHASE_4H_SEMAMBAPP_TRAINING.md](PHASE_4H_SEMAMBAPP_TRAINING.md)。狭い構成、2,048 サンプルで差は 0。`semambapp.gsr.official@1` は blocked のままである。CUDA は `reflection_pad1d` backward が決定的でなく、bit 一致は主張しない。
 - 非目標: 公式 VCTK-GSR 全量と論文スコア。
 
+### 6 モデル統合
+
+- 方法: 6 本の公式 YAML を preflight し、CPU の既存数値試験を再実行し、DeepFilterNet3 と SEMamba++ の推論 export と checkpoint の取り違えを確認する。GPU は短い NCCL だけを足し、公式幅の学習はしない。
+- 期待: 6 モデルを同じ Factory から構築できる。CPU / FP32 の検証済み条件で現行 Task との最大絶対誤差は 0 のままである。追跡中の DeepFilterNet3 native library が読めない場合、その条件を CONDITIONAL GO のまま残す。`data_provenance.json` は足さない。
+- Phase: 4-I
+- 測定: [PHASE_4I_SIX_MODEL_INTEGRATION.md](PHASE_4I_SIX_MODEL_INTEGRATION.md)。全体は CONDITIONAL GO。公式全量と論文スコアは含まない。
+- 非目標: Provenance sidecar、追跡バイナリの置換、公式全量学習。
+
 ### 既存テストの回帰
 
 - 方法: 次を、Phase 4 の差分を入れた作業ツリーで実行する。

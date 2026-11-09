@@ -37,7 +37,7 @@ Phase 4 で各モデルに新 Trainer を足すときの固定要件は [ARCHITE
 | TF-GridNet | `mr_l1_tfd`、RMS を掛けない公式モード、`espnet_chunk_v1`、最短 rank で停止、n-best は valid loss | chunk 計画の再実装 |
 | TF-Locoformer | 時間重み 0.5、clip 5、warmup は step の後、最初の step は構築時学習率、研究用 si_snr は dB の最大 | `cv_synthetic_small` という名前の検証集合。現行決定で未解決のままである |
 
-四モデルの数値比較は Phase 4-F で終わった。DeepFilterNet3 の Trainer は、その完了とは別の Phase 4-G である。SEMamba++ の Trainer は Phase 4-H で接続した。本学習の開始条件は現行の P10 系決定に従い、この移行計画は本学習の承認にならない。
+四モデルの数値比較は Phase 4-F で終わった。DeepFilterNet3 の Trainer は Phase 4-G、SEMamba++ の Trainer は Phase 4-H で接続した。Phase 4-I は 6 モデルの統合判定で、新しい Trainer は足していない。全体は CONDITIONAL GO であり、公式全量の本学習の承認にはならない。本学習の開始条件は現行の P10 系決定に従う。
 
 ## 並行運用
 

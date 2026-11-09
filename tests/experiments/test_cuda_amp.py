@@ -753,6 +753,220 @@ def _semamba_probe(mode: str, python: str) -> dict:
     return json.loads(out.read_text(encoding="utf-8"))
 
 
+class Phase4ICudaTests(unittest.TestCase):
+    """Short NCCL checks for models whose CUDA world size 2 path was open."""
+
+    def test_deepfilternet3_nccl_one_step_ranks_agree(self) -> None:
+        _require_devices(2)
+        from tests.experiments.test_deepfilternet3 import _tiny_yaml
+
+        with tempfile.TemporaryDirectory(prefix="phase4i-dfn-nccl-") as directory:
+            target = Path(directory)
+            text = _tiny_yaml(target, stop_after=None, world_batch=2)
+            text = text.replace("    device: cpu\n", "    device: cuda\n")
+            text = text.replace("deterministic: true\n", "deterministic: false\n")
+            text = text.replace("      max_logical_steps: 2\n", "      max_logical_steps: 1\n")
+            config = target / "experiment.yaml"
+            config.write_text(text, encoding="utf-8")
+            completed = _torchrun_worker(config, devices=_DEVICES_TWO, timeout=300)
+            self.assertEqual(completed.returncode, 0, completed.stderr[-2500:] + completed.stdout[-800:])
+            self._assert_ranks(target, logical_step=1)
+            payload = torch.load(target / "step_00000001.pt", map_location="cpu", weights_only=False)
+            self.assertTrue(any("df_fc_a" in key for key in payload["states"]["model"]))
+            self.assertIsNone(payload["provenance_sha256"])
+            self.assertFalse((target / "data_provenance.json").exists())
+            self.assertEqual(payload["world_size"], 2)
+            metrics = [
+                json.loads(line)
+                for line in (target / "metrics.jsonl").read_text(encoding="utf-8").splitlines()
+                if line
+            ]
+            self.assertEqual(len(metrics), 1)
+            self.assertTrue(all(float(row["loss"]) == float(row["loss"]) for row in metrics))
+
+    def test_semamba_nccl_resume_keeps_both_ranks(self) -> None:
+        _require_devices(2)
+        from tests.experiments.test_semambapp import _yaml
+
+        with tempfile.TemporaryDirectory(prefix="phase4i-semamba-nccl-") as directory:
+            root = Path(directory)
+            continuous = _yaml(
+                root / "continuous",
+                steps=2,
+                count=2,
+                accumulation=1,
+                validation_interval=0,
+                device="cuda",
+                deterministic=False,
+            )
+            interrupted = _yaml(
+                root / "interrupted",
+                steps=2,
+                count=2,
+                accumulation=1,
+                validation_interval=0,
+                stop_after=1,
+                device="cuda",
+                deterministic=False,
+            )
+            first = _torchrun_worker(continuous, devices=_DEVICES_TWO, timeout=300)
+            self.assertEqual(first.returncode, 0, first.stderr[-2500:])
+            stopped = _torchrun_worker(interrupted, devices=_DEVICES_TWO, timeout=300)
+            self.assertEqual(stopped.returncode, 0, stopped.stderr[-2500:])
+            resumed_config = _yaml(
+                root / "interrupted",
+                steps=2,
+                count=2,
+                accumulation=1,
+                validation_interval=0,
+                device="cuda",
+                deterministic=False,
+            )
+            resumed = _torchrun_worker(
+                resumed_config,
+                devices=_DEVICES_TWO,
+                timeout=300,
+                resume=root / "interrupted" / "step_00000001.pt",
+            )
+            self.assertEqual(resumed.returncode, 0, resumed.stderr[-2500:])
+            self._assert_ranks(root / "continuous", logical_step=2)
+            self._assert_ranks(root / "interrupted", logical_step=2)
+            gap = _checkpoint_gap(
+                root / "continuous" / "step_00000002.pt",
+                root / "interrupted" / "step_00000002.pt",
+            )
+            row = torch.load(root / "interrupted" / "step_00000002.pt", map_location="cpu", weights_only=False)
+            trainer = row["states"]["trainer"]
+            self.assertEqual(trainer["step_log"][-1]["scan_configured"], "reference")
+            self.assertEqual(trainer["step_log"][-1]["scan_executed"], "reference")
+            self.assertIn("generator", row["states"])
+            self.assertIn("mrd", row["states"])
+            self.assertIn("cqt", row["states"])
+            self.assertIn("optim_g", row["states"])
+            self.assertIn("optim_d", row["states"])
+            self.assertIn("scheduler_g", row["states"])
+            self.assertIn("scheduler_d", row["states"])
+            Path("/tmp/phase4i-semamba-nccl-resume-gap.txt").write_text(f"{gap}\n", encoding="utf-8")
+            # CUDA reflection_pad1d backward is nondeterministic. A gap near
+            # the self-rerun of two continuous runs shows the resume loaded
+            # the step-1 state. It is not a bit-exact match.
+            self.assertLess(gap, 1e-2)
+
+    def test_grid_and_locoformer_nccl_one_step(self) -> None:
+        _require_devices(2)
+        from tests.experiments.test_tf_gridnet_training import _scripted_yaml as grid_yaml
+        from tests.experiments.test_tf_locoformer_training import _scripted_yaml as loco_yaml
+
+        with tempfile.TemporaryDirectory(prefix="phase4i-chunk-nccl-") as directory:
+            root = Path(directory)
+            for name, write in (
+                ("grid", grid_yaml),
+                ("loco", loco_yaml),
+            ):
+                target = root / name
+                config = write(target, steps=1, updates=2, distribute="ddp")
+                text = config.read_text(encoding="utf-8")
+                text = text.replace("    device: cpu\n", "    device: cuda\n")
+                text = text.replace("deterministic: true\n", "deterministic: false\n")
+                text = text.replace("    timeout_seconds: 60\n", "    timeout_seconds: 180\n")
+                config.write_text(text, encoding="utf-8")
+                completed = _torchrun_worker(config, devices=_DEVICES_TWO, timeout=300)
+                self.assertEqual(completed.returncode, 0, f"{name}\n{completed.stderr[-2500:]}")
+                self._assert_ranks(target, logical_step=1)
+
+    def _assert_ranks(self, directory: Path, *, logical_step: int) -> None:
+        left = torch.load(directory / "rank0-modules.pt", map_location="cpu", weights_only=False)
+        right = torch.load(directory / "rank1-modules.pt", map_location="cpu", weights_only=False)
+        self.assertEqual(set(left), set(right))
+        worst = 0.0
+        for name in left:
+            for key, value in left[name].items():
+                other = right[name][key]
+                if value.dtype.is_floating_point:
+                    worst = max(worst, float((value - other).abs().max()))
+                else:
+                    self.assertTrue(torch.equal(value, other), f"{name}.{key}")
+        self.assertEqual(worst, 0.0)
+        for rank in (0, 1):
+            summary = json.loads((directory / f"rank{rank}-summary.json").read_text(encoding="utf-8"))
+            self.assertEqual(summary["logical_step"], logical_step)
+            self.assertIsInstance(summary["sync_batchnorm"], dict)
+            self.assertFalse(any(summary["sync_batchnorm"].values()))
+
+
+def _checkpoint_gap(left: Path, right: Path) -> float:
+    lhs = torch.load(left, map_location="cpu", weights_only=False)
+    rhs = torch.load(right, map_location="cpu", weights_only=False)
+    worst = 0.0
+
+    def walk(a: object, b: object) -> None:
+        nonlocal worst
+        if isinstance(a, torch.Tensor):
+            if not isinstance(b, torch.Tensor):
+                raise AssertionError(type(b))
+            if a.dtype.is_floating_point and b.dtype.is_floating_point:
+                worst = max(worst, float((a.cpu() - b.cpu()).abs().max()))
+            return
+        if isinstance(a, dict):
+            if not isinstance(b, dict):
+                raise AssertionError(type(b))
+            for key, value in a.items():
+                if key in {"output_directory", "code_identity"}:
+                    continue
+                if key not in b:
+                    raise AssertionError(key)
+                walk(value, b[key])
+            return
+        if isinstance(a, (list, tuple)):
+            if not isinstance(b, (list, tuple)) or len(a) != len(b):
+                raise AssertionError("length")
+            for item, other in zip(a, b, strict=True):
+                walk(item, other)
+
+    for key in ("states", "logical_step", "optimizer_updates"):
+        walk(lhs[key], rhs[key])
+    return worst
+
+
+def _torchrun_worker(
+    config: Path,
+    *,
+    devices: str,
+    timeout: int,
+    resume: Path | None = None,
+) -> subprocess.CompletedProcess[str]:
+    visible = [item for item in devices.split(",") if item != ""]
+    command = [
+        sys.executable,
+        "-m",
+        "torch.distributed.run",
+        "--standalone",
+        "--nproc_per_node",
+        str(len(visible)),
+        "--master_port",
+        str(_free_port()),
+        "-m",
+        "tests.experiments.phase4i_nccl_worker",
+        str(config),
+    ]
+    if resume is not None:
+        command.extend(["--resume", str(resume)])
+    env = _base_env(devices)
+    env["PYTHONPATH"] = str(ROOT) + (os.pathsep + env["PYTHONPATH"] if env.get("PYTHONPATH") else "")
+    local = ROOT / "build" / "df-rfft" / "release" / "libdf_rfft.so"
+    if local.is_file():
+        env.setdefault("DF_RFFT_LIBRARY", str(local))
+    return subprocess.run(
+        command,
+        cwd=ROOT,
+        env=env,
+        check=False,
+        capture_output=True,
+        text=True,
+        timeout=timeout,
+    )
+
+
 def _torchrun_python(config: Path, *, python: str, devices: str, timeout: int) -> subprocess.CompletedProcess[str]:
     visible = [item for item in devices.split(",") if item != ""]
     return subprocess.run(
