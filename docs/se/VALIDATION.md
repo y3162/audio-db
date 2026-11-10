@@ -1,5 +1,7 @@
 # 検証（途中）
 
+現在の通常テストは `CUDA_VISIBLE_DEVICES="" .venvs/se/bin/python -m unittest discover -s tests/se -v` である。以下はこのファイルに残っている測定記録である。
+
 `lab`: Python 3.13.9、PyTorch 2.6.0+cu124、torchaudio 2.6.0+cu124、NumPy 2.5.4、ホスト turing。GPU は使用中につき CPU のみ。環境構築は `docs/envs/SHINODA_LAB.md`（当時のファイル名は LAB.md）。追加インストールなし。
 
 実行: `.venvs/lab/bin/python -m unittest discover -s tests/se -v`。公式比較テストは参照コードとチェックポイントがある場合のみ実行し、なければ skip される。公式コードを含まない一時コピーでロードと推論を行う独立性テストも含む。

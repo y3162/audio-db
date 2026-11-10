@@ -59,8 +59,8 @@ help:
 	  '  make reproduction-register-p8' \
 	  '' \
 	  'Experiments:' \
-	  '  make experiment CONFIG=configs/experiments/....yaml' \
-	  '  make experiment-preflight CONFIG=configs/experiments/....yaml' \
+	  '  make experiment CONFIG=configs/reproduction/experiments/....yaml' \
+	  '  make experiment-preflight CONFIG=configs/reproduction/experiments/....yaml' \
 	  '  make test-cpu'
 
 setup:

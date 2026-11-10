@@ -87,8 +87,8 @@ asr:
 
 `src/evaluation/models/asr.py` は設定を `src.asr.load_recognizer()` に渡すだけです。`mock` は評価のテスト用で、モデル本体ではありません。認識テキストは仮説として保存し、WER を計算するときだけ `wer-norm-v1` を掛けます。
 
-例は `configs/evaluation/e2e.yaml` です。SE は CPU、Parakeet は空いている GPU を指定します。
+名前付きセットの例は `configs/reproduction/evaluation/example.yaml` で、ASR は無効です。合成音声と mock ASR は `tests/fixtures/configs/evaluation/smoke.yaml` です。Parakeet を使うときは上の `asr` を評価設定に書き、空いている GPU を `device` に指定します。
 
 ## 環境
 
-NeMo は Python 3.13 の `.venvs/lab` には入れません。ASR 用は `.venvs/asr`（Python 3.12.13）です。再構築は [ASR 環境](../envs/ASR.md) にあります。
+NeMo は `.venvs/asr` に入ります。再構築は [ASR 環境](../envs/ASR.md) にあります。

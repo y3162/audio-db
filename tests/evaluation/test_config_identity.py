@@ -21,14 +21,14 @@ ROOT = Path(__file__).resolve().parents[2]
 
 class ConfigTests(unittest.TestCase):
     def test_smoke_file_loads(self):
-        config = load_config(ROOT / "configs/evaluation/smoke.yaml")
+        config = load_config(ROOT / "tests/fixtures/configs/evaluation/smoke.yaml")
         self.assertEqual(config.experiment.name, "se-smoke")
         self.assertEqual(config.models[0].name, "mock")
         self.assertEqual(config.mixing.snr_db, [0.0, 5.0])
 
     def test_example_accepts_a_named_evaluation_set(self):
         # Evaluation no longer reads manifests. Import them, then select dataset.set.
-        config = load_config(ROOT / "configs/evaluation/example.yaml")
+        config = load_config(ROOT / "configs/reproduction/evaluation/example.yaml")
         self.assertEqual(config.models[0].name, "mp_senet")
         self.assertEqual(config.models[0].variant, "vb")
         self.assertTrue(config.models[0].checkpoint.endswith("g_best_vb"))

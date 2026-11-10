@@ -1,5 +1,7 @@
 # コーパス
 
+再現実験の Dataset と Protocol は `configs/data/datasets/` と `configs/data/protocols/` にある。学習が読むのはスナップショットで、選び方は [学習](../experiments/RUN.md)。
+
 標準リンクと索引対象は `src/data/corpora_catalog.py` の 14 コーパス。索引は学習に使うかどうかを理由に音声を除外せず、元の sample rate・フレーム数・チャンネル数を保存する。列の意味と各コーパスの対応は [audio_files](tables/AUDIO_FILES.md)、既存コーパスの収録条件と内訳は [データセット](DATASETS.md)、TSUBAME 初回構築時の件数は [初回構築記録](TSUBAME_INITIAL.md) を参照する。後者の件数は取得したファイル集合の記録であり、現在の DB 全件の保証ではない。
 
 ## リンクと索引

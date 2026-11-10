@@ -1,6 +1,19 @@
 # 音声強調 API
 
-`src.se` は `available_enhancers()`, `build_model(name, config=None)`, `load_enhancer(name, checkpoint, device='cpu', config=None)` を公開する。登録済みは MP-SENet、TF-GridNet、DeepFilterNet3、MossFormerGAN、SEMamba++。`build_model` は勾配を維持する `nn.Module` を返す。学習ループは `src/training` にあり、この API には含まれない。チェックポイントのパスを渡す。キーの過不足は拒否する。
+`src.se` は `available_enhancers()`, `build_model(name, config=None)`, `load_enhancer(name, checkpoint, device='cpu', config=None)` を公開する。登録済みは MP-SENet、TF-GridNet、TF-Locoformer、DeepFilterNet3、MossFormerGAN、SEMamba++。`build_model` は勾配を維持する `nn.Module` を返す。学習は `src/experiments/` だけが行い、この API は推論と未学習モジュールの構築だけを返す。チェックポイントのパスを渡す。キーの過不足は拒否する。
+
+```python
+from src.se import available_enhancers, build_model, load_enhancer
+
+print(available_enhancers())
+model = build_model("mp_senet")
+enc = load_enhancer("mp_senet", checkpoint="/path/to/g_best_vb", device="cpu")
+enhanced = enc.enhance(noisy, sample_rate=16000)
+model_urgent = build_model("tf_gridnet", variant="urgent24")
+model_ms = build_model("tf_gridnet", variant="ms-snsd")
+```
+
+可変長は `enhancer.enhance_batch(padded_waveforms, 16000, lengths)`。モデルごとの差は [MODELS.md](MODELS.md)、波形比較の範囲は [VALIDATION.md](VALIDATION.md)。
 
 `enhance` は一次元浮動小数点 Tensor と整数サンプルレートを受け、元の長さ、dtype、デバイスの Tensor を返す。内部で 16 kHz にリサンプリング、RMS 正規化、複素 STFT、振幅圧縮、Generator、逆変換を行う。無音は無音として返す。非常に短い音声は reflect padding の制約により拒否する。公式の iSTFT は長さを hop の倍数に切り詰めるが、API は元の長さを明示する。リサンプリングは torchaudio を使う。複数チャンネルとストリーミングは未対応。MossFormerGAN は 10 秒超で公式と同じ窓分割をする。
 
@@ -10,7 +23,7 @@
 
 `src/se/core/registry.py` の `ModelSpec` にモデル構築・ローダー・別名・variant・基本メタデータを登録し、`model_metadata(name)` で参照できる。`build_model(..., variant=...)` と `load_enhancer(..., variant=...)` は指定 variant を検証する。任意の checkpoint パスに加え、必要な名前とパスの辞書を受け取り、キーの過不足と state dict の不一致を拒否する。
 
-設定は辞書・JSON・YAML を受け付ける。YAML は追加の PyYAML が必要で、既存 lab には未インストール。既存環境は変更していない。モデル設定は flat mapping であり公式の ESPnet YAML 全体を直接読み込む機能ではない。
+設定は辞書・JSON・YAML を受け付ける。モデル設定は flat mapping であり、公式の ESPnet YAML 全体を直接読み込む機能ではない。
 
 `enhancer.enhance_batch(waveforms, sample_rate, lengths=None)` は `(batch, time)` と発話長を受け、各発話を独立推論し `(zero-padded output, lengths)` を返す。バッチ内の異なるサンプルレートは未対応。TF-GridNet の `urgent24` と `ms-snsd` は構造が異なるため `variant` を明示する。`wsj0-2mix` は未対応。URGENT24 は入力サンプルレートに応じて STFT を変更し、MS-SNSD は内部で 16 kHz に変換する。公式の resampling 実装との数値比較は未実施。
 

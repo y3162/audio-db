@@ -13,7 +13,7 @@ ROOT = Path(__file__).resolve().parents[2]
 class CliTests(unittest.TestCase):
     def test_smoke_dry_run_and_execute(self):
         with self._temporary_dir() as directory:
-            config = ROOT / "configs/evaluation/smoke.yaml"
+            config = ROOT / "tests/fixtures/configs/evaluation/smoke.yaml"
             dry_out = io.StringIO()
             with redirect_stdout(dry_out):
                 code = main(["--config", str(config), "--dry-run", "--output", directory, "--run-id", "cli"])
@@ -57,7 +57,7 @@ class CliTests(unittest.TestCase):
             code = main(
                 [
                     "--config",
-                    str(ROOT / "configs/evaluation/smoke.yaml"),
+                    str(ROOT / "tests/fixtures/configs/evaluation/smoke.yaml"),
                     "--models",
                     "not-a-model",
                     "--dry-run",

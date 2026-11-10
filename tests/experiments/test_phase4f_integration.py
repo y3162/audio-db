@@ -38,10 +38,10 @@ from tests.experiments.test_tf_locoformer_training import _scripted_yaml as loco
 
 ROOT = Path(__file__).resolve().parents[2]
 OFFICIAL = {
-    "mp_senet": ROOT / "configs/experiments/mp_senet_gan.yaml",
-    "mossformergan": ROOT / "configs/experiments/mossformergan_se_16k.yaml",
-    "tf_gridnet": ROOT / "configs/experiments/tf_gridnet_ms_snsd.yaml",
-    "tf_locoformer": ROOT / "configs/experiments/tf_locoformer_dns.yaml",
+    "mp_senet": ROOT / "tests/fixtures/configs/experiments/mp_senet_gan.yaml",
+    "mossformergan": ROOT / "tests/fixtures/configs/experiments/mossformergan_se_16k.yaml",
+    "tf_gridnet": ROOT / "tests/fixtures/configs/experiments/tf_gridnet_ms_snsd.yaml",
+    "tf_locoformer": ROOT / "tests/fixtures/configs/experiments/tf_locoformer_dns.yaml",
 }
 
 

@@ -19,9 +19,8 @@ src/evaluation/
 
 src/asr/                    # 認識モデル本体。評価には依存しない
 configs/db/init.yaml         # make db-init が登録する Manifest と評価セット
-configs/evaluation/
-├── smoke.yaml             # 合成音声 + mock
-└── example.yaml           # 名前付き評価セット + MP-SENet
+configs/reproduction/evaluation/example.yaml   # 名前付き評価セット + MP-SENet
+tests/fixtures/configs/evaluation/smoke.yaml   # 合成音声 + mock
 
 examples/manifests/          # DuckDB へ登録する Manifest の例
 tests/evaluation/
@@ -163,7 +162,7 @@ db.create_set_from_corpus(
 
 ### 合成音声
 
-`dataset.source: synthetic` はメモリ上の振幅変調ノイズを作ります。コーパスが無くても `configs/evaluation/smoke.yaml` が動きます。
+`dataset.source: synthetic` はメモリ上の振幅変調ノイズを作ります。コーパスが無くても `tests/fixtures/configs/evaluation/smoke.yaml` が動きます。
 
 ### データが無いとき
 
@@ -263,10 +262,10 @@ ESTOI は `metrics.estoi: true`、SI-SDR は `metrics.si_sdr: true` です。既
 
 ```bash
 make db-init
-python -m src.evaluation.cli --config configs/evaluation/smoke.yaml --dry-run
-python -m src.evaluation.cli --config configs/evaluation/smoke.yaml --limit 2 --device cpu --seed 0
-python -m src.evaluation.cli --config configs/evaluation/example.yaml --run-id libri-2s --device cpu
-python -m src.evaluation.cli --config configs/evaluation/example.yaml --run-id libri-2s --resume
+python -m src.evaluation.cli --config tests/fixtures/configs/evaluation/smoke.yaml --dry-run
+python -m src.evaluation.cli --config tests/fixtures/configs/evaluation/smoke.yaml --limit 2 --device cpu --seed 0
+python -m src.evaluation.cli --config configs/reproduction/evaluation/example.yaml --run-id libri-2s --device cpu
+python -m src.evaluation.cli --config configs/reproduction/evaluation/example.yaml --run-id libri-2s --resume
 python -m src.evaluation.cli --summarize data/results/se-evaluation/libri-2s
 ```
 
@@ -309,7 +308,7 @@ Run ID を省略すると、実験名、UTC 時刻、設定ハッシュから作
 
 ```bash
 cd /path/to/audio-db
-.venvs/lab/bin/python -m unittest discover -s tests/evaluation -v
+CUDA_VISIBLE_DEVICES="" .venvs/se/bin/python -m unittest discover -s tests/evaluation -v
 ```
 
 合成音声、Mock SE、Mock ASR で、混合、SNR、WER の micro 集計、指標の skip、保存、再開、設定変更によるキャッシュ無効化、dry-run を確認します。GPU も巨大チェックポイントも要りません。
@@ -319,24 +318,12 @@ cd /path/to/audio-db
 既存の SE 試験は今までどおりです。
 
 ```bash
-.venvs/lab/bin/python -m unittest discover -s tests/se -v
+CUDA_VISIBLE_DEVICES="" .venvs/se/bin/python -m unittest discover -s tests/se -v
 ```
 
 ## 依存関係
 
-実行環境は `.venvs/lab` です。評価のために追加したものは `requirements/evaluation.txt` です。
-
-| パッケージ | 用途 |
-|---|---|
-| PyYAML | 設定ファイル |
-| pesq | PESQ。無いときはその指標だけ unavailable |
-| pystoi / scipy | STOI と ESTOI。無いときはその指標だけ unavailable |
-
-torch、torchaudio、duckdb、numpy は既存の lab 環境のものを使います。numpy は 2.5.4 のままにします。
-
-```bash
-uv pip install --python .venvs/lab/bin/python "numpy==2.5.4" -r requirements/evaluation.txt
-```
+実行環境は `.venvs/se` です。依存の正本は `requirements/se.lock.txt` です。PESQ または STOI のライブラリが無いときは、その指標だけ `unavailable` になり、WER は続きます。
 
 ## 学習データの来歴
 

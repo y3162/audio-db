@@ -1,7 +1,7 @@
 """Command line for the evaluation pipeline.
 
-    python -m src.evaluation.cli --config configs/evaluation/smoke.yaml --dry-run
-    python -m src.evaluation.cli --config configs/evaluation/smoke.yaml --limit 2
+    python -m src.evaluation.cli --config tests/fixtures/configs/evaluation/smoke.yaml --dry-run
+    python -m src.evaluation.cli --config tests/fixtures/configs/evaluation/smoke.yaml --limit 2
     python -m src.evaluation.cli --summarize data/results/se-evaluation/<run_id>
 """
 

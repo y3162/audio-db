@@ -7,6 +7,7 @@ it. ``tests/experiments/test_cuda_amp.py`` launches it when a GPU is free.
 from __future__ import annotations
 
 import argparse
+import gc
 import json
 import time
 from pathlib import Path
@@ -36,12 +37,14 @@ def main() -> None:
     torch.cuda.set_device(0)
     reports = []
     saved = []
+    own_context = False
     if args.mode in {"reference", "both"}:
-        report, state = _match("reference", args)
+        report, state = _match("reference", args, allow_busy=own_context)
+        own_context = True
         reports.append(report)
         saved.append(state)
     if args.mode in {"fused", "both"}:
-        report, state = _match("fused", args)
+        report, state = _match("fused", args, allow_busy=own_context)
         reports.append(report)
         saved.append(state)
     if args.mode == "both" and len(saved) == 2:
@@ -50,7 +53,7 @@ def main() -> None:
     print(args.out.read_text(encoding="utf-8"))
 
 
-def _match(backend: str, args: argparse.Namespace) -> dict[str, object]:
+def _match(backend: str, args: argparse.Namespace, *, allow_busy: bool) -> dict[str, object]:
     directory = args.directory / backend
     config = _yaml(
         directory,
@@ -68,10 +71,17 @@ def _match(backend: str, args: argparse.Namespace) -> dict[str, object]:
     text = text.replace("num_tfmamba: 1", f"num_tfmamba: {args.layers}")
     text = text.replace("d_state: 4", f"d_state: {args.state}")
     text = text.replace("d_conv: 2", f"d_conv: {args.conv}")
+    if allow_busy:
+        text = text.replace(
+            "    precision: fp32\n",
+            "    precision: fp32\n    allow_busy_gpu: true\n",
+            1,
+        )
     config.write_text(text, encoding="utf-8")
     torch.cuda.reset_peak_memory_stats()
     started = time.perf_counter()
     experiment = build_experiment(load_experiment(config))
+    task = None
     try:
         task = _task(backend, args)
         _require_same_init(task, experiment)
@@ -135,6 +145,10 @@ def _match(backend: str, args: argparse.Namespace) -> dict[str, object]:
         }, state
     finally:
         experiment.close()
+        del task
+        del experiment
+        gc.collect()
+        torch.cuda.empty_cache()
 
 
 def _task(backend: str, args: argparse.Namespace) -> SEMambaTask:

@@ -9,7 +9,7 @@ make setup PLATFORM=tsubame
 make doctor
 ```
 
-SHINODA-LAB では最後の構築コマンドだけを変える。
+SHINODA-LAB では最後の構築コマンドだけを変える。ホスト差は [TSUBAME](TSUBAME.md) と [SHINODA-LAB](SHINODA_LAB.md)、ASR 用の環境は [ASR](ASR.md)、壊れた環境の作り直しは [CLEAN_REBUILD](CLEAN_REBUILD.md)。
 
 ```bash
 make setup PLATFORM=shinoda_lab

@@ -64,7 +64,7 @@ class MPSENetConnectionTests(unittest.TestCase):
         cls._temporary.cleanup()
 
     def test_committed_yaml_declares_the_connection(self) -> None:
-        config = load_experiment(ROOT / "configs/experiments/mp_senet_l1.yaml")
+        config = load_experiment(ROOT / "tests/fixtures/configs/experiments/mp_senet_l1.yaml")
         model = config.components["model"]
         self.assertEqual(model.class_path, "src.experiments.models.mp_senet.MPSENetWaveformAdapter")
         self.assertEqual(model.kwargs["sampling_rate"], 16000)

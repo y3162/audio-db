@@ -1,7 +1,7 @@
 """Phase 4-H SEMamba++ GAN connection tests.
 
 CPU comparisons use the reference selective scan and a narrow generator.
-The official-width declaration is ``configs/experiments/semambapp_gsr.yaml``.
+The official-width declaration is ``tests/fixtures/configs/experiments/semambapp_gsr.yaml``.
 It is loaded here and not trained: one 3-second official-width step is a
 separate measurement. CUDA fused and NCCL live in ``test_cuda_amp`` so a
 hidden GPU does not add a skip to this module.
@@ -465,8 +465,8 @@ class SEMambaPPAlgorithmTests(unittest.TestCase):
         runtime.shutdown()
 
     def test_declaration_uses_the_substitute_snapshot(self) -> None:
-        config = load_experiment(_ROOT / "configs" / "experiments" / "semambapp_gsr.yaml")
-        text = (_ROOT / "configs" / "experiments" / "semambapp_gsr.yaml").read_text(encoding="utf-8")
+        config = load_experiment(_ROOT / "tests" / "fixtures" / "configs" / "experiments" / "semambapp_gsr.yaml")
+        text = (_ROOT / "tests" / "fixtures" / "configs" / "experiments" / "semambapp_gsr.yaml").read_text(encoding="utf-8")
         self.assertIn("semambapp.gsr.smoke@1", text)
         self.assertNotIn("semambapp.gsr.official@1", text.split("stays blocked")[-1])
         self.assertEqual(config.components["trainer"].kwargs["max_logical_steps"], 1)

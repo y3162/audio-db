@@ -18,7 +18,7 @@ from src.experiments.config import load_experiment
 from src.experiments.trainers import StandardTrainer
 
 ROOT = Path(__file__).resolve().parents[2]
-EXAMPLE = ROOT / "configs/experiments/linear_supervised.yaml"
+EXAMPLE = ROOT / "tests/fixtures/configs/experiments/linear_supervised.yaml"
 
 
 def _weights(experiment: object) -> list[torch.Tensor]:

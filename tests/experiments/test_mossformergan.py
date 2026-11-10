@@ -865,7 +865,7 @@ class MossFormerGANAlgorithmTests(unittest.TestCase):
             self.assertEqual(trainer_state["logical_step"], 0)
 
     def test_committed_yaml_declares_the_official_algorithm(self) -> None:
-        config = load_experiment(ROOT / "configs/experiments/mossformergan_se_16k.yaml")
+        config = load_experiment(ROOT / "tests/fixtures/configs/experiments/mossformergan_se_16k.yaml")
         components = config.components
         self.assertEqual(components["generator"].class_path, "src.experiments.models.mossformergan.MossFormerGANGenerator")
         self.assertEqual(

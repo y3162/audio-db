@@ -16,7 +16,7 @@
 
 - `official_faithful` は、公式が test を選択に使うなら使う。`selection_uses_test` は true。独立な最終評価とは呼ばない。
 - `leakage_safe` は test を選択に使わない。profile または `selection_uses_test` が claim と矛盾する設定は拒否する。
-- 本格候補は `configs/experiments/official/` と `configs/experiments/research/`。短い宣言は `configs/experiments/*.yaml`。測定用の短い YAML は `configs/experiments/readiness/`。
+- 本格候補は `configs/reproduction/experiments/official/`（`official_faithful`）と `configs/reproduction/experiments/variants/`（`leakage_safe` と比較用の代替条件）。1 step の宣言は `tests/fixtures/configs/experiments/`。Dataset と Protocol の定義は `configs/data/`。評価 DB の登録は `configs/db/init.yaml`。
 - `dfn3.online.official@1` と `semambapp.gsr.official@1` は blocked。代替素材を公式データの再現と呼ばない。
 - 追跡中の `libdf_rfft.so` は置き換えない。読めないときは、ABI が合うローカル再ビルドだけを使い、PyTorch fallback にしない。
 

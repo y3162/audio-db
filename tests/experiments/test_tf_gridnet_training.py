@@ -60,7 +60,7 @@ TINY = {
 
 class TFGridNetDeclarationTests(unittest.TestCase):
     def test_committed_yaml_declares_the_official_algorithm(self) -> None:
-        config = load_experiment(ROOT / "configs/experiments/tf_gridnet_ms_snsd.yaml")
+        config = load_experiment(ROOT / "tests/fixtures/configs/experiments/tf_gridnet_ms_snsd.yaml")
         model = config.components["model"]
         loss = config.components["loss"]
         trainer = config.components["trainer"]
@@ -95,7 +95,7 @@ class TFGridNetDeclarationTests(unittest.TestCase):
         self.assertNotIn("valid.si_snr.ave", text)
 
     def test_official_widths_build_one_ms_snsd_generator(self) -> None:
-        config = load_experiment(ROOT / "configs/experiments/tf_gridnet_ms_snsd.yaml")
+        config = load_experiment(ROOT / "tests/fixtures/configs/experiments/tf_gridnet_ms_snsd.yaml")
         model = TFGridNetModel(seed=0, architecture=config.components["model"].kwargs["architecture"])
         self.assertIsInstance(model.generator, TFGridNet)
         self.assertEqual(model.n_fft, 512)

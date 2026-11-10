@@ -20,8 +20,8 @@
 - CPU テストは `CUDA_VISIBLE_DEVICES=""` で実行する。CPU の成功を GPU テストの PASS にしない。
 
 ```bash
-make experiment CONFIG=configs/experiments/official/mp_senet_gan.yaml
-make experiment-preflight CONFIG=configs/experiments/mp_senet_gan.yaml
+make experiment CONFIG=configs/reproduction/experiments/official/mp_senet_gan.yaml
+make experiment-preflight CONFIG=tests/fixtures/configs/experiments/mp_senet_gan.yaml
 make test-cpu
 ```
 

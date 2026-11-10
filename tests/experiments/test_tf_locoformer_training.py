@@ -72,7 +72,7 @@ TINY = {
 
 class TFLocoformerDeclarationTests(unittest.TestCase):
     def test_committed_yaml_declares_the_dns_algorithm(self) -> None:
-        config = load_experiment(ROOT / "configs/experiments/tf_locoformer_dns.yaml")
+        config = load_experiment(ROOT / "tests/fixtures/configs/experiments/tf_locoformer_dns.yaml")
         model = config.components["model"]
         loss = config.components["loss"]
         trainer = config.components["trainer"]
@@ -129,7 +129,7 @@ class TFLocoformerDeclarationTests(unittest.TestCase):
         self.assertNotIn("self.scheduler.step(", text)
 
     def test_official_widths_build_one_dns_generator(self) -> None:
-        config = load_experiment(ROOT / "configs/experiments/tf_locoformer_dns.yaml")
+        config = load_experiment(ROOT / "tests/fixtures/configs/experiments/tf_locoformer_dns.yaml")
         model = TFLocoformerModel(seed=0, architecture=config.components["model"].kwargs["architecture"])
         self.assertIsInstance(model.generator, TFLocoformer)
         self.assertEqual(model.n_fft, 256)

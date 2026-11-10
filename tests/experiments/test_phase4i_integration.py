@@ -43,12 +43,12 @@ TRACKED_RFFT = ROOT / "src/se/models/deepfilternet3/libdf_rfft.so"
 LOCAL_RFFT = ROOT / "build/df-rfft/release/libdf_rfft.so"
 SNAPSHOTS = ROOT / "data/db/snapshots"
 OFFICIAL = {
-    "mp_senet": ROOT / "configs/experiments/mp_senet_gan.yaml",
-    "mossformergan": ROOT / "configs/experiments/mossformergan_se_16k.yaml",
-    "tf_gridnet": ROOT / "configs/experiments/tf_gridnet_ms_snsd.yaml",
-    "tf_locoformer": ROOT / "configs/experiments/tf_locoformer_dns.yaml",
-    "deepfilternet3": ROOT / "configs/experiments/deepfilternet3.yaml",
-    "semambapp": ROOT / "configs/experiments/semambapp_gsr.yaml",
+    "mp_senet": ROOT / "tests/fixtures/configs/experiments/mp_senet_gan.yaml",
+    "mossformergan": ROOT / "tests/fixtures/configs/experiments/mossformergan_se_16k.yaml",
+    "tf_gridnet": ROOT / "tests/fixtures/configs/experiments/tf_gridnet_ms_snsd.yaml",
+    "tf_locoformer": ROOT / "tests/fixtures/configs/experiments/tf_locoformer_dns.yaml",
+    "deepfilternet3": ROOT / "tests/fixtures/configs/experiments/deepfilternet3.yaml",
+    "semambapp": ROOT / "tests/fixtures/configs/experiments/semambapp_gsr.yaml",
 }
 READY = {
     "mp_senet.vb28.ondemand.official": "official_reproduction",

@@ -14,7 +14,7 @@
 登録のやり直し:
 
 ```bash
-.venvs/lab/bin/python -m src.data.training_sets
+.venvs/se/bin/python -m src.data.training_sets
 ```
 
 同じ内容の再実行は行を増やさない。

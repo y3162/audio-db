@@ -82,7 +82,7 @@ class MPSENetGANTests(unittest.TestCase):
         cls._temporary.cleanup()
 
     def test_committed_yaml_declares_the_official_algorithm(self) -> None:
-        path = ROOT / "configs/experiments/mp_senet_gan.yaml"
+        path = ROOT / "tests/fixtures/configs/experiments/mp_senet_gan.yaml"
         text = path.read_text(encoding="utf-8")
         config = load_experiment(path)
         self.assertEqual(config.schema, "audio-db-experiment/v1")

@@ -12,7 +12,7 @@ from src.experiments.api import Experiment
 from src.experiments.config import load_experiment
 
 ROOT = Path(__file__).resolve().parents[2]
-EXAMPLE = ROOT / "configs/experiments/linear_supervised.yaml"
+EXAMPLE = ROOT / "tests/fixtures/configs/experiments/linear_supervised.yaml"
 
 
 class Phase5ProfileTests(unittest.TestCase):

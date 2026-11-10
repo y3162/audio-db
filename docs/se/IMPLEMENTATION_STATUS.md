@@ -2,7 +2,7 @@
 
 判定は、公式チェックポイントを載せた公式処理と独立実装の最終波形を同じ入力で比べた結果に基づく。短音声の有限値だけでは PASS にしない。
 
-ホストは turing。通常テストは `.venvs/lab`（Python 3.13.9、PyTorch 2.6.0+cu124）。公式パッケージ比較は `.venvs/ref`（Python 3.10.12、同じ PyTorch）。SEMamba++ の CUDA 比較だけ `.venvs/semamba`（Python 3.10.20、PyTorch 2.6.0+cu124、ソースビルドした `causal-conv1d==1.7.0` と `mamba-ssm==2.3.2.post1`、sm_75）。GPU 0 は他ユーザーが使用中。比較は空きの GPU 1・2・3（Quadro RTX 5000）。
+この表は turing 上の波形比較の記録である。現在の通常テストは `.venvs/se`、公式パッケージ比較は `.venvs/official`、SEMamba++ の fused CUDA は `.venvs/semambapp` を使う。
 
 | モデル | 公式波形の最大絶対誤差 | 最大検証長 | official非依存 | 判定 |
 |---|---|---|---|---|
@@ -25,10 +25,10 @@
 
 ```bash
 cd /path/to/audio-db
-.venvs/lab/bin/python -m unittest discover -s tests/se -v
+CUDA_VISIBLE_DEVICES="" .venvs/se/bin/python -m unittest discover -s tests/se -v
 ```
 
-公式比較は `tests/se/reference/run_*.py` を明示実行する。`.venvs/ref` が要るスクリプトは lab では走らない。SKIP を PASS とは数えない。
+公式比較は `tests/se/reference/run_*.py` を明示実行する。`.venvs/official` が要るスクリプトは `.venvs/se` では走らない。SKIP を PASS とは数えない。
 
 ## 今回足したこと
 

@@ -19,9 +19,9 @@ import yaml
 from src.experiments.api import build_experiment, load_experiment
 
 ROOT = Path(__file__).resolve().parents[2]
-READINESS = ROOT / "configs/experiments/readiness/mossformergan_se_16k_leakage_safe.yaml"
-PRODUCTION = ROOT / "configs/experiments/research/mossformergan_se_16k.yaml"
-OFFICIAL = ROOT / "configs/experiments/official/mossformergan_se_16k.yaml"
+READINESS = ROOT / "tests/fixtures/configs/experiments/mossformergan_se_16k_leakage_safe.yaml"
+PRODUCTION = ROOT / "configs/reproduction/experiments/variants/mossformergan_se_16k.yaml"
+OFFICIAL = ROOT / "configs/reproduction/experiments/official/mossformergan_se_16k.yaml"
 
 
 def _run(config: Path, *extra: str) -> subprocess.CompletedProcess[str]:
