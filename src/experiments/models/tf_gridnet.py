@@ -17,9 +17,9 @@ import torch
 from src.experiments.errors import BuildError, RuntimeFailure
 from src.se import build_model
 from src.se.models.tf_gridnet.model import TFGridNet
-from src.training.core.rng import seed_model_init
-from src.training.errors import TrainingError
-from src.training.se.initialization import apply_espnet_initialization
+from src.experiments.calc.rng import seed_model_init
+from src.experiments.calc.errors import TrainingError
+from src.experiments.calc.initialization import apply_espnet_initialization
 
 
 class TFGridNetModel(torch.nn.Module):

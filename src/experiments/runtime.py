@@ -26,7 +26,7 @@ import torch.distributed as dist
 from torch.nn.parallel import DistributedDataParallel
 
 from src.experiments.errors import PrepareError, RuntimeFailure
-from src.training.core.rng import capture_rank_rng, restore_rank_rng
+from src.experiments.calc.rng import capture_rank_rng, restore_rank_rng
 
 _SCALER_KEYS = frozenset(
     {"scale", "growth_factor", "backoff_factor", "growth_interval", "_growth_tracker"}
@@ -87,6 +87,7 @@ class ProcessRuntime:
         precision: str = "fp32",
         world_size: int | None = None,
         timeout_seconds: float = 120,
+        allow_busy_gpu: bool = False,
         init_scale: float = 65536.0,
         growth_factor: float = 2.0,
         backoff_factor: float = 0.5,
@@ -108,6 +109,8 @@ class ProcessRuntime:
             or timeout_seconds <= 0
         ):
             raise PrepareError("timeout_seconds must be a positive number")
+        if not isinstance(allow_busy_gpu, bool):
+            raise PrepareError("allow_busy_gpu must be a boolean")
         _check_scaler_config(init_scale, growth_factor, backoff_factor, growth_interval)
         # cuBLAS reads this when the CUDA context is created. Set it before set_device.
         os.environ.setdefault("CUBLAS_WORKSPACE_CONFIG", ":4096:8")
@@ -123,7 +126,16 @@ class ProcessRuntime:
         self._stepped: set[int] = set()
         self._group_started = False
         self._scaler: torch.amp.GradScaler | None = None
+        self.allow_busy_gpu = bool(allow_busy_gpu)
         self.device = _resolve_device(device, local_rank, resolved_world)
+        if self.device.type == "cuda":
+            from src.experiments.calc.errors import TrainingError
+            from src.experiments.calc.gpu import assert_gpu_idle
+
+            try:
+                assert_gpu_idle(self.local_rank, allow_busy=self.allow_busy_gpu)
+            except TrainingError as exc:
+                raise PrepareError(str(exc)) from exc
         if precision == "amp_fp16":
             self._scaler = torch.amp.GradScaler(
                 "cuda",

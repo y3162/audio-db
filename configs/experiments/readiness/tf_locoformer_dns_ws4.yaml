@@ -102,7 +102,7 @@ components:
       weight_decay: 0.01
   scheduler:
     role: scheduler
-    class: src.training.se.optim.WarmupReduceLROnPlateau
+    class: src.experiments.calc.optim.WarmupReduceLROnPlateau
     kwargs:
       warmup_steps: 4000
       mode: min

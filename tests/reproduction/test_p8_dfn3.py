@@ -29,9 +29,7 @@ from src.reproduction.protocols.online_dfn3 import (
     sample_seed,
     synthesize_noise,
 )
-from src.training.core.batch import plan_batches
-from src.training.core.batch_schedule import scheduled_batch_size
-from tests.training.support import cpu_process
+from src.experiments.calc.batch_schedule import scheduled_batch_size
 
 DISTRIBUTION_SEED = 20261106
 DISTRIBUTION_N = 4000
@@ -281,65 +279,11 @@ class SnapshotTests(unittest.TestCase):
 
 
 class TrainerSmokeTests(unittest.TestCase):
-    def test_schedule_validation_checkpoint_and_resume(self):
-        from src.training.core.trainer import Trainer
-        from src.training.provenance import PROVENANCE_NAME
-
-        with tempfile.TemporaryDirectory() as tmp:
-            root = Path(tmp)
-            data = _smoke(2, 1)
-            task = _Stub()
-            config = _trainer_config()
-            trainer = Trainer(
-                task,
-                plan_batches(2, 2, 1),
-                cpu_process(),
-                max_steps=5,
-                seed=43,
-                checkpoint_dir=root / "ckpt",
-                checkpoint_interval=1,
-                validation_interval=1,
-                config=config,
-            )
-            trainer.fit(data, segment_steps=1)
-            self.assertEqual(task.steps, 1)
-            resumed = open_training_data(
-                dataset="dfn3.online.smoke@1",
-                allow_test_selection=False,
-                seed=43,
-                global_batch=2,
-                micro_batch=2,
-                accumulation=1,
-                world_size=1,
-                segment_size=NUM_SAMPLES,
-                model_sample_rate=SAMPLE_RATE,
-            )
-            again = Trainer(
-                _Stub(),
-                plan_batches(2, 2, 1),
-                cpu_process(),
-                max_steps=5,
-                seed=43,
-                checkpoint_dir=root / "ckpt",
-                checkpoint_interval=1,
-                validation_interval=1,
-                config=config,
-            )
-            again.fit(resumed, resume=root / "ckpt" / "step_00000001.pt")
-            state = json.loads((root / "ckpt" / "data_state.json").read_text())
-            self.assertEqual(state["epoch"], 1)
-            self.assertEqual(state["micro_batch"], 4)
-            self.assertGreaterEqual(again.task.validated, 1)
-            document = json.loads((root / "ckpt" / PROVENANCE_NAME).read_text())
-            self.assertEqual(document["claim_label"], "protocol_conformant_substitute_materials")
-            self.assertEqual(document["dataset_identity"]["algorithm"], "online.dfn3")
-            self.assertIn(1, again.task.positions)
-
     def test_one_deepfilternet_step_is_finite(self):
-        from src.training.core.rng import set_determinism
-        from src.training.se.deepfilternet import DeepFilterNetTask
-        from tests.training.support import accelerator_device, prepare_accelerator_numerics
-        from tests.training.test_model_tasks import _base
+        from src.experiments.calc.rng import set_determinism
+        from src.experiments.calc.deepfilternet import DeepFilterNetTask
+        from tests.numerics.support import accelerator_device, prepare_accelerator_numerics
+        from tests.numerics.test_model_tasks import _base
 
         data = _smoke(1, 1)
         try:

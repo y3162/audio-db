@@ -19,18 +19,14 @@ from src.reproduction.db.staging import write_graph
 from src.reproduction.errors import ReproductionError
 from src.reproduction.paths import DEFAULT_RESOURCE_DB, DEFAULT_SNAPSHOTS, ROOT
 from src.reproduction.pipeline.training_data import open_training_data
-from src.training.core.batch import plan_batches
-from src.training.core.checkpoint import load_checkpoint, save_atomic
-from src.training.core.trainer import Trainer
-from src.training.errors import TrainingError
-from src.training.provenance import (
+from src.experiments.calc.errors import TrainingError
+from src.experiments.calc.provenance import (
     assert_checkpoint_provenance,
     build_provenance,
     publish_provenance,
 )
 from tests.reproduction.support import fixed_pair_graph
-from tests.training.mock_task import LinearPairTask
-from tests.training.support import cpu_process, paired_dataset, tiny_config
+from tests.numerics.support import cpu_process, paired_dataset, tiny_config
 
 SHA_A = "a" * 64
 SHA_B = "b" * 64
@@ -101,69 +97,6 @@ class ProvenanceCheckpointTests(unittest.TestCase):
             with self.assertRaisesRegex(TrainingError, "does not match this run"):
                 publish_provenance(root / "ckpt", other, rank=0)
             self.assertEqual((root / "ckpt" / "data_provenance.json").read_bytes(), raw)
-
-    def test_trainer_writes_matching_checkpoint_and_provenance(self) -> None:
-        with tempfile.TemporaryDirectory() as directory:
-            root = Path(directory)
-            task, _trainer = _fit(root, steps=1)
-            checkpoint = root / "ckpt" / "step_00000001.pt"
-            payload = load_checkpoint(checkpoint, torch.device("cpu"))
-            self.assertEqual(payload["format"], "audio-db-training-v1")
-            provenance_path = root / "ckpt" / "data_provenance.json"
-            sidecar = checkpoint.with_suffix(".data_provenance.json")
-            self.assertEqual(provenance_path.read_bytes(), sidecar.read_bytes())
-            self.assertEqual(hashlib.sha256(provenance_path.read_bytes()).hexdigest(), payload["provenance_sha256"])
-            document = json.loads(provenance_path.read_text(encoding="utf-8"))
-            self.assertEqual(document["run_id"], payload["run_id"])
-            self.assertEqual(document["pipeline"], "legacy")
-            self.assertTrue((root / "ckpt" / "generator.data_provenance.json").is_file())
-            assert_checkpoint_provenance(payload, checkpoint, paired_dataset(root / "wav", 4, frames=80, segment_size=40, rewrite=False))
-            del task
-
-    def test_corrupt_or_missing_provenance_is_not_a_valid_resume(self) -> None:
-        with tempfile.TemporaryDirectory() as directory:
-            root = Path(directory)
-            _fit(root, steps=1)
-            checkpoint = root / "ckpt" / "step_00000001.pt"
-            payload = load_checkpoint(checkpoint, torch.device("cpu"))
-            dataset = paired_dataset(root / "wav", 4, frames=80, segment_size=40, rewrite=False)
-            provenance = root / "ckpt" / "data_provenance.json"
-            provenance.write_text("{", encoding="utf-8")
-            with self.assertRaisesRegex(TrainingError, "unreadable"):
-                assert_checkpoint_provenance(payload, checkpoint, dataset)
-            provenance.unlink()
-            checkpoint.with_suffix(".data_provenance.json").unlink()
-            with self.assertRaisesRegex(TrainingError, "missing"):
-                assert_checkpoint_provenance(payload, checkpoint, dataset)
-
-    def test_legacy_checkpoint_without_provenance_still_loads(self) -> None:
-        with tempfile.TemporaryDirectory() as directory:
-            path = Path(directory) / "old.pt"
-            payload = {
-                "format": "audio-db-training-v1",
-                "global_step": 1,
-                "epoch": 1,
-                "micro_batches_consumed": 1,
-                "task": {},
-                "rng": {},
-                "dataset": {"name": "old"},
-                "config": {},
-                "batch_plan": {},
-            }
-            save_atomic(path, payload, verify_training=True)
-            loaded = load_checkpoint(path, torch.device("cpu"))
-            self.assertNotIn("provenance_sha256", loaded)
-            assert_checkpoint_provenance(loaded, path, _Identity({"name": "old"}))
-
-    def test_resume_rejects_a_different_dataset(self) -> None:
-        with tempfile.TemporaryDirectory() as directory:
-            root = Path(directory)
-            _fit(root, steps=1)
-            checkpoint = root / "ckpt" / "step_00000001.pt"
-            payload = load_checkpoint(checkpoint, torch.device("cpu"))
-            with self.assertRaisesRegex(TrainingError, "does not match this dataset"):
-                assert_checkpoint_provenance(payload, checkpoint, _Identity({"name": "different", "case_ids_sha256": "0" * 64}))
-
 
 class RunRegistrationTests(unittest.TestCase):
     def test_register_distinguishes_resume_from_a_new_run(self) -> None:
@@ -251,9 +184,6 @@ class EvaluationPropagationTests(unittest.TestCase):
     def test_three_judgments_are_recorded_on_results(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
-            _fit(root / "overlap", steps=1, count=4)
-            _fit(root / "clear", steps=1, count=4)
-            _fit(root / "missing", steps=1, count=4)
             overlap = _publish_case(
                 root / "overlap" / "ckpt",
                 selection=SHA_A,
@@ -270,6 +200,8 @@ class EvaluationPropagationTests(unittest.TestCase):
                 test=SHA_C,
             )
             missing_checkpoint = root / "missing" / "ckpt" / "generator.pt"
+            missing_checkpoint.parent.mkdir(parents=True)
+            missing_checkpoint.write_bytes(b"checkpoint-without-provenance")
             results = {
                 "overlap": _evaluate(root / "out-overlap", overlap, SHA_A, "selected_test"),
                 "clear": _evaluate(root / "out-clear", clear, "f" * 64, "other_set"),
@@ -360,34 +292,6 @@ class RealSnapshotSmokeTests(unittest.TestCase):
             self.assertGreater(by_name[name]["lineage_counts"]["source"], 0)
             self.assertEqual(by_name[name]["lineage_counts"]["derived"], 0)
         self.reports = reports
-
-
-def _fit(root: Path, *, steps: int, count: int = 4):
-    root.mkdir(parents=True, exist_ok=True)
-    config = tiny_config(
-        root / "ckpt",
-        max_steps=steps,
-        seed=7,
-        global_batch_size=4,
-        micro_batch_size_per_gpu=4,
-        loss="mock",
-        checkpoint_interval=1,
-    )
-    dataset = paired_dataset(root / "wav", count, frames=80, segment_size=40, seed=7)
-    task = LinearPairTask(config, torch.device("cpu"))
-    trainer = Trainer(
-        task,
-        plan_batches(4, 4, 1),
-        cpu_process(),
-        max_steps=steps,
-        seed=7,
-        checkpoint_dir=root / "ckpt",
-        checkpoint_interval=1,
-        validation_interval=0,
-        config=config,
-    )
-    trainer.fit(dataset)
-    return task, trainer
 
 
 def _run_record(dataset: dict, *, snapshot: str, epoch: int, step: str) -> tuple[dict, dict]:

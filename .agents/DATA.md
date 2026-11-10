@@ -1,6 +1,6 @@
 # データ・DB・再現性
 
-仕様の詳細は `docs/db/SETUP.md`、`docs/db/RECIPE.md`、`docs/db/CORPORA.md`、`docs/db/tables/AUDIO_FILES.md`、`docs/evaluation/PIPELINE.md`。ここには、コードを読まないと分からない制約だけを書く。
+仕様の詳細は `docs/db/SETUP.md`、`docs/db/RECIPE.md`、`docs/db/CORPORA.md`、`docs/db/tables/AUDIO_FILES.md`、`docs/evaluation/PIPELINE.md`。ここには、コードを読まないと分からない制約だけを書く。学習の式と checkpoint は `.agents/ARCHITECTURE.md`。
 
 ## DB の構成
 
@@ -48,12 +48,12 @@ DuckDB は `data/db/resource.duckdb`（`src/data/constants.py`）。
 
 ## 学習に使うセット
 
-- Experiment Framework の `SnapshotDataModule` は、重みを渡さない epoch では snapshot の `rank_order` を使う。重み付きは研究用 `weighted_categorical_v1` で、公式 sampler ではない。`state_dict` の `weights` は、その `epoch` の計画に使った実効重みで、未設定は null である。再開は実行側の表と一致するときだけ許し、checkpoint の表で上書きしない。chunk と DeepFilterNet3 には掛けない。開いている epoch view の途中では変えない。DeepFilterNet3 の batch schedule は、world size 1 の epoch 先頭で `Dfn3IndexSampler` の `micro_batch` だけを付け替える。再開は、保存された `micro_batch` 以外の identity が一致するときその幅へ戻してから identity と `plan_hash` を比べる。他の供給は付け替えない。SEMamba++ の Experiment Trainer は `online.semambapp_gsr` をそのまま使い、micro-batch は付け替えない。`group_size` は accumulation と一致させる。Phase 4-J の新規実験 checkpoint は rank 0 が `data_provenance.json` と checkpoint 別 sidecar を書き、`provenance_sha256` にその SHA-256 を入れる。snapshot の素材 hash が無いデータは limitations に残し、評価は UNKNOWN で、独立の証明にしない。`provenance_sha256` が None の旧 checkpoint は、後から同じディレクトリに来歴ファイルができても証明済みにしない。`dfn3.online.official@1` と `semambapp.gsr.official@1` は blocked のままである。詳細は `docs/training/experiment-framework/PHASE_3F_WEIGHTED_SAMPLING.md`、`docs/training/experiment-framework/PHASE_4G_DEEPFILTERNET3_TRAINING.md`、`docs/training/experiment-framework/PHASE_4I_SIX_MODEL_INTEGRATION.md`。
+- `SnapshotDataModule` は、重みを渡さない epoch では snapshot の `rank_order` を使う。重み付きは研究用 `weighted_categorical_v1` で、公式 sampler ではない。`state_dict` の `weights` は、その `epoch` の計画に使った実効重みで、未設定は null である。再開は実行側の表と一致するときだけ許し、checkpoint の表で上書きしない。chunk と DeepFilterNet3 には掛けない。開いている epoch view の途中では変えない。DeepFilterNet3 の batch schedule は、world size 1 の epoch 先頭で `Dfn3IndexSampler` の `micro_batch` だけを付け替える。再開は、保存された `micro_batch` 以外の identity が一致するときその幅へ戻してから identity と `plan_hash` を比べる。他の供給は付け替えない。SEMamba++ は `online.semambapp_gsr` をそのまま使い、micro-batch は付け替えない。`group_size` は accumulation と一致させる。新規の実験 checkpoint は rank 0 が `data_provenance.json` と checkpoint 別 sidecar を書き、`provenance_sha256` にその SHA-256 を入れる。snapshot の素材 hash が無いデータは limitations に残し、評価は UNKNOWN で、独立の証明にしない。`provenance_sha256` が None の checkpoint は、後から同じディレクトリに来歴ファイルができても証明済みにしない。`dfn3.online.official@1` と `semambapp.gsr.official@1` は blocked のままである。
 - ESPnet chunk の複数 rank では、checkpoint の `data_state.pipeline` が `espnet_chunk_v1` である。計画は `(seed, epoch, world_size)` から再計算し、`plan_hash` が違えば再開しない。world size または `virtual_world_size` が違う再開は拒否する。先読みした未使用バッチは位置に数えない。来歴 JSON は run に 1 つで、rank 0 だけが書く。rank ごとの消費位置は `data_state` に置き、来歴と混ぜない。
 - 学習 checkpoint は、その step の JSONL 書き込みと TensorBoard 有効時の event flush の後に公開する。`status.json` は `RUNNING` / `CHECKPOINTED` / `INTERRUPTED` / `COMPLETED` / `FAILED` を区別する。公式の終了だけが `complete.json` を書き、再開を拒む。`verification_max_updates` への到達は `interrupted.json` を書き、`complete.json` は書かない。途中で停止した場合は、完成済み checkpoint より後の記録を再開時に巻き戻す。CLI の `--resume` は `logging` 以外の設定差を拒否する。`verification_max_updates` などの上限を外した設定への再開は、モデル構築の前に失敗する。電源断やストレージ障害に対する複数ファイルの原子性は保証しない。再現学習の rank 0 は、同じディレクトリに `data_provenance.json` を一度だけ排他作成する。`data_state` は再開位置で、来歴 JSON は Dataset・snapshot・使用集合の内容ハッシュと派生元である。`provenance_sha256` を持つ checkpoint は、横の JSON が欠けるかハッシュが違うと再開しない。来歴の無い古い checkpoint は再開できるが、評価の `independent` は `UNKNOWN` である。`UNKNOWN` は独立評価ではない。world size が 2 以上の checkpoint は `rng_by_rank` が要る。各要素はその rank の Python、NumPy、Torch CPU と、学習に使う現在の CUDA device だけである。これが無い複数プロセスの checkpoint は再開しない。world size 1 は従来の `rng` のまま再開する。
 - 評価結果の `independent` は true / false / `UNKNOWN` である。`checkpoint_selection_overlap` は、選択に使った素材と内容または既知の派生元が重なった評価セット名である。情報が足りないときは null で、空リストは重なりが無いと確認できたときだけ使う。`selection_uses_test` は独立性とは別に残す。判定は checkpoint 横の JSON と評価レシピの SHA-256 だけで、`reproduction.duckdb` は開かない。
 
-学習は評価と同じ名前付きセットとレシピを読む。詳細は `docs/training/MP_SENET.md`。
+実験の学習はスナップショットを読む。評価用の名前付きセットを学習の入力にしない。
 
 - 教師はレシピの `output.reference` だけである。`dry_clean` と `reverberant_clean` を取り違えない。`none` のケースは学習に入れず、エラーにする。
 - サンプルの識別子は `case_id`（レシピの SHA-256）である。rowid や登録順の採番は学習の並びに使わない。

@@ -30,12 +30,6 @@ from src.reproduction.errors import ReproductionError
 from src.reproduction.pipeline.chunking import plan_chunk_epoch
 from src.reproduction.pipeline.pregenerated import open_chunk_datasets
 from src.reproduction.prepare.dns_run import run_config
-from src.training.core.batch import plan_batches
-from src.training.core.trainer import Trainer
-from src.training.errors import TrainingError
-from src.training.se.tf_locoformer import TFLocoformerTask
-from tests.se.test_tf_locoformer import TINY
-from tests.training.support import cpu_process
 
 ROOT = Path(__file__).resolve().parents[2]
 
@@ -396,119 +390,6 @@ class DnsAcceptanceTests(unittest.TestCase):
             first = subprocess.check_output([str(ROOT / ".venvs/se/bin/python"), "-c", script], cwd=ROOT, text=True)
             second = subprocess.check_output([str(ROOT / ".venvs/se/bin/python"), "-c", script], cwd=ROOT, text=True)
             self.assertEqual(json.loads(first), json.loads(second))
-
-    def test_tiny_trainer_resumes_the_same_chunks(self):
-        with tempfile.TemporaryDirectory() as tmp:
-            root = Path(tmp)
-            _corpus(root)
-            database = root / "reproduction.duckdb"
-            initialize_database(database)
-            run_config(
-                _config(root),
-                "register",
-                corpus=root,
-                staging=root / "staging",
-                database=database,
-                snapshots=root / "snapshots",
-                resource_db=root / "missing.duckdb",
-                generated=root / "generated",
-            )
-            train, valid = open_chunk_datasets(
-                dataset="dns.accept.limited@1",
-                snapshot_root=root / "snapshots",
-                corpora_root=root,
-                generated_root=root / "generated",
-                derived_root=root / "derived",
-            )
-            straight = _fit_tiny(root / "straight", train, valid, max_steps=2)
-            paused = _fit_tiny(root / "paused", train, valid, max_steps=2, segment_steps=1)
-            self.assertTrue((root / "paused" / "data_provenance.json").is_file())
-            self.assertIn("dns_pcm16_accept_v2", (root / "paused" / "data_provenance.json").read_text())
-            paused_log = (root / "paused" / "metrics.jsonl").read_text()
-            self.assertIn('"validated": true', paused_log)
-            mismatch = dict(paused["config"])
-            mismatch["data"] = {**mismatch["data"], "virtual_world_size": 2}
-            rejected = _trainer(root / "paused", train, mismatch, max_steps=2)
-            with self.assertRaises(TrainingError):
-                rejected.fit(train, valid, resume=paused["checkpoint"])
-            resumed = _fit_tiny(
-                root / "paused",
-                train,
-                valid,
-                max_steps=2,
-                resume=paused["checkpoint"],
-                config=paused["config"],
-            )
-            self.assertEqual(paused["waves"] + resumed["waves"], straight["waves"])
-            self.assertEqual(paused["case_ids"] + resumed["case_ids"], straight["case_ids"])
-            self.assertGreaterEqual(len(straight["waves"]), 2)
-            train.close()
-            valid.close()
-
-
-def _task_config() -> dict:
-    return {
-        "seed": 17,
-        "deterministic": True,
-        "loss": "official",
-        "grad_clip": 5.0,
-        "optimizer": {"name": "adamw", "lr": 1.0e-3, "betas": [0.9, 0.999], "weight_decay": 0.01},
-        "scheduler": {"name": "none"},
-        "model": {
-            "name": "tf_locoformer",
-            "variant": "dns",
-            "stage": None,
-            "sampling_rate": 16000,
-            "architecture": dict(TINY),
-            "stft": {},
-            "components": {},
-        },
-        "chunk_iterator": {
-            "num_samples_per_epoch": 1,
-            "chunk_length": 15999,
-            "chunk_shift_ratio": 0.5,
-            "num_cache_chunks": 4,
-            "shuffle": True,
-            "max_epochs": 3,
-            "early_stopping_patience": 5,
-            "keep_nbest": 5,
-        },
-        "best_checkpoint_start_epoch": 0,
-        "data": {"load_workers": 1},
-    }
-
-
-def _trainer(directory: Path, train, config: dict, *, max_steps: int) -> Trainer:
-    return Trainer(
-        TFLocoformerTask(config, cpu_process().device),
-        plan_batches(1, 1, 1),
-        cpu_process(),
-        max_steps=max_steps,
-        seed=17,
-        checkpoint_dir=directory,
-        checkpoint_interval=0,
-        validation_interval=0,
-        config=config,
-    )
-
-
-def _fit_tiny(directory, train, valid, *, max_steps, segment_steps=None, resume=None, config=None):
-    config = config or _task_config()
-    seen: list[bytes] = []
-    cases: list[list[str]] = []
-    trainer = _trainer(directory, train, config, max_steps=max_steps)
-
-    def remember(batches, accumulation):
-        noisy = batches[0]["noisy"].detach().cpu().numpy()
-        seen.append(noisy.tobytes())
-        cases.append(list(batches[0]["case_id"]))
-        return TFLocoformerTask.train_update(trainer.task, batches, accumulation)
-
-    trainer.task.train_update = remember
-    trainer.fit(train, valid, resume, segment_steps=segment_steps)
-    checkpoint = Path(trainer.last_checkpoint) if trainer.last_checkpoint else None
-    return {"waves": seen, "case_ids": cases, "checkpoint": checkpoint, "config": config}
-
 
 if __name__ == "__main__":
     unittest.main()

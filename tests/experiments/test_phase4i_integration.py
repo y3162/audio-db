@@ -29,7 +29,7 @@ from src.experiments.errors import ExperimentError
 from src.experiments.models.deepfilternet3 import DeepFilterNet3Model
 from src.experiments.models.semambapp import SEMambaPPGenerator, scan_execution
 from src.se import load_enhancer
-from src.training.core.rng import set_determinism
+from src.experiments.calc.rng import set_determinism
 from tests.experiments.test_deepfilternet3 import _ARCH as DFN_ARCH
 from tests.experiments.test_deepfilternet3 import _tiny_yaml
 from tests.experiments.test_mossformergan import _yaml as moss_yaml
@@ -183,7 +183,7 @@ class Phase4IDeclarationTests(unittest.TestCase):
         self.assertEqual(grid.components["batcher"].kwargs["micro_batch"], 2)
         loco = configs["tf_locoformer"]
         self.assertEqual(loco.components["optimizer"].class_path, "torch.optim.AdamW")
-        self.assertEqual(loco.components["scheduler"].class_path, "src.training.se.optim.WarmupReduceLROnPlateau")
+        self.assertEqual(loco.components["scheduler"].class_path, "src.experiments.calc.optim.WarmupReduceLROnPlateau")
         self.assertEqual(
             loco.components["trainer"].kwargs["validation_profile"],
             "tf_locoformer.dns.accept_recipe.research_valid_fixed@1",

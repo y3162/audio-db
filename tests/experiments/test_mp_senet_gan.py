@@ -51,9 +51,9 @@ from src.reproduction.snapshot_reader import (
     load_snapshot,
     snapshot_hash,
 )
-from src.training.core.rng import set_determinism
-from src.training.se.losses import metric_targets
-from src.training.se.mp_senet import MPSENetTask
+from src.experiments.calc.rng import set_determinism
+from src.experiments.calc.losses import metric_targets
+from src.experiments.calc.mp_senet import MPSENetTask
 
 ROOT = Path(__file__).resolve().parents[2]
 ARCH = {
@@ -217,7 +217,7 @@ class MPSENetGANTests(unittest.TestCase):
                     return None
                 return None
 
-            with patch("src.training.se.losses.metric_targets", fail_one):
+            with patch("src.experiments.calc.losses.metric_targets", fail_one):
                 metrics = trainer.official_step([batch], runtime)
             self.assertTrue(torch.isfinite(torch.tensor(metrics["generator"])))
             self.assertEqual(steps, {"g": 1, "d": 1})
@@ -560,7 +560,7 @@ def _compare_update(*, accumulation: int, length: int, stub: bool, sine: bool = 
     _capture(task.optim_d, old_box, "d")
     _capture(task.optim_g, old_box, "g")
     _seed_streams(21)
-    patcher = patch("src.training.se.mp_senet.metric_targets", targets) if stub else nullpatch()
+    patcher = patch("src.experiments.calc.mp_senet.metric_targets", targets) if stub else nullpatch()
     with patcher:
         old = task._official([{"clean": batch.targets.clone(), "noisy": batch.inputs.clone()} for batch in batches], accumulation)
     runtime = ProcessRuntime(device="cpu", precision="fp32")
@@ -585,7 +585,7 @@ def _compare_update(*, accumulation: int, length: int, stub: bool, sine: bool = 
 
         trainer._on_update_phase = hook
         _seed_streams(21)
-        new_patch = patch("src.training.se.losses.metric_targets", targets) if stub else nullpatch()
+        new_patch = patch("src.experiments.calc.losses.metric_targets", targets) if stub else nullpatch()
         before = resource.getrusage(resource.RUSAGE_SELF).ru_maxrss
         with new_patch:
             new = trainer.official_step(

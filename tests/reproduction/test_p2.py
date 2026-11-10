@@ -90,12 +90,11 @@ class ListTests(unittest.TestCase):
         self.assertEqual(parse_mp_senet("p226_010|ignored/path.wav\n", where="training.txt"), ["p226_010"])
 
     def test_training_launch_requires_on_demand(self) -> None:
-        from src.training.errors import TrainingError
-        from src.training.se.run import require_on_demand
+        from src.reproduction.pipeline.pregenerated import require_on_demand
 
-        with self.assertRaises(TrainingError):
+        with self.assertRaises(ReproductionError):
             require_on_demand({"name": "mp_senet.vb28.official", "version": 1, "rule_json": {}})
-        with self.assertRaises(TrainingError):
+        with self.assertRaises(ReproductionError):
             require_on_demand({"name": "tf_gridnet.ms_snsd.smoke", "version": 1, "rule_json": {"delivery": "stored"}})
         require_on_demand({"name": "mp_senet.vb28.ondemand.official", "version": 1, "rule_json": {"delivery": "on_demand"}})
 

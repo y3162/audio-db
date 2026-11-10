@@ -34,8 +34,8 @@ from src.experiments.deepfilternet3 import (
 )
 from src.experiments.models.deepfilternet3 import DeepFilterNet3Model
 from src.se.models.deepfilternet3.dsp import DFStream, _rfft_kernel, rfft_library_path
-from src.training.core.batch_schedule import scheduled_batch_size
-from src.training.se.deepfilternet import DeepFilterNetTask, deepfilter_cosine_schedules
+from src.experiments.calc.batch_schedule import scheduled_batch_size
+from src.experiments.calc.deepfilternet import DeepFilterNetTask, deepfilter_cosine_schedules
 
 _ARCH = {
     "conv_ch": 16,

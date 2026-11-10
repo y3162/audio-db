@@ -9,7 +9,7 @@ from pathlib import Path
 import torch
 
 from src.se import available_enhancers, build_model, load_enhancer
-from src.training.se.spectral import multi_resolution_l1
+from src.experiments.calc.spectral import multi_resolution_l1
 
 ROOT = Path(__file__).resolve().parents[2]
 OFFICIAL = ROOT / "src/se/official/tf-locoformer"

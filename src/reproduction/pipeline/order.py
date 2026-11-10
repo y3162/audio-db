@@ -22,7 +22,7 @@ POLICY_NOTES: dict[str, dict[str, str]] = {
     "global_shuffle_stride_v1": {
         "matches": "algorithm",
         "detail": (
-            "Same permutation as src.training.data.sampler.epoch_indices: "
+            "Same permutation as src.experiments.calc.sampler.epoch_indices: "
             "torch.randperm seeded by mix_seed('order', seed, epoch), then "
             "drop the tail and take [rank::world]."
         ),

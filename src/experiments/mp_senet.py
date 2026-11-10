@@ -43,9 +43,9 @@ from src.experiments.trainers import (
     _rewind_metrics,
     _sample_path,
 )
-from src.training.errors import TrainingError
-from src.training.se.losses import discriminator_loss, generator_losses
-from src.training.se.mp_senet import MPSENetTask, _require_discriminator_resolution
+from src.experiments.calc.errors import TrainingError
+from src.experiments.calc.losses import discriminator_loss, generator_losses
+from src.experiments.calc.mp_senet import _require_discriminator_resolution, validation_model
 
 _IN_EPOCH = "in_epoch"
 _PENDING = "pending_boundary"
@@ -146,7 +146,7 @@ class MPSENetGANTrainer:
         self.stop_reason = "initialized"
         self._restored = False
         self._in_official_step = False
-        self._shadow: MPSENetTask | None = None
+        self._shadow = None
         self._average_calls = 0
         self._generator_synced_during_backward = False
 
@@ -556,11 +556,11 @@ class MPSENetGANTrainer:
             raise RuntimeFailure(f"component {component_id}: rank 0 validation produced no batches")
         return _aggregate_reports(reports)
 
-    def _shadow_task(self, runtime: ProcessRuntime) -> MPSENetTask:
+    def _shadow_task(self, runtime: ProcessRuntime):
         if self._shadow is None:
             group = self.optim_g.param_groups[0]
             betas = group["betas"]
-            self._shadow = MPSENetTask(
+            self._shadow = validation_model(
                 {
                     "loss": "official",
                     "model": dict(self.generator.state_module.architecture),
@@ -715,7 +715,7 @@ class MPSENetGANTrainer:
 def _metric_targets(clean: torch.Tensor, enhanced: torch.Tensor, sample_rate: int) -> torch.Tensor | None:
     """Look up PESQ targets on the losses module so tests can patch that function."""
 
-    from src.training.se import losses as loss_lib
+    from src.experiments.calc import losses as loss_lib
 
     return loss_lib.metric_targets(clean, enhanced, sample_rate)
 

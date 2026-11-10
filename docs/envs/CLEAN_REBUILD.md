@@ -77,14 +77,14 @@ export DF_RFFT_LIBRARY="$PWD/build/clean-20261104/cargo-rfft/release/libdf_rfft.
 
 ```bash
 PYTHONPATH="$PWD" CUDA_VISIBLE_DEVICES=0 \
-  .venvs/clean-20261104/bin/python tests/training/gpu_smoke.py
+  .venvs/clean-20261104/bin/python tests/numerics/gpu_smoke.py
 ```
 
-公式学習エントリーポイントの短時間実行は `tests/training/reference/official_entry_smoke.py`。出力先は存在しないディレクトリを指定する。
+公式学習エントリーポイントの短時間実行は `tests/numerics/reference/official_entry_smoke.py`。出力先は存在しないディレクトリを指定する。
 
 ## 既知の制約
 
 - 別ノード、別 GPU アーキテクチャでの再ビルドは未実施。今回の cubin は `sm_90` だけである。未実施の理由はジョブを増やさないためであり、依存関係やコンパイラの失敗ではない。
-- 公式 DeepFilterNet の学習は、HDF5 を `df/scripts/prepare_data.py` で作り、`libdfdata` の DataLoader で読む。`num_workers = 0` では epoch 開始直後に `TimeoutError` になり、プロセスは戻らなかった。`num_workers = 2` と `overfit = true` では 2 更新が完了した。記録は `docs/training/VERIFICATION.md` の 2026-11-04 節。
-- ESPnet の `espnet2/bin/enh_train.py` は、`typeguard==4.4.4`、`configargparse`、`humanfriendly`、`torch-complex`、`omniio`、`sentencepiece`、`fast-bss-eval` を入れると起動する。`flash_attn` は無く、ESPnet は自前の注意実装へ戻る。MS-SNSD の公式設定は 16 kHz、`chunk_length` 48000、`n_fft` 512、`stride` 256、Adam、`mr_l1_tfd` である。2026-11-04 の短時間実行は batch 1、worker 0、更新 2、chunk 16000、1 epoch で、VoiceBank を 16 kHz に変換して公式 DataLoader に渡した。記録は `docs/training/VERIFICATION.md`。
+- 公式 DeepFilterNet の学習は、HDF5 を `df/scripts/prepare_data.py` で作り、`libdfdata` の DataLoader で読む。`num_workers = 0` では epoch 開始直後に `TimeoutError` になり、プロセスは戻らなかった。`num_workers = 2` と `overfit = true` では 2 更新が完了した。この記録は当時の短い実行であり、公式再現の完了ではない。
+- ESPnet の `espnet2/bin/enh_train.py` は、`typeguard==4.4.4`、`configargparse`、`humanfriendly`、`torch-complex`、`omniio`、`sentencepiece`、`fast-bss-eval` を入れると起動する。`flash_attn` は無く、ESPnet は自前の注意実装へ戻る。MS-SNSD の公式設定は 16 kHz、`chunk_length` 48000、`n_fft` 512、`stride` 256、Adam、`mr_l1_tfd` である。2026-11-04 の短時間実行は batch 1、worker 0、更新 2、chunk 16000、1 epoch で、VoiceBank を 16 kHz に変換して公式 DataLoader に渡した。この短い実行は公式レシピの再現ではない。
 - SEMamba++ の `train.py` は epoch 数を引数にしない。短時間実行は出力ディレクトリの外部 launcher が `main` のソース文字列だけを差し替えて `exec` する。ピン留めツリーは `utils.py` しか無いのに `dataset.py` が未使用の `utils.util` を import するので、launcher が同じ関数を `sys.modules` に登録する。公式ファイルは編集しない。

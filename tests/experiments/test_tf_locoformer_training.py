@@ -38,10 +38,10 @@ from src.experiments.tf_locoformer import (
 )
 from src.se.models.tf_locoformer.inference import load as load_enhancer_checkpoint
 from src.se.models.tf_locoformer.model import TFLocoformer
-from src.training.core.average import average_state_dicts
-from src.training.se.optim import WarmupReduceLROnPlateau, clip_gradients
-from src.training.se.spectral import multi_resolution_l1, si_sdr_loss
-from src.training.se.tf_locoformer import TFLocoformerTask
+from src.experiments.calc.average import average_state_dicts
+from src.experiments.calc.optim import WarmupReduceLROnPlateau, clip_gradients
+from src.experiments.calc.spectral import multi_resolution_l1, si_sdr_loss
+from src.experiments.calc.tf_locoformer import TFLocoformerTask
 from tests.experiments.test_chunk_data import _write_snapshot
 from tests.experiments.tf_gridnet_data import ScriptedChunkData
 
@@ -97,7 +97,7 @@ class TFLocoformerDeclarationTests(unittest.TestCase):
         self.assertEqual(optimizer.kwargs["weight_decay"], 0.01)
         self.assertEqual(tuple(optimizer.kwargs["betas"]), (0.9, 0.999))
         scheduler = config.components["scheduler"]
-        self.assertEqual(scheduler.class_path, "src.training.se.optim.WarmupReduceLROnPlateau")
+        self.assertEqual(scheduler.class_path, "src.experiments.calc.optim.WarmupReduceLROnPlateau")
         self.assertEqual(scheduler.kwargs["warmup_steps"], 4000)
         self.assertEqual(scheduler.kwargs["mode"], "min")
         self.assertEqual(scheduler.kwargs["factor"], 0.5)
@@ -701,7 +701,7 @@ class TFLocoformerConnectionTests(unittest.TestCase):
         self.assertEqual(tuple(restored.shape), (1, 32))
         directory = self.base / "bad-scheduler"
         text = _scripted_text(directory, steps=1, updates=1).replace(
-            "src.training.se.optim.WarmupReduceLROnPlateau",
+            "src.experiments.calc.optim.WarmupReduceLROnPlateau",
             "torch.optim.lr_scheduler.StepLR",
         )
         text = text.replace(
@@ -954,7 +954,7 @@ components:
       weight_decay: 0.01
   scheduler:
     role: scheduler
-    class: src.training.se.optim.WarmupReduceLROnPlateau
+    class: src.experiments.calc.optim.WarmupReduceLROnPlateau
     kwargs:
       warmup_steps: {warmup}
       mode: min
@@ -1073,7 +1073,7 @@ components:
       weight_decay: 0.01
   scheduler:
     role: scheduler
-    class: src.training.se.optim.WarmupReduceLROnPlateau
+    class: src.experiments.calc.optim.WarmupReduceLROnPlateau
     kwargs:
       warmup_steps: {WARMUP}
       mode: min

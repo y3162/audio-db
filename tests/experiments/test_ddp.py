@@ -18,7 +18,7 @@ from torch import nn
 
 from src.experiments.checkpoint import DirectoryLock
 from src.experiments.data import TensorPairData
-from src.training.core.rng import set_determinism
+from src.experiments.calc.rng import set_determinism
 
 ROOT = Path(__file__).resolve().parents[2]
 

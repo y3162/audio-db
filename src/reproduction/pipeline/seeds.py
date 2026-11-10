@@ -1,6 +1,6 @@
 """Seed mixing for data plans.
 
-This is the same SHA-256 mix as ``src.training.core.rng.mix_seed``. The
+This is the same SHA-256 mix as ``src.experiments.calc.rng.mix_seed``. The
 pipeline does not import ``src.training``, so the function lives here. A test
 checks that the two implementations agree.
 """

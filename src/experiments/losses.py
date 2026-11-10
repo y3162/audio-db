@@ -1,6 +1,6 @@
 """Loss modules constructed by the experiment factory.
 
-``MultiResolutionL1Loss`` calls ``src.training.se.spectral.multi_resolution_l1``.
+``MultiResolutionL1Loss`` calls ``src.experiments.calc.spectral.multi_resolution_l1``.
 MS-SNSD keeps ``normalize_variance`` false. That flag is the URGENT loss
 setting and is not the model's internal waveform standard-deviation scaling.
 """
@@ -12,7 +12,7 @@ from collections.abc import Sequence
 import torch
 
 from src.experiments.errors import BuildError
-from src.training.se.spectral import multi_resolution_l1
+from src.experiments.calc.spectral import multi_resolution_l1
 
 OFFICIAL_WINDOWS = (256, 512, 768, 1024)
 

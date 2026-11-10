@@ -41,10 +41,10 @@ from src.experiments.trainers import (
     _rewind_metrics,
     _sample_path,
 )
-from src.training.core.trainer import _aggregate_validation
-from src.training.errors import TrainingError
-from src.training.se.semambapp import SEMambaTask
-from src.training.se.spectral import (
+from src.experiments.calc.metrics import _aggregate_validation
+from src.experiments.calc.errors import TrainingError
+from src.experiments.calc.semambapp import validation_model
+from src.experiments.calc.spectral import (
     compressed_complex_losses,
     feature_matching,
     least_squares_discriminator,
@@ -165,7 +165,7 @@ class SEMambaPPTrainer:
         self.scan_report: dict[str, str] | None = None
         self._restored = False
         self._in_official_step = False
-        self._shadow: SEMambaTask | None = None
+        self._shadow = None
 
     def run(self, runtime: ProcessRuntime, checkpoint: CheckpointManager) -> RunResult:
         """Train until the step budget, an epoch cap, or an interrupt."""
@@ -590,7 +590,7 @@ class SEMambaPPTrainer:
         ]
         return summary
 
-    def _shadow_task(self, runtime: ProcessRuntime) -> SEMambaTask:
+    def _shadow_task(self, runtime: ProcessRuntime):
         if self._shadow is None:
             architecture = dict(self.generator.state_module.architecture)
             hop = int(architecture.pop("hop"))
@@ -598,7 +598,7 @@ class SEMambaPPTrainer:
             sampling_rate = int(architecture.pop("sampling_rate"))
             group = self.optim_g.param_groups[0]
             betas = group["betas"]
-            self._shadow = SEMambaTask(
+            self._shadow = validation_model(
                 {
                     "grad_clip": self.grad_clip,
                     "loss": "official",

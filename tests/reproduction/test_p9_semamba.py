@@ -42,8 +42,6 @@ from src.reproduction.protocols.online_semamba import (
     vad_power,
 )
 from src.se.models.semambapp.network import SelectiveSSM
-from src.training.core.batch import plan_batches
-from tests.training.support import cpu_process
 
 DISTRIBUTION_SEED = 20261107
 DISTRIBUTION_N = 4000
@@ -480,62 +478,11 @@ class TrainerTests(unittest.TestCase):
     def setUpClass(cls):
         _registered()
 
-    def test_checkpoint_validation_and_resume_keep_order(self):
-        from src.training.core.trainer import Trainer
-        from src.training.provenance import PROVENANCE_NAME
-
-        with tempfile.TemporaryDirectory() as tmp:
-            root = Path(tmp)
-            data = _open(4, 1, accumulation=2)
-            expected = [group for group in data.epoch(0, rank=0, world_size=1)]
-            data.close()
-            task = _Stub()
-            config = _trainer_config()
-            trainer = Trainer(
-                task,
-                plan_batches(4, 2, 1),
-                cpu_process(),
-                max_steps=2,
-                seed=7,
-                checkpoint_dir=root / "ckpt",
-                checkpoint_interval=1,
-                validation_interval=1,
-                config=config,
-            )
-            trainer.fit(_open(4, 1, accumulation=2), segment_steps=1)
-            self.assertEqual(task.steps, 1)
-            self.assertEqual(task.micro_batches, 2)
-            self.assertTrue(np.array_equal(task.seen[0][0], expected[0][0]["noisy"]))
-            self.assertFalse((root / "ckpt" / "best_generator.pt").exists())
-            resumed_task = _Stub()
-            resumed = Trainer(
-                resumed_task,
-                plan_batches(4, 2, 1),
-                cpu_process(),
-                max_steps=2,
-                seed=7,
-                checkpoint_dir=root / "ckpt",
-                checkpoint_interval=1,
-                validation_interval=1,
-                config=config,
-            )
-            resumed.fit(_open(4, 1, accumulation=2), resume=root / "ckpt" / "step_00000001.pt")
-            self.assertGreaterEqual(resumed_task.validated, 1)
-            self.assertTrue(np.array_equal(resumed_task.seen[0][0], expected[1][0]["noisy"]))
-            state = json.loads((root / "ckpt" / "data_state.json").read_text())
-            self.assertEqual(state["order_policy"], "per_rank_independent_v1")
-            self.assertEqual(state["epoch"], 1)
-            self.assertEqual(state["update_in_epoch"], 0)
-            document = json.loads((root / "ckpt" / PROVENANCE_NAME).read_text())
-            self.assertEqual(document["claim_label"], "protocol_conformant_substitute_materials")
-            self.assertEqual(document["dataset_identity"]["algorithm"], "online.semambapp_gsr")
-            self.assertIn("train", (root / "ckpt" / "metrics.jsonl").read_text())
-
     def test_one_reduced_generator_step_is_finite(self):
-        from src.training.core.rng import set_determinism
-        from src.training.se.semambapp import SEMambaTask
-        from tests.training.support import accelerator_device, prepare_accelerator_numerics
-        from tests.training.test_model_tasks import _base
+        from src.experiments.calc.rng import set_determinism
+        from src.experiments.calc.semambapp import SEMambaTask
+        from tests.numerics.support import accelerator_device, prepare_accelerator_numerics
+        from tests.numerics.test_model_tasks import _base
 
         data = _open(2, 1)
         try:

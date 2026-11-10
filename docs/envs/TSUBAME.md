@@ -18,7 +18,7 @@ GPU の計算と CUDA 拡張のビルドはスケジューラで確保した計�
 
 長時間の学習は `qsub`、短時間の開発・デバッグは `qrsh` を使う。いずれも優先度は、ユーザーから別の指示がなければ `-p -5` とする。30 分程度以上のジョブは、投入前にそのジョブを含むユーザーの明示的な指示または追加承認が必要である。
 
-以下の初期構築例では 5 モデルの小規模 GPU スモークを確認した。この環境構築例には融合カーネルを含めない。別環境での融合経路の検証と制約は [学習検証記録](../training/VERIFICATION.md) を参照する。研究室環境をコピーせず、リポジトリのルートで実行する。
+以下の初期構築例では 5 モデルの小規模 GPU スモークを確認した。この環境構築例には融合カーネルを含めない。融合経路の制約は `.agents/ARCHITECTURE.md` と `.agents/OPERATIONS.md` にある。研究室環境をコピーせず、リポジトリのルートで実行する。
 
 ```bash
 uv venv .venvs/tsubame --python 3.12
@@ -34,10 +34,10 @@ hostname
 nvidia-smi
 nvidia-smi -L
 .venvs/tsubame/bin/python -c 'import torch; print(torch.__version__, torch.version.cuda, torch.cuda.is_available()); print(torch.cuda.get_device_properties(0))'
-PYTHONPATH="$PWD" .venvs/tsubame/bin/python tests/training/gpu_smoke.py
+PYTHONPATH="$PWD" .venvs/tsubame/bin/python tests/numerics/gpu_smoke.py
 ```
 
-SEMamba++ の `scan_backend: fused` は `mamba-ssm` と `causal-conv1d` が必要。上記の初期構築例には両方とも含まれない。別の拡張環境でのビルドと H100 上の検証は [学習検証記録](../training/VERIFICATION.md) を参照する。研究室でビルドした拡張は流用しない。
+SEMamba++ の `scan_backend: fused` は `mamba-ssm` と `causal-conv1d` が必要。上記の初期構築例には両方とも含まれない。fused 指定は `.venvs/semambapp` の `mamba-ssm` と `causal-conv1d` が必要である。研究室でビルドした拡張は流用しない。
 
 初期のビルド調査では、確保した計算ノード上で次を試した。その後、CUDA 12.3.2 と PyTorch CUDA 12.4 の組合せで H100 の融合カーネルを実行したが、`mamba-ssm` の未使用 Mamba3 自動 import を外す必要があった。下記だけでは動作手順として完結しない。詳細は学習検証記録を参照する。
 
@@ -57,4 +57,4 @@ uv pip install --python .venvs/tsubame/bin/python --no-deps --no-build-isolation
 
 さらに同日、`.venvs/tsubame` を削除し、上記の初期構築コマンドのみで作り直した環境でも、5 モデルの同じスモークが成功した。ログは `.venvs/tsubame/logs/rebuild-gpu-smoke.log`。
 
-既存環境を残した再取得・再ビルドは [クリーン再構築](CLEAN_REBUILD.md)。DeepFilterNet3 の解析 FFT は、リポジトリルートの `make df-rfft` で共有ライブラリを作る。Cargo の出力先は `DF_RFFT_TARGET`、読込先の上書きは `DF_RFFT_LIBRARY`。どちらもホスト固有のパスを既定にしない。Rust は利用者の `cargo` を使う。このリポジトリで通したコンパイラは rustc 1.99.1 で、別バージョンでの再コンパイルは未実施。手順とライセンスは [学習検証記録](../training/VERIFICATION.md)。
+既存環境を残した再取得・再ビルドは [クリーン再構築](CLEAN_REBUILD.md)。DeepFilterNet3 の解析 FFT は、リポジトリルートの `make df-rfft` で共有ライブラリを作る。Cargo の出力先は `DF_RFFT_TARGET`、読込先の上書きは `DF_RFFT_LIBRARY`。どちらもホスト固有のパスを既定にしない。Rust は利用者の `cargo` を使う。このリポジトリで通したコンパイラは rustc 1.99.1 で、別バージョンでの再コンパイルは未実施。手順は `make df-rfft`。`realfft` 3.3.0 は MIT、`rustfft` 6.4.1 は MIT OR Apache-2.0。libdf 自体は再配布しない。

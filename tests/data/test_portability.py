@@ -11,7 +11,7 @@ from src.data.corpora_catalog import CATALOG
 from src.data.db.schema import create_corpora_schema
 from src.data.link_corpora import link_corpora
 from src.evaluation.datasets.evaldb import EvaluationDB
-from src.training.data.dataset import load_recipe_dataset
+from src.experiments.calc.dataset import load_recipe_dataset
 
 
 class PortabilityTests(unittest.TestCase):

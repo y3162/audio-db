@@ -16,7 +16,7 @@ import torch
 from src.experiments.errors import BuildError, RuntimeFailure
 from src.se import build_model
 from src.se.models.deepfilternet3.model import DfNet
-from src.training.core.rng import seed_model_init
+from src.experiments.calc.rng import seed_model_init
 
 
 class DeepFilterNet3Model(torch.nn.Module):

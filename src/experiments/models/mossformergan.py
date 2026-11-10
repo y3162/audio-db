@@ -20,8 +20,8 @@ import torch
 from src.experiments.errors import BuildError
 from src.se import build_model
 from src.se.models.mossformergan.generator import SyncANet
-from src.training.core.rng import seed_model_init
-from src.training.se.mossformer_discriminator import Discriminator
+from src.experiments.calc.rng import seed_model_init
+from src.experiments.calc.mossformer_discriminator import Discriminator
 
 _BUILD_KEYS = ("hop", "n_fft", "num_channel", "win_len")
 

@@ -10,7 +10,6 @@ from pathlib import Path
 
 import numpy as np
 import torch
-import yaml
 
 from src.reproduction.errors import ReproductionError
 from src.reproduction.ids import digest
@@ -22,16 +21,11 @@ from src.reproduction.pipeline.store import AssetStore
 from src.reproduction.pipeline.training_data import ReproductionTrainingData, open_training_data
 from src.reproduction.pipeline.transform import apply_window, independent_audio_norm, noisy_rms_unit
 from src.reproduction.pipeline.types import CropSpec
-from src.training.core.batch import plan_batches
-from src.training.core.checkpoint import load_checkpoint
-from src.training.core.rng import mix_seed as training_mix_seed
-from src.training.core.rng import set_determinism
-from src.training.core.trainer import Trainer
-from src.training.data.sampler import crop_start, epoch_indices
-from src.training.errors import TrainingError
-from src.training.se.config import load_training_config
-from tests.training.mock_task import LinearPairTask
-from tests.training.support import cpu_process, tiny_config, write_wav
+from src.experiments.calc.rng import mix_seed as training_mix_seed
+from src.experiments.calc.rng import set_determinism
+from src.experiments.calc.sampler import crop_start, epoch_indices
+from src.experiments.calc.errors import TrainingError
+from tests.numerics.support import write_wav
 
 OFFICIAL = ROOT / "data" / "db" / "snapshots"
 
@@ -257,38 +251,6 @@ class PlanAndRenderTests(unittest.TestCase):
 
 
 class GateAndTrainerTests(unittest.TestCase):
-    def test_config_rejects_mixed_pipeline_keys(self):
-        with tempfile.TemporaryDirectory() as directory:
-            root = Path(directory)
-            legacy = _yaml_config(root / "legacy.yaml")
-            loaded = load_training_config(root / "legacy.yaml")
-            self.assertNotIn("pipeline", loaded["data"])
-            self.assertEqual(loaded["data"]["train_set"], "toy_train")
-            mixed = dict(legacy)
-            mixed["data"] = dict(legacy["data"])
-            mixed["data"]["dataset"] = "mp_senet.vb28.official@1"
-            _dump(root / "mixed.yaml", mixed)
-            with self.assertRaises(TrainingError):
-                load_training_config(root / "mixed.yaml")
-            reproduction = dict(legacy)
-            reproduction["data"] = {
-                "pipeline": "reproduction",
-                "dataset": "mp_senet.vb28.safe@1",
-                "database": "data/db/voicebank.duckdb",
-            }
-            _dump(root / "both.yaml", reproduction)
-            with self.assertRaises(TrainingError):
-                load_training_config(root / "both.yaml")
-            reproduction["data"] = {
-                "pipeline": "reproduction",
-                "dataset": "mp_senet.vb28.official@1",
-                "allow_test_selection": True,
-                "virtual_world_size": 2,
-            }
-            _dump(root / "virtual.yaml", reproduction)
-            with self.assertRaises(TrainingError):
-                load_training_config(root / "virtual.yaml")
-
     def test_test_selection_requires_both_flags(self):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
@@ -308,22 +270,6 @@ class GateAndTrainerTests(unittest.TestCase):
             opened = _open(safe, allow=False)
             self.assertTrue(set(opened.valid_ids).isdisjoint(opened.test_ids))
             opened.close()
-
-    def test_resume_discards_prefetched_audio(self):
-        with tempfile.TemporaryDirectory() as directory:
-            root = Path(directory)
-            continuous = _run(root / "continuous", steps=2, prefetch=True)
-            partial = root / "partial"
-            _run(partial, steps=2, prefetch=True, segment_steps=1)
-            checkpoint = partial / "ckpt" / "step_00000001.pt"
-            saved = load_checkpoint(checkpoint, torch.device("cpu"))
-            self.assertEqual(saved["data_state"]["pipeline"], "reproduction")
-            self.assertEqual(saved["data_state"]["update_in_epoch"], 1)
-            self.assertEqual(saved["update_in_epoch"], 1)
-            resumed = _run(root / "resumed", steps=2, prefetch=True, resume=checkpoint, source=partial)
-        self.assertEqual(continuous.case_ids[1:], resumed.case_ids)
-        for left, right in zip(_state(continuous), _state(resumed), strict=True):
-            self.assertTrue(torch.equal(left, right))
 
     def test_pipeline_modules_do_not_import_duckdb_or_training(self):
         forbidden = ("duckdb", "src.training", "src.se", "src.asr", "src.evaluation")
@@ -550,99 +496,6 @@ def _plan(store: AssetStore, *, epoch: int, world: int):
         micro_batch=micro,
         accumulation=1,
     )
-
-
-def _yaml_config(path: Path) -> dict:
-    config = {
-        "seed": 1,
-        "deterministic": False,
-        "global_batch_size": 2,
-        "micro_batch_size_per_gpu": 2,
-        "max_steps": 1,
-        "segment_size": 8,
-        "loss": "official",
-        "checkpoint_dir": "unused",
-        "checkpoint_interval": 1,
-        "validation_interval": 0,
-        "optimizer": {"name": "adamw", "lr": 0.0005, "betas": [0.8, 0.99], "weight_decay": 0.01},
-        "scheduler": {"name": "exponential", "gamma": 0.99},
-        "model": {
-            "name": "mp_senet",
-            "dense_channel": 4,
-            "num_tsconformers": 1,
-            "n_fft": 32,
-            "hop_size": 8,
-            "win_size": 32,
-            "compress_factor": 0.3,
-            "beta": 2.0,
-            "sampling_rate": 16000,
-        },
-        "data": {"database": "toy.duckdb", "train_set": "toy_train", "validation_set": None},
-        "runtime": {"device": "cpu", "allow_busy_gpu": False},
-    }
-    _dump(path, config)
-    return config
-
-
-def _dump(path: Path, config: dict) -> None:
-    path.write_text(yaml.safe_dump(config), encoding="utf-8")
-
-
-def _run(root: Path, *, steps: int, prefetch: bool, segment_steps: int | None = None,
-         resume: Path | None = None, source: Path | None = None) -> LinearPairTask:
-    root.mkdir(parents=True, exist_ok=True)
-    config = tiny_config(
-        root / "ckpt",
-        max_steps=steps,
-        seed=7,
-        global_batch_size=2,
-        micro_batch_size_per_gpu=2,
-        loss="mock",
-        checkpoint_interval=0,
-        validation_interval=0,
-        segment_size=8,
-    )
-    config["data"]["prefetch"] = prefetch
-    config["data"]["load_workers"] = 1
-    plan = plan_batches(2, 2, 1)
-    base = source if source is not None else root
-    store = _store(base / "data", normalize="noisy_rms_unit_v1", order="global_shuffle_stride_v1", frames=16, count=8)
-    data = ReproductionTrainingData(
-        store,
-        settings={
-            "allow_test_selection": False,
-            "seed": 7,
-            "global_batch": plan.global_batch_size,
-            "micro_batch": plan.micro_batch_size,
-            "accumulation": plan.accumulation_steps,
-            "world_size": 1,
-            "segment_size": 8,
-            "model_sample_rate": 16000,
-            "load_workers": 1,
-        },
-    )
-    task = LinearPairTask(config, torch.device("cpu"))
-    trainer = Trainer(
-        task,
-        plan,
-        cpu_process(),
-        max_steps=steps,
-        seed=7,
-        checkpoint_dir=root / "ckpt",
-        checkpoint_interval=0,
-        validation_interval=0,
-        config=config,
-    )
-    try:
-        trainer.fit(data, resume=resume, segment_steps=segment_steps)
-    finally:
-        data.close()
-    return task
-
-
-def _state(task: LinearPairTask) -> list[torch.Tensor]:
-    state = task.state_dict()
-    return [tensor.detach().cpu() for tensor in list(state["generator"].values()) + list(state["discriminator"].values())]
 
 
 if __name__ == "__main__":

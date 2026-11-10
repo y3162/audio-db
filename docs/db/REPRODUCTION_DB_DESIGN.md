@@ -1,6 +1,6 @@
 # 再現用データ基盤の DB 設計
 
-状態: **P1 の DB 基盤は実装済み**（2026-11-06）。`reproduction.duckdb` には VoiceBank 固定ペア 4 Dataset と、MS-SNSD の保存済み WAV Dataset、オンデマンド Dataset がある。学習はスナップショットを読み、生成済み WAV を必須にしない。詳細は [P6_VERIFICATION](../training/reproduction/P6_VERIFICATION.md)。
+状態: **P1 の DB 基盤は実装済み**（2026-11-06）。`reproduction.duckdb` には VoiceBank 固定ペア 4 Dataset と、MS-SNSD の保存済み WAV Dataset、オンデマンド Dataset がある。学習はスナップショットを読み、生成済み WAV を必須にしない。詳細は [P6_VERIFICATION](../../.agents/DATA.md)。
 
 P1 で設計からずらした点: `rule_json` は `src/reproduction/ids.py` の閉じたアルゴリズム封筒（完全な Protocol dataclass は P3）。生成素材は `assets.npz` に入れず `generated.json` に書く。leak 監査は `--resource-db` を渡したときだけ `resource.duckdb` を開く。監査に時刻は無く、PASS が存在し FAIL が無いことを使用条件にする。`sha256` の NULL から値への更新だけを `asset_hashes/` 経由で許す。`integrity = sha256` は Python 側で `size_bytes` も要求する。`official_reproduction` は ready のとき全素材 SHA-256 を要求する。blocked または unknown でバインドが空なら登録できる（P8 の `dfn3.online.official@1`）。ready な公式再現がバインド無しになることは無い。
 
@@ -9,9 +9,9 @@ P1 で設計からずらした点: `rule_json` は `src/reproduction/ids.py` の
 | 項目 | 正本 |
 |---|---|
 | DB スキーマ、ID とハッシュ、Protocol と Case の区別、Official / Research の分離、staging、事前生成の保存・再開、DuckDB の読み書き規則 | **この文書** |
-| Dataset / Sampler / Renderer / Batch の API、DDP、再開、性能、YAML、コマンド | [DATA_PIPELINE_DESIGN](../training/reproduction/DATA_PIPELINE_DESIGN.md) |
-| 実装フェーズ、受け入れテスト、未解決事項、着手前の確認 | [IMPLEMENTATION_PLAN](../training/reproduction/IMPLEMENTATION_PLAN.md) |
-| 6 モデルの再現対象、D-01〜D-09 の採用結果 | [TARGETS](../training/reproduction/TARGETS.md)、[.agents/DECISIONS.md](../../.agents/DECISIONS.md) |
+| Dataset / Sampler / Renderer / Batch の API、DDP、再開、性能、YAML、コマンド | [DATA_PIPELINE_DESIGN](../../.agents/DATA.md) |
+| 実装フェーズ、受け入れテスト、未解決事項、着手前の確認 | [IMPLEMENTATION_PLAN](../../.agents/DATA.md) |
+| 6 モデルの再現対象、D-01〜D-09 の採用結果 | [TARGETS](../../.agents/ARCHITECTURE.md)、[.agents/DECISIONS.md](../../.agents/ARCHITECTURE.md) |
 | レシピ JSON v1、`eval.*` | [RECIPE](RECIPE.md)、`src/data/recipe.py` |
 
 記法: 「（確認）」は 2026-11-06 に現行コードを読んで確認した事実、「（設計）」はこの文書が定める内容、「（UNKNOWN）」は一次資料で決まらない事項。
@@ -85,7 +85,7 @@ DB ファイル名の stem を `eval` にしない規則（`DATA.md`）は新フ
 | WHAM48 `high_res_wham` | 48 kHz | 2 | 1,578 | 78.5 h |
 | OpenSLR26 `sim_rir_16k` / OpenSLR28 `RIRS_NOISES` | 16 kHz（OpenSLR26 には `sim_rir_8k` 60,000 件が 8 kHz で別にある）| 1（RIRS_NOISES の 379 件は 2〜30 ch）| 60,000 / 61,260 | 19.44 / 25.5 h |
 
-- VoiceBank-DEMAND は **48 kHz のみ**で、16 kHz 版は無い。MP-SENet と MossFormerGAN の公式は 16 kHz のリストを使う。公式の配布物は**事前に 16 kHz へ変換済みで、変換器は不明**（UNKNOWN。[mp_senet.md](../training/reproduction/mp_senet.md)、[mossformergan.md](../training/reproduction/mossformergan.md)）。変換は派生素材（§4.3 の `derivations`）として明示し、§11 と DATA_PIPELINE_DESIGN の ResampleSpec で扱う。
+- VoiceBank-DEMAND は **48 kHz のみ**で、16 kHz 版は無い。MP-SENet と MossFormerGAN の公式は 16 kHz のリストを使う。公式の配布物は**事前に 16 kHz へ変換済みで、変換器は不明**（UNKNOWN。[mp_senet.md](../../.agents/DATA.md)、[mossformergan.md](../../.agents/DATA.md)）。変換は派生素材（§4.3 の `derivations`）として明示し、§11 と DATA_PIPELINE_DESIGN の ResampleSpec で扱う。
 - `data/staging/` は空。`data/db/` に `resource.duckdb` 以外は無い。
 
 この状態が、再現用 DB の設計に影響する点: (a) `eval` スキーマに頼らない（再現用 DB は自前のスキーマ）。(b) leakage 監査が評価セットと突き合わせるときは、`eval` が無ければ **UNKNOWN** とし、PASS にしない（§7.4）。
@@ -647,7 +647,7 @@ data/staging/reproduction/
 
 ### 9.6 段階（D-08）
 
-現行の段階名は S0（条件の計画）、S1（メモリ上の式比較。WAV は残さない）、S2（3000 h 相当の条件登録）、S3（小さい Dataset の Trainer）である。実装は混合 WAV を書かない。`reproduction.duckdb` の登録済み Dataset は `tf_locoformer.dns.recipe@1` と `tf_locoformer.dns.smoke@1`。P7.1 の `tf_locoformer.dns.accept_smoke@1` は別スナップショットで、本番 DB には入れていない。検証は [P7_VERIFICATION](../training/reproduction/P7_VERIFICATION.md) と [P7_1_VERIFICATION](../training/reproduction/P7_1_VERIFICATION.md)。`cv_synthetic_small` は UNKNOWN のまま。検証に使うのは sorted uttid の末尾 1/10 である。
+現行の段階名は S0（条件の計画）、S1（メモリ上の式比較。WAV は残さない）、S2（3000 h 相当の条件登録）、S3（小さい Dataset の Trainer）である。実装は混合 WAV を書かない。`reproduction.duckdb` の登録済み Dataset は `tf_locoformer.dns.recipe@1` と `tf_locoformer.dns.smoke@1`。P7.1 の `tf_locoformer.dns.accept_smoke@1` は別スナップショットで、本番 DB には入れていない。検証は [P7_VERIFICATION](../../.agents/DATA.md) と [P7_1_VERIFICATION](../../.agents/DATA.md)。`cv_synthetic_small` は UNKNOWN のまま。検証に使うのは sorted uttid の末尾 1/10 である。
 
 下の表は、WAV を段階的に書く旧設計である。現行の実装はこの表を使わない。容量の見積りだけが、作らなかったファイルの大きさとして残る。
 
@@ -669,7 +669,7 @@ Build の ID は件数を含まないので、**小さい段階の生成物は�
 
 ### 9.7 TF-GridNet の生成（MS-SNSD、D-07）
 
-公式の `ms_snsd_create_mixture.sh` は `rm -r data/` で既存データを消す（確認: [tf_gridnet.md](../training/reproduction/tf_gridnet.md) C-1）。**audio-db は消さない。** 新しい Build ディレクトリに作る。
+公式の `ms_snsd_create_mixture.sh` は `rm -r data/` で既存データを消す（確認: [tf_gridnet.md](../../.agents/DATA.md) C-1）。**audio-db は消さない。** 新しい Build ディレクトリに作る。
 
 - 素材: `clean_train` 23,075 と `noise_train` 128（train 側）、`clean_test` 1,100 と `noise_test` 51（test 側）。train 側と test 側は別の Build 入力にする。
 - 公式の生成式（C-1 の 2〜6）: `audio_length` 10 s、`silence_length` 0.2 s、各ファイルを −25 dBFS RMS で読む、名目 SNR は `linspace(0, 40, 5)` = [0, 10, 20, 30, 40] の 5 値すべてで同じクリップを作る（実 SNR は名目の半分）、`total_hours_train = 30`、`total_hours_test = 1`（5 SNR のコピーを数えた時間。一意なクリップは約 6 h / 0.2 h）。

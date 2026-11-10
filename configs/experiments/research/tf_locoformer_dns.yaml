@@ -1,0 +1,138 @@
+# Phase 5 production candidate. Do not launch from this readiness session.
+# Research DNS run. Not official cv_synthetic_small and not a paper-score claim.
+# Selection uses tf_locoformer.dns.accept_recipe.research_valid_fixed@1.
+# World size 4, global batch 4, micro-batch 1, chunk 64,000, 150 epochs.
+# 1,000 utterances per rank and 14,000 updates per epoch give 2,100,000 updates.
+# checkpoint_interval is 60 logical steps. Phase 5 estimated 7.4 s/update, so
+# this is about 7.4 minutes plus the 6.8 s write. Validation stays at the epoch end.
+# Launch with 4 visible GPUs. Fewer GPUs are a different, refused condition.
+schema: audio-db-experiment/v1
+seed: 0
+deterministic: false
+entry: trainer
+runtime:
+  class: src.experiments.runtime.ProcessRuntime
+  kwargs:
+    device: cuda
+    precision: fp32
+output:
+  directory: data/results/experiments/phase5-production/tf-locoformer-dns-research
+components:
+  model:
+    role: module
+    class: src.experiments.models.tf_locoformer.TFLocoformerModel
+    kwargs:
+      seed: 0
+      variant: dns
+      init: xavier_uniform
+      architecture:
+        n_fft: 256
+        hop_length: 128
+        normalize_variance: true
+        num_spk: 1
+        n_layers: 6
+        emb_dim: 128
+        norm_type: rmsgroupnorm
+        num_groups: 4
+        tf_order: ft
+        n_heads: 4
+        flash_attention: false
+        attention_dim: 128
+        pos_enc: rope
+        ffn_type: [swiglu_conv1d, swiglu_conv1d]
+        ffn_hidden_dim: [384, 384]
+        conv1d_kernel: 4
+        conv1d_shift: 1
+        dropout: 0.0
+        eps: 1.0e-5
+    prepare: {trainable: true, distribute: ddp}
+  loss:
+    role: loss
+    class: src.experiments.losses.MultiResolutionL1Loss
+    kwargs:
+      windows: [256, 512, 768, 1024]
+      time_domain_weight: 0.5
+      normalize_variance: false
+  source:
+    role: other
+    class: src.experiments.data.SnapshotSource
+    kwargs:
+      snapshot: tf_locoformer.dns.accept_recipe.research_valid_fixed@1
+      snapshot_root: data/db/snapshots
+      split: train
+  sampler:
+    role: other
+    class: src.experiments.data.ChunkSampler
+    kwargs:
+      seed: 0
+      num_samples_per_epoch: 1000
+      chunk_length: 64000
+      shift_ratio: 0.5
+      num_cache_chunks: 1024
+      shuffle: true
+      global_batch: 4
+    inject:
+      source: {ref: source}
+  protocol:
+    role: other
+    class: src.experiments.data.ChunkProtocol
+    kwargs: {}
+    inject:
+      source: {ref: source}
+  batcher:
+    role: other
+    class: src.experiments.data.MicroBatcher
+    kwargs:
+      micro_batch: 1
+      group_size: 1
+  data:
+    role: data
+    class: src.experiments.data.SnapshotDataModule
+    kwargs:
+      prefetch: false
+    inject:
+      source: {ref: source}
+      sampler: {ref: sampler}
+      protocol: {ref: protocol}
+      batcher: {ref: batcher}
+  optimizer:
+    role: optimizer
+    class: torch.optim.AdamW
+    parameters_of: model
+    kwargs:
+      lr: 0.001
+      betas: [0.9, 0.999]
+      weight_decay: 0.01
+  scheduler:
+    role: scheduler
+    class: src.experiments.calc.optim.WarmupReduceLROnPlateau
+    kwargs:
+      warmup_steps: 4000
+      mode: min
+      factor: 0.5
+      patience: 3
+      threshold: 1.0e-4
+      threshold_mode: rel
+      cooldown: 0
+      min_lr: 0.0
+      eps: 1.0e-8
+    inject:
+      optimizer: {ref: optimizer}
+  trainer:
+    role: trainer
+    class: src.experiments.tf_locoformer.TFLocoformerTrainer
+    kwargs:
+      max_logical_steps: 2100000
+      accumulation: 1
+      grad_clip: 5.0
+      keep_nbest: 5
+      max_epochs: 150
+      early_stopping_patience: 10
+      checkpoint_interval: 60
+      validation_profile: tf_locoformer.dns.accept_recipe.research_valid_fixed@1
+    inject:
+      model: {ref: model}
+      loss: {ref: loss}
+      data: {ref: data}
+      optimizer: {ref: optimizer}
+      scheduler: {ref: scheduler}

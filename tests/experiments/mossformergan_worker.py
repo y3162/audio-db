@@ -45,7 +45,7 @@ def _pesq_constant(clean: torch.Tensor, enhanced: torch.Tensor, sample_rate: int
 
 
 def _install_pesq(mode: str) -> None:
-    import src.training.se.mossformergan as mossformer
+    import src.experiments.calc.mossformergan as mossformer
 
     if mode == "skip":
         mossformer.metric_targets = _pesq_split

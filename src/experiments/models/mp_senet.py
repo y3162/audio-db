@@ -17,8 +17,8 @@ import torch
 from src.experiments.errors import BuildError, RuntimeFailure
 from src.se import build_model
 from src.se.models.mp_senet.model import MPNet
-from src.training.errors import TrainingError
-from src.training.se.stft import mag_pha_istft, mag_pha_stft
+from src.experiments.calc.errors import TrainingError
+from src.experiments.calc.stft import mag_pha_istft, mag_pha_stft
 
 _SAMPLE_RATE = 16000
 

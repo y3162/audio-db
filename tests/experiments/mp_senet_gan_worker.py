@@ -29,7 +29,7 @@ def main() -> None:
     if mode == "nan":
         os.environ["MP_SENET_NAN_RANK0"] = "1"
     if mode == "pesq_split":
-        import src.training.se.losses as losses
+        import src.experiments.calc.losses as losses
 
         losses.metric_targets = _pesq_split
     experiment = build_experiment(load_experiment(directory / "experiment.yaml"))

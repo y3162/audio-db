@@ -27,8 +27,8 @@ from src.experiments.data import Batch
 from src.experiments.errors import BuildError, RuntimeFailure
 from src.experiments.mossformergan import MossFormerGANTrainer
 from src.experiments.runtime import PreparePolicy, ProcessRuntime
-from src.training.core.rng import set_determinism
-from src.training.se.mossformergan import (
+from src.experiments.calc.rng import set_determinism
+from src.experiments.calc.mossformergan import (
     MossFormerGANTask,
     local_validation_totals,
     official_validation_mean,
@@ -432,7 +432,7 @@ class MossFormerGANAlgorithmTests(unittest.TestCase):
         metric = _metric_script(fail_calls)
         self._reload()
         torch.manual_seed(19)
-        with patch("src.training.se.mossformergan.metric_targets", metric):
+        with patch("src.experiments.calc.mossformergan.metric_targets", metric):
             self.task.train_update(batches, accumulation)
         expected_gen = {key: value.detach().cpu().clone() for key, value in self.task.generator.state_dict().items()}
         expected_disc = {
@@ -450,7 +450,7 @@ class MossFormerGANAlgorithmTests(unittest.TestCase):
         phases: list[str] = []
         trainer._on_update_phase = lambda phase: phases.append(phase)  # type: ignore[method-assign]
         torch.manual_seed(19)
-        with patch("src.training.se.mossformergan.metric_targets", metric):
+        with patch("src.experiments.calc.mossformergan.metric_targets", metric):
             for index, batch in enumerate(batches):
                 trainer.consume_micro_batch(_as_batch(batch, index), self.runtime, update_index=index)
         gen_diff = _max_tree(expected_gen, trainer.generator.state_module.generator.state_dict(), "generator")
@@ -560,7 +560,7 @@ class MossFormerGANAlgorithmTests(unittest.TestCase):
         batch = _noise(11)
         metric = _metric_script(set())
         trainer = self._trainer(1)
-        with patch("src.training.se.mossformergan.metric_targets", metric):
+        with patch("src.experiments.calc.mossformergan.metric_targets", metric):
             torch.manual_seed(5)
             old = self.task.validation_report(batch)
             metric.reset()
@@ -573,7 +573,7 @@ class MossFormerGANAlgorithmTests(unittest.TestCase):
         self.assertEqual(old["losses"]["generator"]["value"], new["losses"]["generator"]["value"])
         self.assertEqual(old["generator_loss_included"], True)
         metric_fail = _metric_script({1})
-        with patch("src.training.se.mossformergan.metric_targets", metric_fail):
+        with patch("src.experiments.calc.mossformergan.metric_targets", metric_fail):
             failed = self.task.validation_report(batch)
         self.assertEqual(failed["losses"]["generator"]["status"], "na")
         self.assertIsNone(failed["losses"]["generator"]["value"])
@@ -756,7 +756,7 @@ class MossFormerGANAlgorithmTests(unittest.TestCase):
 
             trainer._step_pair = _capture  # type: ignore[method-assign]
             result = None
-            with patch("src.training.se.mossformergan.metric_targets", metric):
+            with patch("src.experiments.calc.mossformergan.metric_targets", metric):
                 for index, batch in enumerate(batches):
                     result = trainer.consume_micro_batch(batch, self.runtime, update_index=index)
             self.assertIsNotNone(result)
@@ -798,7 +798,7 @@ class MossFormerGANAlgorithmTests(unittest.TestCase):
             return torch.full((clean.shape[0],), 0.4)
 
         with tempfile.TemporaryDirectory(prefix="moss-partial-") as raw, patch(
-            "src.training.se.mossformergan.metric_targets", _constant
+            "src.experiments.calc.mossformergan.metric_targets", _constant
         ):
             root = Path(raw)
             first_dir = root / "clean"
@@ -847,7 +847,7 @@ class MossFormerGANAlgorithmTests(unittest.TestCase):
                 del clean, enhanced, sample_rate
                 return None
 
-            with patch("src.training.se.mossformergan.metric_targets", _none):
+            with patch("src.experiments.calc.mossformergan.metric_targets", _none):
                 try:
                     result = experiment.run()
                 finally:

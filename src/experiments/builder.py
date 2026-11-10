@@ -19,7 +19,7 @@ from src.experiments.factory import ComponentFactory, ComponentSpec
 from src.experiments.registry import ComponentRegistry, StateRegistry
 from src.experiments.runtime import PreparedModel, ProcessRuntime
 from src.experiments.state import ComponentState, RuntimeState
-from src.training.core.rng import set_determinism
+from src.experiments.calc.rng import set_determinism
 
 _STAGE = {
     "module": 0,

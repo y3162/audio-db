@@ -229,8 +229,8 @@ def _frontend(separator, waveform: torch.Tensor) -> torch.Tensor:
 
 def _train_step(device_name: str, batch: int, chunk: int) -> dict:
     from src.se.models.tf_locoformer.model import TFLocoformer
-    from src.training.se.initialization import apply_espnet_initialization
-    from src.training.se.spectral import multi_resolution_l1
+    from src.experiments.calc.initialization import apply_espnet_initialization
+    from src.experiments.calc.spectral import multi_resolution_l1
 
     device = torch.device(device_name)
     row = {"kind": "train-step", "batch": batch, "chunk": chunk, "device": device_name, "status": "NOT_TESTED"}

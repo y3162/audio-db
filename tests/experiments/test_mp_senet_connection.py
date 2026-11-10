@@ -35,8 +35,8 @@ from src.reproduction.snapshot_reader import (
     snapshot_hash,
 )
 from src.se.models.mp_senet.model import MPNet
-from src.training.se.mp_senet import MPSENetTask
-from tests.training.support import tiny_config
+from src.experiments.calc.mp_senet import MPSENetTask
+from tests.numerics.support import tiny_config
 
 ROOT = Path(__file__).resolve().parents[2]
 WAVEFORM_LENGTH = 64

@@ -25,8 +25,8 @@ from src.evaluation.provenance import (
 )
 from src.experiments.config import ExperimentConfig, config_sha256
 from src.experiments.errors import CheckpointError
-from src.training.errors import TrainingError
-from src.training.provenance import build_provenance, provenance_sha256, publish_provenance
+from src.experiments.calc.errors import TrainingError
+from src.experiments.calc.provenance import build_provenance, provenance_sha256, publish_provenance
 
 
 class _Process:
@@ -97,7 +97,7 @@ def bind_provenance(
 def attach_provenance_sidecar(checkpoint: Path, raw: bytes) -> None:
     """Copy the run provenance next to one checkpoint. The previous bytes must match."""
 
-    from src.training.provenance import write_provenance_sidecar
+    from src.experiments.calc.provenance import write_provenance_sidecar
 
     try:
         write_provenance_sidecar(checkpoint, raw)

@@ -411,7 +411,14 @@ def _reject_differentiable(components: dict[str, ComponentConfig]) -> None:
         _reject_differentiable_value(spec.kwargs, spec.component_id)
 
 
-def config_sha256(config: ExperimentConfig) -> str:
+# Class paths moved out of ``src.training`` keep the previous hash so an
+# ``audio-db-experiment-v1`` checkpoint can resume.
+LEGACY_CLASS_PATHS = {
+    "src.experiments.calc.optim.WarmupReduceLROnPlateau": "src.training.se.optim.WarmupReduceLROnPlateau",
+}
+
+
+def config_sha256(config: ExperimentConfig, *, class_paths: dict[str, str] | None = None) -> str:
     """Hash the experiment identity.
 
     ``output`` is excluded. Resume refuses a different directory by comparing
@@ -422,7 +429,7 @@ def config_sha256(config: ExperimentConfig) -> str:
 
     payload = {
         "components": {
-            component_id: _component_identity(spec)
+            component_id: _component_identity(spec, class_paths)
             for component_id, spec in config.components.items()
         },
         "deterministic": config.deterministic,
@@ -435,14 +442,14 @@ def config_sha256(config: ExperimentConfig) -> str:
     return hashlib.sha256(encoded.encode("utf-8")).hexdigest()
 
 
-def _component_identity(spec: ComponentConfig) -> dict[str, Any]:
+def _component_identity(spec: ComponentConfig, class_paths: dict[str, str] | None = None) -> dict[str, Any]:
     if spec.ref is not None:
         return {"ref": spec.ref}
     kwargs = _jsonable(spec.kwargs)
     if isinstance(kwargs, dict):
         kwargs.pop("stop_after_logical_steps", None)
     payload: dict[str, Any] = {
-        "class": spec.class_path,
+        "class": (class_paths or {}).get(spec.class_path, spec.class_path),
         "kwargs": kwargs,
         "role": spec.role,
     }

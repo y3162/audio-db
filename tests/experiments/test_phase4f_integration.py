@@ -28,7 +28,7 @@ from src.experiments.models.tf_gridnet import TFGridNetModel
 from src.experiments.models.tf_locoformer import TFLocoformerModel
 from src.se import load_enhancer
 from src.se.models.mossformergan.inference import _enhance_chunk
-from src.training.core.rng import set_determinism
+from src.experiments.calc.rng import set_determinism
 from tests.experiments.test_mp_senet_gan import ARCH, _yaml as mp_yaml
 from tests.experiments.test_mossformergan import _yaml as moss_yaml
 from tests.experiments.test_tf_gridnet_training import TINY as GRID_TINY
@@ -137,7 +137,7 @@ class Phase4FDeclarationTests(unittest.TestCase):
         self.assertEqual(grid.components["batcher"].kwargs["micro_batch"], 2)
         loco = configs["tf_locoformer"]
         self.assertEqual(loco.components["optimizer"].class_path, "torch.optim.AdamW")
-        self.assertEqual(loco.components["scheduler"].class_path, "src.training.se.optim.WarmupReduceLROnPlateau")
+        self.assertEqual(loco.components["scheduler"].class_path, "src.experiments.calc.optim.WarmupReduceLROnPlateau")
         self.assertEqual(loco.components["trainer"].kwargs["validation_profile"], "tf_locoformer.dns.accept_recipe.research_valid_fixed@1")
         self.assertEqual(loco.components["model"].prepare.distribute, "ddp")
         self.assertEqual(loco.components["sampler"].kwargs["global_batch"], 4)
@@ -225,7 +225,7 @@ class Phase4FCheckpointAndExportTests(unittest.TestCase):
 
     def _execute(self, config: Path, *, resume: Path | None = None, pesq: bool = False) -> None:
         if pesq:
-            with patch("src.training.se.mossformergan.metric_targets", _pesq_stub):
+            with patch("src.experiments.calc.mossformergan.metric_targets", _pesq_stub):
                 Experiment(load_experiment(config)).run(resume=resume)
             return
         Experiment(load_experiment(config)).run(resume=resume)

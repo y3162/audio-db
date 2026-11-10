@@ -25,10 +25,10 @@ from typing import Any, Literal
 
 import torch
 
-from src.experiments.config import ExperimentConfig, config_sha256
+from src.experiments.config import LEGACY_CLASS_PATHS, ExperimentConfig, config_sha256
 from src.experiments.data.identity import comparable_identity
 from src.experiments.errors import CheckpointError, ExperimentError, StateError
-from src.training.errors import TrainingError
+from src.experiments.calc.errors import TrainingError
 from src.experiments.registry import StateRegistry
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
@@ -432,7 +432,9 @@ def _validate_payload(
             raise CheckpointError("resume from a different directory is not supported")
         if payload.get("output_directory") != str(directory.resolve()):
             raise CheckpointError("resume from a different directory is not supported")
-        if payload.get("config_sha256") != config_sha256(config):
+        current = config_sha256(config)
+        legacy = config_sha256(config, class_paths=LEGACY_CLASS_PATHS)
+        if payload.get("config_sha256") not in {current, legacy}:
             raise CheckpointError("checkpoint config identity does not match this experiment")
         _align_scheduled_batches(payload, components)
         if not _dataset_identities_match(payload.get("dataset_identity"), _dataset_identity(config, components)):

@@ -39,10 +39,11 @@ model_ms = build_model('tf_gridnet', variant='ms-snsd')
 
 ## 学習
 
-SE の学習は `src.training` にある。`enhance()` は推論のままである。MP-SENet は [学習](docs/training/MP_SENET.md)、ほかのモデルの到達レベルは [OTHER_MODELS.md](docs/training/OTHER_MODELS.md)、確認した条件は [検証記録](docs/training/VERIFICATION.md) を参照する。
+SE の学習は `src/experiments` だけである。`enhance()` は推論のままである。公式再現の本格候補は `configs/experiments/official/`、研究用は `configs/experiments/research/`。式と再開条件は [.agents/ARCHITECTURE.md](.agents/ARCHITECTURE.md)。
 
 ```bash
-python -m src.training.se.cli --config configs/training/mp_senet.yaml
+make experiment-preflight CONFIG=configs/experiments/mp_senet_gan.yaml
+make experiment CONFIG=configs/experiments/official/mp_senet_gan.yaml
 ```
 
 ## 公式再現用 DB
@@ -59,7 +60,7 @@ make reproduction-rebuild-db OUT=data/db/reproduction-rebuilt.duckdb
 
 `DATASET` が無い snapshot、`OUT` が無い rebuild、`DATASET` と `BUILD` のどちらも無い verify は失敗します。同じスキーマへの `reproduction-init-db` は何もしません。違うスキーマや未完了のファイルは変更せず拒否します。再構築は `OUT` が既存なら拒否します。leakage 監査が `UNKNOWN` の Dataset を書き出すときだけ `ALLOW_UNKNOWN_LEAK_CHECK=1` を付けます。このフラグはスナップショットの来歴に残り、ハッシュには入りません。
 
-学習はまだこの DB もスナップショットも読みません。
+学習プロセスは `reproduction.duckdb` を開かない。スナップショットを読む。
 
 ## 評価データ
 

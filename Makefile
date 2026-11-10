@@ -5,7 +5,8 @@
 	reproduction-plan-build reproduction-register \
 	reproduction-plan-dns reproduction-register-dns \
 	reproduction-benchmark-dns-accept reproduction-plan-dns-accept reproduction-register-dns-accept \
-	reproduction-register-p8
+	reproduction-register-p8 \
+	experiment experiment-preflight test-cpu
 
 ROOT := $(abspath $(dir $(lastword $(MAKEFILE_LIST))))
 WITH_ENV := $(ROOT)/scripts/setup/with_env.sh
@@ -55,7 +56,12 @@ help:
 	  '  make reproduction-rebuild-db OUT=path/to/new.duckdb' \
 	  '  make reproduction-prepare [STEP=all] [WORKERS=8]' \
 	  '  make reproduction-plan-dns-accept | reproduction-register-dns-accept | reproduction-benchmark-dns-accept' \
-	  '  make reproduction-register-p8'
+	  '  make reproduction-register-p8' \
+	  '' \
+	  'Experiments:' \
+	  '  make experiment CONFIG=configs/experiments/....yaml' \
+	  '  make experiment-preflight CONFIG=configs/experiments/....yaml' \
+	  '  make test-cpu'
 
 setup:
 	$(WITH_ENV) $(ROOT)/scripts/setup/setup.sh $(PLATFORM)
@@ -157,3 +163,25 @@ reproduction-register-dns-accept:
 
 reproduction-register-p8:
 	$(WITH_ENV) $(PYTHON) -c 'from src.reproduction.prepare.dfn3_online import register_p8; print(register_p8())'
+
+CONFIG ?=
+RESUME ?=
+INITIALIZE_FROM ?=
+
+experiment:
+	@test -n "$(CONFIG)" || { echo "CONFIG is required"; exit 1; }
+	CUDA_VISIBLE_DEVICES="$${CUDA_VISIBLE_DEVICES}" $(WITH_ENV) $(PYTHON) -m src.experiments.cli --config "$(CONFIG)" $(if $(RESUME),--resume "$(RESUME)",) $(if $(INITIALIZE_FROM),--initialize-from "$(INITIALIZE_FROM)",)
+
+experiment-preflight:
+	@test -n "$(CONFIG)" || { echo "CONFIG is required"; exit 1; }
+	CUDA_VISIBLE_DEVICES="" $(WITH_ENV) $(PYTHON) -m src.experiments.cli --config "$(CONFIG)" --preflight
+
+test-cpu:
+	CUDA_VISIBLE_DEVICES="" $(WITH_ENV) $(PYTHON) -m unittest discover -s tests/asr -v
+	CUDA_VISIBLE_DEVICES="" $(WITH_ENV) $(PYTHON) -m unittest discover -s tests/data -v
+	CUDA_VISIBLE_DEVICES="" $(WITH_ENV) $(PYTHON) -m unittest discover -s tests/evaluation -v
+	CUDA_VISIBLE_DEVICES="" $(WITH_ENV) $(PYTHON) -m unittest discover -s tests/experiments -v
+	CUDA_VISIBLE_DEVICES="" $(WITH_ENV) $(PYTHON) -m unittest discover -s tests/reproduction -v
+	CUDA_VISIBLE_DEVICES="" $(WITH_ENV) $(PYTHON) -m unittest discover -s tests/se -v
+	CUDA_VISIBLE_DEVICES="" $(WITH_ENV) $(PYTHON) -m unittest discover -s tests/setup -v
+	CUDA_VISIBLE_DEVICES="" $(WITH_ENV) $(PYTHON) -m unittest discover -s tests/numerics -v

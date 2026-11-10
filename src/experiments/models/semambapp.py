@@ -7,7 +7,7 @@ alone and replays the draws it does not keep. Discarded modules are not
 registered and are not optimizer targets.
 
 The generator is ``src.se.build_model("semambapp")``. The discriminators are
-the existing classes in ``src.training.se.semamba_disc``. Neither network is
+the existing classes in ``src.experiments.calc.semamba_disc``. Neither network is
 reimplemented here. ``scan_backend`` is a runtime switch on that generator,
 not a second architecture.
 """
@@ -21,10 +21,10 @@ import torch
 from src.experiments.errors import BuildError, RuntimeFailure
 from src.se import build_model
 from src.se.models.semambapp.network import SEMambaPP
-from src.training.core.rng import seed_model_init
-from src.training.errors import TrainingError
-from src.training.se.semamba_disc import MultiResolutionDiscriminator, MultiScaleSubbandCQTDiscriminator
-from src.training.se.stft import semamba_mag_phase_istft, semamba_mag_phase_stft
+from src.experiments.calc.rng import seed_model_init
+from src.experiments.calc.errors import TrainingError
+from src.experiments.calc.semamba_disc import MultiResolutionDiscriminator, MultiScaleSubbandCQTDiscriminator
+from src.experiments.calc.stft import semamba_mag_phase_istft, semamba_mag_phase_stft
 
 _SAMPLE_RATE = 16000
 _COMPRESS = 0.3

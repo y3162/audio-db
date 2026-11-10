@@ -36,10 +36,10 @@ from src.experiments.tf_gridnet import (
     weighted_validation_loss,
 )
 from src.se.models.tf_gridnet.model import TFGridNet
-from src.training.core.average import average_state_dicts
-from src.training.se.optim import clip_gradients
-from src.training.se.spectral import multi_resolution_l1
-from src.training.se.tf_gridnet import TFGridNetTask
+from src.experiments.calc.average import average_state_dicts
+from src.experiments.calc.optim import clip_gradients
+from src.experiments.calc.spectral import multi_resolution_l1
+from src.experiments.calc.tf_gridnet import TFGridNetTask
 from tests.experiments.test_chunk_data import _write_snapshot
 
 ROOT = Path(__file__).resolve().parents[2]

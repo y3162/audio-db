@@ -44,12 +44,15 @@ from src.experiments.trainers import (
     _rewind_metrics,
     _sample_path,
 )
-from src.training.errors import TrainingError
-from src.training.se import mossformergan as mossformer_lib
-from src.training.se.mossformergan import (
+from src.experiments.calc.errors import TrainingError
+from src.experiments.calc import mossformergan as mossformer_lib
+from src.experiments.calc.mossformergan import (
     OFFICIAL_ADAMW_WEIGHT_DECAY,
-    MossFormerGANTask,
+    forward_spectra,
+    generator_terms,
     mossformer_validation_decision,
+    reduce_validation,
+    validation_report,
 )
 
 _IN_EPOCH = "in_epoch"
@@ -301,7 +304,7 @@ class MossFormerGANTrainer:
         generator_module = self.generator.module
         discriminator_module = self.discriminator.module
         with runtime.sync_context([self.generator, self.discriminator], sync=False):
-            terms = MossFormerGANTask._generator_terms(self._terms_view(), generator_module, discriminator_module, clean, noisy)
+            terms = generator_terms(self._terms_view(), generator_module, discriminator_module, clean, noisy)
             generator_loss = terms["generator"]
             reason = None
             targets = None
@@ -606,11 +609,11 @@ class MossFormerGANTrainer:
                     "validation_alignment_pad": alignment,
                 }
                 try:
-                    reports.append(MossFormerGANTask.validation_report(proxy, payload))
+                    reports.append(validation_report(proxy, payload))
                 except TrainingError as exc:
                     raise RuntimeFailure(f"validation report failed: {exc}") from exc
             try:
-                summary = MossFormerGANTask.reduce_validation(
+                summary = reduce_validation(
                     proxy, reports, collective=runtime.world_size > 1
                 )
             except TrainingError as exc:
@@ -897,10 +900,10 @@ class _OfficialCall:
     ``SimpleNamespace`` does not bind those functions.
     """
 
-    _forward = MossFormerGANTask._forward
-    _generator_terms = MossFormerGANTask._generator_terms
-    validation_report = MossFormerGANTask.validation_report
-    reduce_validation = MossFormerGANTask.reduce_validation
+    _forward = forward_spectra
+    _generator_terms = generator_terms
+    validation_report = validation_report
+    reduce_validation = reduce_validation
 
     def __init__(
         self,

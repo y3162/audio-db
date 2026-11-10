@@ -1,1 +1,0 @@
-"""Recipe-backed training data."""

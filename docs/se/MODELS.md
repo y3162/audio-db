@@ -18,7 +18,7 @@
 
 ## TF-Locoformer
 
-[論文](https://arxiv.org/abs/2409.16674)、[公式コード](https://github.com/merlresearch/tf-locoformer) tag `v1.1.0`、commit `7a615460d347ff7334a13dbb831d16280da72cdc`、Apache-2.0（`src/se/models/tf_locoformer/LICENSE`）。対応するのは DNS-Interspeech 2020 の単一話者強調（`dns`）である。standalone の separator を引用し、Hann STFT（`n_fft=256`、`hop=128`）と ESPnet の `normalize_variance`（入力を不偏標準偏差で割る）を独立構成した。不偏標準偏差が `1e-6` 未満の入力は、学習では拒否し、推論では零波形を返す。ESPnet は実行時に import しない。2 話者分離の重みは読み込まない。公開重みの CPU 比較は最大絶対誤差 0、空の Quadro RTX 5000 では 20 秒まで `1e-5` 未満。手順と表は [TF-Locoformer](../training/TF_LOCOFORMER.md)。
+[論文](https://arxiv.org/abs/2409.16674)、[公式コード](https://github.com/merlresearch/tf-locoformer) tag `v1.1.0`、commit `7a615460d347ff7334a13dbb831d16280da72cdc`、Apache-2.0（`src/se/models/tf_locoformer/LICENSE`）。対応するのは DNS-Interspeech 2020 の単一話者強調（`dns`）である。standalone の separator を引用し、Hann STFT（`n_fft=256`、`hop=128`）と ESPnet の `normalize_variance`（入力を不偏標準偏差で割る）を独立構成した。不偏標準偏差が `1e-6` 未満の入力は、学習では拒否し、推論では零波形を返す。ESPnet は実行時に import しない。2 話者分離の重みは読み込まない。公開重みの CPU 比較は最大絶対誤差 0、空の Quadro RTX 5000 では 20 秒まで `1e-5` 未満。手順と表は [TF-Locoformer](../../.agents/ARCHITECTURE.md)。
 
 ## 追記: 以前の未実装調査
 
