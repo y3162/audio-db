@@ -1,6 +1,6 @@
 """Fixed-pair supply for MP-SENet and MossFormerGAN.
 
-Snapshots and numeric functions stay in ``src.reproduction``. This module
+Snapshot reads and numeric functions stay in this package. This module
 does not open DuckDB and does not construct ``ReproductionTrainingData``.
 """
 
@@ -28,23 +28,23 @@ from src.experiments.data.weighted import (
     weighted_order_parameters,
 )
 from src.experiments.errors import DataError, StateError
-from src.reproduction.errors import ReproductionError
-from src.reproduction.ids import digest
-from src.reproduction.paths import DEFAULT_CORPORA, DEFAULT_DERIVED, DEFAULT_GENERATED
-from src.reproduction.pipeline.order import order_params, rank_order, resolve_order_policy
-from src.reproduction.pipeline.planner import (
+from src.experiments.data.errors import ReproductionError
+from src.experiments.data.ids import digest
+from src.experiments.data.paths import DEFAULT_CORPORA, DEFAULT_DERIVED, DEFAULT_GENERATED
+from src.experiments.data.sampling.order import order_params, rank_order, resolve_order_policy
+from src.experiments.data.sampling.planner import (
     fixed_pair_case_length,
     fixed_pair_crop,
     fixed_pair_pad_name,
     fixed_pair_plan_index,
     validation_refs,
 )
-from src.reproduction.pipeline.provenance import snapshot_provenance_parts
-from src.reproduction.pipeline.renderer import render_sample
-from src.reproduction.pipeline.store import AssetStore
-from src.reproduction.pipeline.types import CropSpec
-from src.reproduction.pipeline.types import SampleRef as PlannedRef
-from src.reproduction.snapshot_reader import LoadedSnapshot, load_snapshot
+from src.experiments.data.snapshot_provenance import snapshot_provenance_parts
+from src.experiments.data.render.renderer import render_sample
+from src.experiments.data.assets.store import AssetStore
+from src.experiments.data.render.types import CropSpec
+from src.experiments.data.render.types import SampleRef as PlannedRef
+from src.experiments.data.snapshot import LoadedSnapshot, load_snapshot
 
 _IDENTITY_CLASS = "src.experiments.data.SnapshotDataModule"
 _MISSING = object()

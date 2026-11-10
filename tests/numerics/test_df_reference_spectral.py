@@ -15,7 +15,7 @@ CONFIG = Path(os.environ.get("DF_REFERENCE_CONFIG", ROOT / "data/checkpoints/dee
 class DeepFilterNetReferenceSpectralTest(unittest.TestCase):
     def test_loss_and_gradient_on_distinct_waveforms(self):
         from tests.numerics.four_process.real_models import DeepFilterNet3
-        from src.experiments.calc.deepfilternet import _multi_resolution_spectral
+        from src.experiments.official.deepfilternet3.reference import _multi_resolution_spectral
 
         adapter = DeepFilterNet3()
         adapter.configure({})
@@ -34,7 +34,7 @@ class DeepFilterNetReferenceSpectralTest(unittest.TestCase):
 
     @unittest.skipUnless(torch.cuda.is_available(), "CUDA required")
     def test_cuda_deterministic_fallback_remains_finite(self):
-        from src.experiments.calc.deepfilternet import _multi_resolution_spectral
+        from src.experiments.official.deepfilternet3.reference import _multi_resolution_spectral
 
         torch.manual_seed(29)
         signal = torch.randn(1, 4800, device="cuda", requires_grad=True)

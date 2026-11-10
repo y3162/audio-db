@@ -18,7 +18,7 @@ output:
 components:
   model:
     role: module
-    class: src.experiments.models.mp_senet.MPSENetWaveformAdapter
+    class: src.experiments.official.mp_senet.waveform.MPSENetWaveformAdapter
     kwargs:
       dense_channel: 4
       num_tsconformers: 1

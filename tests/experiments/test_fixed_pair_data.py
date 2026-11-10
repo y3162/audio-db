@@ -28,12 +28,12 @@ from src.experiments.data.fixed_pair import (
 from src.experiments.data.identity import DISPLAY_IDENTITY_KEYS, comparable_identity
 from src.experiments.errors import BuildError, CheckpointError, DataError, RuntimeFailure, StateError
 from src.experiments.trainers import _batch_on_device
-from src.reproduction.ids import canonical_text, digest
-from src.reproduction.pipeline.order import rank_order
-from src.reproduction.pipeline.planner import plan_fixed_pair, validation_refs
-from src.reproduction.pipeline.renderer import render_sample
-from src.reproduction.pipeline.store import AssetStore
-from src.reproduction.snapshot_reader import (
+from src.experiments.data.ids import canonical_text, digest
+from src.experiments.data.sampling.order import rank_order
+from src.experiments.data.sampling.planner import plan_fixed_pair, validation_refs
+from src.experiments.data.render.renderer import render_sample
+from src.experiments.data.assets.store import AssetStore
+from src.experiments.data.snapshot import (
     FORMAT,
     SCHEMA_VERSION,
     arrays_from_assets,
@@ -106,7 +106,7 @@ class FixedPairDataTests(unittest.TestCase):
         _remove(self.base)
 
     def test_factory_builds_components_without_duckdb_or_training_data(self) -> None:
-        import src.reproduction.pipeline.training_data as training_data
+        import src.experiments.data.fixed_pair_stream as training_data
 
         calls = {"duck": 0, "training": 0}
         original_training = training_data.ReproductionTrainingData
@@ -183,7 +183,7 @@ class FixedPairDataTests(unittest.TestCase):
             module.close()
 
     def test_waveforms_match_plan_fixed_pair_for_both_normalizers(self) -> None:
-        import src.reproduction.pipeline.training_data as training_data
+        import src.experiments.data.fixed_pair_stream as training_data
 
         calls = {"training": 0}
         original = training_data.ReproductionTrainingData

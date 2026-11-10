@@ -11,10 +11,10 @@ import torch
 from src.se import build_model, load_enhancer
 from src.experiments.calc.rng import seed_model_init, set_determinism
 from src.experiments.calc.errors import TrainingError
-from src.experiments.calc.deepfilternet import DeepFilterNetTask, deepfilter_cosine_schedules
-from src.experiments.calc.mossformergan import MossFormerGANTask
-from src.experiments.calc.semambapp import SEMambaTask
-from src.experiments.calc.tf_gridnet import TFGridNetTask
+from src.experiments.official.deepfilternet3.reference import DeepFilterNetTask, deepfilter_cosine_schedules
+from src.experiments.official.mossformergan.reference import MossFormerGANTask
+from src.experiments.official.semambapp.reference import SEMambaTask
+from src.experiments.official.tf_gridnet.reference import TFGridNetTask
 from tests.numerics.support import accelerator_device, enable_accelerator_determinism, paired_dataset, tiny_config
 
 

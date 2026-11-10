@@ -8,7 +8,7 @@ import torch
 ROOT = Path(__file__).resolve().parents[3]
 sys.path.insert(0, str(ROOT))
 from tests.numerics.test_model_tasks import _base
-from src.experiments.calc.tf_gridnet import TFGridNetTask
+from src.experiments.official.tf_gridnet.reference import TFGridNetTask
 
 
 def main():

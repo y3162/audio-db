@@ -26,7 +26,7 @@ output:
 components:
   generator:
     role: module
-    class: src.experiments.models.semambapp.SEMambaPPGenerator
+    class: src.experiments.official.semambapp.models.SEMambaPPGenerator
     kwargs:
       seed: 1234
       hid_feature: 48
@@ -47,7 +47,7 @@ components:
       distribute: ddp
   mrd:
     role: module
-    class: src.experiments.models.semambapp.SEMambaPPMRD
+    class: src.experiments.official.semambapp.models.SEMambaPPMRD
     kwargs:
       seed: 1234
       hid_feature: 48
@@ -68,7 +68,7 @@ components:
       distribute: ddp
   cqt:
     role: module
-    class: src.experiments.models.semambapp.SEMambaPPCQTDiscriminator
+    class: src.experiments.official.semambapp.models.SEMambaPPCQTDiscriminator
     kwargs:
       seed: 1234
       hid_feature: 48
@@ -158,7 +158,7 @@ components:
       optimizer: {ref: optim_d}
   trainer:
     role: trainer
-    class: src.experiments.semambapp.SEMambaPPTrainer
+    class: src.experiments.official.semambapp.trainer.SEMambaPPTrainer
     kwargs:
       max_logical_steps: 1
       accumulation: 1

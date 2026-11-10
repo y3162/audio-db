@@ -10,7 +10,7 @@ from unittest.mock import patch
 import torch
 
 from src.experiments.calc.rng import set_determinism
-from src.experiments.calc.mossformergan import MossFormerGANTask, _GAN, _MAG, _RI, _TIME
+from src.experiments.official.mossformergan.reference import MossFormerGANTask, _GAN, _MAG, _RI, _TIME
 from tests.numerics.support import paired_dataset, tiny_config
 
 
@@ -49,7 +49,7 @@ class MossFormerValidationTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as directory:
             task, data = _task(Path(directory))
             batch = data.collate([0])
-            with patch("src.experiments.calc.mossformergan.metric_targets", return_value=torch.ones(1)):
+            with patch("src.experiments.official.mossformergan.reference.metric_targets", return_value=torch.ones(1)):
                 task.eval_mode()
                 self.assertFalse(task.generator.training)
                 self.assertTrue(task.discriminator.training)
@@ -75,7 +75,7 @@ class MossFormerValidationTests(unittest.TestCase):
             task, data = _task(Path(directory))
             batch = data.collate([0])
             before = [parameter.detach().clone() for parameter in task.generator.parameters()]
-            with patch("src.experiments.calc.mossformergan.metric_targets", return_value=None):
+            with patch("src.experiments.official.mossformergan.reference.metric_targets", return_value=None):
                 report = task.validation_report(batch)
             after = [parameter.detach() for parameter in task.generator.parameters()]
             self.assertEqual(report["pesq_gate"], "denominator_only")

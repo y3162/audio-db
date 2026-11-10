@@ -23,7 +23,7 @@ from src.evaluation.provenance import (
     parse_provenance_bytes,
     sidecar_path,
 )
-from src.experiments.config import ExperimentConfig, config_sha256
+from src.experiments.config import LEGACY_CLASS_PATHS, ExperimentConfig, config_sha256
 from src.experiments.errors import CheckpointError
 from src.experiments.calc.errors import TrainingError
 from src.experiments.calc.provenance import build_provenance, provenance_sha256, publish_provenance
@@ -84,14 +84,30 @@ def bind_provenance(
 ) -> tuple[bytes, str]:
     """Publish the run provenance once and return its canonical bytes and SHA-256."""
 
-    try:
-        document = _document(config, components, runtime)
-        raw = publish_provenance(directory, document, rank=0)
-    except TrainingError as exc:
-        raise CheckpointError(str(exc)) from exc
-    except (OSError, TypeError, ValueError) as exc:
-        raise CheckpointError(f"data provenance could not be written: {exc}") from exc
-    return raw, provenance_sha256(raw)
+    generations = _config_generations(config)
+    provenance_path = directory / PROVENANCE_NAME
+    if not provenance_path.is_file():
+        generations = generations[:1]
+    last_error: TrainingError | None = None
+    for class_paths, digest in generations:
+        try:
+            document = _document(
+                config,
+                components,
+                runtime,
+                config_digest=digest,
+                class_paths=class_paths,
+            )
+            raw = publish_provenance(directory, document, rank=0)
+        except TrainingError as exc:
+            if provenance_path.is_file() and "does not match this run" in str(exc):
+                last_error = exc
+                continue
+            raise CheckpointError(str(exc)) from exc
+        except (OSError, TypeError, ValueError) as exc:
+            raise CheckpointError(f"data provenance could not be written: {exc}") from exc
+        return raw, provenance_sha256(raw)
+    raise CheckpointError(str(last_error) if last_error is not None else "data provenance does not match this run")
 
 
 def attach_provenance_sidecar(checkpoint: Path, raw: bytes) -> None:
@@ -183,19 +199,45 @@ def judge_experiment_checkpoint(
     return result
 
 
-def _document(config: ExperimentConfig, components: Any, runtime: Any) -> dict[str, Any]:
+def _config_generations(config: ExperimentConfig) -> list[tuple[dict[str, str] | None, str]]:
+    """Current class paths, then each explicit historical generation.
+
+    A generation is one complete rewrite. Mixing paths from different
+    generations is not a separate accepted identity.
+    """
+
+    generations: list[tuple[dict[str, str] | None, str]] = [(None, config_sha256(config))]
+    seen = {generations[0][1]}
+    for mapping in LEGACY_CLASS_PATHS:
+        digest = config_sha256(config, class_paths=mapping)
+        if digest in seen:
+            continue
+        seen.add(digest)
+        generations.append((mapping, digest))
+    return generations
+
+
+def _document(
+    config: ExperimentConfig,
+    components: Any,
+    runtime: Any,
+    *,
+    config_digest: str | None = None,
+    class_paths: dict[str, str] | None = None,
+) -> dict[str, Any]:
     identity_map = dataset_identity_map(config, components)
     view = _DatasetView(_view_identity(identity_map), _parts(components, identity_map))
     process = _Process(int(getattr(runtime, "world_size", 1)))
+    digest = config_sha256(config) if config_digest is None else config_digest
     training_config = {
-        "model": {"name": _model_name(config)},
+        "model": {"name": _model_name(config, class_paths)},
         "seed": config.seed,
-        "loss": {"experiment_config_sha256": config_sha256(config)},
+        "loss": {"experiment_config_sha256": digest},
         "data": {},
     }
     document = build_provenance(view, training_config, process)
     document["dataset_identity"] = identity_map
-    document["experiment_config_sha256"] = config_sha256(config)
+    document["experiment_config_sha256"] = digest
     limitations = list(document.get("limitations") or [])
     if not _parts_have_content(document):
         note = "a provenance file without content hashes is not evidence of independence"
@@ -309,12 +351,12 @@ def _comparable_map(value: object) -> object:
     return converted
 
 
-def _model_name(config: ExperimentConfig) -> str:
-    names = [
-        spec.class_path
-        for _, spec in sorted(config.components.items())
-        if spec.ref is None and spec.role == "module" and spec.class_path
-    ]
+def _model_name(config: ExperimentConfig, class_paths: dict[str, str] | None = None) -> str:
+    names = []
+    for _, spec in sorted(config.components.items()):
+        if spec.ref is not None or spec.role != "module" or not spec.class_path:
+            continue
+        names.append((class_paths or {}).get(spec.class_path, spec.class_path))
     if not names:
         return "experiment"
     return ",".join(names)

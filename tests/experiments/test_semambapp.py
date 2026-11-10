@@ -25,9 +25,9 @@ from src.experiments.data.fixed_pair import MicroBatcher, OrderSampler, Snapshot
 from src.experiments.data.online import SemambaProtocol
 from src.experiments.data.sample import Batch
 from src.experiments.errors import BuildError, CheckpointError, RuntimeFailure
-from src.experiments.models.semambapp import SEMambaPPGenerator, scan_execution
+from src.experiments.official.semambapp.models import SEMambaPPGenerator, scan_execution
 from src.experiments.runtime import ProcessRuntime
-from src.experiments.calc.semambapp import SEMambaTask
+from src.experiments.official.semambapp.reference import SEMambaTask
 
 _ROOT = Path(__file__).resolve().parents[2]
 _ARCH = {
@@ -621,7 +621,7 @@ output:
 components:
   generator:
     role: module
-    class: src.experiments.models.semambapp.SEMambaPPGenerator
+    class: src.experiments.official.semambapp.models.SEMambaPPGenerator
     kwargs:
       seed: 1234
       hid_feature: 8
@@ -642,7 +642,7 @@ components:
       distribute: ddp
   mrd:
     role: module
-    class: src.experiments.models.semambapp.SEMambaPPMRD
+    class: src.experiments.official.semambapp.models.SEMambaPPMRD
     kwargs:
       seed: 1234
       hid_feature: 8
@@ -663,7 +663,7 @@ components:
       distribute: ddp
   cqt:
     role: module
-    class: src.experiments.models.semambapp.SEMambaPPCQTDiscriminator
+    class: src.experiments.official.semambapp.models.SEMambaPPCQTDiscriminator
     kwargs:
       seed: 1234
       hid_feature: 8
@@ -725,7 +725,7 @@ components:
       optimizer: {{ref: optim_d}}
   trainer:
     role: trainer
-    class: src.experiments.semambapp.SEMambaPPTrainer
+    class: src.experiments.official.semambapp.trainer.SEMambaPPTrainer
     kwargs:
       max_logical_steps: {steps}
       accumulation: {accumulation}

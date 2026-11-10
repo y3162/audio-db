@@ -14,12 +14,12 @@ import numpy as np
 from src.experiments.data.fixed_pair import SnapshotSource, _call, _non_negative, _positive
 from src.experiments.data.sample import ChunkSpan, SampleRef
 from src.experiments.errors import DataError
-from src.reproduction.errors import ReproductionError
-from src.reproduction.pipeline.chunking import ChunkEpochPlan, plan_chunk_epoch
-from src.reproduction.pipeline.dns_ondemand import dns_rendering, render_dns_pair
-from src.reproduction.pipeline.ondemand import ms_snsd_rendering, render_ms_snsd_pair
-from src.reproduction.pipeline.order import order_params
-from src.reproduction.pipeline.planner import chunk_case_length
+from src.experiments.data.errors import ReproductionError
+from src.experiments.data.render.chunking import ChunkEpochPlan, plan_chunk_epoch
+from src.experiments.data.mix.dns_ondemand import dns_rendering, render_dns_pair
+from src.experiments.data.mix.ondemand import ms_snsd_rendering, render_ms_snsd_pair
+from src.experiments.data.sampling.order import order_params
+from src.experiments.data.sampling.planner import chunk_case_length
 
 _MS = "pregenerated.ms_snsd_tfgridnet"
 _DNS = "pregenerated.dns_tflocoformer"

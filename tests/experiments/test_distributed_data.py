@@ -19,9 +19,9 @@ import yaml
 
 from src.experiments.data.fixed_pair import MicroBatcher, OrderSampler, SnapshotDataModule, SnapshotSource
 from src.experiments.data.fixed_pair import FixedPairProtocol
-from src.reproduction.ids import SEMAMBA_GSR_V1
-from src.reproduction.pipeline.order import distributed_sampler_coverage, rank_order
-from src.reproduction.protocols.online_semamba import bandwidth_limitation
+from src.experiments.data.ids import SEMAMBA_GSR_V1
+from src.experiments.data.sampling.order import distributed_sampler_coverage, rank_order
+from src.experiments.data.protocols.online_semamba import bandwidth_limitation
 from tests.experiments.test_chunk_data import _write_snapshot as _write_chunk
 from tests.experiments.test_fixed_pair_data import _write_snapshot as _write_fixed
 from tests.experiments.test_online_data import _write_online

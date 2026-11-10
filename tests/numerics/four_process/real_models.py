@@ -125,7 +125,7 @@ class SEMambaPP:
             self._mel = _official_mel(device)
         else:
             from src.se.models.semambapp.network import SEMambaPP as Independent
-            from src.experiments.calc.semamba_disc import MultiResolutionDiscriminator, MultiScaleSubbandCQTDiscriminator
+            from src.experiments.official.semambapp.discriminator import MultiResolutionDiscriminator, MultiScaleSubbandCQTDiscriminator
             generator = Independent(arch).to(device)
             band = MultiScaleSubbandCQTDiscriminator(self.sample_rate).to(device)
             resolution = MultiResolutionDiscriminator().to(device)
@@ -221,7 +221,7 @@ class MossFormerGAN:
             generator, discriminator = _official_moss(device)
         else:
             from src.se import build_model
-            from src.experiments.calc.mossformer_discriminator import Discriminator
+            from src.experiments.official.mossformergan.discriminator import Discriminator
             generator = build_model(
                 "mossformergan", {"n_fft": 400, "win_len": 400, "hop": 100, "num_channel": 64}, variant="se_16k"
             ).to(device)
@@ -553,7 +553,7 @@ def _official_moss_losses(generator, discriminator, normalized, teacher, device)
 
 def _independent_moss_losses(generator, discriminator, normalized, teacher, sample_rate):
     from src.experiments.calc.losses import metric_targets
-    from src.experiments.calc.mossformergan import _compress, _istft, _stft, _uncompress
+    from src.experiments.official.mossformergan.reference import _compress, _istft, _stft, _uncompress
     noisy_spec = _compress(_stft(normalized, 400, 100, 400)).permute(0, 1, 3, 2)
     real, imag = generator(noisy_spec)
     real = real.permute(0, 1, 3, 2)
@@ -633,7 +633,7 @@ def _official_df_losses(device):
 
 
 def _df_schedule():
-    from src.experiments.calc.deepfilternet import deepfilter_cosine_schedules
+    from src.experiments.official.deepfilternet3.reference import deepfilter_cosine_schedules
     config = {
         "optimizer": {"lr": 1e-3, "weight_decay": 1e-12},
         "scheduler": {
@@ -647,7 +647,7 @@ def _df_schedule():
 def _df_loss(implementation, module, stream, params, clean, noisy, official_loss):
     import torch.nn.functional as F
     from src.se.models.deepfilternet3.dsp import vorbis_window
-    from src.experiments.calc.deepfilternet import _local_snr_db, _multi_resolution_spectral, _vorbis_istft
+    from src.experiments.official.deepfilternet3.reference import _local_snr_db, _multi_resolution_spectral, _vorbis_istft
     stream.reset()
     clean_spec, _erb, _feat, clean_complex = _df_analyze(stream, params, clean)
     stream.reset()

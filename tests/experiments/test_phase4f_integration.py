@@ -22,10 +22,10 @@ from src.experiments.checkpoint import FORMAT
 from src.experiments.config import load_experiment
 from src.experiments.data import ChunkSampler, MicroBatcher
 from src.experiments.errors import CheckpointError, DataError, ExperimentError
-from src.experiments.models.mossformergan import MossFormerGANGenerator
-from src.experiments.models.mp_senet_gan import MPSENetGANGenerator
-from src.experiments.models.tf_gridnet import TFGridNetModel
-from src.experiments.models.tf_locoformer import TFLocoformerModel
+from src.experiments.official.mossformergan.models import MossFormerGANGenerator
+from src.experiments.official.mp_senet.models import MPSENetGANGenerator
+from src.experiments.official.tf_gridnet.model import TFGridNetModel
+from src.experiments.official.tf_locoformer.model import TFLocoformerModel
 from src.se import load_enhancer
 from src.se.models.mossformergan.inference import _enhance_chunk
 from src.experiments.calc.rng import set_determinism
@@ -225,7 +225,7 @@ class Phase4FCheckpointAndExportTests(unittest.TestCase):
 
     def _execute(self, config: Path, *, resume: Path | None = None, pesq: bool = False) -> None:
         if pesq:
-            with patch("src.experiments.calc.mossformergan.metric_targets", _pesq_stub):
+            with patch("src.experiments.official.mossformergan.reference.metric_targets", _pesq_stub):
                 Experiment(load_experiment(config)).run(resume=resume)
             return
         Experiment(load_experiment(config)).run(resume=resume)

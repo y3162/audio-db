@@ -12,7 +12,7 @@ from pathlib import Path
 
 import torch
 
-from src.experiments.models.tf_gridnet import TFGridNetModel
+from src.experiments.official.tf_gridnet.model import TFGridNetModel
 from src.experiments.runtime import PreparePolicy, ProcessRuntime
 
 ARCH = {

@@ -411,11 +411,37 @@ def _reject_differentiable(components: dict[str, ComponentConfig]) -> None:
         _reject_differentiable_value(spec.kwargs, spec.component_id)
 
 
-# Class paths moved out of ``src.training`` keep the previous hash so an
-# ``audio-db-experiment-v1`` checkpoint can resume.
-LEGACY_CLASS_PATHS = {
+# Historical class paths. Each mapping is one saved generation. Resume accepts
+# the current hash or one of these rewrites, and does not accept an arbitrary
+# hash. The scheduler move and the official-component move are separate
+# generations; checkpoints that predate both use the combined mapping.
+_SCHEDULER_CLASS_PATHS = {
     "src.experiments.calc.optim.WarmupReduceLROnPlateau": "src.training.se.optim.WarmupReduceLROnPlateau",
 }
+_OFFICIAL_CLASS_PATHS = {
+    "src.experiments.official.mp_senet.trainer.MPSENetGANTrainer": "src.experiments.mp_senet.MPSENetGANTrainer",
+    "src.experiments.official.mp_senet.models.MPSENetGANGenerator": "src.experiments.models.mp_senet_gan.MPSENetGANGenerator",
+    "src.experiments.official.mp_senet.models.MPSENetMetricDiscriminator": "src.experiments.models.mp_senet_gan.MPSENetMetricDiscriminator",
+    "src.experiments.official.mp_senet.waveform.MPSENetWaveformAdapter": "src.experiments.models.mp_senet.MPSENetWaveformAdapter",
+    "src.experiments.official.mossformergan.trainer.MossFormerGANTrainer": "src.experiments.mossformergan.MossFormerGANTrainer",
+    "src.experiments.official.mossformergan.models.MossFormerGANGenerator": "src.experiments.models.mossformergan.MossFormerGANGenerator",
+    "src.experiments.official.mossformergan.models.MossFormerGANDiscriminator": "src.experiments.models.mossformergan.MossFormerGANDiscriminator",
+    "src.experiments.official.tf_gridnet.trainer.TFGridNetTrainer": "src.experiments.tf_gridnet.TFGridNetTrainer",
+    "src.experiments.official.tf_gridnet.model.TFGridNetModel": "src.experiments.models.tf_gridnet.TFGridNetModel",
+    "src.experiments.official.tf_locoformer.trainer.TFLocoformerTrainer": "src.experiments.tf_locoformer.TFLocoformerTrainer",
+    "src.experiments.official.tf_locoformer.model.TFLocoformerModel": "src.experiments.models.tf_locoformer.TFLocoformerModel",
+    "src.experiments.official.deepfilternet3.trainer.DeepFilterNet3Trainer": "src.experiments.deepfilternet3.DeepFilterNet3Trainer",
+    "src.experiments.official.deepfilternet3.model.DeepFilterNet3Model": "src.experiments.models.deepfilternet3.DeepFilterNet3Model",
+    "src.experiments.official.semambapp.trainer.SEMambaPPTrainer": "src.experiments.semambapp.SEMambaPPTrainer",
+    "src.experiments.official.semambapp.models.SEMambaPPGenerator": "src.experiments.models.semambapp.SEMambaPPGenerator",
+    "src.experiments.official.semambapp.models.SEMambaPPMRD": "src.experiments.models.semambapp.SEMambaPPMRD",
+    "src.experiments.official.semambapp.models.SEMambaPPCQTDiscriminator": "src.experiments.models.semambapp.SEMambaPPCQTDiscriminator",
+}
+LEGACY_CLASS_PATHS = (
+    _SCHEDULER_CLASS_PATHS,
+    _OFFICIAL_CLASS_PATHS,
+    {**_OFFICIAL_CLASS_PATHS, **_SCHEDULER_CLASS_PATHS},
+)
 
 
 def config_sha256(config: ExperimentConfig, *, class_paths: dict[str, str] | None = None) -> str:

@@ -16,7 +16,7 @@ import torch
 
 from src.experiments.api import build_experiment, load_experiment
 from src.experiments.data.sample import Batch
-from src.experiments.calc.semambapp import SEMambaTask
+from src.experiments.official.semambapp.reference import SEMambaTask
 from tests.experiments.test_semambapp import _ARCH, _adam_gap, _state_gap, _tensor_gap, _yaml
 
 

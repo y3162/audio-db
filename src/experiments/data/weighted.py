@@ -13,7 +13,7 @@ from functools import reduce
 from typing import Any
 
 from src.experiments.errors import DataError
-from src.reproduction.pipeline.seeds import mix_seed
+from src.experiments.data.sampling.seeds import mix_seed
 
 ALGORITHM = "weighted_categorical_v1"
 RNG_NAME = "splitmix64-v1"

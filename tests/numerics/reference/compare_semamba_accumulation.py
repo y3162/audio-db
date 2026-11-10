@@ -15,7 +15,7 @@ from pathlib import Path
 
 import torch
 
-from src.experiments.calc.semambapp import SEMambaTask
+from src.experiments.official.semambapp.reference import SEMambaTask
 
 
 def _config(device: str) -> dict:

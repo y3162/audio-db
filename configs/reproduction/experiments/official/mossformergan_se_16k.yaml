@@ -19,7 +19,7 @@ output:
 components:
   generator:
     role: module
-    class: src.experiments.models.mossformergan.MossFormerGANGenerator
+    class: src.experiments.official.mossformergan.models.MossFormerGANGenerator
     kwargs:
       seed: 777
       variant: se_16k
@@ -36,7 +36,7 @@ components:
       sync_batchnorm: true
   discriminator:
     role: module
-    class: src.experiments.models.mossformergan.MossFormerGANDiscriminator
+    class: src.experiments.official.mossformergan.models.MossFormerGANDiscriminator
     kwargs:
       seed: 777
       variant: se_16k
@@ -107,7 +107,7 @@ components:
       weight_decay: 0.01
   trainer:
     role: trainer
-    class: src.experiments.mossformergan.MossFormerGANTrainer
+    class: src.experiments.official.mossformergan.trainer.MossFormerGANTrainer
     kwargs:
       max_logical_steps: 350053
       accumulation: 2

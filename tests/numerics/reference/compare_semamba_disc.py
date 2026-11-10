@@ -19,7 +19,7 @@ OFFICIAL = ROOT / "src" / "se" / "official" / "semambapp"
 sys.path.insert(0, str(ROOT))
 sys.path.insert(0, str(OFFICIAL))
 
-from src.experiments.calc.semamba_disc import (  # noqa: E402
+from src.experiments.official.semambapp.discriminator import (  # noqa: E402
     MultiResolutionDiscriminator,
     MultiScaleSubbandCQTDiscriminator,
 )

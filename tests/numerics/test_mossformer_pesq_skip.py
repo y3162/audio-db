@@ -37,7 +37,7 @@ import torch
 import torch.distributed as dist
 
 from src.experiments.calc.distributed import ProcessInfo
-from src.experiments.calc.mossformergan import MossFormerGANTask
+from src.experiments.official.mossformergan.reference import MossFormerGANTask
 from tests.numerics.support import free_tcp_port, paired_dataset, pin_repo_root_for_spawn
 from tests.numerics.test_mossformer_syncbn_collective import install_cpu_gloo_syncbn
 
@@ -117,7 +117,7 @@ def _pesq_worker(rank: int, world: int, port: int, result_dir: str) -> None:
                 before = _clone_weights(task)
                 disc_before = disc_module.sigmoid.slope.detach().clone()
                 optim_before = copy.deepcopy(task.optim_g.state_dict())
-                with patch("src.experiments.calc.mossformergan.metric_targets", metric):
+                with patch("src.experiments.official.mossformergan.reference.metric_targets", metric):
                     metrics = task.train_update([_batch()], 1)
                 payload[name] = {
                     "update_applied": metrics["update_applied"],
@@ -149,7 +149,7 @@ class MossFormerPesqSkipTests(unittest.TestCase):
             before = _clone_weights(task)
             optim_g = task.optim_g.state_dict()
             optim_d = task.optim_d.state_dict()
-            with patch("src.experiments.calc.mossformergan.metric_targets", return_value=None):
+            with patch("src.experiments.official.mossformergan.reference.metric_targets", return_value=None):
                 metrics = task.train_update([batch], 1)
             self.assertEqual(metrics["update_applied"], 0.0)
             self.assertEqual(metrics["generator"], 0.0)
@@ -231,7 +231,7 @@ class MossFormerPesqSkipTests(unittest.TestCase):
 
             batch = {"clean": torch.zeros(1, 32), "noisy": torch.zeros(1, 32), "case_id": ["group"]}
             with patch.object(MossFormerGANTask, "_generator_terms", fake_terms):
-                with patch("src.experiments.calc.mossformergan.metric_targets", metric):
+                with patch("src.experiments.official.mossformergan.reference.metric_targets", metric):
                     metrics = task.train_update([batch, batch], 2)
             self.assertEqual(metrics["update_applied"], 0.0)
             self.assertEqual(calls["n"], 2)
@@ -274,7 +274,7 @@ class MossFormerPesqSkipTests(unittest.TestCase):
             batch = {"clean": torch.zeros(1, 32), "noisy": torch.zeros(1, 32), "case_id": ["window"]}
             before = task.discriminator.sigmoid.slope.detach().clone()
             with patch.object(MossFormerGANTask, "_generator_terms", fake_terms):
-                with patch("src.experiments.calc.mossformergan.metric_targets", metric):
+                with patch("src.experiments.official.mossformergan.reference.metric_targets", metric):
                     first = task.train_update([batch, batch], 2)
                     second = task.train_update([batch], 2)
             self.assertEqual(first["update_applied"], 0.0)
@@ -336,7 +336,7 @@ class MossFormerPesqSkipTests(unittest.TestCase):
                     return torch.ones(teacher.shape[0])
 
                 with patch.object(MossFormerGANTask, "_generator_terms", fake_terms):
-                    with patch("src.experiments.calc.mossformergan.metric_targets", metric):
+                    with patch("src.experiments.official.mossformergan.reference.metric_targets", metric):
                         metrics = task.train_update([batch] * len(pattern), 2)
                 processed, succeeded, failed, optim, official, accu, applied = expected[name]
                 self.assertEqual(calls["n"], len(pattern), name)
@@ -370,7 +370,7 @@ class MossFormerPesqSkipTests(unittest.TestCase):
 
             batch = {"clean": torch.zeros(1, 32), "noisy": torch.zeros(1, 32), "case_id": ["partial"]}
             with patch.object(MossFormerGANTask, "_generator_terms", fake_terms):
-                with patch("src.experiments.calc.mossformergan.metric_targets", return_value=torch.ones(1)):
+                with patch("src.experiments.official.mossformergan.reference.metric_targets", return_value=torch.ones(1)):
                     metrics = task.train_update([batch], 2)
             self.assertEqual(metrics["update_applied"], 0.0)
             self.assertEqual(task._accu_count, 1)

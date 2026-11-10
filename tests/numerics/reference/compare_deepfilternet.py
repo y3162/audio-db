@@ -33,7 +33,7 @@ ROOT = Path(__file__).resolve().parents[3]
 sys.path.insert(0, str(ROOT))
 
 from src.se import build_model, load_enhancer  # noqa: E402
-from src.experiments.calc.deepfilternet import DeepFilterNetTask, deepfilter_cosine_schedules  # noqa: E402
+from src.experiments.official.deepfilternet3.reference import DeepFilterNetTask, deepfilter_cosine_schedules  # noqa: E402
 from tests.numerics.reference.common import (  # noqa: E402
     environment,
     gap,
@@ -155,7 +155,7 @@ def main() -> None:
     torch.manual_seed(5)
     wave_a = torch.randn(1, 4800, device=device)
     wave_b = torch.randn(1, 4800, device=device)
-    from src.experiments.calc.deepfilternet import _multi_resolution_spectral
+    from src.experiments.official.deepfilternet3.reference import _multi_resolution_spectral
 
     report["spectral_identity"] = abs(float(mr(wave_a, wave_b).detach()) - float(_multi_resolution_spectral(wave_a, wave_b).detach()))
     save_report("deepfilternet3.json", report)
@@ -261,7 +261,7 @@ def _manual_step(module, optim, task, mr, local_loss, local_snr, clean, noisy, l
 
 
 def _manual_loss(module, task, mr, local_loss, local_snr, clean, noisy):
-    from src.experiments.calc.deepfilternet import (
+    from src.experiments.official.deepfilternet3.reference import (
         _local_snr_db,
         _multi_resolution_spectral,
         _vorbis_istft,
@@ -328,7 +328,7 @@ def _enhanced_wave(task, clean, noisy):
 
 
 def _manual_wave(module, task, clean, noisy):
-    from src.experiments.calc.deepfilternet import _vorbis_istft
+    from src.experiments.official.deepfilternet3.reference import _vorbis_istft
     from src.se.models.deepfilternet3.dsp import vorbis_window
 
     task.stream.reset()

@@ -11,7 +11,7 @@ REFERENCE = Path(__file__).resolve().parents[2] / 'src/se/official/semambapp/mod
 @unittest.skipUnless(REFERENCE.is_file(), 'official SEMamba source required')
 class SEMambaMRDReferenceTest(unittest.TestCase):
     def test_spectrogram_and_waveform_gradient(self):
-        from src.experiments.calc.semamba_disc import ResolutionDiscriminator
+        from src.experiments.official.semambapp.discriminator import ResolutionDiscriminator
 
         spec = importlib.util.spec_from_file_location('semamba_reference_disc', REFERENCE)
         module = importlib.util.module_from_spec(spec)

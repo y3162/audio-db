@@ -432,9 +432,10 @@ def _validate_payload(
             raise CheckpointError("resume from a different directory is not supported")
         if payload.get("output_directory") != str(directory.resolve()):
             raise CheckpointError("resume from a different directory is not supported")
-        current = config_sha256(config)
-        legacy = config_sha256(config, class_paths=LEGACY_CLASS_PATHS)
-        if payload.get("config_sha256") not in {current, legacy}:
+        acceptable = {config_sha256(config)}
+        for mapping in LEGACY_CLASS_PATHS:
+            acceptable.add(config_sha256(config, class_paths=mapping))
+        if payload.get("config_sha256") not in acceptable:
             raise CheckpointError("checkpoint config identity does not match this experiment")
         _align_scheduled_batches(payload, components)
         if not _dataset_identities_match(payload.get("dataset_identity"), _dataset_identity(config, components)):

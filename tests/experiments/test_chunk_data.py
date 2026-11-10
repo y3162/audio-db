@@ -22,21 +22,21 @@ from src.experiments.data.chunk import ChunkProtocol, ChunkSampler
 from src.experiments.data.fixed_pair import MicroBatcher, SnapshotDataModule, SnapshotSource
 from src.experiments.data.sample import ChunkSpan, SampleRef
 from src.experiments.errors import BuildError, CheckpointError, DataError, StateError
-from src.reproduction.build.dns2020 import (
+from src.experiments.data.build.dns2020 import (
     ALGORITHM as DNS_ALGORITHM,
     RENDERER_ACCEPT,
     RETRY_ACCEPT,
     read_mono,
     resample_to_16k,
 )
-from src.reproduction.build.ms_snsd import ALGORITHM as MS_ALGORITHM
-from src.reproduction.ids import canonical_text, digest
-from src.reproduction.pipeline.chunking import PlannedChunk, plan_chunk_epoch
-from src.reproduction.pipeline.dns_ondemand import DnsOnDemandChunkData
-from src.reproduction.pipeline.ondemand import OnDemandChunkData
-from src.reproduction.pipeline.planner import chunk_case_length
-from src.reproduction.pipeline.store import AssetStore
-from src.reproduction.snapshot_reader import (
+from src.experiments.data.build.ms_snsd import ALGORITHM as MS_ALGORITHM
+from src.experiments.data.ids import canonical_text, digest
+from src.experiments.data.render.chunking import PlannedChunk, plan_chunk_epoch
+from src.experiments.data.mix.dns_ondemand import DnsOnDemandChunkData
+from src.experiments.data.mix.ondemand import OnDemandChunkData
+from src.experiments.data.sampling.planner import chunk_case_length
+from src.experiments.data.assets.store import AssetStore
+from src.experiments.data.snapshot import (
     FORMAT,
     SCHEMA_VERSION,
     arrays_from_assets,
@@ -75,9 +75,9 @@ class ChunkDataTests(unittest.TestCase):
 
     def test_factory_builds_components_without_duckdb_or_old_readers(self) -> None:
         import src.experiments.data.chunk as chunk_mod
-        import src.reproduction.pipeline.dns_ondemand as dns_mod
-        import src.reproduction.pipeline.ondemand as ms_mod
-        import src.reproduction.pipeline.training_data as training_data
+        import src.experiments.data.mix.dns_ondemand as dns_mod
+        import src.experiments.data.mix.ondemand as ms_mod
+        import src.experiments.data.fixed_pair_stream as training_data
 
         calls = {"duck": 0, "training": 0, "ms": 0, "dns": 0}
         original_training = training_data.ReproductionTrainingData

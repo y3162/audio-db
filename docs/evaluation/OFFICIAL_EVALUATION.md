@@ -16,7 +16,7 @@ Official Evaluation は、公式再現の checkpoint を、公式が使った指
 | 結果 | `data/results/se-official-eval/<run_id>/`（未作成）。Research Evaluation の `data/results/se-evaluation/` とは混ぜない |
 | 主張 | `claim_label` と `selection_uses_test` を結果に書く |
 
-`src/evaluation/official/` も `src.reproduction` を importしない。必要な Dataset・snapshot・集合ハッシュは、学習が書いた `data_provenance.json` と、公式リストのファイルから取る。
+`src/evaluation/official/` も再現用 DB を importしない。必要な Dataset・snapshot・集合ハッシュは、学習が書いた `data_provenance.json` と、公式リストのファイルから取る。
 
 ## 独立性
 

@@ -1,12 +1,12 @@
 # 学習の不変条件
 
-学習式を「整理」で変えない。参照ステップは `src/experiments/calc/` にあり、テストが公式実装や連続実行と比べる。Trainer はその関数を呼ぶ。第二の学習 CLI は作らない。
+学習式を「整理」で変えない。モデル固有の参照ステップは `src/experiments/official/<model>/reference.py` にあり、共有の STFT・スペクトル損失・scheduler は `src/experiments/calc/` にある。テストが公式実装や連続実行と比べる。Trainer はその関数を呼ぶ。第二の学習 CLI は作らない。
 
 ## Checkpoint
 
 - 形式は `audio-db-experiment-v1`。必須の意味は `src/experiments/checkpoint.py`。
 - `config_sha256` は `output` と `stop_after_logical_steps` を除いた設定の SHA-256。違う設定の resume は拒否する。
-- `WarmupReduceLROnPlateau` のクラスパスは `src.experiments.calc.optim.WarmupReduceLROnPlateau`。再開時だけ、移動前の `src.training.se.optim.WarmupReduceLROnPlateau` で計算したハッシュも同じ設定として受ける。新しい保存は現在のパスのハッシュを書く。
+- `WarmupReduceLROnPlateau` のクラスパスは `src.experiments.calc.optim.WarmupReduceLROnPlateau`。再開時だけ、移動前の `src.training.se.optim.WarmupReduceLROnPlateau` で計算したハッシュも同じ設定として受ける。公式コンポーネントへ移した Model と Trainer は、移動前の `src.experiments.<model>` と `src.experiments.models.*` のハッシュも受ける。scheduler の旧パスと公式コンポーネントの旧パスを同時に持つ世代も受ける。新しい保存は現在のパスのハッシュを書く。既存の `data_provenance.json` は、その世代のクラスパスで計算したときだけ同じ run として残す。
 - `provenance_sha256` が None の checkpoint は来歴なしのまま再開できる。後から同じディレクトリに JSON ができても、その checkpoint を証明済みにしない。
 - 保存前に rank 間の parameter、buffer、optimizer、scheduler、trainer、data を比べる。不一致の完成ファイルは置かない。
 - SIGTERM は完了した logical step の境界で書く。GAN の optimizer 対の途中では書かない。
@@ -22,7 +22,7 @@
 
 ## モデルごとの更新
 
-損失の足し方と Optimizer の順序は、対応する `src/experiments/calc/` の参照ステップと一致させる。
+損失の足し方と Optimizer の順序は、対応する `src/experiments/official/<model>/reference.py` の参照ステップと一致させる。
 
 - MP-SENet GAN: Discriminator を先に更新し、同じ Generator forward のグラフで Generator を更新する。`ExponentialLR` は epoch の micro-batch が尽きたときだけ進む。
 - MossFormerGAN: Generator の backward のあと Discriminator の backward。両 AdamW はその後。PESQ が無い micro-batch は分母に残り、損失 0 にはしない。plateau は 5 回で Generator の学習率を半分にし、10 回で止める。

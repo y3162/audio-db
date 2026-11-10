@@ -121,48 +121,48 @@ STEP ?= all
 WORKERS ?= 8
 
 reproduction-doctor:
-	$(WITH_ENV) $(PYTHON) -m src.reproduction.cli doctor --database "$(REPRO_DB)" --resource-db "$(REPRO_RESOURCE)" --models "$(MODELS)"
+	$(WITH_ENV) $(PYTHON) -m src.experiments.data.cli doctor --database "$(REPRO_DB)" --resource-db "$(REPRO_RESOURCE)" --models "$(MODELS)"
 
 reproduction-init-db:
-	$(WITH_ENV) $(PYTHON) -m src.reproduction.cli init-db --database "$(REPRO_DB)"
+	$(WITH_ENV) $(PYTHON) -m src.experiments.data.cli init-db --database "$(REPRO_DB)"
 
 reproduction-snapshot:
-	$(WITH_ENV) $(PYTHON) -m src.reproduction.cli snapshot --database "$(REPRO_DB)" --dataset "$(DATASET)" --snapshots "$(REPRO_SNAPSHOTS)" $(if $(ALLOW_UNKNOWN_LEAK_CHECK),--allow-unknown-leak-check,)
+	$(WITH_ENV) $(PYTHON) -m src.experiments.data.cli snapshot --database "$(REPRO_DB)" --dataset "$(DATASET)" --snapshots "$(REPRO_SNAPSHOTS)" $(if $(ALLOW_UNKNOWN_LEAK_CHECK),--allow-unknown-leak-check,)
 
 reproduction-rebuild-db:
-	$(WITH_ENV) $(PYTHON) -m src.reproduction.cli rebuild-db --database "$(REPRO_DB)" --staging "$(REPRO_STAGING)" --out "$(OUT)" --reference "$(REPRO_DB)"
+	$(WITH_ENV) $(PYTHON) -m src.experiments.data.cli rebuild-db --database "$(REPRO_DB)" --staging "$(REPRO_STAGING)" --out "$(OUT)" --reference "$(REPRO_DB)"
 
 reproduction-verify:
-	$(WITH_ENV) $(PYTHON) -m src.reproduction.cli verify --database "$(REPRO_DB)" --staging "$(REPRO_STAGING)" --dataset "$(DATASET)" --build "$(BUILD)" $(if $(HASH),--hash,)
+	$(WITH_ENV) $(PYTHON) -m src.experiments.data.cli verify --database "$(REPRO_DB)" --staging "$(REPRO_STAGING)" --dataset "$(DATASET)" --build "$(BUILD)" $(if $(HASH),--hash,)
 
 reproduction-prepare:
-	$(WITH_ENV) $(PYTHON) -m src.reproduction.cli prepare --database "$(REPRO_DB)" --staging "$(REPRO_STAGING)" --snapshots "$(REPRO_SNAPSHOTS)" --resource-db "$(REPRO_RESOURCE)" --step "$(STEP)" --workers "$(WORKERS)"
+	$(WITH_ENV) $(PYTHON) -m src.experiments.data.cli prepare --database "$(REPRO_DB)" --staging "$(REPRO_STAGING)" --snapshots "$(REPRO_SNAPSHOTS)" --resource-db "$(REPRO_RESOURCE)" --step "$(STEP)" --workers "$(WORKERS)"
 
 reproduction-plan-build:
-	$(WITH_ENV) $(PYTHON) -m src.reproduction.cli ms-snsd --config "$(MS_SNSD_CONFIG)" --step plan
+	$(WITH_ENV) $(PYTHON) -m src.experiments.data.cli ms-snsd --config "$(MS_SNSD_CONFIG)" --step plan
 
 reproduction-register:
-	$(WITH_ENV) $(PYTHON) -m src.reproduction.cli ms-snsd --config "$(MS_SNSD_CONFIG)" --step register
+	$(WITH_ENV) $(PYTHON) -m src.experiments.data.cli ms-snsd --config "$(MS_SNSD_CONFIG)" --step register
 
 reproduction-plan-dns:
-	$(WITH_ENV) $(PYTHON) -m src.reproduction.cli dns --config "$(DNS_CONFIG)" --step plan
+	$(WITH_ENV) $(PYTHON) -m src.experiments.data.cli dns --config "$(DNS_CONFIG)" --step plan
 
 reproduction-register-dns:
-	$(WITH_ENV) $(PYTHON) -m src.reproduction.cli dns --config "$(DNS_CONFIG)" --step register
+	$(WITH_ENV) $(PYTHON) -m src.experiments.data.cli dns --config "$(DNS_CONFIG)" --step register
 
 DNS_ACCEPT_CONFIG ?= configs/data/builds/dns_tflocoformer_accept_recipe.yaml
 
 reproduction-benchmark-dns-accept:
-	$(WITH_ENV) $(PYTHON) -m src.reproduction.cli dns --config "$(DNS_ACCEPT_CONFIG)" --step benchmark
+	$(WITH_ENV) $(PYTHON) -m src.experiments.data.cli dns --config "$(DNS_ACCEPT_CONFIG)" --step benchmark
 
 reproduction-plan-dns-accept:
-	$(WITH_ENV) $(PYTHON) -m src.reproduction.cli dns --config "$(DNS_ACCEPT_CONFIG)" --step plan
+	$(WITH_ENV) $(PYTHON) -m src.experiments.data.cli dns --config "$(DNS_ACCEPT_CONFIG)" --step plan
 
 reproduction-register-dns-accept:
-	$(WITH_ENV) $(PYTHON) -m src.reproduction.cli dns --config "$(DNS_ACCEPT_CONFIG)" --step register
+	$(WITH_ENV) $(PYTHON) -m src.experiments.data.cli dns --config "$(DNS_ACCEPT_CONFIG)" --step register
 
 reproduction-register-p8:
-	$(WITH_ENV) $(PYTHON) -c 'from src.reproduction.prepare.dfn3_online import register_p8; print(register_p8())'
+	$(WITH_ENV) $(PYTHON) -c 'from src.experiments.data.prepare.dfn3_online import register_p8; print(register_p8())'
 
 CONFIG ?=
 RESUME ?=
@@ -181,7 +181,6 @@ test-cpu:
 	CUDA_VISIBLE_DEVICES="" $(WITH_ENV) $(PYTHON) -m unittest discover -s tests/data -v
 	CUDA_VISIBLE_DEVICES="" $(WITH_ENV) $(PYTHON) -m unittest discover -s tests/evaluation -v
 	CUDA_VISIBLE_DEVICES="" $(WITH_ENV) $(PYTHON) -m unittest discover -s tests/experiments -v
-	CUDA_VISIBLE_DEVICES="" $(WITH_ENV) $(PYTHON) -m unittest discover -s tests/reproduction -v
 	CUDA_VISIBLE_DEVICES="" $(WITH_ENV) $(PYTHON) -m unittest discover -s tests/se -v
 	CUDA_VISIBLE_DEVICES="" $(WITH_ENV) $(PYTHON) -m unittest discover -s tests/setup -v
 	CUDA_VISIBLE_DEVICES="" $(WITH_ENV) $(PYTHON) -m unittest discover -s tests/numerics -v

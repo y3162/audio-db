@@ -18,7 +18,7 @@ from src.evaluation.provenance import (
     load_provenance,
 )
 from src.evaluation.results.summary import build_summary
-from src.reproduction.paths import ROOT
+from src.experiments.data.paths import ROOT
 
 SHA_A = "a" * 64
 SHA_B = "b" * 64

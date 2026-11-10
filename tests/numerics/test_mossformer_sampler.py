@@ -7,14 +7,14 @@ import unittest
 
 import torch
 
-from src.reproduction.errors import ReproductionError
-from src.reproduction.pipeline.order import (
+from src.experiments.data.errors import ReproductionError
+from src.experiments.data.sampling.order import (
     distributed_sampler_coverage,
     rank_order,
     recipe_validation_positions,
     sampler_batch_count,
 )
-from src.experiments.calc.mossformergan import average_new_grad, official_validation_mean
+from src.experiments.official.mossformergan.reference import average_new_grad, official_validation_mean
 
 
 def _official_rank_slices(size: int, world: int, epoch: int = 0) -> list[list[int]]:

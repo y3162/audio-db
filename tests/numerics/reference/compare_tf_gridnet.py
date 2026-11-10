@@ -33,7 +33,7 @@ sys.path.insert(0, str(ROOT))
 
 from src.se import build_model, load_enhancer  # noqa: E402
 from src.experiments.calc.spectral import multi_resolution_l1  # noqa: E402
-from src.experiments.calc.tf_gridnet import TFGridNetTask  # noqa: E402
+from src.experiments.official.tf_gridnet.reference import TFGridNetTask  # noqa: E402
 from tests.se.test_tf_gridnet import reference_v1  # noqa: E402
 from tests.numerics.reference.common import (  # noqa: E402
     environment,

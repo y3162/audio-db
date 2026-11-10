@@ -21,7 +21,7 @@ output:
 components:
   model:
     role: module
-    class: src.experiments.models.tf_locoformer.TFLocoformerModel
+    class: src.experiments.official.tf_locoformer.model.TFLocoformerModel
     kwargs:
       seed: 0
       variant: dns
@@ -121,7 +121,7 @@ components:
       optimizer: {ref: optimizer}
   trainer:
     role: trainer
-    class: src.experiments.tf_locoformer.TFLocoformerTrainer
+    class: src.experiments.official.tf_locoformer.trainer.TFLocoformerTrainer
     kwargs:
       max_logical_steps: 1
       accumulation: 1

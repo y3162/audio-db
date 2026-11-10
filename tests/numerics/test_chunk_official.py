@@ -5,7 +5,7 @@ from pathlib import Path
 
 import numpy as np
 import torch
-from src.reproduction.pipeline.chunking import plan_chunk_epoch
+from src.experiments.data.render.chunking import plan_chunk_epoch
 from src.experiments.calc.chunk_plan import chunk_batches, select_utterances
 
 ROOT = Path(__file__).resolve().parents[2]

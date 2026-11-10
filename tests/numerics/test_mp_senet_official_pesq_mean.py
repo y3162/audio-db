@@ -8,7 +8,7 @@ import numpy as np
 import torch
 
 from src.experiments.calc.metrics import _combine_metric
-from src.experiments.calc.mp_senet import (
+from src.experiments.official.mp_senet.reference import (
     MPSENetTask,
     _annotate_research_pesq,
     _combine_scores,
@@ -74,7 +74,7 @@ class OfficialPesqMeanTests(unittest.TestCase):
 
     def test_validation_report_returns_the_official_mean_for_the_trainer(self):
         task = _task("official", n_fft=400, hop_size=100, win_size=400)
-        with patch("src.experiments.calc.mp_senet.official_eval_pesq", side_effect=[4.0, -1.0]):
+        with patch("src.experiments.official.mp_senet.reference.official_eval_pesq", side_effect=[4.0, -1.0]):
             with patch("src.evaluation.metrics.pesq.score_pesq", side_effect=AssertionError("research")):
                 report = task.validation_report(_batch(1600, rows=2, seed=5))
         self.assertEqual(report["pesq"]["status"], "ok")

@@ -13,7 +13,7 @@ from tests.numerics.four_process.compare import _batch, digest
 class MossProbeAccumulationTest(unittest.TestCase):
     @unittest.skipUnless(torch.cuda.is_available(), "CUDA required")
     def test_cuda_stft_uses_official_cpu_window(self):
-        from src.experiments.calc.mossformergan import _stft
+        from src.experiments.official.mossformergan.reference import _stft
         torch.manual_seed(7)
         wave = torch.randn(1, 8000, device="cuda")
         window = torch.hamming_window(400, periodic=False).to(wave.device)

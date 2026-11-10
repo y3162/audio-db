@@ -25,10 +25,10 @@ from src.experiments.api import build_experiment, load_experiment
 from src.experiments.checkpoint import CheckpointError
 from src.experiments.data import Batch
 from src.experiments.errors import BuildError, RuntimeFailure
-from src.experiments.mossformergan import MossFormerGANTrainer
+from src.experiments.official.mossformergan.trainer import MossFormerGANTrainer
 from src.experiments.runtime import PreparePolicy, ProcessRuntime
 from src.experiments.calc.rng import set_determinism
-from src.experiments.calc.mossformergan import (
+from src.experiments.official.mossformergan.reference import (
     MossFormerGANTask,
     local_validation_totals,
     official_validation_mean,
@@ -156,7 +156,7 @@ output:
 components:
   generator:
     role: module
-    class: src.experiments.models.mossformergan.MossFormerGANGenerator
+    class: src.experiments.official.mossformergan.models.MossFormerGANGenerator
     kwargs:
       seed: 7
       variant: se_16k
@@ -173,7 +173,7 @@ components:
       sync_batchnorm: true
   discriminator:
     role: module
-    class: src.experiments.models.mossformergan.MossFormerGANDiscriminator
+    class: src.experiments.official.mossformergan.models.MossFormerGANDiscriminator
     kwargs:
       seed: 7
       variant: se_16k
@@ -216,7 +216,7 @@ components:
       weight_decay: 0.01
   trainer:
     role: trainer
-    class: src.experiments.mossformergan.MossFormerGANTrainer
+    class: src.experiments.official.mossformergan.trainer.MossFormerGANTrainer
     kwargs:
       max_logical_steps: {steps}
       accumulation: {accumulation}
@@ -337,7 +337,7 @@ class MossFormerGANAlgorithmTests(unittest.TestCase):
     @classmethod
     def setUpClass(cls) -> None:
         set_determinism(True)
-        from src.experiments.models.mossformergan import (
+        from src.experiments.official.mossformergan.models import (
             MossFormerGANDiscriminator,
             MossFormerGANGenerator,
         )
@@ -432,7 +432,7 @@ class MossFormerGANAlgorithmTests(unittest.TestCase):
         metric = _metric_script(fail_calls)
         self._reload()
         torch.manual_seed(19)
-        with patch("src.experiments.calc.mossformergan.metric_targets", metric):
+        with patch("src.experiments.official.mossformergan.reference.metric_targets", metric):
             self.task.train_update(batches, accumulation)
         expected_gen = {key: value.detach().cpu().clone() for key, value in self.task.generator.state_dict().items()}
         expected_disc = {
@@ -450,7 +450,7 @@ class MossFormerGANAlgorithmTests(unittest.TestCase):
         phases: list[str] = []
         trainer._on_update_phase = lambda phase: phases.append(phase)  # type: ignore[method-assign]
         torch.manual_seed(19)
-        with patch("src.experiments.calc.mossformergan.metric_targets", metric):
+        with patch("src.experiments.official.mossformergan.reference.metric_targets", metric):
             for index, batch in enumerate(batches):
                 trainer.consume_micro_batch(_as_batch(batch, index), self.runtime, update_index=index)
         gen_diff = _max_tree(expected_gen, trainer.generator.state_module.generator.state_dict(), "generator")
@@ -560,7 +560,7 @@ class MossFormerGANAlgorithmTests(unittest.TestCase):
         batch = _noise(11)
         metric = _metric_script(set())
         trainer = self._trainer(1)
-        with patch("src.experiments.calc.mossformergan.metric_targets", metric):
+        with patch("src.experiments.official.mossformergan.reference.metric_targets", metric):
             torch.manual_seed(5)
             old = self.task.validation_report(batch)
             metric.reset()
@@ -573,7 +573,7 @@ class MossFormerGANAlgorithmTests(unittest.TestCase):
         self.assertEqual(old["losses"]["generator"]["value"], new["losses"]["generator"]["value"])
         self.assertEqual(old["generator_loss_included"], True)
         metric_fail = _metric_script({1})
-        with patch("src.experiments.calc.mossformergan.metric_targets", metric_fail):
+        with patch("src.experiments.official.mossformergan.reference.metric_targets", metric_fail):
             failed = self.task.validation_report(batch)
         self.assertEqual(failed["losses"]["generator"]["status"], "na")
         self.assertIsNone(failed["losses"]["generator"]["value"])
@@ -756,7 +756,7 @@ class MossFormerGANAlgorithmTests(unittest.TestCase):
 
             trainer._step_pair = _capture  # type: ignore[method-assign]
             result = None
-            with patch("src.experiments.calc.mossformergan.metric_targets", metric):
+            with patch("src.experiments.official.mossformergan.reference.metric_targets", metric):
                 for index, batch in enumerate(batches):
                     result = trainer.consume_micro_batch(batch, self.runtime, update_index=index)
             self.assertIsNotNone(result)
@@ -798,7 +798,7 @@ class MossFormerGANAlgorithmTests(unittest.TestCase):
             return torch.full((clean.shape[0],), 0.4)
 
         with tempfile.TemporaryDirectory(prefix="moss-partial-") as raw, patch(
-            "src.experiments.calc.mossformergan.metric_targets", _constant
+            "src.experiments.official.mossformergan.reference.metric_targets", _constant
         ):
             root = Path(raw)
             first_dir = root / "clean"
@@ -847,7 +847,7 @@ class MossFormerGANAlgorithmTests(unittest.TestCase):
                 del clean, enhanced, sample_rate
                 return None
 
-            with patch("src.experiments.calc.mossformergan.metric_targets", _none):
+            with patch("src.experiments.official.mossformergan.reference.metric_targets", _none):
                 try:
                     result = experiment.run()
                 finally:
@@ -867,12 +867,12 @@ class MossFormerGANAlgorithmTests(unittest.TestCase):
     def test_committed_yaml_declares_the_official_algorithm(self) -> None:
         config = load_experiment(ROOT / "tests/fixtures/configs/experiments/mossformergan_se_16k.yaml")
         components = config.components
-        self.assertEqual(components["generator"].class_path, "src.experiments.models.mossformergan.MossFormerGANGenerator")
+        self.assertEqual(components["generator"].class_path, "src.experiments.official.mossformergan.models.MossFormerGANGenerator")
         self.assertEqual(
             components["discriminator"].class_path,
-            "src.experiments.models.mossformergan.MossFormerGANDiscriminator",
+            "src.experiments.official.mossformergan.models.MossFormerGANDiscriminator",
         )
-        self.assertEqual(components["trainer"].class_path, "src.experiments.mossformergan.MossFormerGANTrainer")
+        self.assertEqual(components["trainer"].class_path, "src.experiments.official.mossformergan.trainer.MossFormerGANTrainer")
         self.assertEqual(components["optim_g"].kwargs["lr"], 0.0005)
         self.assertEqual(components["optim_d"].kwargs["lr"], 0.001)
         self.assertEqual(components["optim_g"].kwargs["weight_decay"], 0.01)

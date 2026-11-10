@@ -327,7 +327,7 @@ CUDA_VISIBLE_DEVICES="" .venvs/se/bin/python -m unittest discover -s tests/se -v
 
 ## 学習データの来歴
 
-SE の checkpoint が学習ディレクトリにあるとき、評価は同じディレクトリの `data_provenance.json`（または `<checkpoint>.data_provenance.json`）を読む。`src.reproduction` も DuckDB も使わない。
+SE の checkpoint が学習ディレクトリにあるとき、評価は同じディレクトリの `data_provenance.json`（または `<checkpoint>.data_provenance.json`）を読む。再現用 DB も DuckDB も使わない。
 
 各レコードと `summary.json` の `data_independence` に、次を書く。
 

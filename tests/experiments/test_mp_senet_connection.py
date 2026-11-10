@@ -20,10 +20,10 @@ import yaml
 from src.experiments.api import build_experiment
 from src.experiments.config import load_experiment
 from src.experiments.errors import BuildError, CheckpointError, RuntimeFailure, StateError
-from src.experiments.models.mp_senet import MPSENetWaveformAdapter
+from src.experiments.official.mp_senet.waveform import MPSENetWaveformAdapter
 from src.experiments.runtime import PreparedModel
-from src.reproduction.ids import canonical_text, digest
-from src.reproduction.snapshot_reader import (
+from src.experiments.data.ids import canonical_text, digest
+from src.experiments.data.snapshot import (
     FORMAT,
     SCHEMA_VERSION,
     arrays_from_assets,
@@ -35,7 +35,7 @@ from src.reproduction.snapshot_reader import (
     snapshot_hash,
 )
 from src.se.models.mp_senet.model import MPNet
-from src.experiments.calc.mp_senet import MPSENetTask
+from src.experiments.official.mp_senet.reference import MPSENetTask
 from tests.numerics.support import tiny_config
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -66,7 +66,7 @@ class MPSENetConnectionTests(unittest.TestCase):
     def test_committed_yaml_declares_the_connection(self) -> None:
         config = load_experiment(ROOT / "tests/fixtures/configs/experiments/mp_senet_l1.yaml")
         model = config.components["model"]
-        self.assertEqual(model.class_path, "src.experiments.models.mp_senet.MPSENetWaveformAdapter")
+        self.assertEqual(model.class_path, "src.experiments.official.mp_senet.waveform.MPSENetWaveformAdapter")
         self.assertEqual(model.kwargs["sampling_rate"], 16000)
         self.assertEqual(config.components["loss"].class_path, "torch.nn.L1Loss")
         self.assertEqual(config.components["optimizer"].class_path, "torch.optim.AdamW")
@@ -340,7 +340,7 @@ output:
 components:
   model:
     role: module
-    class: src.experiments.models.mp_senet.MPSENetWaveformAdapter
+    class: src.experiments.official.mp_senet.waveform.MPSENetWaveformAdapter
     kwargs:
       dense_channel: 4
       num_tsconformers: 1

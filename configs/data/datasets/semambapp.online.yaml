@@ -1,5 +1,5 @@
 # Registration record. The renderer does not read this file.
-# Numeric distributions live in src/reproduction/ids.py SEMAMBA_GSR_V1.
+# Numeric distributions live in src/experiments/data/ids.py SEMAMBA_GSR_V1.
 # The target config is HEAD config.yaml, not config_orig.yaml and not the paper's 24000-sample setting.
 name: semambapp.gsr
 database: data/db/reproduction-p9.duckdb

@@ -27,15 +27,15 @@ from src.experiments.api import Experiment
 from src.experiments.config import load_experiment
 from src.experiments.data.fixed_pair import MicroBatcher, SnapshotDataModule, SnapshotSource
 from src.experiments.data.online import Dfn3IndexSampler, Dfn3Protocol
-from src.experiments.deepfilternet3 import (
+from src.experiments.official.deepfilternet3.trainer import (
     component_losses,
     note_early_stop,
     schedule_index,
 )
-from src.experiments.models.deepfilternet3 import DeepFilterNet3Model
+from src.experiments.official.deepfilternet3.model import DeepFilterNet3Model
 from src.se.models.deepfilternet3.dsp import DFStream, _rfft_kernel, rfft_library_path
 from src.experiments.calc.batch_schedule import scheduled_batch_size
-from src.experiments.calc.deepfilternet import DeepFilterNetTask, deepfilter_cosine_schedules
+from src.experiments.official.deepfilternet3.reference import DeepFilterNetTask, deepfilter_cosine_schedules
 
 _ARCH = {
     "conv_ch": 16,
@@ -339,7 +339,7 @@ output:
 components:
   model:
     role: module
-    class: src.experiments.models.deepfilternet3.DeepFilterNet3Model
+    class: src.experiments.official.deepfilternet3.model.DeepFilterNet3Model
     kwargs:
       seed: 7
       variant: deepfilternet3
@@ -407,7 +407,7 @@ components:
       amsgrad: true
   trainer:
     role: trainer
-    class: src.experiments.deepfilternet3.DeepFilterNet3Trainer
+    class: src.experiments.official.deepfilternet3.trainer.DeepFilterNet3Trainer
     kwargs:
       max_logical_steps: 2
       accumulation: 1

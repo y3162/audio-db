@@ -25,14 +25,14 @@ from src.evaluation.provenance import canonical_bytes, judge_checkpoint
 from src.experiments.api import Experiment
 from src.experiments.checkpoint import CheckpointError, _assert_replicated_states
 from src.experiments.config import load_experiment
-from src.experiments.deepfilternet3 import DeepFilterNet3Trainer
-from src.experiments.mossformergan import MossFormerGANTrainer
-from src.experiments.mp_senet import MPSENetGANTrainer
+from src.experiments.official.deepfilternet3.trainer import DeepFilterNet3Trainer
+from src.experiments.official.mossformergan.trainer import MossFormerGANTrainer
+from src.experiments.official.mp_senet.trainer import MPSENetGANTrainer
 from src.experiments.provenance import judge_experiment_checkpoint
-from src.experiments.semambapp import SEMambaPPTrainer
+from src.experiments.official.semambapp.trainer import SEMambaPPTrainer
 from src.experiments.signals import clear_interrupt, ranks_should_stop, request_interrupt
-from src.experiments.tf_gridnet import TFGridNetTrainer
-from src.experiments.tf_locoformer import TFLocoformerTrainer
+from src.experiments.official.tf_gridnet.trainer import TFGridNetTrainer
+from src.experiments.official.tf_locoformer.trainer import TFLocoformerTrainer
 from src.se.models.deepfilternet3.dsp import _rfft_kernel, rfft_runtime_record
 from tests.experiments.test_ddp import _torchrun, _write_yaml
 

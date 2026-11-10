@@ -26,10 +26,10 @@ from src.experiments.api import build_experiment
 from src.experiments.config import load_experiment
 from src.experiments.errors import BuildError, RuntimeFailure
 from src.experiments.losses import OFFICIAL_WINDOWS, MultiResolutionL1Loss
-from src.experiments.models.tf_locoformer import TFLocoformerModel
+from src.experiments.official.tf_locoformer.model import TFLocoformerModel
 from src.experiments.runtime import PreparedModel, ProcessRuntime, StepResult
-from src.experiments.tf_gridnet import early_stop, rank_validation_loss
-from src.experiments.tf_locoformer import (
+from src.experiments.official.tf_gridnet.trainer import early_stop, rank_validation_loss
+from src.experiments.official.tf_locoformer.trainer import (
     RESEARCH_VALIDATION_PROFILE,
     TFLocoformerTrainer,
     _write_selection,
@@ -41,7 +41,7 @@ from src.se.models.tf_locoformer.model import TFLocoformer
 from src.experiments.calc.average import average_state_dicts
 from src.experiments.calc.optim import WarmupReduceLROnPlateau, clip_gradients
 from src.experiments.calc.spectral import multi_resolution_l1, si_sdr_loss
-from src.experiments.calc.tf_locoformer import TFLocoformerTask
+from src.experiments.official.tf_locoformer.reference import TFLocoformerTask
 from tests.experiments.test_chunk_data import _write_snapshot
 from tests.experiments.tf_gridnet_data import ScriptedChunkData
 
@@ -76,7 +76,7 @@ class TFLocoformerDeclarationTests(unittest.TestCase):
         model = config.components["model"]
         loss = config.components["loss"]
         trainer = config.components["trainer"]
-        self.assertEqual(model.class_path, "src.experiments.models.tf_locoformer.TFLocoformerModel")
+        self.assertEqual(model.class_path, "src.experiments.official.tf_locoformer.model.TFLocoformerModel")
         self.assertEqual(model.kwargs["variant"], "dns")
         self.assertEqual(model.kwargs["init"], "xavier_uniform")
         architecture = model.kwargs["architecture"]
@@ -107,7 +107,7 @@ class TFLocoformerDeclarationTests(unittest.TestCase):
         self.assertEqual(scheduler.kwargs["cooldown"], 0)
         self.assertEqual(scheduler.kwargs["min_lr"], 0.0)
         self.assertEqual(scheduler.kwargs["eps"], 1e-8)
-        self.assertEqual(trainer.class_path, "src.experiments.tf_locoformer.TFLocoformerTrainer")
+        self.assertEqual(trainer.class_path, "src.experiments.official.tf_locoformer.trainer.TFLocoformerTrainer")
         self.assertEqual(trainer.kwargs["grad_clip"], 5.0)
         self.assertEqual(trainer.kwargs["keep_nbest"], 5)
         self.assertEqual(trainer.kwargs["early_stopping_patience"], 10)
@@ -121,7 +121,7 @@ class TFLocoformerDeclarationTests(unittest.TestCase):
         self.assertEqual(config.components["sampler"].kwargs["chunk_length"], 64000)
         self.assertEqual(config.components["sampler"].kwargs["num_samples_per_epoch"], 1000)
         self.assertEqual(config.components["batcher"].kwargs["group_size"], 1)
-        text = (ROOT / "src/experiments/tf_locoformer.py").read_text(encoding="utf-8")
+        text = (ROOT / "src/experiments/official/tf_locoformer/trainer.py").read_text(encoding="utf-8")
         self.assertIn("step_batch", text)
         self.assertIn("step_validation", text)
         self.assertIn(RESEARCH_VALIDATION_PROFILE, text)
@@ -921,7 +921,7 @@ output:
 components:
   model:
     role: module
-    class: src.experiments.models.tf_locoformer.TFLocoformerModel
+    class: src.experiments.official.tf_locoformer.model.TFLocoformerModel
     kwargs:
       seed: 0
       variant: dns
@@ -969,7 +969,7 @@ components:
       optimizer: {{ref: optimizer}}
   trainer:
     role: trainer
-    class: src.experiments.tf_locoformer.TFLocoformerTrainer
+    class: src.experiments.official.tf_locoformer.trainer.TFLocoformerTrainer
     kwargs:
       max_logical_steps: {steps}
       accumulation: 1
@@ -1005,7 +1005,7 @@ output:
 components:
   model:
     role: module
-    class: src.experiments.models.tf_locoformer.TFLocoformerModel
+    class: src.experiments.official.tf_locoformer.model.TFLocoformerModel
     kwargs:
       seed: 0
       variant: dns
@@ -1088,7 +1088,7 @@ components:
       optimizer: {{ref: optimizer}}
   trainer:
     role: trainer
-    class: src.experiments.tf_locoformer.TFLocoformerTrainer
+    class: src.experiments.official.tf_locoformer.trainer.TFLocoformerTrainer
     kwargs:
       max_logical_steps: 200
       accumulation: 1

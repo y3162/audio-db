@@ -20,7 +20,7 @@ output:
 components:
   generator:
     role: module
-    class: src.experiments.models.mp_senet_gan.MPSENetGANGenerator
+    class: src.experiments.official.mp_senet.models.MPSENetGANGenerator
     kwargs:
       seed: 1234
       dense_channel: 64
@@ -34,7 +34,7 @@ components:
     prepare: {trainable: true, distribute: none}
   metric_discriminator:
     role: module
-    class: src.experiments.models.mp_senet_gan.MPSENetMetricDiscriminator
+    class: src.experiments.official.mp_senet.models.MPSENetMetricDiscriminator
     kwargs:
       seed: 1234
       dense_channel: 64
@@ -116,7 +116,7 @@ components:
       optimizer: {ref: optim_d}
   trainer:
     role: trainer
-    class: src.experiments.mp_senet.MPSENetGANTrainer
+    class: src.experiments.official.mp_senet.trainer.MPSENetGANTrainer
     kwargs:
       max_logical_steps: 1
       accumulation: 1

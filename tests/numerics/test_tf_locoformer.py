@@ -11,7 +11,7 @@ import torch
 from src.se import build_model, load_enhancer
 from src.experiments.calc.rng import seed_model_init, set_determinism
 from src.experiments.calc.spectral import multi_resolution_l1
-from src.experiments.calc.tf_locoformer import TFLocoformerTask
+from src.experiments.official.tf_locoformer.reference import TFLocoformerTask
 from tests.se.test_tf_locoformer import OFFICIAL, TINY, _frontend, _official_separator
 from tests.numerics.support import paired_dataset, tiny_config
 

@@ -36,7 +36,7 @@ from src.evaluation.metrics.sisdr import score_si_sdr
 from src.experiments.calc.rng import capture_rng, seed_training_stream
 from src.experiments.calc.dataset import load_recipe_dataset
 from src.experiments.calc.sampler import epoch_indices
-from src.experiments.calc.semambapp import SEMambaTask
+from src.experiments.official.semambapp.reference import SEMambaTask
 from tests.numerics.supply import tensor_sha256
 
 DB = ROOT / "data/db/semamba-voicebank-train-20261101-compat.duckdb"

@@ -12,7 +12,7 @@ from pathlib import Path
 
 import torch
 
-from src.experiments.models.tf_locoformer import TFLocoformerModel
+from src.experiments.official.tf_locoformer.model import TFLocoformerModel
 from src.experiments.runtime import PreparePolicy, ProcessRuntime
 
 ARCH = {

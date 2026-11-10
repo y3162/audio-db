@@ -1,12 +1,12 @@
 """Chunk batches for fixed-length, single-category ESPnet-style inputs.
 
 World size 1 is the single-rank case of
-``src.reproduction.pipeline.chunking.plan_chunk_epoch``. The yielded chunks
+``src.experiments.data.render.chunking.plan_chunk_epoch``. The yielded chunks
 match the previous one-process planner. Multi-rank plans are built there.
 """
 from dataclasses import dataclass
 
-from src.reproduction.pipeline.chunking import iterate_chunks, plan_chunk_epoch, select_source_ids
+from src.experiments.data.render.chunking import iterate_chunks, plan_chunk_epoch, select_source_ids
 
 
 @dataclass(frozen=True)

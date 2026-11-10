@@ -12,7 +12,7 @@ import torch
 from src.se import build_model
 from src.experiments.calc.rng import set_determinism
 from src.experiments.calc.errors import TrainingError
-from src.experiments.calc.mp_senet import (
+from src.experiments.official.mp_senet.reference import (
     MPSENetTask,
     align_validation_length,
     official_center_istft_length,
@@ -72,9 +72,9 @@ class FullLengthValidationTests(unittest.TestCase):
             seen.append(int(waveform.shape[-1]))
             return real(waveform, *args, **kwargs)
 
-        with patch("src.experiments.calc.mp_senet.mag_pha_stft", spy):
+        with patch("src.experiments.official.mp_senet.reference.mag_pha_stft", spy):
             with patch(
-                "src.experiments.calc.mp_senet.align_validation_length",
+                "src.experiments.official.mp_senet.reference.align_validation_length",
                 side_effect=AssertionError("validation must not truncate with align_validation_length"),
             ):
                 report = task.validation_report(_batch(1650, seed=2))
@@ -96,7 +96,7 @@ class FullLengthValidationTests(unittest.TestCase):
         self.assertEqual(official_center_istft_length(250, 100), 200)
         task = _task()
         with patch(
-            "src.experiments.calc.mp_senet.align_validation_length",
+            "src.experiments.official.mp_senet.reference.align_validation_length",
             side_effect=AssertionError("validation must not truncate with align_validation_length"),
         ):
             report = task.validation_report(_batch(250, seed=3))

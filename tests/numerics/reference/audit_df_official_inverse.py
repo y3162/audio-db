@@ -21,7 +21,7 @@ sys.path.insert(0, str(ROOT / "src/se/official/deepfilternet/DeepFilterNet"))
 
 from libdf import DF  # noqa: E402
 from src.se.models.deepfilternet3.dsp import vorbis_window  # noqa: E402
-from src.experiments.calc.deepfilternet import _vorbis_istft  # noqa: E402
+from src.experiments.official.deepfilternet3.reference import _vorbis_istft  # noqa: E402
 
 
 def official_istft(spectrum: torch.Tensor, n_fft: int, hop: int, window: torch.Tensor) -> torch.Tensor:

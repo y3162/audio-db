@@ -26,8 +26,8 @@ from src.experiments.api import Experiment
 from src.experiments.checkpoint import FORMAT
 from src.experiments.config import load_experiment
 from src.experiments.errors import ExperimentError
-from src.experiments.models.deepfilternet3 import DeepFilterNet3Model
-from src.experiments.models.semambapp import SEMambaPPGenerator, scan_execution
+from src.experiments.official.deepfilternet3.model import DeepFilterNet3Model
+from src.experiments.official.semambapp.models import SEMambaPPGenerator, scan_execution
 from src.se import load_enhancer
 from src.experiments.calc.rng import set_determinism
 from tests.experiments.test_deepfilternet3 import _ARCH as DFN_ARCH

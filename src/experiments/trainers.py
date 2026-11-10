@@ -85,6 +85,7 @@ class StandardTrainer:
         self.losses: list[float] = []
         self.stop_reason = "initialized"
         self._restored = False
+        self._published_logical_step: int | None = None
 
     def run(self, runtime: ProcessRuntime, checkpoint: CheckpointManager) -> RunResult:
         """Run until ``max_logical_steps``. A restored trainer continues.
@@ -129,9 +130,8 @@ class StandardTrainer:
                 and self.logical_step >= self.stop_after_logical_steps
             )
             if ranks_should_stop(runtime, extra=capped):
-                if self.logical_step > 0:
-                    self._before_checkpoint(runtime, checkpoint)
-                    checkpoint.save(checkpoint.directory, logical_step=self.logical_step, label="step")
+                if self._stop_needs_checkpoint(runtime, checkpoint):
+                    self._publish_step(runtime, checkpoint)
                 self.stop_reason = "interrupted"
                 return RunResult(
                     stop_reason="interrupted",
@@ -198,8 +198,7 @@ class StandardTrainer:
                         },
                     )
                 if self.logical_step % self.checkpoint_interval == 0:
-                    self._before_checkpoint(runtime, checkpoint)
-                    checkpoint.save(checkpoint.directory, logical_step=self.logical_step, label="step")
+                    self._publish_step(runtime, checkpoint)
             finally:
                 _close_epoch_view(view)
         self.stop_reason = "completed"
@@ -243,6 +242,39 @@ class StandardTrainer:
         """Hook for tests that change state after a step and before publish."""
 
         del runtime, checkpoint
+
+    def _stop_needs_checkpoint(self, runtime: ProcessRuntime, checkpoint: CheckpointManager) -> bool:
+        """Save on stop unless this logical step already has a finished step file.
+
+        The interval publish and the stop publish can land on the same step.
+        Writing it twice runs ``_before_checkpoint`` again and advances CUDA
+        RNG, so a resumed run no longer matches a continuous one. A temporary
+        ``.step_*.pt.tmp`` is not finished: only a successful ``save`` plus the
+        replaced ``step_*.pt`` counts. Ranks follow rank 0's file check.
+        """
+
+        if self.logical_step <= 0:
+            return False
+        if self._published_logical_step != self.logical_step:
+            return True
+        finished = _finished_step_file(checkpoint.directory, self.logical_step)
+        world = int(getattr(runtime, "world_size", 1))
+        if world > 1:
+            flags = runtime.gather_objects(finished if _rank(runtime) == 0 else False)
+            finished = bool(flags[0])
+        return not finished
+
+    def _publish_step(self, runtime: ProcessRuntime, checkpoint: CheckpointManager) -> None:
+        self._before_checkpoint(runtime, checkpoint)
+        path = checkpoint.save(checkpoint.directory, logical_step=self.logical_step, label="step")
+        finished = _finished_step_file(Path(path).parent, self.logical_step)
+        world = int(getattr(runtime, "world_size", 1))
+        if world > 1:
+            flags = runtime.gather_objects(finished if _rank(runtime) == 0 else False)
+            finished = bool(flags[0])
+        if not finished:
+            raise CheckpointError("checkpoint save did not leave a finished step file")
+        self._published_logical_step = self.logical_step
 
     def _require_group_size(self, component_id: str) -> None:
         group_size = getattr(self.data, "group_size", None)
@@ -307,6 +339,13 @@ def _batch_on_device(batch: Batch, device: torch.device) -> Batch:
     if not changed:
         return batch
     return replace(batch, inputs=inputs, targets=targets, lengths=lengths)
+
+
+def _finished_step_file(directory: Path, logical_step: int) -> bool:
+    """True for the replaced step file. Dotfile temporaries do not count."""
+
+    path = Path(directory) / f"step_{logical_step:08d}.pt"
+    return path.is_file() and not path.name.startswith(".")
 
 
 def _rank(runtime: ProcessRuntime) -> int:

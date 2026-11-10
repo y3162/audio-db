@@ -25,6 +25,7 @@ make test-cpu
 .venvs/se/bin/python -m src.experiments.cli \
   --config configs/reproduction/experiments/variants/mossformergan_se_16k.yaml \
   --preflight
+.venvs/se/bin/python -m src.experiments.data.cli doctor --database data/db/reproduction.duckdb
 .venvs/se/bin/python -m src.evaluation.cli \
   --config tests/fixtures/configs/evaluation/smoke.yaml \
   --limit 2 --device cpu

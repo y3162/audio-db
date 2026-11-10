@@ -45,7 +45,25 @@ CUDA を要求する設定は、使用メモリが空いていない GPU を拒�
   --resume data/results/experiments/phase5-production/mp-senet-gan-official/step_00000001.pt
 ```
 
-`--resume` は `logging` 以外の設定差を拒否する。`config_sha256` は `output` と `stop_after_logical_steps` を除いた設定の SHA-256 で、YAML のパスはハッシュに入らない。クラスパスを変えると別の設定になる。`audio-db-training-v1` は読まない。
+`--resume` は `logging` 以外の設定差を拒否する。`config_sha256` は `output` と `stop_after_logical_steps` を除いた設定の SHA-256 で、YAML のパスはハッシュに入らない。意味の違うクラスパスは別の設定になる。公式コンポーネントへ移した Model と Trainer、および `WarmupReduceLROnPlateau` の移動前パスだけは、同じ設定として再開できる。`audio-db-training-v1` は読まない。
+
+## コンポーネント
+
+公式手法の Model、Trainer、参照ステップは `src/experiments/official/<model>/` にある。YAML は既存の `class`、`inject`、`ref`、`parameters_of` でつなぐ。
+
+```yaml
+class: src.experiments.official.mp_senet.trainer.MPSENetGANTrainer
+```
+
+```yaml
+class: src.experiments.official.mp_senet.models.MPSENetGANGenerator
+```
+
+DB の準備は学習 CLI とは別である。
+
+```bash
+.venvs/se/bin/python -m src.experiments.data.cli doctor --database data/db/reproduction.duckdb
+```
 
 ## 出力の見方
 

@@ -1,5 +1,5 @@
 # Registration record. The mixer does not read this file.
-# Numeric distributions live in src/reproduction/ids.py DFN3_ONLINE_V1.
+# Numeric distributions live in src/experiments/data/ids.py DFN3_ONLINE_V1.
 name: dfn3.online
 database: data/db/reproduction-p8.duckdb
 staging: data/staging/reproduction-p8

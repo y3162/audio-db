@@ -23,12 +23,12 @@ from src.experiments.data.fixed_pair import (
 )
 from src.experiments.data.online import Dfn3IndexSampler, Dfn3Protocol, SemambaProtocol
 from src.experiments.runtime import ProcessRuntime
-from src.reproduction.pipeline.chunking import plan_chunk_epoch
-from src.reproduction.pipeline.online_dfn3 import plan_online_epoch
-from src.reproduction.pipeline.online_semamba import plan_semamba_epoch
-from src.reproduction.pipeline.order import rank_order, resolve_order_policy
-from src.reproduction.pipeline.planner import chunk_case_length, validation_refs
-from src.reproduction.protocols.online_dfn3 import speech_key_positions
+from src.experiments.data.render.chunking import plan_chunk_epoch
+from src.experiments.data.mix.online_dfn3 import plan_online_epoch
+from src.experiments.data.mix.online_semamba import plan_semamba_epoch
+from src.experiments.data.sampling.order import rank_order, resolve_order_policy
+from src.experiments.data.sampling.planner import chunk_case_length, validation_refs
+from src.experiments.data.protocols.online_dfn3 import speech_key_positions
 
 
 def main(argv: list[str] | None = None) -> int:

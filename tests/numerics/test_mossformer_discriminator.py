@@ -1,8 +1,8 @@
 """Regression checks for the released-width MossFormerGAN scorer."""
 import unittest
 import torch
-from src.experiments.calc.mossformer_discriminator import Discriminator
-from src.experiments.calc.mossformergan import _uncompress, _istft
+from src.experiments.official.mossformergan.discriminator import Discriminator
+from src.experiments.official.mossformergan.reference import _uncompress, _istft
 
 class MossFormerDiscriminatorTests(unittest.TestCase):
     def test_reconstruction_gradient_uses_shared_phase(self):

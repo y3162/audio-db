@@ -18,7 +18,7 @@ class _Scores:
 
 class SEMambaLossOrderTest(unittest.TestCase):
     def test_discriminator_families_interleave_real_and_fake(self):
-        from src.experiments.calc.semamba_disc import MultiResolutionDiscriminator, MultiScaleSubbandCQTDiscriminator
+        from src.experiments.official.semambapp.discriminator import MultiResolutionDiscriminator, MultiScaleSubbandCQTDiscriminator
 
         for cls in (MultiScaleSubbandCQTDiscriminator, MultiResolutionDiscriminator):
             calls = []

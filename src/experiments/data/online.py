@@ -14,11 +14,11 @@ import numpy as np
 from src.experiments.data.fixed_pair import SnapshotSource, _non_negative, _positive
 from src.experiments.data.sample import SampleRef
 from src.experiments.errors import DataError
-from src.reproduction.errors import ReproductionError
-from src.reproduction.pipeline.clips import Dfn3Clip, SemambaClip
-from src.reproduction.pipeline.online_dfn3 import POLICY as DFN3_POLICY
-from src.reproduction.pipeline.online_dfn3 import plan_online_epoch
-from src.reproduction.protocols.online_dfn3 import (
+from src.experiments.data.errors import ReproductionError
+from src.experiments.data.render.clips import Dfn3Clip, SemambaClip
+from src.experiments.data.mix.online_dfn3 import POLICY as DFN3_POLICY
+from src.experiments.data.mix.online_dfn3 import plan_online_epoch
+from src.experiments.data.protocols.online_dfn3 import (
     NUM_SAMPLES,
     SAMPLE_RATE as DFN3_RATE,
     DFN3OnlineSpec,
@@ -26,7 +26,7 @@ from src.reproduction.protocols.online_dfn3 import (
     sample_seed as dfn3_sample_seed,
     speech_key_positions,
 )
-from src.reproduction.protocols.online_semamba import (
+from src.experiments.data.protocols.online_semamba import (
     SAMPLE_RATE as SEMAMBA_RATE,
     SEGMENT_SIZE,
     render_example,

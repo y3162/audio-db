@@ -27,9 +27,9 @@ from src.experiments.api import build_experiment
 from src.experiments.config import load_experiment
 from src.experiments.data import Batch
 from src.experiments.errors import BuildError, CheckpointError, RuntimeFailure
-from src.experiments.models.mp_senet import MPSENetWaveformAdapter
-from src.experiments.models.mp_senet_gan import MPSENetGANGenerator, MPSENetMetricDiscriminator
-from src.experiments.mp_senet import (
+from src.experiments.official.mp_senet.waveform import MPSENetWaveformAdapter
+from src.experiments.official.mp_senet.models import MPSENetGANGenerator, MPSENetMetricDiscriminator
+from src.experiments.official.mp_senet.trainer import (
     BEST_CHECKPOINT_START_EPOCH,
     LEAKAGE_SAFE_VALIDATION_INTERVAL,
     OFFICIAL_CHECKPOINT_INTERVAL,
@@ -39,8 +39,8 @@ from src.experiments.mp_senet import (
     OFFICIAL_WEIGHT_DECAY,
 )
 from src.experiments.runtime import PreparePolicy, ProcessRuntime
-from src.reproduction.ids import canonical_text, digest
-from src.reproduction.snapshot_reader import (
+from src.experiments.data.ids import canonical_text, digest
+from src.experiments.data.snapshot import (
     FORMAT,
     SCHEMA_VERSION,
     arrays_from_assets,
@@ -53,7 +53,7 @@ from src.reproduction.snapshot_reader import (
 )
 from src.experiments.calc.rng import set_determinism
 from src.experiments.calc.losses import metric_targets
-from src.experiments.calc.mp_senet import MPSENetTask
+from src.experiments.official.mp_senet.reference import MPSENetTask
 
 ROOT = Path(__file__).resolve().parents[2]
 ARCH = {
@@ -520,7 +520,7 @@ def _manual_trainer(runtime: ProcessRuntime, accumulation: int) -> tuple[object,
             del epoch
             return iter(())
 
-    from src.experiments.mp_senet import MPSENetGANTrainer
+    from src.experiments.official.mp_senet.trainer import MPSENetGANTrainer
 
     trainer = MPSENetGANTrainer(
         prepared_g,
@@ -560,7 +560,7 @@ def _compare_update(*, accumulation: int, length: int, stub: bool, sine: bool = 
     _capture(task.optim_d, old_box, "d")
     _capture(task.optim_g, old_box, "g")
     _seed_streams(21)
-    patcher = patch("src.experiments.calc.mp_senet.metric_targets", targets) if stub else nullpatch()
+    patcher = patch("src.experiments.official.mp_senet.reference.metric_targets", targets) if stub else nullpatch()
     with patcher:
         old = task._official([{"clean": batch.targets.clone(), "noisy": batch.inputs.clone()} for batch in batches], accumulation)
     runtime = ProcessRuntime(device="cpu", precision="fp32")
@@ -798,12 +798,12 @@ output:
 components:
   generator:
     role: module
-    class: src.experiments.models.mp_senet_gan.MPSENetGANGenerator
+    class: src.experiments.official.mp_senet.models.MPSENetGANGenerator
     kwargs: {{seed: 7, {arch}}}
     prepare: {{trainable: true, distribute: {distribute}}}
   metric_discriminator:
     role: module
-    class: src.experiments.models.mp_senet_gan.MPSENetMetricDiscriminator
+    class: src.experiments.official.mp_senet.models.MPSENetMetricDiscriminator
     kwargs: {{seed: 7, {arch}}}
     prepare: {{trainable: true, distribute: {distribute}}}
   data:
@@ -849,7 +849,7 @@ components:
       optimizer: {{ref: optim_d}}
   trainer:
     role: trainer
-    class: src.experiments.mp_senet.MPSENetGANTrainer
+    class: src.experiments.official.mp_senet.trainer.MPSENetGANTrainer
     kwargs:
       max_logical_steps: {steps}
       accumulation: {accumulation}
@@ -887,12 +887,12 @@ output:
 components:
   generator:
     role: module
-    class: src.experiments.models.mp_senet_gan.MPSENetGANGenerator
+    class: src.experiments.official.mp_senet.models.MPSENetGANGenerator
     kwargs: {{seed: 7, {arch}}}
     prepare: {{trainable: true, distribute: none}}
   metric_discriminator:
     role: module
-    class: src.experiments.models.mp_senet_gan.MPSENetMetricDiscriminator
+    class: src.experiments.official.mp_senet.models.MPSENetMetricDiscriminator
     kwargs: {{seed: 7, {arch}}}
     prepare: {{trainable: true, distribute: none}}
   source:
@@ -968,7 +968,7 @@ components:
       optimizer: {{ref: optim_d}}
   trainer:
     role: trainer
-    class: src.experiments.mp_senet.MPSENetGANTrainer
+    class: src.experiments.official.mp_senet.trainer.MPSENetGANTrainer
     kwargs:
       max_logical_steps: 1
       accumulation: 1

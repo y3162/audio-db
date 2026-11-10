@@ -19,7 +19,7 @@ output:
 components:
   model:
     role: module
-    class: src.experiments.models.tf_gridnet.TFGridNetModel
+    class: src.experiments.official.tf_gridnet.model.TFGridNetModel
     kwargs:
       seed: 0
       variant: ms-snsd
@@ -105,7 +105,7 @@ components:
       optimizer: {ref: optimizer}
   trainer:
     role: trainer
-    class: src.experiments.tf_gridnet.TFGridNetTrainer
+    class: src.experiments.official.tf_gridnet.trainer.TFGridNetTrainer
     kwargs:
       max_logical_steps: 553521
       accumulation: 1

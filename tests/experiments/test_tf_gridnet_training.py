@@ -26,9 +26,9 @@ from src.experiments.api import build_experiment
 from src.experiments.config import load_experiment
 from src.experiments.errors import BuildError, RuntimeFailure
 from src.experiments.losses import OFFICIAL_WINDOWS, MultiResolutionL1Loss
-from src.experiments.models.tf_gridnet import TFGridNetModel
+from src.experiments.official.tf_gridnet.model import TFGridNetModel
 from src.experiments.runtime import PreparedModel, ProcessRuntime
-from src.experiments.tf_gridnet import (
+from src.experiments.official.tf_gridnet.trainer import (
     TFGridNetTrainer,
     _write_nbest,
     early_stop,
@@ -39,7 +39,7 @@ from src.se.models.tf_gridnet.model import TFGridNet
 from src.experiments.calc.average import average_state_dicts
 from src.experiments.calc.optim import clip_gradients
 from src.experiments.calc.spectral import multi_resolution_l1
-from src.experiments.calc.tf_gridnet import TFGridNetTask
+from src.experiments.official.tf_gridnet.reference import TFGridNetTask
 from tests.experiments.test_chunk_data import _write_snapshot
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -64,7 +64,7 @@ class TFGridNetDeclarationTests(unittest.TestCase):
         model = config.components["model"]
         loss = config.components["loss"]
         trainer = config.components["trainer"]
-        self.assertEqual(model.class_path, "src.experiments.models.tf_gridnet.TFGridNetModel")
+        self.assertEqual(model.class_path, "src.experiments.official.tf_gridnet.model.TFGridNetModel")
         self.assertEqual(model.kwargs["variant"], "ms-snsd")
         self.assertEqual(model.kwargs["init"], "xavier_uniform")
         self.assertEqual(model.kwargs["architecture"]["n_fft"], 512)
@@ -82,14 +82,14 @@ class TFGridNetDeclarationTests(unittest.TestCase):
         self.assertEqual(scheduler.kwargs["mode"], "min")
         self.assertEqual(scheduler.kwargs["factor"], 0.7)
         self.assertEqual(scheduler.kwargs["patience"], 1)
-        self.assertEqual(trainer.class_path, "src.experiments.tf_gridnet.TFGridNetTrainer")
+        self.assertEqual(trainer.class_path, "src.experiments.official.tf_gridnet.trainer.TFGridNetTrainer")
         self.assertEqual(trainer.kwargs["grad_clip"], 5.0)
         self.assertEqual(trainer.kwargs["keep_nbest"], 5)
         self.assertEqual(trainer.kwargs["early_stopping_patience"], 5)
         self.assertEqual(config.components["data"].class_path, "src.experiments.data.SnapshotDataModule")
         self.assertEqual(config.components["sampler"].class_path, "src.experiments.data.ChunkSampler")
         self.assertEqual(config.components["source"].kwargs["snapshot"], "tf_gridnet.ms_snsd.espnet_recipe@1")
-        text = (ROOT / "src/experiments/tf_gridnet.py").read_text(encoding="utf-8")
+        text = (ROOT / "src/experiments/official/tf_gridnet/trainer.py").read_text(encoding="utf-8")
         self.assertNotIn("OnDemandChunkData", text)
         self.assertNotIn("valid.si_snr.best", text)
         self.assertNotIn("valid.si_snr.ave", text)
@@ -511,7 +511,7 @@ output:
 components:
   model:
     role: module
-    class: src.experiments.models.tf_gridnet.TFGridNetModel
+    class: src.experiments.official.tf_gridnet.model.TFGridNetModel
     kwargs:
       seed: 0
       variant: ms-snsd
@@ -553,7 +553,7 @@ components:
       optimizer: {{ref: optimizer}}
   trainer:
     role: trainer
-    class: src.experiments.tf_gridnet.TFGridNetTrainer
+    class: src.experiments.official.tf_gridnet.trainer.TFGridNetTrainer
     kwargs:
       max_logical_steps: {steps}
       accumulation: 1
@@ -588,7 +588,7 @@ output:
 components:
   model:
     role: module
-    class: src.experiments.models.tf_gridnet.TFGridNetModel
+    class: src.experiments.official.tf_gridnet.model.TFGridNetModel
     kwargs:
       seed: 0
       variant: ms-snsd
@@ -665,7 +665,7 @@ components:
       optimizer: {{ref: optimizer}}
   trainer:
     role: trainer
-    class: src.experiments.tf_gridnet.TFGridNetTrainer
+    class: src.experiments.official.tf_gridnet.trainer.TFGridNetTrainer
     kwargs:
       max_logical_steps: 200
       accumulation: 1

@@ -29,7 +29,7 @@ class SemambaResampyTests(unittest.TestCase):
             """\
             import resampy
             import numpy as np
-            from src.reproduction.protocols.online_semamba import bandwidth_limitation
+            from src.experiments.data.protocols.online_semamba import bandwidth_limitation
 
             assert resampy.__version__ == "0.4.3", resampy.__version__
             time = np.linspace(0, 0.05, 800, endpoint=False, dtype=np.float64)

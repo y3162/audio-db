@@ -2,7 +2,7 @@
 
 状態: **P1 の DB 基盤は実装済み**（2026-11-06）。`reproduction.duckdb` には VoiceBank 固定ペア 4 Dataset と、MS-SNSD の保存済み WAV Dataset、オンデマンド Dataset がある。学習はスナップショットを読み、生成済み WAV を必須にしない。詳細は [P6_VERIFICATION](../../.agents/DATA.md)。
 
-P1 で設計からずらした点: `rule_json` は `src/reproduction/ids.py` の閉じたアルゴリズム封筒（完全な Protocol dataclass は P3）。生成素材は `assets.npz` に入れず `generated.json` に書く。leak 監査は `--resource-db` を渡したときだけ `resource.duckdb` を開く。監査に時刻は無く、PASS が存在し FAIL が無いことを使用条件にする。`sha256` の NULL から値への更新だけを `asset_hashes/` 経由で許す。`integrity = sha256` は Python 側で `size_bytes` も要求する。`official_reproduction` は ready のとき全素材 SHA-256 を要求する。blocked または unknown でバインドが空なら登録できる（P8 の `dfn3.online.official@1`）。ready な公式再現がバインド無しになることは無い。
+P1 で設計からずらした点: `rule_json` は `src/experiments/data/ids.py` の閉じたアルゴリズム封筒（完全な Protocol dataclass は P3）。生成素材は `assets.npz` に入れず `generated.json` に書く。leak 監査は `--resource-db` を渡したときだけ `resource.duckdb` を開く。監査に時刻は無く、PASS が存在し FAIL が無いことを使用条件にする。`sha256` の NULL から値への更新だけを `asset_hashes/` 経由で許す。`integrity = sha256` は Python 側で `size_bytes` も要求する。`official_reproduction` は ready のとき全素材 SHA-256 を要求する。blocked または unknown でバインドが空なら登録できる（P8 の `dfn3.online.official@1`）。ready な公式再現がバインド無しになることは無い。
 
 ## 0. この文書の位置づけ
 
@@ -433,7 +433,7 @@ DuckDB のスキーマ名は `repro`。型は DuckDB の型。CHECK は同じ行
 
 学習が終わった（または止まった）後に、1 プロセスの書き込みで登録する。**学習中は書かない。** checkpoint ディレクトリの `data_provenance.json` が一次記録で、この表はそれを後から載せる（既存の `register_run` と同じ順序）。
 
-P4 の登録関数は `register_training_run`（`python -m src.reproduction.cli register-run`）。学習プロセスは呼ばない。`--database` の既定値は無く、本番 `reproduction.duckdb` を暗黙には開かない。同じ `run_id` で dataset・snapshot・config・git・world size・`ddp_mode`・`selection_uses_test`・claim・データ計画が同じなら、checkpoint の位置（`epoch`、`update_in_epoch`、`plan_hash`）と checkpoint パスだけの変化は同じ run の更新である。それらが違う再登録は拒否し、行を変えない。別の `run_id` は別 run として挿入する。
+P4 の登録関数は `register_training_run`（`python -m src.experiments.data.cli register-run`）。学習プロセスは呼ばない。`--database` の既定値は無く、本番 `reproduction.duckdb` を暗黙には開かない。同じ `run_id` で dataset・snapshot・config・git・world size・`ddp_mode`・`selection_uses_test`・claim・データ計画が同じなら、checkpoint の位置（`epoch`、`update_in_epoch`、`plan_hash`）と checkpoint パスだけの変化は同じ run の更新である。それらが違う再登録は拒否し、行を変えない。別の `run_id` は別 run として挿入する。
 
 `profile` は checkpoint の `data_state` に既にある。`claim_label`、`checkpoint_path`、`checkpoint_sha256` は表に列が無いので、スキーマを変えずに `data_state_json` へ足す。再開が読むのは checkpoint 本体の `data_state` であり、この足したキーは DB 側の登録情報である。
 

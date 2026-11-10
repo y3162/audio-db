@@ -13,8 +13,8 @@ from src.experiments.config import load_experiment
 from src.experiments.data.fixed_pair import SnapshotEpochView
 from src.experiments.data.weighted import categorical_draws, rank_sample_positions
 from src.experiments.errors import DataError, StateError
-from src.reproduction.ids import digest
-from src.reproduction.pipeline.order import rank_order
+from src.experiments.data.ids import digest
+from src.experiments.data.sampling.order import rank_order
 from tests.experiments.test_chunk_data import _module as _chunk_module
 from tests.experiments.test_chunk_data import _write_snapshot as _write_chunk
 from tests.experiments.test_distributed_data import (

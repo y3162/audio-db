@@ -1,7 +1,7 @@
 """Checkpoint data provenance and evaluation independence.
 
 The JSON file is the record evaluation can read without DuckDB and without
-``src.reproduction``. ``independent`` is true only when content hashes and
+the reproduction database. ``independent`` is true only when content hashes and
 known source hashes show no overlap. ``UNKNOWN`` is not an independent result.
 """
 

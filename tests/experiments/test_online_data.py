@@ -23,23 +23,23 @@ from src.experiments.data.fixed_pair import MicroBatcher, OrderSampler, Snapshot
 from src.experiments.data.online import Dfn3IndexSampler, Dfn3Protocol, SemambaProtocol
 from src.experiments.data.sample import SampleRef
 from src.experiments.errors import CheckpointError, DataError, StateError
-from src.reproduction.ids import canonical_text, digest
-from src.reproduction.pipeline.online_dfn3 import plan_online_epoch
-from src.reproduction.pipeline.online_semamba import plan_semamba_epoch
-from src.reproduction.pipeline.order import rank_order
-from src.reproduction.protocols.online_dfn3 import (
+from src.experiments.data.ids import canonical_text, digest
+from src.experiments.data.mix.online_dfn3 import plan_online_epoch
+from src.experiments.data.mix.online_semamba import plan_semamba_epoch
+from src.experiments.data.sampling.order import rank_order
+from src.experiments.data.protocols.online_dfn3 import (
     NUM_SAMPLES,
     render_mixture,
     sample_seed as dfn3_sample_seed,
     speech_key_positions,
 )
-from src.reproduction.protocols.online_semamba import (
+from src.experiments.data.protocols.online_semamba import (
     SEGMENT_SIZE,
     draw_used,
     render_example,
     sample_seed as semamba_sample_seed,
 )
-from src.reproduction.snapshot_reader import (
+from src.experiments.data.snapshot import (
     FORMAT,
     SCHEMA_VERSION,
     arrays_from_assets,
@@ -108,8 +108,8 @@ class OnlineDataTests(unittest.TestCase):
         _remove(self.base)
 
     def test_factory_builds_both_modules_without_duckdb_or_old_readers(self) -> None:
-        import src.reproduction.pipeline.online_dfn3 as dfn_mod
-        import src.reproduction.pipeline.online_semamba as semamba_mod
+        import src.experiments.data.mix.online_dfn3 as dfn_mod
+        import src.experiments.data.mix.online_semamba as semamba_mod
 
         calls = {"duck": 0, "dfn": 0, "semamba": 0}
         original_dfn = dfn_mod.OnlineDFN3TrainingData

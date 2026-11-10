@@ -35,12 +35,11 @@ CUDA_VISIBLE_DEVICES="" .venvs/se/bin/python -m unittest discover -s tests/asr -
 CUDA_VISIBLE_DEVICES="" .venvs/se/bin/python -m unittest discover -s tests/data -v
 CUDA_VISIBLE_DEVICES="" .venvs/se/bin/python -m unittest discover -s tests/evaluation -v
 CUDA_VISIBLE_DEVICES="" .venvs/se/bin/python -m unittest discover -s tests/experiments -v
-CUDA_VISIBLE_DEVICES="" .venvs/se/bin/python -m unittest discover -s tests/reproduction -v
 CUDA_VISIBLE_DEVICES="" .venvs/se/bin/python -m unittest discover -s tests/numerics -v
 CUDA_VISIBLE_DEVICES="" .venvs/se/bin/python -m unittest discover -s tests/setup -v
 ```
 
-`tests/numerics/` は損失、STFT、scheduler、参照ステップの数値比較。`tests/experiments/` は組み立て、checkpoint、6 モデルの学習ループ。チェックポイントや公式ツリーが無いテストは skip する。SKIP は PASS ではない。
+`tests/numerics/` は損失、STFT、scheduler、参照ステップの数値比較。`tests/experiments/` は組み立て、checkpoint、6 モデルの学習ループ。再現 DB とスナップショットのテストは `tests/data/reproduction/` にあり、`tests/data` の discover がまとめて実行する。チェックポイントや公式ツリーが無いテストは skip する。SKIP は PASS ではない。
 
 CUDA / NCCL の `tests/experiments/test_cuda_amp.py` は、見える GPU が無いとき NOT_RUN になる。CPU スイートの成功には数えない。
 
