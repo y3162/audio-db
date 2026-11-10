@@ -2,6 +2,8 @@
 # Phase 4-H recorded an OOM after about 45.56 GiB at 3 seconds. Accumulation is
 # not a substitute. semambapp.gsr.official@1 stays blocked. This file is not a
 # measured runnable condition.
+# checkpoint_interval is 45 logical steps, copied from the measured micro-4 estimate.
+# The wall-clock gap for batch 8 is not measured.
 schema: audio-db-experiment/v1
 seed: 1234
 deterministic: false
@@ -154,7 +156,7 @@ components:
       accumulation: 1
       grad_clip: null
       validation_interval: 0
-      checkpoint_interval: 1000
+      checkpoint_interval: 45
       best_checkpoint_start_epoch: 40
       claim_label: protocol_conformant_substitute_materials
     inject:

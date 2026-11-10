@@ -2,7 +2,8 @@
 # ESPnet MS-SNSD recipe, fixed seed. Not a claim of the paper's unseeded run.
 # World size 2, global batch 4, micro-batch 2, chunk 48,000, 35 epochs.
 # 553,521 is the planned optimizer-update total. Epoch-end checkpoints remain.
-# checkpoint_interval is larger than one epoch so mid-epoch files are not written.
+# checkpoint_interval is 100 logical steps. Phase 5 estimated 4.0 s/update, so
+# this is about 7 minutes plus the 2.7 s write. Validation stays at the epoch end.
 # Launch with 2 visible GPUs. World size 1 is refused.
 schema: audio-db-experiment/v1
 seed: 0
@@ -112,7 +113,7 @@ components:
       keep_nbest: 5
       max_epochs: 35
       early_stopping_patience: 5
-      checkpoint_interval: 1000000
+      checkpoint_interval: 100
     inject:
       model: {ref: model}
       loss: {ref: loss}

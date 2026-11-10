@@ -157,7 +157,7 @@ components:
       accumulation: 1
       grad_clip: null
       validation_interval: 0
-      checkpoint_interval: 1000
+      checkpoint_interval: 45
       best_checkpoint_start_epoch: 40
       claim_label: protocol_conformant_substitute_materials
     inject:

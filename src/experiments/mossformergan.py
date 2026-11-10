@@ -55,6 +55,8 @@ from src.training.se.mossformergan import (
 _IN_EPOCH = "in_epoch"
 _PENDING = "pending_boundary"
 OFFICIAL_FAITHFUL = "official_faithful"
+LEAKAGE_SAFE = "leakage_safe"
+_CLAIMS = frozenset({OFFICIAL_FAITHFUL, LEAKAGE_SAFE})
 OFFICIAL_LEARNING_RATE = 0.0005
 OFFICIAL_DISCRIMINATOR_LEARNING_RATE = 0.001
 OFFICIAL_BETAS = (0.9, 0.999)
@@ -103,8 +105,8 @@ class MossFormerGANTrainer:
         _require_adamw(optim_g, "optim_g", lr=OFFICIAL_LEARNING_RATE)
         _require_adamw(optim_d, "optim_d", lr=OFFICIAL_DISCRIMINATOR_LEARNING_RATE)
         _require_disjoint(optim_g, optim_d)
-        if experiment_claim != OFFICIAL_FAITHFUL:
-            raise BuildError("experiment_claim must be official_faithful")
+        if experiment_claim not in _CLAIMS:
+            raise BuildError("experiment_claim must be official_faithful or leakage_safe")
         if not hasattr(data, "train_epoch") or not hasattr(data, "validation_epoch"):
             raise BuildError("data must provide train_epoch and validation_epoch")
         optim_g_id = getattr(optim_g, "_experiment_component_id", None)
@@ -225,6 +227,7 @@ class MossFormerGANTrainer:
             if self.logical_step >= self.max_logical_steps:
                 return self._result(checkpoint, "completed")
             if self._stop_requested(runtime):
+                self._publish_interrupt(runtime, checkpoint)
                 return self._result(checkpoint, "interrupted")
             epoch = int(self.data.epoch)
             index = int(self.data.update_index)
@@ -801,10 +804,25 @@ class MossFormerGANTrainer:
             raise RuntimeFailure(f"MossFormerGAN requires fixed_pair.mossformergan_se_16k data, got {algorithm}")
         profile = identity.get("profile")
         uses_test = identity.get("selection_uses_test")
-        if profile not in (None, OFFICIAL_FAITHFUL):
-            raise RuntimeFailure("official_faithful data profile must be official_faithful")
-        if uses_test is False:
-            raise RuntimeFailure("official_faithful selection uses the dataset test split as validation")
+        if self.experiment_claim == OFFICIAL_FAITHFUL:
+            if profile not in (None, OFFICIAL_FAITHFUL):
+                raise RuntimeFailure("official_faithful data profile must be official_faithful")
+            if uses_test is False:
+                raise RuntimeFailure("official_faithful selection uses the dataset test split as validation")
+            return
+        if profile not in (None, LEAKAGE_SAFE):
+            raise RuntimeFailure("leakage_safe data profile must be leakage_safe")
+        if uses_test is True:
+            raise RuntimeFailure("leakage_safe selection keeps the test split out of best-checkpoint decisions")
+
+    def _publish_interrupt(self, runtime: ProcessRuntime, checkpoint: CheckpointManager) -> None:
+        """Save the last finished boundary. A GAN optimizer pair is not a boundary."""
+
+        if self._in_optimizer_pair:
+            raise RuntimeFailure("refusing to checkpoint between the generator step and the discriminator step")
+        if self.logical_step <= 0 and self._accu_count <= 0:
+            return
+        self._checkpoint(runtime, checkpoint, logical_step=self.logical_step, label="step")
 
     def _require_group_size(self, component_id: str) -> None:
         group_size = getattr(self.data, "group_size", None)

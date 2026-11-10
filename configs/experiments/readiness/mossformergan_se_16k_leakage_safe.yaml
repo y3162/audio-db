@@ -1,0 +1,121 @@
+# Short leakage-safe check. One logical step, then a separate process may resume.
+# Same snapshot, claim, and network as the production leakage-safe file.
+# Step 1 is saved by the stop boundary. Step 2 matches checkpoint_interval and is saved on completion.
+# This file is not the 121-pass run. Do not point it at the production directory.
+schema: audio-db-experiment/v1
+seed: 777
+deterministic: true
+entry: trainer
+runtime:
+  class: src.experiments.runtime.ProcessRuntime
+  kwargs:
+    device: cpu
+    precision: fp32
+output:
+  directory: data/results/experiments/phase6-readiness/mossformergan-leakage-safe
+components:
+  generator:
+    role: module
+    class: src.experiments.models.mossformergan.MossFormerGANGenerator
+    kwargs:
+      seed: 777
+      variant: se_16k
+      n_fft: 400
+      win_len: 400
+      hop: 100
+      num_channel: 64
+      sampling_rate: 16000
+    prepare:
+      trainable: true
+      distribute: none
+      find_unused_parameters: true
+      broadcast_buffers: true
+      sync_batchnorm: true
+  discriminator:
+    role: module
+    class: src.experiments.models.mossformergan.MossFormerGANDiscriminator
+    kwargs:
+      seed: 777
+      variant: se_16k
+      n_fft: 400
+      win_len: 400
+      hop: 100
+      num_channel: 64
+      sampling_rate: 16000
+    prepare:
+      trainable: true
+      distribute: none
+      find_unused_parameters: true
+      broadcast_buffers: true
+      sync_batchnorm: true
+  source:
+    role: other
+    class: src.experiments.data.SnapshotSource
+    kwargs:
+      snapshot: mossformergan.vb28.ondemand.safe@1
+      snapshot_root: data/db/snapshots
+      split: train
+  protocol:
+    role: other
+    class: src.experiments.data.FixedPairProtocol
+    kwargs: {}
+    inject:
+      source: {ref: source}
+  sampler:
+    role: other
+    class: src.experiments.data.OrderSampler
+    kwargs:
+      seed: 777
+    inject:
+      source: {ref: source}
+      protocol: {ref: protocol}
+  batcher:
+    role: other
+    class: src.experiments.data.MicroBatcher
+    kwargs:
+      micro_batch: 1
+      group_size: 2
+  data:
+    role: data
+    class: src.experiments.data.SnapshotDataModule
+    kwargs:
+      require_profile: leakage_safe
+      prefetch: false
+    inject:
+      source: {ref: source}
+      sampler: {ref: sampler}
+      protocol: {ref: protocol}
+      batcher: {ref: batcher}
+  optim_g:
+    role: optimizer
+    class: torch.optim.AdamW
+    parameters_of: generator
+    kwargs:
+      lr: 0.0005
+      betas: [0.9, 0.999]
+      weight_decay: 0.01
+  optim_d:
+    role: optimizer
+    class: torch.optim.AdamW
+    parameters_of: discriminator
+    kwargs:
+      lr: 0.001
+      betas: [0.9, 0.999]
+      weight_decay: 0.01
+  trainer:
+    role: trainer
+    class: src.experiments.mossformergan.MossFormerGANTrainer
+    kwargs:
+      max_logical_steps: 2
+      accumulation: 2
+      grad_clip: 10.0
+      experiment_claim: leakage_safe
+      checkpoint_interval: 2
+      stop_after_logical_steps: 1
+      validate_on_epoch_end: true
+    inject:
+      generator: {ref: generator}
+      discriminator: {ref: discriminator}
+      data: {ref: data}
+      optim_g: {ref: optim_g}
+      optim_d: {ref: optim_d}

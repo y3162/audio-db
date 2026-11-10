@@ -415,6 +415,7 @@ class MossFormerGANAlgorithmTests(unittest.TestCase):
         self.task.train_mode()
 
     def _trainer(self, accumulation: int, **kwargs: object) -> MossFormerGANTrainer:
+        claim = str(kwargs.get("experiment_claim", "official_faithful"))
         return MossFormerGANTrainer(
             self.generator,
             self.discriminator,
@@ -424,6 +425,7 @@ class MossFormerGANAlgorithmTests(unittest.TestCase):
             max_logical_steps=4,
             accumulation=accumulation,
             grad_clip=float(kwargs.get("grad_clip", 10.0)),
+            experiment_claim=claim,
         )
 
     def _exercise(self, batches: list[dict[str, torch.Tensor]], accumulation: int, fail_calls: set[int]) -> None:
@@ -667,8 +669,19 @@ class MossFormerGANAlgorithmTests(unittest.TestCase):
                 self.optim_g,
                 self.optim_d,
                 max_logical_steps=1,
-                experiment_claim="leakage_safe",
+                experiment_claim="research",
             )
+        leakage = MossFormerGANTrainer(
+            self.generator,
+            self.discriminator,
+            _IdleData(),
+            self.optim_g,
+            self.optim_d,
+            max_logical_steps=1,
+            experiment_claim="leakage_safe",
+        )
+        with self.assertRaises(RuntimeFailure):
+            leakage._check_claim()
         bad = torch.optim.AdamW(self.optim_d.param_groups[0]["params"], lr=1e-3, weight_decay=0.0)
         bad._experiment_component_id = "optim_d"  # type: ignore[attr-defined]
         with self.assertRaises(BuildError):
@@ -680,6 +693,95 @@ class MossFormerGANAlgorithmTests(unittest.TestCase):
                 bad,
                 max_logical_steps=1,
             )
+
+    def test_profile_must_match_the_claim(self) -> None:
+        cases = (
+            ("official_faithful", "leakage_safe", False, True),
+            ("official_faithful", "official_faithful", False, True),
+            ("leakage_safe", "official_faithful", False, True),
+            ("leakage_safe", "leakage_safe", True, True),
+        )
+        for claim, profile, uses_test, rejected in cases:
+            data = _ProfileData(profile, uses_test)
+            trainer = MossFormerGANTrainer(
+                self.generator,
+                self.discriminator,
+                data,
+                self.optim_g,
+                self.optim_d,
+                max_logical_steps=1,
+                experiment_claim=claim,
+            )
+            with self.subTest(claim=claim, profile=profile, uses_test=uses_test):
+                if rejected:
+                    with self.assertRaises(RuntimeFailure):
+                        trainer._check_claim()
+                else:
+                    trainer._check_claim()
+        for claim, profile, uses_test in (
+            ("official_faithful", "official_faithful", True),
+            ("leakage_safe", "leakage_safe", False),
+            ("official_faithful", None, None),
+            ("leakage_safe", None, None),
+        ):
+            trainer = MossFormerGANTrainer(
+                self.generator,
+                self.discriminator,
+                _ProfileData(profile, uses_test),
+                self.optim_g,
+                self.optim_d,
+                max_logical_steps=1,
+                experiment_claim=claim,
+            )
+            with self.subTest(claim=claim, profile=profile, uses_test=uses_test, accepted=True):
+                trainer._check_claim()
+
+    def test_leakage_safe_update_matches_the_official_update(self) -> None:
+        batches = [_as_batch(_noise(index), index) for index in range(2)]
+        metric = _metric_script(set())
+        torch_state = torch.get_rng_state().clone()
+
+        def _once(claim: str) -> dict[str, object]:
+            torch.set_rng_state(torch_state.clone())
+            metric.reset()
+            self._reload()
+            trainer = self._trainer(2, experiment_claim=claim)
+            captured: dict[str, object] = {}
+            original = trainer._step_pair
+
+            def _capture(runtime: ProcessRuntime) -> dict[str, object]:
+                captured["generator_grads"] = _clone_grads(self.generator.state_module)
+                captured["discriminator_grads"] = _clone_grads(self.discriminator.state_module)
+                return original(runtime)
+
+            trainer._step_pair = _capture  # type: ignore[method-assign]
+            result = None
+            with patch("src.training.se.mossformergan.metric_targets", metric):
+                for index, batch in enumerate(batches):
+                    result = trainer.consume_micro_batch(batch, self.runtime, update_index=index)
+            self.assertIsNotNone(result)
+            captured["log"] = result
+            captured["generator"] = {
+                key: value.detach().cpu().clone()
+                for key, value in self.generator.state_module.state_dict().items()
+            }
+            captured["discriminator"] = {
+                key: value.detach().cpu().clone()
+                for key, value in self.discriminator.state_module.state_dict().items()
+            }
+            captured["optim_g"] = self.optim_g.state_dict()
+            captured["optim_d"] = self.optim_d.state_dict()
+            return captured
+
+        official = _once("official_faithful")
+        leakage = _once("leakage_safe")
+        self.assertEqual(_max_tree(official["log"], leakage["log"]), 0.0)
+        self.assertEqual(_max_tree(official["generator_grads"], leakage["generator_grads"]), 0.0)
+        self.assertEqual(_max_tree(official["discriminator_grads"], leakage["discriminator_grads"]), 0.0)
+        self.assertEqual(_max_tree(official["generator"], leakage["generator"]), 0.0)
+        self.assertEqual(_max_tree(official["discriminator"], leakage["discriminator"]), 0.0)
+        self.assertEqual(_max_tree(official["optim_g"], leakage["optim_g"]), 0.0)
+        self.assertEqual(_max_tree(official["optim_d"], leakage["optim_d"]), 0.0)
 
     def test_amp_and_mid_pair_checkpoint_are_refused(self) -> None:
         trainer = self._trainer(1)
@@ -848,6 +950,33 @@ class MossFormerGANAlgorithmTests(unittest.TestCase):
             self.assertEqual([row["halt_reason"] for row in skip_ranks], ["no_successful_micro_batch"] * 2)
             self.assertEqual([row["counters"]["micro_batches_failed"] for row in skip_ranks], [2, 2])
             self.assertEqual([row["average_calls"] for row in skip_ranks], [0, 0])
+
+
+class _ProfileData:
+    """Identity-only data. It does not supply batches."""
+
+    group_size = 1
+    epoch = 0
+    update_index = 0
+
+    def __init__(self, profile: str | None, selection_uses_test: bool | None) -> None:
+        self.profile = profile
+        self.selection_uses_test = selection_uses_test
+
+    def train_epoch(self, epoch: int, *, start_update: int):
+        del epoch, start_update
+        raise AssertionError("profile data has no epoch")
+
+    def validation_epoch(self, epoch: int):
+        del epoch
+        return iter(())
+
+    def identity(self) -> dict[str, object]:
+        return {
+            "algorithm": "fixed_pair.mossformergan_se_16k",
+            "profile": self.profile,
+            "selection_uses_test": self.selection_uses_test,
+        }
 
 
 class _IdleData:

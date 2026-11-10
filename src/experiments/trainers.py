@@ -129,6 +129,9 @@ class StandardTrainer:
                 and self.logical_step >= self.stop_after_logical_steps
             )
             if ranks_should_stop(runtime, extra=capped):
+                if self.logical_step > 0:
+                    self._before_checkpoint(runtime, checkpoint)
+                    checkpoint.save(checkpoint.directory, logical_step=self.logical_step, label="step")
                 self.stop_reason = "interrupted"
                 return RunResult(
                     stop_reason="interrupted",

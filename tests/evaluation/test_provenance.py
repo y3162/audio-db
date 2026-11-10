@@ -90,6 +90,24 @@ class ProvenanceJudgmentTests(unittest.TestCase):
         self.assertIn("selected-cases", judged["overlap_case_sets"])
         self.assertIs(judged["selection_uses_test"], True)
 
+    def test_test_selection_is_not_an_independent_final_evaluation(self) -> None:
+        document = _document(
+            [
+                _row("train", SHA_A),
+                _row("selection", SHA_B, case_set="valid"),
+                _row("test", SHA_C, case_set="test"),
+            ],
+            selection_uses_test=True,
+            profile="official_faithful",
+            claim_label="official_reproduction",
+        )
+        judged = judge_independence(document, [_eval(OTHER, name="held-out")])
+        self.assertIs(judged["independent"], False)
+        self.assertFalse(is_confirmed_independent(judged["independent"]))
+        self.assertIs(judged["selection_uses_test"], True)
+        self.assertIs(judged["split_independent"], False)
+        self.assertIn("test split", judged["reason"])
+
     def test_disjoint_attested_materials_are_independent(self) -> None:
         document = _document(
             [

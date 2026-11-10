@@ -132,6 +132,8 @@ pyyaml==6.0.3
     # via -r requirements/se.in
 requests==2.34.2
     # via pooch
+resampy==0.4.3
+    # via -r requirements/se.in
 rotary-embedding-torch==0.8.3
     # via -r requirements/se.in
 scikit-learn==1.9.1

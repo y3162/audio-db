@@ -2,6 +2,8 @@
 # Official 2-GPU MossFormerGAN. micro-batch 1, accumulation 2, global batch 4.
 # 11,572 utterances give 2,893 updates per pass. 121 passes are 350,053 updates.
 # Scratch start: do not pass an initialization checkpoint.
+# checkpoint_interval is 90 logical steps. Phase 5 estimated 5.3 s/update, so
+# this is about 8 minutes plus the 3.6 s write. The plateau still runs at the pass end.
 # Launch with 2 visible GPUs. World size 1 raises accumulation and is a different run.
 schema: audio-db-experiment/v1
 seed: 777
@@ -111,7 +113,7 @@ components:
       accumulation: 2
       grad_clip: 10.0
       experiment_claim: official_faithful
-      checkpoint_interval: 2893
+      checkpoint_interval: 90
       validate_on_epoch_end: true
     inject:
       generator: {ref: generator}

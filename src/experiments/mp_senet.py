@@ -196,6 +196,8 @@ class MPSENetGANTrainer:
                 return self._result(checkpoint, "completed")
         while self.logical_step < self.max_logical_steps:
             if self._stop_requested(runtime):
+                if self.logical_step > 0 and not self._in_official_step:
+                    self._checkpoint(checkpoint, logical_step=self.logical_step, label="step")
                 return self._result(checkpoint, "interrupted")
             if self._epoch_cap_reached():
                 return self._result(checkpoint, "completed")

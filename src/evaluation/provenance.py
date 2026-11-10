@@ -212,6 +212,21 @@ def judge_independence(
         fields["split_independent"] = _split_status(provenance)
         fields["missing"] = missing
         return fields
+    if _optional_bool(provenance.get("selection_uses_test")) is True:
+        fields.update(
+            {
+                "independent": False,
+                "confirmed_independent": False,
+                "checkpoint_selection_overlap": [],
+                "train_overlap": [],
+                "overlap_sha256": [],
+                "overlap_case_sets": [],
+                "comparison": "TESTED",
+                "reason": "selection uses the test split, so this is not an independent final evaluation",
+                "missing": [],
+            }
+        )
+        return fields
     fields.update(
         {
             "independent": True,
