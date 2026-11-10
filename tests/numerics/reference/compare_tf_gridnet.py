@@ -36,12 +36,14 @@ from src.experiments.calc.spectral import multi_resolution_l1  # noqa: E402
 from src.experiments.official.tf_gridnet.reference import TFGridNetTask  # noqa: E402
 from tests.se.test_tf_gridnet import reference_v1  # noqa: E402
 from tests.numerics.reference.common import (  # noqa: E402
+    configured_steps,
     environment,
     gap,
     grad_report,
     load_cached,
     optim_report,
     reference_scores,
+    REPORT_DIR,
     save_report,
     weight_report,
 )
@@ -195,8 +197,39 @@ def main() -> None:
     }
     official, independent = _pair(device)
     report["parameters"] = sum(parameter.numel() for parameter in independent.parameters())
-    train = load_cached("tf_train")
-    valid = load_cached("valid")
+    from src.experiments.official.tf_gridnet.model import TFGridNetModel
+
+    yaml_model = TFGridNetModel(seed=7, architecture=ARCHITECTURE, variant="ms-snsd")
+    yaml_model.generator.load_state_dict(official.state_dict(), strict=True)
+    yaml_model.to(device).eval()
+    official.eval()
+    independent.eval()
+    with torch.no_grad():
+        yaml_wave = yaml_model(probe_wave)
+        official_wave, independent_wave = _enhance(official, independent, probe_wave)
+    report["yaml_model_forward"] = {
+        "class": "src.experiments.official.tf_gridnet.model.TFGridNetModel",
+        "versus_official": gap(official_wave, yaml_wave),
+        "versus_build_model": gap(independent_wave, yaml_wave),
+    }
+    official.train()
+    independent.train()
+    try:
+        train = load_cached("tf_train")
+        valid = load_cached("valid")
+        report["input_protocol"] = "historical_speech_cache_tf_train"
+    except FileNotFoundError as exc:
+        generator = torch.Generator().manual_seed(3)
+        clean = torch.randn(4, 4096, generator=generator)
+        noisy = clean * 0.5 + 0.05 * torch.randn(4, 4096, generator=generator)
+        train = {"clean": clean, "noisy": noisy, "case_id": [f"synthetic-tf-{i}" for i in range(4)]}
+        valid = {"clean": clean[:1], "noisy": noisy[:1], "case_id": ["synthetic-tf-valid"]}
+        report["input_protocol"] = "synthetic_fixed_seed"
+        report["input_protocol_detail"] = (
+            "torch.Generator seed 3; 4 utterances x 4096 samples. "
+            "Not speech_cache.pt and not training.duckdb. Shorter than the official 48000-sample chunk."
+        )
+        report["cache_missing"] = str(exc)
     report["train_case_ids"] = train["case_id"]
     report["valid_case_id"] = valid["case_id"]
     first = {"clean": train["clean"][:1], "noisy": train["noisy"][:1], "case_id": [train["case_id"][0]]}
@@ -216,7 +249,9 @@ def main() -> None:
     official, independent = _pair(device)
     optim_o, optim_i = _adam(official), _adam(independent)
     history = []
-    for step in range(20):
+    steps = configured_steps(20)
+    report["steps"] = steps
+    for step in range(steps):
         index = step % train["clean"].shape[0]
         batch = {
             "clean": train["clean"][index : index + 1],
@@ -261,7 +296,7 @@ def main() -> None:
         "official": reference_scores(clean, official_wave[0], 16000),
         "independent": reference_scores(clean, independent_wave[0], 16000),
     }
-    exported = ROOT / "data" / "results" / "training" / "official-compare-20261101" / "tf_gridnet_generator.pt"
+    exported = REPORT_DIR / "tf_gridnet_generator.pt"
     torch.save({"separator." + name: value.detach().cpu() for name, value in independent.state_dict().items()}, exported)
     enhancer = load_enhancer("tf_gridnet", {"model": str(exported)}, device=str(device), config=ARCHITECTURE, variant="ms-snsd")
     with torch.no_grad():

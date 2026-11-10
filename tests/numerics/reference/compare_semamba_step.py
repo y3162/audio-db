@@ -14,6 +14,7 @@ Tolerances are fixed before reading the measured errors:
 from __future__ import annotations
 
 import json
+import os
 import sys
 import types
 from pathlib import Path
@@ -77,9 +78,19 @@ def _cfg(width: int, layers: int, state: int, conv: int) -> dict:
     }
 
 
-def _flat(cfg: dict) -> dict:
+def _scan_backend(device: torch.device) -> str:
+    requested = os.environ.get("AUDIO_DB_SEMAMBA_SCAN", "reference")
+    if requested not in ("reference", "fused"):
+        raise SystemExit(f"AUDIO_DB_SEMAMBA_SCAN must be reference or fused, got {requested}")
+    if requested == "fused" and device.type != "cuda":
+        raise SystemExit("fused scan requires CUDA")
+    return requested
+
+
+def _flat(cfg: dict, scan_backend: str) -> dict:
     values = dict(cfg["model_cfg"])
     values["n_fft"] = 400
+    values["scan_backend"] = scan_backend
     return values
 
 
@@ -94,7 +105,7 @@ def _gap(reference: torch.Tensor, other: torch.Tensor) -> dict[str, float]:
 def _pair(device: torch.device, width: int, layers: int, state: int, conv: int):
     cfg = _cfg(width, layers, state, conv)
     official_g = SEMambapp(cfg).to(device)
-    independent_g = SEMambaPP(_flat(cfg)).to(device)
+    independent_g = SEMambaPP(_flat(cfg, _scan_backend(device))).to(device)
     official_cqt = OfficialCQT().to(device)
     independent_cqt = MultiScaleSubbandCQTDiscriminator().to(device)
     official_mrd = OfficialMRD().to(device)
@@ -368,6 +379,7 @@ def one_step(
     return {
         "width": width,
         "layers": layers,
+        "scan_backend": _scan_backend(device),
         "mel_gap": mel_gap,
         "first": first,
         "last": history[-1],
@@ -470,6 +482,23 @@ def diagnose(device: torch.device) -> dict:
     }
 
 
+def _steps(default: int) -> int:
+    raw = os.environ.get("AUDIO_DB_NUMERICS_STEPS")
+    if raw is None or raw == "":
+        return default
+    value = int(raw)
+    if value < 1:
+        raise SystemExit("AUDIO_DB_NUMERICS_STEPS must be an integer >= 1")
+    return value
+
+
+def _out_dir() -> Path:
+    raw = os.environ.get("AUDIO_DB_NUMERICS_OUT")
+    if raw:
+        return Path(raw)
+    return ROOT / "data" / "results" / "training" / "official-compare-20261101"
+
+
 def _speech_batches(device: torch.device, steps: int) -> list[tuple[torch.Tensor, torch.Tensor]]:
     path = ROOT / "data" / "results" / "training" / "official-compare-20261101" / "semamba_waves.pt"
     saved = torch.load(path, map_location=device, weights_only=True)
@@ -481,19 +510,20 @@ def main() -> None:
     mode = sys.argv[1] if len(sys.argv) > 1 else "narrow"
     device = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
     if mode == "narrow":
-        report = one_step(device, 8, 1, 4, 2, 5)
+        report = one_step(device, 8, 1, 4, 2, _steps(5))
     elif mode == "official":
-        report = one_step(device, 48, 4, 16, 4, 20)
+        report = one_step(device, 48, 4, 16, 4, _steps(20))
     elif mode == "diagnose":
         report = diagnose(device)
     elif mode == "speech":
-        report = one_step(device, 48, 4, 16, 4, 20, batches=_speech_batches(device, 20))
+        speech_steps = _steps(20)
+        report = one_step(device, 48, 4, 16, 4, speech_steps, batches=_speech_batches(device, speech_steps))
         report["audio"] = "libri_demand_smoke_train segments of 8000 samples"
     else:
         raise SystemExit(f"unknown mode {mode}")
     report["device"] = str(device)
     report["tolerances"] = {"loss_atol": LOSS_ATOL, "grad_atol": GRAD_ATOL, "cosine_min": COSINE_MIN}
-    out = ROOT / "data" / "results" / "training" / "official-compare-20261101" / f"semamba_{mode}.json"
+    out = _out_dir() / f"semamba_{mode}.json"
     out.parent.mkdir(parents=True, exist_ok=True)
     out.write_text(json.dumps(report, indent=2), encoding="utf-8")
     print(out)

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import os
 import socket
 from pathlib import Path
 from typing import Any
@@ -10,7 +11,35 @@ from typing import Any
 import torch
 
 ROOT = Path(__file__).resolve().parents[3]
-REPORT_DIR = ROOT / "data" / "results" / "training" / "official-compare-20261101"
+HISTORICAL_DIR = ROOT / "data" / "results" / "training" / "official-compare-20261101"
+
+
+def numerics_output_dir() -> Path:
+    """Directory for this run's reports.
+
+    ``AUDIO_DB_NUMERICS_OUT`` redirects writes away from ``data/results``.
+    The historical speech cache is never created or replaced here.
+    """
+
+    raw = os.environ.get("AUDIO_DB_NUMERICS_OUT")
+    if raw:
+        return Path(raw)
+    return HISTORICAL_DIR
+
+
+REPORT_DIR = numerics_output_dir()
+
+
+def configured_steps(default: int) -> int:
+    """Step count for a short official run. Unset keeps the script default."""
+
+    raw = os.environ.get("AUDIO_DB_NUMERICS_STEPS")
+    if raw is None or raw == "":
+        return default
+    value = int(raw)
+    if value < 1:
+        raise ValueError("AUDIO_DB_NUMERICS_STEPS must be an integer >= 1")
+    return value
 
 
 def save_report(name: str, payload: dict[str, Any]) -> Path:
@@ -42,7 +71,7 @@ def load_cached(key: str) -> dict[str, Any]:
     Tensor's torchaudio build has no FLAC backend. The tensors are the same
     recipe render and crop the training dataset would produce.
     """
-    path = REPORT_DIR / "speech_cache.pt"
+    path = HISTORICAL_DIR / "speech_cache.pt"
     saved = torch.load(path, map_location="cpu", weights_only=True)
     return saved[key]
 

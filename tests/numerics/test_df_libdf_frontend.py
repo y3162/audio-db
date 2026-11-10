@@ -3,6 +3,7 @@
 The comparison imports libdf. It skips when that extension or the local
 realfft 3.3.0 kernel is absent. Neither is required to import the model.
 """
+import os
 import sys
 import unittest
 from pathlib import Path
@@ -15,7 +16,7 @@ KERNEL = ROOT / "src/se/models/deepfilternet3/libdf_rfft.so"
 
 
 def _libdf():
-    path = str(ROOT / ".venvs/tsubame-libdf")
+    path = os.environ.get("AUDIO_DB_LIBDF_PATH", str(ROOT / ".venvs/tsubame-libdf"))
     inserted = path not in sys.path
     sys.path.insert(0, path)
     try:

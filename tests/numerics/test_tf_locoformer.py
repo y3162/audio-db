@@ -75,6 +75,23 @@ class TFLocoformerTrainingTests(unittest.TestCase):
                 heard = enhancer.enhance(noisy[0], 16000)
             self.assertEqual(float((wave[0] - heard).abs().max()), 0.0)
 
+    @unittest.skipUnless(OFFICIAL.is_dir(), "official checkout missing")
+    def test_yaml_model_matches_standalone_separator(self):
+        """The experiment model class is the network the trainer calls."""
+        from src.experiments.official.tf_locoformer.model import TFLocoformerModel
+
+        torch.manual_seed(11)
+        official = _official_separator()
+        model = TFLocoformerModel(seed=11, architecture=dict(TINY), variant="dns", init="xavier_uniform")
+        model.generator.separator.load_state_dict(official.state_dict(), strict=True)
+        noisy = torch.randn(1, 512)
+        model.eval()
+        official.eval()
+        with torch.no_grad():
+            yaml_wave = model(noisy)
+            official_wave = _frontend(official, noisy, 64, 32)
+        self.assertEqual(float((yaml_wave - official_wave).abs().max()), 0.0)
+
 
 if __name__ == "__main__":
     unittest.main()

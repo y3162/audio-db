@@ -1,5 +1,8 @@
 """CPU comparison with the pinned ESPnet iterator (optional source checkout)."""
+import os
+import subprocess
 import sys
+import types
 import unittest
 from pathlib import Path
 
@@ -9,7 +12,44 @@ from src.experiments.data.render.chunking import plan_chunk_epoch
 from src.experiments.calc.chunk_plan import chunk_batches, select_utterances
 
 ROOT = Path(__file__).resolve().parents[2]
-SOURCE = ROOT / 'build/clean-20261104/sources/espnet'
+# build/clean-20261104 cloned this commit (docs/envs/CLEAN_REBUILD.md).
+PINNED_ESPNET = "0d136c5456d403cb2c0a4c13e76e8136e32e9b7a"
+
+
+def _git_head(path: Path) -> str | None:
+    try:
+        return subprocess.check_output(
+            ["git", "-C", str(path), "rev-parse", "HEAD"], text=True
+        ).strip()
+    except (OSError, subprocess.CalledProcessError):
+        return None
+
+
+def resolve_espnet_source() -> Path:
+    """Prefer the historical build tree, else the same commit elsewhere.
+
+    A different commit is not accepted. The historical path is accepted when
+    present because that tree was the pinned clone, even if ``.git`` is gone.
+    """
+
+    historical = ROOT / "build/clean-20261104/sources/espnet"
+    override = os.environ.get("AUDIO_DB_ESPNET_SOURCE")
+    candidates: list[Path] = []
+    if override:
+        candidates.append(Path(override))
+    candidates.append(historical)
+    candidates.append(ROOT / "src/se/official/espnet")
+    for path in candidates:
+        if not path.is_dir():
+            continue
+        if path == historical:
+            return path
+        if _git_head(path) == PINNED_ESPNET:
+            return path
+    return historical
+
+
+SOURCE = resolve_espnet_source()
 
 
 class AudioDataset(torch.utils.data.Dataset):
@@ -26,6 +66,13 @@ def collate(batch):
 
 
 def _import_factories():
+    if "typeguard" not in sys.modules:
+        try:
+            import typeguard  # noqa: F401
+        except ModuleNotFoundError:
+            stub = types.ModuleType("typeguard")
+            stub.typechecked = lambda fn: fn
+            sys.modules["typeguard"] = stub
     inserted = str(SOURCE) not in sys.path
     sys.path.insert(0, str(SOURCE))
     try:

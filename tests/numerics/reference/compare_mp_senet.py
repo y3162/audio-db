@@ -31,6 +31,7 @@ ROOT = Path(__file__).resolve().parents[3]
 sys.path.insert(0, str(ROOT))
 
 from tests.numerics.reference.common import (  # noqa: E402
+    configured_steps,
     environment,
     gap,
     grad_report,
@@ -396,8 +397,22 @@ def main() -> None:
     synthetic_clean = torch.randn(2, 8000, device=device)
     synthetic_noisy = synthetic_clean * 0.5 + 0.05
     report["synthetic_forward"] = _forward_modes(modules, synthetic_clean, synthetic_noisy, h)
-    train = load_cached("mp_train")
-    valid = load_cached("valid")
+    try:
+        train = load_cached("mp_train")
+        valid = load_cached("valid")
+        report["input_protocol"] = "historical_speech_cache_mp_train"
+    except FileNotFoundError as exc:
+        generator = torch.Generator().manual_seed(11)
+        clean = torch.randn(4, 8000, generator=generator)
+        noisy = clean * 0.5 + 0.05 * torch.randn(4, 8000, generator=generator)
+        train = {"clean": clean, "noisy": noisy, "case_id": [f"synthetic-mp-{i}" for i in range(4)]}
+        valid = {"clean": clean[:1], "noisy": noisy[:1], "case_id": ["synthetic-mp-valid"]}
+        report["input_protocol"] = "synthetic_fixed_seed"
+        report["input_protocol_detail"] = (
+            "torch.Generator seed 11; 4 utterances x 8000 samples. "
+            "Not speech_cache.pt and not training.duckdb."
+        )
+        report["cache_missing"] = str(exc)
     report["train_case_ids"] = train["case_id"]
     report["valid_case_id"] = valid["case_id"]
     clean = train["clean"][:2].to(device)
@@ -407,7 +422,9 @@ def main() -> None:
     modules = _build(h, device)
     optimizers = _optimizers(*modules)
     history = []
-    for step in range(20):
+    steps = configured_steps(20)
+    report["steps"] = steps
+    for step in range(steps):
         start = (2 * step) % train["clean"].shape[0]
         indices = [start, (start + 1) % train["clean"].shape[0]]
         clean_batch = train["clean"][indices].to(device)

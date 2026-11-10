@@ -84,4 +84,32 @@ report['task']['generator_output_grad'] = [gap(a.grad,b.grad) for a,b in zip(gen
 ogopt.step(); odopt.step()
 report['task']['generator_weights']=gap(flat(og.parameters()),flat(task.generator.parameters()))
 report['task']['discriminator_weights']=gap(flat(od.parameters()),flat(task.discriminator.parameters()))
+from src.experiments.official.mossformergan.models import MossFormerGANGenerator
+yaml = MossFormerGANGenerator(seed=0, variant='se_16k', n_fft=400, win_len=400, hop=100, num_channel=64, sampling_rate=16000)
+yaml.generator.load_state_dict(og.state_dict(), strict=True)
+compressed = power_compress(stft(inputs,args,center=True).float()).permute(0,1,3,2)
+rng=torch.get_rng_state()
+same_weights = og(compressed)
+torch.set_rng_state(rng)
+yaml_out = yaml(compressed)
+report['yaml_generator'] = {
+    'class': 'src.experiments.official.mossformergan.models.MossFormerGANGenerator',
+    'forward_vs_task_generator_same_weights': [gap(a,b) for a,b in zip(same_weights, yaml_out)],
+}
+extra=[]
+for step in (2, 3):
+    rng=torch.get_rng_state()
+    losses=task.train_update([{'clean':clean,'noisy':noisy}],1)
+    torch.set_rng_state(rng)
+    out=og(compressed)
+    with patch.object(official_loss,'batch_pesq',side_effect=cpu_pesq):
+        lg,ld=official_loss.loss_mossformergan_se_16k(args,inputs,clean,out,c,od,torch.device('cpu'))
+    lg.backward(); torch.nn.utils.clip_grad_norm_(og.parameters(),10.)
+    ld.backward(); torch.nn.utils.clip_grad_norm_(od.parameters(),10.)
+    record={'step':step,'loss_g':gap(lg,torch.tensor(losses['generator'])),'loss_d':gap(ld,torch.tensor(losses['discriminator']))}
+    ogopt.step(); odopt.step()
+    record['generator_weights']=gap(flat(og.parameters()),flat(task.generator.parameters()))
+    record['discriminator_weights']=gap(flat(od.parameters()),flat(task.discriminator.parameters()))
+    extra.append(record)
+report['extra_steps']=extra
 print(json.dumps(report,indent=2))

@@ -35,12 +35,14 @@ sys.path.insert(0, str(ROOT))
 from src.se import build_model, load_enhancer  # noqa: E402
 from src.experiments.official.deepfilternet3.reference import DeepFilterNetTask, deepfilter_cosine_schedules  # noqa: E402
 from tests.numerics.reference.common import (  # noqa: E402
+    configured_steps,
     environment,
     gap,
     grad_report,
     load_cached,
     optim_report,
     reference_scores,
+    REPORT_DIR,
     save_report,
     weight_report,
 )
@@ -58,10 +60,19 @@ def _install_official():
     df.__path__ = [str(package)]
     df.__package__ = "df"
     sys.modules["df"] = df
-    libdf = types.ModuleType("libdf")
-    libdf.unit_norm_init = lambda *args, **kwargs: None
-    libdf.DF = type("DF", (), {})
-    sys.modules["libdf"] = libdf
+    try:
+        import libdf as real_libdf
+    except ImportError:
+        real_libdf = None
+    if real_libdf is None or not hasattr(real_libdf, "DF"):
+        libdf = types.ModuleType("libdf")
+        libdf.unit_norm_init = lambda *args, **kwargs: None
+        libdf.DF = type("DF", (), {})
+        sys.modules["libdf"] = libdf
+        libdf_status = "stub"
+    else:
+        sys.modules["libdf"] = real_libdf
+        libdf_status = f"real:{getattr(real_libdf, '__file__', '')}"
     loguru = types.ModuleType("loguru")
 
     class _Level:
@@ -83,7 +94,7 @@ def _install_official():
     from df.modules import local_snr
 
     config.load(str(CONFIG_INI))
-    return MultiResSpecLoss, LocalSnrLoss, local_snr, cosine_scheduler
+    return MultiResSpecLoss, LocalSnrLoss, local_snr, cosine_scheduler, libdf_status
 
 
 def _schedule_config() -> dict:
@@ -125,7 +136,7 @@ def _official_total(mr, local_loss, enhanced_td, clean_td, predicted, target) ->
 
 def main() -> None:
     device = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
-    MultiResSpecLoss, LocalSnrLoss, local_snr, cosine_scheduler = _install_official()
+    MultiResSpecLoss, LocalSnrLoss, local_snr, cosine_scheduler, libdf_status = _install_official()
     ours_lr, ours_wd = deepfilter_cosine_schedules(_schedule_config())
     official_lr = cosine_scheduler(
         1e-3, 1e-6, epochs=EPOCHS, niter_per_ep=STEPS_PER_EPOCH, warmup_epochs=3, start_warmup_value=1e-4
@@ -148,7 +159,7 @@ def main() -> None:
             "lr_end_warmup": float(official_lr[3 * STEPS_PER_EPOCH - 1]),
             "wd0": float(official_wd[0]),
         },
-        "libdf_frontend": "NOT TESTED. libdf is not installed; ERB and the official analysis STFT were not executed.",
+        "libdf_frontend": libdf_status,
     }
     mr = MultiResSpecLoss([256, 512, 1024, 2048], 0.3, 500.0, 500.0).to(device)
     local = LocalSnrLoss(1e-3).to(device)
@@ -166,13 +177,29 @@ def main() -> None:
     other.load_state_dict(task.generator.state_dict(), strict=True)
     report["parameters"] = sum(parameter.numel() for parameter in other.parameters())
     report["official_dfnet"] = _try_official_dfnet(other)
-    train = load_cached("df_train")
-    valid = load_cached("valid")
+    try:
+        train = load_cached("df_train")
+        valid = load_cached("valid")
+        report["input_protocol"] = "historical_speech_cache_df_train_resampled_16k_to_48k"
+    except FileNotFoundError as exc:
+        generator = torch.Generator().manual_seed(5)
+        clean = torch.randn(4, 1600, generator=generator)
+        noisy = clean * 0.5 + 0.05 * torch.randn(4, 1600, generator=generator)
+        train = {"clean": clean, "noisy": noisy, "case_id": [f"synthetic-df-{i}" for i in range(4)]}
+        valid = {"clean": clean[:1], "noisy": noisy[:1], "case_id": ["synthetic-df-valid"]}
+        report["input_protocol"] = "synthetic_fixed_seed_resampled_16k_to_48k"
+        report["input_protocol_detail"] = (
+            "torch.Generator seed 5; 4 utterances x 1600 samples at 16 kHz, then the script's "
+            "torchaudio resample to 48 kHz. Not speech_cache.pt and not training.duckdb."
+        )
+        report["cache_missing"] = str(exc)
     report["train_case_ids"] = train["case_id"]
     report["valid_case_id"] = valid["case_id"]
     optim_other = torch.optim.AdamW(other.parameters(), lr=1e-3, betas=(0.9, 0.999), weight_decay=1e-12, amsgrad=True)
     history = []
-    for step in range(20):
+    steps = configured_steps(20)
+    report["steps"] = steps
+    for step in range(steps):
         index = step % train["clean"].shape[0]
         case_id = train["case_id"][index]
         clean = _resample(train["clean"][index : index + 1]).to(device)
@@ -219,7 +246,7 @@ def main() -> None:
         "task": reference_scores(clean[0].cpu(), task_wave[0].cpu(), 48000),
         "manual": reference_scores(clean[0].cpu(), other_wave[0].cpu(), 48000),
     }
-    exported = ROOT / "data" / "results" / "training" / "official-compare-20261101" / "deepfilternet3_generator.pt"
+    exported = REPORT_DIR / "deepfilternet3_generator.pt"
     torch.save(task.generator_state_dict(), exported)
     enhancer = load_enhancer("deepfilternet3", exported, device=str(device))
     with torch.no_grad():
