@@ -27,12 +27,16 @@ from src.experiments.api import Experiment
 from src.experiments.config import load_experiment
 from src.experiments.data.fixed_pair import MicroBatcher, SnapshotDataModule, SnapshotSource
 from src.experiments.data.online import Dfn3IndexSampler, Dfn3Protocol
+from src.experiments.data.sample import Batch
 from src.experiments.official.deepfilternet3.trainer import (
+    DeepFilterNet3Trainer,
+    _clean_noisy,
     component_losses,
     note_early_stop,
     schedule_index,
 )
 from src.experiments.official.deepfilternet3.model import DeepFilterNet3Model
+from src.experiments.runtime import PreparePolicy, ProcessRuntime
 from src.se.models.deepfilternet3.dsp import DFStream, _rfft_kernel, rfft_library_path
 from src.experiments.calc.batch_schedule import scheduled_batch_size
 from src.experiments.official.deepfilternet3.reference import DeepFilterNetTask, deepfilter_cosine_schedules
@@ -79,6 +83,44 @@ def _task_config() -> dict:
 
 def _max_diff(left: torch.Tensor, right: torch.Tensor) -> float:
     return float((left.detach() - right.detach()).abs().max())
+
+
+def _df_stream(params) -> DFStream:
+    return DFStream(
+        params.sr,
+        params.fft_size,
+        params.hop_size,
+        params.nb_erb,
+        params.nb_df,
+        params.min_nb_freqs,
+        params.norm_tau,
+        torch.device("cpu"),
+    )
+
+
+def _optimizer_state_gap(left: torch.optim.Optimizer, right: torch.optim.Optimizer) -> float:
+    left_state = [value for state in left.state.values() for value in state.values() if torch.is_tensor(value)]
+    right_state = [value for state in right.state.values() for value in state.values() if torch.is_tensor(value)]
+    if len(left_state) != len(right_state) or not left_state:
+        return float("inf")
+    return max(_max_diff(lhs, rhs) for lhs, rhs in zip(left_state, right_state))
+
+
+class _ValidationData:
+    group_size = 1
+    epoch = 0
+    update_index = 0
+
+    def __init__(self, batch: Batch) -> None:
+        self._batch = batch
+
+    def train_epoch(self, epoch: int, *, start_update: int):
+        del epoch, start_update
+        raise AssertionError("training epoch is not used")
+
+    def validation_epoch(self, epoch: int):
+        del epoch
+        return iter((self._batch,))
 
 
 class DeepFilterNet3LibraryTests(unittest.TestCase):
@@ -158,6 +200,110 @@ class DeepFilterNet3AlgorithmTests(unittest.TestCase):
         for lhs, rhs in zip(left_state, right_state):
             state_diff = max(state_diff, _max_diff(lhs, rhs))
         self.assertEqual(state_diff, 0.0)
+
+    def test_train_and_validation_keep_clean_and_noisy_apart(self) -> None:
+        """Swapped Batch fields must not match the trainer loss or its gradient."""
+
+        torch.manual_seed(0)
+        clean = torch.randn(2, 4800)
+        noisy = torch.randn(2, 4800)
+        self.assertGreater(float((clean - noisy).abs().max()), 0.5)
+        runtime = ProcessRuntime(device="cpu")
+        try:
+            policy = PreparePolicy(trainable=True, distribute="none", find_unused_parameters=True)
+            prepared = runtime.prepare_model(DeepFilterNet3Model(seed=7, architecture=_ARCH), policy)
+            module = prepared.state_module
+            params = module.generator.params
+            stream = _df_stream(params)
+            module.eval()
+            correct_rows = [
+                float(component_losses(stream, module, clean[row : row + 1], noisy[row : row + 1])["total"])
+                for row in range(2)
+            ]
+            swapped_rows = [
+                float(component_losses(stream, module, noisy[row : row + 1], clean[row : row + 1])["total"])
+                for row in range(2)
+            ]
+            correct_mean = sum(correct_rows) / len(correct_rows)
+            swapped_mean = sum(swapped_rows) / len(swapped_rows)
+            self.assertGreater(abs(correct_mean - swapped_mean), 1e-2)
+            batch = Batch(inputs=noisy, targets=clean, sample_id="swap", realization_id="swap")
+            mapped_clean, mapped_noisy = _clean_noisy(batch)
+            self.assertEqual(float((mapped_clean - clean).abs().max()), 0.0)
+            self.assertEqual(float((mapped_noisy - noisy).abs().max()), 0.0)
+            optimizer = torch.optim.AdamW(
+                prepared.parameters, lr=0.001, betas=(0.9, 0.999), weight_decay=1e-12, amsgrad=True,
+            )
+            optimizer._experiment_component_id = "optim"  # type: ignore[attr-defined]
+            trainer = DeepFilterNet3Trainer(
+                prepared,
+                _ValidationData(batch),
+                optimizer,
+                max_logical_steps=1,
+                steps_per_epoch=4,
+                stop_after_logical_steps=1,
+                checkpoint_interval=10**9,
+            )
+            trainer._stream = stream
+            validated = trainer._validate(runtime, 0, "trainer")
+            self.assertAlmostEqual(validated, correct_mean, places=5)
+            self.assertGreater(abs(validated - swapped_mean), 1e-2)
+            self.assertEqual((int(trainer.data.epoch), int(trainer.data.update_index)), (0, 0))
+
+            held = {key: value.detach().clone() for key, value in module.state_dict().items()}
+            module.train()
+            trainer._stream = _df_stream(params)
+            trained = trainer._forward_loss([batch], "trainer", runtime)
+            trained.backward()
+            clone = DeepFilterNet3Model(seed=7, architecture=_ARCH)
+            clone.load_state_dict(held)
+            clone.train()
+            reference = component_losses(_df_stream(params), clone, clean, noisy)["total"]
+            reference.backward()
+            self.assertAlmostEqual(float(trained.detach()), float(reference.detach()), places=5)
+            grad_gap = 0.0
+            for name, parameter in clone.named_parameters():
+                if parameter.grad is None:
+                    continue
+                grad_gap = max(grad_gap, _max_diff(dict(module.named_parameters())[name].grad, parameter.grad))
+            self.assertLess(grad_gap, 1e-5)
+            reversed_model = DeepFilterNet3Model(seed=7, architecture=_ARCH)
+            reversed_model.load_state_dict(held)
+            reversed_model.train()
+            reversed_loss = component_losses(_df_stream(params), reversed_model, noisy, clean)["total"]
+            reversed_loss.backward()
+            self.assertGreater(abs(float(trained.detach()) - float(reversed_loss.detach())), 1e-2)
+            reversed_grad = 0.0
+            for name, parameter in reversed_model.named_parameters():
+                left = dict(module.named_parameters())[name].grad
+                if left is None or parameter.grad is None:
+                    continue
+                reversed_grad = max(reversed_grad, _max_diff(left, parameter.grad))
+            self.assertGreater(reversed_grad, 1e-4)
+
+            task = DeepFilterNetTask(_task_config(), torch.device("cpu"))
+            task.generator.load_state_dict(module.generator.state_dict())
+            for group in optimizer.param_groups:
+                group["lr"] = task._df_lrs[0]
+                group["weight_decay"] = task._df_wds[0]
+            before = {name: value.detach().clone() for name, value in module.named_parameters()}
+            optimizer.zero_grad(set_to_none=True)
+            stepped = trainer._forward_loss([batch], "trainer", runtime)
+            stepped.backward()
+            torch.nn.utils.clip_grad_norm_(module.parameters(), 1.0)
+            optimizer.step()
+            task.train_update([{"clean": clean, "noisy": noisy}], 1)
+            weight_gap = max(
+                _max_diff(value, dict(task.generator.named_parameters())[name])
+                for name, value in module.generator.named_parameters()
+            )
+            self.assertLess(weight_gap, 1e-5)
+            state_gap = _optimizer_state_gap(optimizer, task.optim_g)
+            self.assertLess(state_gap, 1e-5)
+            moved = max(_max_diff(value, before[name]) for name, value in module.named_parameters())
+            self.assertGreater(moved, 0.0)
+        finally:
+            runtime.shutdown()
 
     def test_cosine_index_is_not_a_cumulative_update_count(self) -> None:
         config = _task_config()

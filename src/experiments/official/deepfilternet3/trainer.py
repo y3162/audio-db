@@ -3,7 +3,8 @@
 The loss, cosine table, and batch-size thresholds are the functions already
 used by ``DeepFilterNetTask``. This trainer does not call ``train_update``.
 ``DFStream`` is reset before every waveform analysis, clean first and then
-noisy, matching that task. The cosine index is ``epoch * steps_per_epoch +
+noisy, matching that task. ``Batch.targets`` is clean and ``Batch.inputs`` is
+noisy. The cosine index is ``epoch * steps_per_epoch +
 index_in_epoch`` after the table is rebuilt for the current epoch length.
 It is not the sum of optimizer updates from earlier epochs.
 
@@ -126,6 +127,19 @@ def note_early_stop(metric: float | None, count: int, loss: float, patience: int
         return loss, 0, False
     count += 1
     return metric, count, count >= patience
+
+
+def _clean_noisy(batch: Batch) -> tuple[torch.Tensor, torch.Tensor]:
+    """Map a micro-batch onto ``component_losses`` argument order.
+
+    Snapshot collation stores the degraded waveform in ``Batch.inputs`` and
+    the clean target in ``Batch.targets``. ``_loss_tensor`` takes clean first.
+    Passing the fields in declaration order trains and validates on the
+    swapped pair, which changes the loss, the local-SNR target, and which
+    checkpoint counts as best.
+    """
+
+    return batch.targets, batch.inputs
 
 
 class DeepFilterNet3Trainer:
@@ -442,10 +456,11 @@ class DeepFilterNet3Trainer:
                         if not isinstance(batch, Batch):
                             raise RuntimeFailure(f"component {component_id}: validation did not return a batch")
                         batch = _batch_on_device(batch, runtime.device)
-                        for row in range(int(batch.inputs.shape[0])):
+                        clean, noisy = _clean_noisy(batch)
+                        for row in range(int(clean.shape[0])):
                             value = self._loss_tensor(
-                                batch.inputs[row : row + 1],
-                                batch.targets[row : row + 1],
+                                clean[row : row + 1],
+                                noisy[row : row + 1],
                                 self.model.state_module,
                             )
                             if not bool(torch.isfinite(value).all()):
@@ -490,7 +505,8 @@ class DeepFilterNet3Trainer:
         total: torch.Tensor | None = None
         for batch in batches:
             batch = _batch_on_device(batch, runtime.device)
-            value = self._loss_tensor(batch.inputs, batch.targets, self.model.module)
+            clean, noisy = _clean_noisy(batch)
+            value = self._loss_tensor(clean, noisy, self.model.module)
             total = value if total is None else total + value
         assert total is not None
         return total / len(batches)
