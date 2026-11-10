@@ -76,12 +76,18 @@ inputs=noisy*c.unsqueeze(-1)
 out=og(power_compress(stft(inputs,args,center=True).float()).permute(0,1,3,2))
 with patch.object(official_loss,'batch_pesq',side_effect=cpu_pesq):
     lg,ld=official_loss.loss_mossformergan_se_16k(args,inputs,clean,out,c,od,torch.device('cpu'))
+def zero_manual():
+    # ClearerVoice solver.py zeroes each AdamW after its step. The task uses
+    # set_to_none=True. Leaving the previous .grad in place adds it to the next
+    # backward, so steps 2 and 3 were not the same update.
+    ogopt.zero_grad(set_to_none=True)
+    odopt.zero_grad(set_to_none=True)
 lg.backward();torch.nn.utils.clip_grad_norm_(og.parameters(),10.)
 ld.backward();torch.nn.utils.clip_grad_norm_(od.parameters(),10.)
 report['task']={'loss_g':gap(lg,torch.tensor(losses['generator'])), 'loss_d':gap(ld,torch.tensor(losses['discriminator'])), 'generator_grad':gap(grads(og),cg['grad']), 'discriminator_grad':gap(grads(od),cd['grad'])}
 report['task']['generator_forward'] = [gap(a,b) for a,b in zip(gen_out[1],gen_out[0])]
 report['task']['generator_output_grad'] = [gap(a.grad,b.grad) for a,b in zip(gen_out[1],gen_out[0])]
-ogopt.step(); odopt.step()
+ogopt.step(); odopt.step(); zero_manual()
 report['task']['generator_weights']=gap(flat(og.parameters()),flat(task.generator.parameters()))
 report['task']['discriminator_weights']=gap(flat(od.parameters()),flat(task.discriminator.parameters()))
 from src.experiments.official.mossformergan.models import MossFormerGANGenerator
@@ -104,10 +110,11 @@ for step in (2, 3):
     out=og(compressed)
     with patch.object(official_loss,'batch_pesq',side_effect=cpu_pesq):
         lg,ld=official_loss.loss_mossformergan_se_16k(args,inputs,clean,out,c,od,torch.device('cpu'))
+    zero_manual()
     lg.backward(); torch.nn.utils.clip_grad_norm_(og.parameters(),10.)
     ld.backward(); torch.nn.utils.clip_grad_norm_(od.parameters(),10.)
-    record={'step':step,'loss_g':gap(lg,torch.tensor(losses['generator'])),'loss_d':gap(ld,torch.tensor(losses['discriminator']))}
-    ogopt.step(); odopt.step()
+    record={'step':step,'loss_g':gap(lg,torch.tensor(losses['generator'])),'loss_d':gap(ld,torch.tensor(losses['discriminator'])), 'generator_grad':gap(grads(og),cg['grad']), 'discriminator_grad':gap(grads(od),cd['grad'])}
+    ogopt.step(); odopt.step(); zero_manual()
     record['generator_weights']=gap(flat(og.parameters()),flat(task.generator.parameters()))
     record['discriminator_weights']=gap(flat(od.parameters()),flat(task.discriminator.parameters()))
     extra.append(record)
