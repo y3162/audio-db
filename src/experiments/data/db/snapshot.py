@@ -60,7 +60,11 @@ def export_snapshot(
     derived: str | Path = DEFAULT_DERIVED,
     provenance_extra: dict[str, Any] | None = None,
 ) -> str:
-    """Write ``snapshots/<dataset_id>`` once. The same logical snapshot is a no-op."""
+    """Write ``snapshots/<dataset_id>`` once. The same logical snapshot is a no-op.
+
+    The files land in ``.{dataset_id}.partial`` and are renamed into place
+    after the self-check. Readers skip that unpublished directory.
+    """
     database = Path(database)
     root = Path(snapshots)
     with reproduction_lock(database.parent):

@@ -55,6 +55,8 @@ DuckDB は `data/db/resource.duckdb`（`src/data/constants.py`）。
 
 実験の学習はスナップショットを読む。評価用の名前付きセットを学習の入力にしない。
 
+公開済み snapshot のディレクトリ名は `.` で始まらず、`.partial` で終わらない。export は `.{dataset_id}.partial` に書いてからその名前へ rename する。探索側はこの未公開ディレクトリを開かない。
+
 - 教師はレシピの `output.reference` だけである。`dry_clean` と `reverberant_clean` を取り違えない。`none` のケースは学習に入れず、エラーにする。
 - サンプルの識別子は `case_id`（レシピの SHA-256）である。rowid や登録順の採番は学習の並びに使わない。
 - `configs/db/init.yaml` の評価セット（LibriSpeech test-clean、CHiME3 et05 を含む）は学習にも検証にも使わない。

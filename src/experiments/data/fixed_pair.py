@@ -31,6 +31,7 @@ from src.experiments.errors import DataError, StateError
 from src.experiments.data.errors import ReproductionError
 from src.experiments.data.ids import digest
 from src.experiments.data.paths import DEFAULT_CORPORA, DEFAULT_DERIVED, DEFAULT_GENERATED
+from src.experiments.data.snapshot import published_snapshot_directories
 from src.experiments.data.sampling.order import order_params, rank_order, resolve_order_policy
 from src.experiments.data.sampling.planner import (
     fixed_pair_case_length,
@@ -205,7 +206,7 @@ class SnapshotSource:
         if not self.snapshot_root.is_dir():
             raise DataError(f"snapshot root is missing: {self.snapshot_root}")
         matches: list[Path] = []
-        for child in sorted(path for path in self.snapshot_root.iterdir() if path.is_dir()):
+        for child in published_snapshot_directories(self.snapshot_root):
             document_path = child / "dataset.json"
             if not document_path.is_file():
                 continue

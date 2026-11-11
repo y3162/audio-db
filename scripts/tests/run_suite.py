@@ -1,7 +1,8 @@
 """Run the audio-db unittest suites with a bounded process pool.
 
 CPU modules hide CUDA. GPU targets run only on devices the caller named or
-on devices that are idle. A CPU pass is not a GPU pass.
+on devices that are idle inside the parent's ``CUDA_VISIBLE_DEVICES``.
+An empty value does not widen back to the machine. A CPU pass is not a GPU pass.
 
 ``unittest discover`` remains the single-directory, single-process command.
 """
@@ -26,12 +27,14 @@ if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
 from tests.suite_resources import (  # noqa: E402
+    available_cpus,
+    gpu_inventory_required,
     gpu_test_environment,
-    intra_threads,
     module_workers,
     parse_busy_uuids,
     parse_gpu_rows,
-    select_free_gpus,
+    process_threads,
+    select_test_gpus,
     thread_environment,
 )
 
@@ -64,6 +67,16 @@ PRODUCTION_DB_MODULES = frozenset(
         "tests.data.reproduction.test_p1",
         "tests.data.reproduction.test_p9_semamba",
         "tests.experiments.test_phase4i_integration",
+    }
+)
+
+# p9 publishes semambapp.gsr.smoke by writing a dot-prefixed partial directory
+# and renaming it into data/db/snapshots. test_semambapp resolves that selector
+# by scanning the directory. The two do not share a pool slot.
+SNAPSHOT_PUBLISH_MODULES = frozenset(
+    {
+        "tests.data.reproduction.test_p9_semamba",
+        "tests.experiments.test_semambapp",
     }
 )
 
@@ -138,16 +151,22 @@ def _gpu_slots() -> int:
     return _positive_int(raw, "AUDIO_DB_TEST_GPU_SLOTS")
 
 
-def _query_gpus() -> tuple[list[int], str]:
-    requested = os.environ.get("AUDIO_DB_TEST_GPUS", "").strip()
-    if requested:
-        try:
-            indexes = [int(part) for part in requested.split(",") if part.strip()]
-        except ValueError as exc:
-            raise SystemExit(f"AUDIO_DB_TEST_GPUS is invalid: {requested!r}") from exc
-        if not indexes:
-            raise SystemExit("AUDIO_DB_TEST_GPUS is empty")
-        return indexes, "AUDIO_DB_TEST_GPUS"
+def _parent_visible() -> str | None:
+    """Parent ``CUDA_VISIBLE_DEVICES``, or None when the variable is unset."""
+    if "CUDA_VISIBLE_DEVICES" not in os.environ:
+        return None
+    return os.environ["CUDA_VISIBLE_DEVICES"]
+
+
+def _parent_visible_label(visible: str | None) -> str:
+    if visible is None:
+        return "unset"
+    if not visible.strip():
+        return "empty"
+    return visible
+
+
+def _read_gpu_query() -> tuple[list[dict[str, object]] | None, set[str], str | None]:
     try:
         gpus = subprocess.run(
             ["nvidia-smi", "--query-gpu=index,uuid,memory.used", "--format=csv,noheader,nounits"],
@@ -162,21 +181,39 @@ def _query_gpus() -> tuple[list[int], str]:
             text=True,
         )
     except FileNotFoundError:
-        return [], "nvidia-smi is not available"
+        return None, set(), "nvidia-smi is not available"
     if gpus.returncode != 0:
         detail = gpus.stderr.strip() or gpus.stdout.strip()
-        return [], f"nvidia-smi failed: {detail}"
+        return None, set(), f"nvidia-smi failed: {detail}"
     if apps.returncode != 0:
         detail = apps.stderr.strip() or apps.stdout.strip()
-        return [], f"nvidia-smi compute-apps failed: {detail}"
+        return None, set(), f"nvidia-smi compute-apps failed: {detail}"
     try:
         rows = parse_gpu_rows(gpus.stdout)
     except ValueError as exc:
-        return [], str(exc)
-    free = select_free_gpus(rows, parse_busy_uuids(apps.stdout))
-    if not free:
-        return [], "no GPU is under 1024 MiB and free of compute processes"
-    return free, "idle"
+        return None, set(), str(exc)
+    return rows, parse_busy_uuids(apps.stdout), None
+
+
+def _query_gpus() -> tuple[list[int], str]:
+    visible = _parent_visible()
+    requested_text = os.environ.get("AUDIO_DB_TEST_GPUS", "").strip()
+    requested = requested_text or None
+    rows: list[dict[str, object]] | None = None
+    busy: set[str] = set()
+    error: str | None = None
+    if gpu_inventory_required(visible, requested):
+        rows, busy, error = _read_gpu_query()
+    try:
+        return select_test_gpus(
+            visible=visible,
+            requested=requested,
+            rows=rows,
+            busy_uuids=busy,
+            query_error=error,
+        )
+    except ValueError as exc:
+        raise SystemExit(str(exc)) from exc
 
 
 def _kind(case: dict[str, str]) -> str:
@@ -410,8 +447,10 @@ def run_lane(
 
 
 def blocked_by_production_db(name: str, running: set[str]) -> bool:
-    """True when ``name`` must wait for another production data/db module."""
-    return name in PRODUCTION_DB_MODULES and bool(PRODUCTION_DB_MODULES & running)
+    """True when ``name`` must wait for a module that shares production data."""
+    if name in PRODUCTION_DB_MODULES and bool(PRODUCTION_DB_MODULES & running):
+        return True
+    return name in SNAPSHOT_PUBLISH_MODULES and bool(SNAPSHOT_PUBLISH_MODULES & running)
 
 
 def _problems(rows: list[dict[str, object]]) -> list[str]:
@@ -506,20 +545,20 @@ def main(argv: list[str] | None = None) -> int:
         return 0
 
     workers = module_workers()
-    threads = intra_threads(workers)
     timeout = _timeout_seconds()
-    cpu_env = os.environ.copy()
-    cpu_env["CUDA_VISIBLE_DEVICES"] = ""
-    cpu_env.update(thread_environment(threads))
-    cpu_env["AUDIO_DB_TEST_WORKERS"] = str(workers)
-
     gpu_devices: list[int] = []
     gpu_reason = "cpu-only"
     if not args.cpu_only:
         gpu_devices, gpu_reason = _query_gpus()
     slots = _gpu_slots()
+    threads = process_threads(workers, slots if gpu_devices else 0)
+    parent_visible = _parent_visible_label(_parent_visible())
+    cpu_env = os.environ.copy()
+    cpu_env["CUDA_VISIBLE_DEVICES"] = ""
+    cpu_env.update(thread_environment(threads))
+    cpu_env["AUDIO_DB_TEST_WORKERS"] = str(workers)
     print(
-        f"host={socket.gethostname()} cpus={os.cpu_count()} "
+        f"host={socket.gethostname()} host_cpus={os.cpu_count()} available_cpus={available_cpus()} "
         f"cpu_workers={workers} threads={threads} timeout_s={timeout:.0f}",
         flush=True,
     )
@@ -527,11 +566,12 @@ def main(argv: list[str] | None = None) -> int:
     if gpu_devices:
         print(
             f"gpu_lane devices={','.join(map(str, gpu_devices))} slots={slots} "
-            f"targets={len(GPU_TARGETS)} source={gpu_reason}",
+            f"targets={len(GPU_TARGETS)} source={gpu_reason} "
+            f"parent_cuda_visible_devices={parent_visible}",
             flush=True,
         )
     else:
-        print(f"gpu_lane=NOT_RUN {gpu_reason}", flush=True)
+        print(f"gpu_lane=NOT_RUN {gpu_reason} parent_cuda_visible_devices={parent_visible}", flush=True)
 
     cpu_box: dict[str, object] = {}
     gpu_box: dict[str, object] = {}
@@ -547,7 +587,7 @@ def main(argv: list[str] | None = None) -> int:
 
     def run_gpu() -> None:
         env = os.environ.copy()
-        env.update(thread_environment(intra_threads(slots)))
+        env.update(thread_environment(threads))
         env.update(gpu_test_environment(gpu_devices))
         env.setdefault("CUBLAS_WORKSPACE_CONFIG", ":4096:8")
         try:
@@ -580,6 +620,7 @@ def main(argv: list[str] | None = None) -> int:
     summary = {
         "host": socket.gethostname(),
         "cpus": os.cpu_count(),
+        "available_cpus": available_cpus(),
         "cpu_workers": workers,
         "threads": threads,
         "wall_seconds": wall,
@@ -593,6 +634,8 @@ def main(argv: list[str] | None = None) -> int:
             "reason": None if gpu_devices else gpu_reason,
             "devices": gpu_devices,
             "slots": slots if gpu_devices else 0,
+            "parent_cuda_visible_devices": parent_visible,
+            "source": gpu_reason if gpu_devices else None,
         },
     }
     if gpu_devices:

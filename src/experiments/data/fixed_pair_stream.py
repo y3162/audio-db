@@ -27,7 +27,7 @@ from src.experiments.data.render.renderer import render_sample
 from src.experiments.data.sampling.state import require_resume_match
 from src.experiments.data.assets.store import AssetStore
 from src.experiments.data.render.types import EpochPlan, SampleRef, UpdateGroup
-from src.experiments.data.snapshot import load_snapshot
+from src.experiments.data.snapshot import load_snapshot, published_snapshot_directories
 
 CROP_NOTE = (
     "Crop starts use mix_seed('crop', seed, epoch, case_id) on the inclusive "
@@ -395,7 +395,7 @@ def find_snapshot_dir(root: Path, spec: str) -> Path:
     if not root.is_dir():
         raise ReproductionError(f"snapshot root is missing: {root}")
     matches = []
-    for child in sorted(path for path in root.iterdir() if path.is_dir()):
+    for child in published_snapshot_directories(root):
         document_path = child / "dataset.json"
         if not document_path.is_file():
             continue

@@ -30,6 +30,7 @@ from src.experiments.official.deepfilternet3.model import DeepFilterNet3Model
 from src.experiments.official.semambapp.models import SEMambaPPGenerator, scan_execution
 from src.se import load_enhancer
 from src.experiments.calc.rng import set_determinism
+from src.experiments.data.snapshot import published_snapshot_directories
 from tests.experiments.test_deepfilternet3 import _ARCH as DFN_ARCH
 from tests.experiments.test_deepfilternet3 import _tiny_yaml
 from tests.experiments.test_mossformergan import _yaml as moss_yaml
@@ -91,7 +92,7 @@ def _max_diff(left: dict[str, torch.Tensor], right: dict[str, torch.Tensor]) -> 
 
 def _datasets() -> dict[str, dict]:
     found: dict[str, dict] = {}
-    for child in SNAPSHOTS.iterdir():
+    for child in published_snapshot_directories(SNAPSHOTS):
         path = child / "dataset.json"
         if not path.is_file():
             continue

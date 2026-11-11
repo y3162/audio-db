@@ -17,6 +17,20 @@ from src.experiments.data.errors import ReproductionError
 from src.experiments.data.ids import SCHEMA_VERSION, digest, generated_rel_path
 
 FORMAT = "reproduction_snapshot_v1"
+
+
+def published_snapshot_directories(root: Path) -> list[Path]:
+    """Snapshot directories a reader may open.
+
+    Export writes ``.{dataset_id}.partial`` and renames it into place.
+    A directory whose name starts with ``.`` or ends with ``.partial`` is
+    not published yet.
+    """
+    return sorted(
+        path
+        for path in Path(root).iterdir()
+        if path.is_dir() and not path.name.startswith(".") and not path.name.endswith(".partial")
+    )
 PART_NAMES = (
     "dataset",
     "assets",

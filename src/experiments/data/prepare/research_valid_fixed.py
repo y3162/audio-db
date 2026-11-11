@@ -26,6 +26,7 @@ from pathlib import Path
 from typing import Any, Iterable, Mapping, Sequence
 
 from src.experiments.data.errors import ReproductionError
+from src.experiments.data.snapshot import published_snapshot_directories
 from src.experiments.data.ids import (
     CLAIM_LABELS,
     case_set_id_for,
@@ -396,7 +397,7 @@ def find_parent_snapshot(snapshots_root: str | Path) -> Path:
     if not root.is_dir():
         raise ReproductionError(f"snapshot root is missing: {root}")
     matches = []
-    for child in sorted(path for path in root.iterdir() if path.is_dir()):
+    for child in published_snapshot_directories(root):
         manifest_path = child / "manifest.json"
         dataset_path = child / "dataset.json"
         if not manifest_path.is_file() or not dataset_path.is_file():
