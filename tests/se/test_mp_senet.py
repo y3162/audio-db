@@ -58,6 +58,16 @@ class MPTests(unittest.TestCase):
         model(x, x)[0].mean().backward()
         self.assertIsNotNone(x.grad)
 
+    def test_input_too_small_to_square_is_returned_like_silence(self):
+        # 1e-30 squared underflows float32. The RMS scale would be infinite and the output NaN.
+        from src.se.api import _MPEnhancer
+        config = types.SimpleNamespace(sampling_rate=16000, n_fft=400, hop_size=100, win_size=400, compress_factor=0.3)
+        enhancer = _MPEnhancer(None, config, torch.device('cpu'))
+        tiny = torch.full((1001,), 1e-30)
+        self.assertTrue(torch.any(tiny))
+        self.assertTrue(torch.equal(enhancer.enhance(tiny, 16000), tiny))
+        self.assertTrue(torch.equal(enhancer.enhance(torch.zeros(500), 16000), torch.zeros(500)))
+
     @unittest.skipUnless((CHECKPOINTS / 'g_best_vb').exists(), 'checkpoint unavailable')
     def test_checkpoint_and_inference(self):
         enhancer = load_enhancer('mp_senet', CHECKPOINTS / 'g_best_vb')

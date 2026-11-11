@@ -47,7 +47,7 @@ CUDA_VISIBLE_DEVICES="" .venvs/se/bin/python -m unittest discover -s tests/setup
 
 `tests/numerics/` は損失、STFT、scheduler、参照ステップの数値比較。`tests/experiments/` は組み立て、checkpoint、6 モデルの学習ループ。再現 DB とスナップショットのテストは `tests/data/reproduction/` にあり、`tests/data` の discover がまとめて実行する。チェックポイントや公式ツリーが無いテストは skip する。SKIP は PASS ではない。
 
-CUDA / NCCL の `tests/experiments/test_cuda_amp.py` は、見える GPU が無いとき NOT_RUN になる。見えるのが 1 枚のときは、2 枚必要なテストだけ NOT_RUN になる。CPU スイートの成功には数えない。`make test` は、親の可視範囲で空いている GPU の物理番号を `CUDA_VISIBLE_DEVICES` に並べ、このファイルと、GPU がないと実行できない実モデルの少数のテストを別レーンで実行する。評価の GPU 使用前検査は、見える番号を `nvidia-smi` の物理番号へ戻してからメモリを見る。空の `CUDA_VISIBLE_DEVICES` では番号を物理番号のまま見る。
+CUDA が要るテストは、見える GPU が無いとき、理由が `NOT_RUN` で始まる skip にする。ランナーはそれを SKIP と分けて NOT_RUN と数える。CUDA / NCCL の `tests/experiments/test_cuda_amp.py` と、GPU レーンに入る実モデルのテストがこれに当たる。見えるのが 1 枚のときは、2 枚必要なテストだけ NOT_RUN になる。CPU スイートの成功には数えない。`make test` は、親の可視範囲で空いている GPU の物理番号を `CUDA_VISIBLE_DEVICES` に並べ、このファイルと、GPU がないと実行できない実モデルの少数のテストを別レーンで実行する。評価の GPU 使用前検査は、見える番号を `nvidia-smi` の物理番号へ戻してからメモリを見る。空の `CUDA_VISIBLE_DEVICES` では番号を物理番号のまま見る。
 
 ## 検証の区別
 

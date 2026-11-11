@@ -20,7 +20,7 @@ def main(argv: list[str] | None = None) -> int:
         print(f"missing directory: {directory}", file=sys.stderr)
         return 1
     print(f"directory\t{directory.resolve()}")
-    for name in ("status.json", "complete.json", "interrupted.json", "data_provenance.json", "rfft.json"):
+    for name in ("status.json", "complete.json", "data_provenance.json", "rfft.json"):
         path = directory / name
         if not path.is_file():
             print(f"{name}\tabsent")

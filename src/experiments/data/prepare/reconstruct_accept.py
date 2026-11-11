@@ -11,7 +11,6 @@ file is created.
 
 from __future__ import annotations
 
-import hashlib
 from pathlib import Path
 from typing import Any
 
@@ -552,11 +551,6 @@ def published_selection_ids(list_path: str | Path) -> list[str]:
     if payload.get("case_id_list_sha256") != PUBLISHED_LIST_SHA256:
         raise ReproductionError("published list records a different case_id_list_sha256")
     return list(case_ids)
-
-
-def directory_sha256(directory: str | Path) -> str:
-    """Hash of the fingerprint. Used only to detect writes inside an existing snapshot."""
-    return hashlib.sha256(repr(snapshot_fingerprint(directory)).encode("utf-8")).hexdigest()
 
 
 def commit_reconstructed_database(

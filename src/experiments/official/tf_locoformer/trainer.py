@@ -17,7 +17,7 @@ Resume runs validation, the plateau update, and checkpoint selection once.
 Training logs ``si_sdr`` as the negative SI-SDR loss. Validation stores
 ``si_snr`` as SI-SDR in dB, the negation of that loss. Checkpoint selection
 minimizes ``valid.loss`` and maximizes ``valid.si_snr``. Those are the
-research rules in ``src/training/core/trainer.py``. The DNS recipe's
+research rules of the removed ``src/training`` trainer. The DNS recipe's
 ``best_model_criterion`` names ``si_snr`` while the loss writes
 ``si_snr_loss``. This trainer follows the research ranker, and the declared
 validation profile is the research set
@@ -50,7 +50,7 @@ from src.experiments.trainers import (
     _rewind_metrics,
     _sample_path,
 )
-from src.experiments.calc.average import average_checkpoint_files, replace_symlink
+from src.experiments.calc.average import average_checkpoint_files, remove_symlink, replace_symlink
 from src.experiments.calc.rng import capture_rank_rng, restore_rank_rng
 from src.experiments.calc.optim import WarmupReduceLROnPlateau
 from src.experiments.calc.spectral import si_sdr_loss
@@ -705,6 +705,8 @@ def _write_selection(
             },
         )
         replace_symlink(directory / "valid.loss.ave.pt", average_name)
+        # Left from the epochs before n-best existed. Its epoch file may be gone by now.
+        remove_symlink(directory / "valid.loss.ave_1best.pt")
         return
     replace_symlink(directory / "valid.loss.ave_1best.pt", best_name)
     replace_symlink(directory / "valid.loss.ave.pt", "valid.loss.ave_1best.pt")

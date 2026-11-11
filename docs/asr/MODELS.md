@@ -49,7 +49,7 @@ TDT、CTC、RNN-T は同じ関数ではデコードしません。Parakeet は�
 
 | 系列 | モデル ID | Backend | チェックポイント | 言語 | デコード | 動作検証 | 備考 |
 |---|---|---|---|---|---|---|---|
-| Parakeet | `nvidia/parakeet-tdt-0.6b-v2` | NeMo | NVIDIA / Hugging Face。`from_pretrained` | 英語 | TDT | 済（cuda:1） | 2 秒の LibriSpeech で英語テキストを得た。CUDA graph は無効のまま greedy TDT |
+| Parakeet | `nvidia/parakeet-tdt-0.6b-v2` | NeMo | NVIDIA / Hugging Face。`from_pretrained` | 英語 | TDT | 済（cuda:1） | 2 秒の LibriSpeech で英語テキストを得た。greedy TDT。このチェックポイントの decoding 設定には `use_cuda_graph_decoder` が無く、ローダは設定を変えない。CUDA では NeMo 2.2.1 の既定どおり CUDA graph デコーダが有効になる |
 | Parakeet | `nvidia/parakeet-tdt-0.6b-v3` | NeMo | 同上 | 多言語 | TDT | 未実施 | 言語はモデルカードに従う |
 | Parakeet | `nvidia/parakeet-tdt-1.1b` | NeMo | 同上 | 英語 | TDT | 未実施 | |
 | Parakeet | `nvidia/parakeet-ctc-0.6b` | NeMo | 同上 | 英語 | CTC | 済（cuda:1） | `EncDecCTCModelBPE` で読んだ。TDT デコーダは使っていない |

@@ -92,6 +92,8 @@ class Experiment:
         ``resume`` and ``initialize_from`` cannot be combined. A failed
         restore does not start the trainer. CPU restore writes into the
         prepared module in place, so the optimizer keeps those parameters.
+        Without ``resume``, a directory that already holds checkpoints or a
+        finished run is refused before anything is built or written.
         """
 
         if resume is not None and initialize_from is not None:
@@ -101,6 +103,8 @@ class Experiment:
         if self._ran:
             raise StateError("experiment has already been run")
         try:
+            if resume is None:
+                self._refuse_used_directory()
             if not self._built:
                 self.build()
             if self._graph is None or self._checkpoint is None or self._directory is None:
@@ -144,7 +148,8 @@ class Experiment:
             self._barrier()
             self._ran = True
             return result
-        except Exception:
+        except BaseException:
+            # Ctrl-C is not an Exception. Without this the status would stay RUNNING.
             self._mark_failed()
             raise
         finally:
@@ -193,11 +198,28 @@ class Experiment:
             self._lock.release()
             self._lock = None
 
-    def _open_directory(self, runtime: object) -> None:
+    def _output_directory(self) -> Path:
         directory = self.config.output_directory
         if not directory.is_absolute():
             directory = Path.cwd() / directory
-        directory = directory.resolve()
+        return directory.resolve()
+
+    def _refuse_used_directory(self) -> None:
+        """A new run starts at step 0, clears metrics.jsonl, and rewrites step files in place."""
+
+        directory = self._directory if self._directory is not None else self._output_directory()
+        if (directory / "complete.json").is_file():
+            found = "complete.json"
+        else:
+            found = next((path.name for path in sorted(directory.glob("step_*.pt"))), None)
+        if found is not None:
+            raise CheckpointError(
+                f"output directory already holds a run ({found}): {directory}. "
+                "Continue it with --resume, or choose another output.directory."
+            )
+
+    def _open_directory(self, runtime: object) -> None:
+        directory = self._output_directory()
         assert_output_allowed(directory)
         try:
             directory.mkdir(parents=True, exist_ok=True)

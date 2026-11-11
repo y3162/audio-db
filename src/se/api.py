@@ -66,13 +66,16 @@ class _MPEnhancer(Enhancer):
         x = waveform.to(device=self.device, dtype=torch.float32)
         if sample_rate != h.sampling_rate:
             x = AF.resample(x, sample_rate, h.sampling_rate)
-        if not torch.any(x):
+        energy = x.square().sum()
+        # Samples too small to square in float32 give zero energy and an infinite scale.
+        # They are returned unchanged, like digital silence.
+        if not torch.any(x) or not bool(energy > 0):
             return waveform.clone()
         # torch.stft's reflect padding requires more than n_fft/2 samples.
         if x.numel() <= h.n_fft // 2:
             raise ValueError(f"input is too short for reflect-padded STFT (need > {h.n_fft // 2} samples at {h.sampling_rate} Hz)")
         with torch.inference_mode():
-            norm = torch.sqrt(x.numel() / x.square().sum())
+            norm = torch.sqrt(x.numel() / energy)
             x = (x * norm).unsqueeze(0)
             window = torch.hann_window(h.win_size, device=self.device)
             spec = torch.stft(x, h.n_fft, h.hop_size, h.win_size, window, return_complex=True)

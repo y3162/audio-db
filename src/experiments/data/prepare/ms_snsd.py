@@ -628,17 +628,6 @@ def _dataset_deviations(train_stats: dict[str, int], *, claim_label: str) -> lis
     return rows
 
 
-def _marker(report: dict[str, Any]) -> dict[str, Any]:
-    return {
-        "build_id": report["build_id"],
-        "shard_ids": list(report["shard_ids"]),
-        "status": "PASS",
-        "files": int(report["files"]),
-        "clipped_samples": int(report["clipped_samples"]),
-        "peak_abs": float(report["peak_abs"]),
-    }
-
-
 def _catalog(assets: list[dict[str, Any]]) -> tuple[dict[str, Any], list[dict[str, Any]]]:
     rows = [
         {

@@ -8,7 +8,7 @@ from unittest.mock import patch
 import torch
 
 from src.asr import ASRResult
-from src.evaluation.config import config_from_dict
+from src.evaluation.config import config_from_dict, config_hash
 from src.evaluation.errors import ConfigError
 from src.evaluation.models.asr import load_recognizer
 from src.evaluation.pipeline import execute
@@ -43,6 +43,16 @@ class AsrAdapterTests(unittest.TestCase):
                         "asr": {"enabled": True, "name": "mock", "model_id": "tiny"},
                     }
                 )
+
+    def test_settings_the_recognizer_does_not_read_are_rejected(self):
+        """They used to enter the config hash and every record while the same ASR ran."""
+        for extra in ({"checkpoint": "tuned.nemo"}, {"sample_rate": 8000}, {"params": {"beam_size": 4}}):
+            with self.subTest(extra=extra), self.assertRaises(ConfigError):
+                _enabled("parakeet", "nvidia/parakeet-tdt-0.6b-v2", **extra)
+        # Writing the unset values is still accepted, and the hash does not move.
+        plain = _enabled("parakeet", "nvidia/parakeet-tdt-0.6b-v2")
+        unset = _enabled("parakeet", "nvidia/parakeet-tdt-0.6b-v2", checkpoint=None, sample_rate=None, params={})
+        self.assertEqual(config_hash(plain), config_hash(unset))
 
     def test_real_model_requires_a_catalog_id_and_uses_src_asr(self):
         config = _enabled("parakeet", "nvidia/parakeet-tdt-0.6b-v2", language="en")

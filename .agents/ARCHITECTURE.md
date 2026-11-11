@@ -31,7 +31,7 @@
 - DeepFilterNet3: 出荷の multi-resolution スペクトルと local SNR。cosine は Optimizer 更新の前。batch schedule は world size 1 の micro-batch 幅だけを付け替える。
 - SEMamba++: Discriminator を先に更新する。蓄積 1 は Generator グラフを再利用する。蓄積 2 以上は再 forward し、DataModule は再消費しない。`best_generator.pt` は書かない。`resampy==0.4.3` は `kaiser_best` と `kaiser_fast` に必要。
 
-Global batch は micro-batch、world size、蓄積回数の積と一致しない構成を拒否する。logical step は Optimizer 更新の回数。
+Global batch は micro-batch、world size、蓄積回数の積と一致しない構成を拒否する。logical step は、蓄積 1 回ぶんの Optimizer 更新を試みた回数。AMP が更新を skip した step も logical step とデータ位置を進め、`optimizer_updates` は適用された更新だけを数える。
 
 ## データ供給
 

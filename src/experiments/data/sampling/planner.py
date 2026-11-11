@@ -12,7 +12,6 @@ import torch
 
 from src.experiments.data.errors import ReproductionError
 from src.experiments.data.ids import digest
-from src.experiments.data.render.chunking import ChunkEpochPlan, plan_chunk_epoch
 from src.experiments.data.sampling.order import order_params, rank_order, resolve_order_policy
 from src.experiments.data.sampling.seeds import mix_seed
 from src.experiments.data.assets.store import AssetStore
@@ -31,34 +30,6 @@ def chunk_case_length(store: AssetStore, case_id: str) -> int:
     if planned != recorded or planned < 1:
         raise ReproductionError(f"case {case_id} length is not the planned length")
     return planned
-
-
-def plan_espnet_chunk(
-    samples,
-    *,
-    espnet_epoch: int,
-    seed: int,
-    world_size: int,
-    num_samples: int | None,
-    chunk_length: int,
-    global_batch: int,
-    num_cache_chunks: int,
-    shuffle: bool,
-    shift_ratio: float = 0.5,
-) -> ChunkEpochPlan:
-    """TF-GridNet and TF-Locoformer chunk plan. Fixed-pair planning does not call this."""
-    return plan_chunk_epoch(
-        samples,
-        espnet_epoch=espnet_epoch,
-        seed=seed,
-        world_size=world_size,
-        num_samples=num_samples,
-        chunk_length=chunk_length,
-        global_batch=global_batch,
-        num_cache_chunks=num_cache_chunks,
-        shuffle=shuffle,
-        shift_ratio=shift_ratio,
-    )
 
 
 def plan_fixed_pair(

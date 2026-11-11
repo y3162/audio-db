@@ -63,7 +63,12 @@ def _observed_decode(model: Any) -> str | None:
 
 
 def _disable_cuda_graph(model: Any) -> None:
-    """Keep the checkpoint strategy. Only turn off CUDA-graph decoding when it is present."""
+    """Keep the checkpoint strategy. Only turn off CUDA-graph decoding when it is present.
+
+    The key must be in the checkpoint's own decoding config. The catalogued
+    Parakeet checkpoints do not carry it, so this leaves them untouched and
+    NeMo's default applies: CUDA-graph decoding stays on when CUDA is used.
+    """
     try:
         config = getattr(model, "cfg", None)
         decoding = getattr(config, "decoding", None)

@@ -1,0 +1,14 @@
+
+---
+alwaysApply: true
+---
+
+# Subagent Model Policy
+
+When spawning subagents, use the following model by default:
+
+`grok-4.7[reasoning_effort=xhigh,fast=false,context=256k]`
+
+Apply this preference to all subagents, regardless of task type.
+
+Do not select another model unless the user explicitly requests it or the specified model is unavailable.

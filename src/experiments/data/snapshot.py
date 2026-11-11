@@ -301,19 +301,6 @@ def members_from_arrays(arrays: dict[str, np.ndarray]) -> list[dict[str, Any]]:
     ]
 
 
-def generated_path(generated_root: Path, row: dict[str, Any]) -> Path:
-    rel = generated_rel_path(
-        generator=row["generator"],
-        build_id=row["build_id"],
-        stream=row["stream"],
-        gen_index=int(row["gen_index"]),
-        shard_size=int(row["shard_size"]),
-    )
-    if rel != row["rel_path"]:
-        raise ReproductionError(f"generated path does not match {row.get('asset_id')}")
-    return Path(generated_root) / rel
-
-
 def load_snapshot(directory: str | Path) -> LoadedSnapshot:
     directory = Path(directory)
     manifest_path = directory / "manifest.json"

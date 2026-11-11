@@ -47,12 +47,15 @@ from src.evaluation.models.se import (
     enhancement_seed,
     load_evaluation_enhancer,
 )
-from src.evaluation.results.reader import read_json, read_record
+from src.evaluation.results.reader import read_json, read_record, read_record_files
 from src.evaluation.results.summary import build_summary, format_summary, write_summary
 from src.evaluation.results.writer import atomic_write_json, write_jsonl, write_record
 from src.evaluation.sample import AudioSample
 
 __all__ = ["execute", "format_plan", "format_summary"]
+
+# Seconds between rewrites of results.jsonl and the summary while a run is in progress.
+_PUBLISH_INTERVAL_SECONDS = 60.0
 
 
 def execute(
@@ -112,7 +115,7 @@ def execute(
             meta["started_at"] = stored["started_at"]
     else:
         atomic_write_json(run_dir / "config.json", config.to_dict())
-        atomic_write_json(run_dir / "run.json", meta)
+    atomic_write_json(run_dir / "run.json", meta)
     recognizer = None
     if config.asr.enabled:
         if recognizer_factory is None:
@@ -121,6 +124,7 @@ def execute(
             recognizer = recognizer_factory(config.asr)
     factory = enhancer_factory or load_evaluation_enhancer
     records: list[dict[str, Any]] = []
+    progress = _Progress(run_dir, records, resumed=config.output.resume)
     reused = 0
     written = 0
     try:
@@ -139,6 +143,7 @@ def execute(
                 git,
                 environment,
                 records,
+                progress,
             )
             reused += model_reused
             written += model_written
@@ -148,6 +153,9 @@ def execute(
         meta["finished_at"] = _now()
         atomic_write_json(run_dir / "run.json", meta)
         raise
+    finally:
+        if meta["status"] != "completed":
+            progress.flush_after_stop()
     meta["finished_at"] = _now()
     meta["reused"] = reused
     meta["written"] = written
@@ -215,6 +223,7 @@ def _run_model(
     git,
     environment,
     records,
+    progress,
 ):
     enhancer = None
     reused = 0
@@ -246,7 +255,7 @@ def _run_model(
                 written += int(did_write)
                 if did_write:
                     write_record(run_dir, record)
-                    _publish(run_dir, records)
+                    progress.wrote()
     finally:
         if enhancer is not None:
             del enhancer
@@ -731,6 +740,57 @@ def _publish(run_dir: Path, records: list[dict[str, Any]]) -> dict[str, Any]:
     write_jsonl(run_dir / "results.jsonl", records)
     write_summary(run_dir, summary)
     return summary
+
+
+class _Progress:
+    """results.jsonl and the summary while a run is still going.
+
+    Every finished record is already in ``records/<id>.json``. The joined
+    files are rewritten from the whole list, so rewriting them per record
+    costs quadratic time. They are refreshed once per interval, and once
+    more when the run stops early. A resumed run keeps the records that are
+    on disk and not yet revisited, so stopping it never publishes fewer
+    records than the directory holds.
+    """
+
+    def __init__(self, run_dir: Path, records: list[dict[str, Any]], *, resumed: bool) -> None:
+        self._run_dir = run_dir
+        self._records = records
+        self._resumed = resumed
+        self._stored: dict[str, dict[str, Any]] | None = None
+        self._last = time.monotonic()
+        self._pending = False
+
+    def wrote(self) -> None:
+        self._pending = True
+        if time.monotonic() - self._last >= _PUBLISH_INTERVAL_SECONDS:
+            self.flush()
+
+    def flush(self) -> None:
+        if not self._pending:
+            return
+        _publish(self._run_dir, self._view())
+        self._last = time.monotonic()
+        self._pending = False
+
+    def flush_after_stop(self) -> None:
+        """Publish what is finished. The error that stopped the run stays the one reported."""
+        try:
+            self.flush()
+        except Exception:
+            pass
+
+    def _view(self) -> list[dict[str, Any]]:
+        if not self._resumed:
+            return self._records
+        if self._stored is None:
+            self._stored = {
+                str(record["record_id"]): record
+                for record in read_record_files(self._run_dir)
+                if record.get("record_id")
+            }
+        visited = {record.get("record_id") for record in self._records}
+        return self._records + [record for key, record in self._stored.items() if key not in visited]
 
 
 def _prepare_run(config: ExperimentConfig, digest: str) -> tuple[str, Path]:

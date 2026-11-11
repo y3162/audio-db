@@ -24,6 +24,10 @@ def build(config, variant=None):
     unknown = set(values) - {'n_fft', 'win_len', 'hop', 'num_channel'}
     if unknown:
         raise ValueError(f'unknown MossFormerGAN config keys: {sorted(unknown)}')
+    # enhance() always frames with these. Another value would be accepted and then ignored.
+    for key, fixed in (('win_len', WIN_LEN), ('hop', HOP)):
+        if int(values.get(key, fixed)) != fixed:
+            raise ValueError(f'MossFormerGAN {key} must be {fixed}, got {values[key]!r}')
     n_fft = int(values.get('n_fft', N_FFT))
     channels = int(values.get('num_channel', 64))
     model = SyncANet(num_channel=channels, num_features=n_fft // 2 + 1)
@@ -34,7 +38,7 @@ def build(config, variant=None):
 def load(checkpoint, device, config, variant):
     model = build(config, variant)
     path = checkpoint_paths(checkpoint, ('model',))['model']
-    state = torch.load(path, map_location='cpu', weights_only=False)
+    state = torch.load(path, map_location='cpu', weights_only=True)
     if isinstance(state, dict) and 'model' in state and isinstance(state['model'], dict):
         state = state['model']
     model.load_state_dict(state, strict=True)

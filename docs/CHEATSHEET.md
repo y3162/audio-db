@@ -62,4 +62,5 @@ make reproduction-doctor
 - preflight が GPU を拒否する: 空いている番号だけを `CUDA_VISIBLE_DEVICES` に入れる。自分のジョブでなければ `allow_busy_gpu` を付けない。
 - 評価が Manifest を読めない: 評価の入力は名前付きセットだけである。登録は `make db-init`。
 - `make db-init` が拒否する: `recipe_json` の無い `eval.cases` がある。DB は変更されていない。
-- 再開が設定差で失敗する: `logging` 以外を変えていないか確認する。`stop_after_logical_steps` を外した設定への再開は、モデル構築の前に失敗する。
+- 再開が設定差で失敗する: `output` と `stop_after_logical_steps` 以外を変えていないか確認する。`stop_after_logical_steps` だけを外した設定は再開できる。
+- 新規の起動が `output directory already holds a run` で止まる: そのディレクトリに `complete.json` か `step_*.pt` がある。続きは `--resume`、やり直しは別の `output.directory` を使う。

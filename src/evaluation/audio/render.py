@@ -227,7 +227,9 @@ def _fit_rate(loaded: tuple[torch.Tensor, int], rate: int, max_seconds) -> tuple
         if waveform.numel() == 0:
             raise RecipeError("audio is empty after resampling")
     span = audio_span(source_frames, used, source_rate, None if max_seconds is None else float(max_seconds))
+    # sample_rate is the rate of the returned waveform. The two frame counts stay on the source rate.
     span["sample_rate"] = rate
+    span["source_sample_rate"] = source_rate
     return waveform.contiguous(), span
 
 

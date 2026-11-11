@@ -122,6 +122,27 @@ class ProvenanceJudgmentTests(unittest.TestCase):
         self.assertEqual(judged["checkpoint_selection_overlap"], [])
         self.assertIs(judged["split_independent"], True)
 
+    def test_selection_flag_that_is_not_a_boolean_stays_unknown(self) -> None:
+        materials = [
+            _row("train", SHA_A),
+            _row("selection", SHA_B, case_set="valid"),
+            _row("test", SHA_C, case_set="test"),
+        ]
+        absent = _document(materials)
+        del absent["selection_uses_test"]
+        documents = [absent] + [_document(materials, selection_uses_test=value) for value in (None, "true", 1)]
+        for document in documents:
+            with self.subTest(selection_uses_test=document.get("selection_uses_test", "absent")):
+                judged = judge_independence(document, [_eval(OTHER, name="held-out")])
+                self.assertEqual(judged["independent"], "UNKNOWN")
+                self.assertFalse(judged["confirmed_independent"])
+                self.assertFalse(is_confirmed_independent(judged["independent"]))
+                self.assertIsNone(judged["selection_uses_test"])
+                self.assertIn("selection_uses_test", judged["reason"])
+        # A hash hit is still a definite answer.
+        overlapping = judge_independence(absent, [_eval(SHA_B, name="reused")])
+        self.assertIs(overlapping["independent"], False)
+
     def test_same_name_and_different_content_is_not_overlap(self) -> None:
         document = _document(
             [
@@ -255,7 +276,9 @@ class ProvenanceJudgmentTests(unittest.TestCase):
         document = _document([_row("train", SHA_A), _row("selection", SHA_B), _row("test", SHA_C)])
         self.assertEqual(canonical_bytes(document), canonical_bytes(json.loads(canonical_bytes(document))))
 
-    def test_evaluation_package_does_not_import_reproduction(self) -> None:
+    def test_evaluation_package_imports_only_its_allowed_packages(self) -> None:
+        """Evaluation uses src.se, src.asr, and src.data. The reproduction database lives in src.experiments."""
+        allowed = ("src.evaluation", "src.se", "src.asr", "src.data")
         offenders = []
         for path in (ROOT / "src" / "evaluation").rglob("*.py"):
             tree = ast.parse(path.read_text(encoding="utf-8"))
@@ -263,10 +286,13 @@ class ProvenanceJudgmentTests(unittest.TestCase):
                 modules = []
                 if isinstance(node, ast.Import):
                     modules = [alias.name for alias in node.names]
-                elif isinstance(node, ast.ImportFrom) and node.module:
+                elif isinstance(node, ast.ImportFrom) and node.module and node.level == 0:
                     modules = [node.module]
-                if any(name == "src.reproduction" or name.startswith("src.reproduction.") for name in modules):
-                    offenders.append(str(path))
+                for name in modules:
+                    if name != "src" and not name.startswith("src."):
+                        continue
+                    if not any(name == package or name.startswith(package + ".") for package in allowed):
+                        offenders.append(f"{path.relative_to(ROOT)}: {name}")
         self.assertEqual(offenders, [])
 
 

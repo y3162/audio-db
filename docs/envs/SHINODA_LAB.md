@@ -24,16 +24,3 @@ GPU が見えないホストでは fused 拡張をビルドせず、失敗とし
 歴史的な `.venvs/lab` が残っていても削除しない。新しい役割の環境とはパスが違う。
 
 詳細は [セットアップ](SETUP.md)。
-
-共有インストールを変更しない検証用ビルドは、各ホストで新しい出力ディレクトリを指定する。依存環境 `.venvs/semambapp` と `make assets` で取得した固定ソースが必要。ビルドはソースと中間成果物を出力先へ複製し、`.so` を `lib/` に置く。`PYTHONPATH` の先頭にその `lib/` を置いて、どの `.so` が読み込まれたか確認する。
-
-```bash
-CUDA_HOME=/net/ox/data/.apps/modules/binaries/cuda/12.1 \
-  scripts/training/build_mamba_isolated.sh <新規ディレクトリ> > <新規ログ> 2>&1
-# 使用前に nvidia-smi で空き GPU を確認
-CUDA_VISIBLE_DEVICES=<空きGPU> OMP_NUM_THREADS=1 \
-  PYTHONPATH=<新規ディレクトリ>/lib:. \
-  .venvs/semambapp/bin/python scripts/training/probe_semamba_fused.py
-```
-
-この短い probe は 0.5 秒の合成音声で公式幅 Generator と 2 Discriminator の forward・backward・optimizer 更新を実行し、損失・重みの有限性と各ネットワークの更新を確認する。本格学習や音質の評価ではない。

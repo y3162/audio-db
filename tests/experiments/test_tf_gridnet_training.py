@@ -338,6 +338,24 @@ class TFGridNetConnectionTests(unittest.TestCase):
         self.assertEqual(os.readlink(directory / "valid.loss.ave.pt"), "valid.loss.ave_2best.pt")
         self.assertTrue((directory / "1epoch.pt").is_file())
         self.assertTrue((directory / "2epoch.pt").is_file())
+        # The link from epoch 1 is not left pointing at an epoch that is no longer the best.
+        self.assertFalse((directory / "valid.loss.ave_1best.pt").is_symlink())
+        third = {"separator.count": torch.tensor(5), "separator.weight": torch.ones(2) * 5}
+        _write_nbest(
+            directory,
+            third,
+            3,
+            rank_validation_loss(
+                [{"epoch": 1, "loss": 2.0}, {"epoch": 2, "loss": 1.0}, {"epoch": 3, "loss": 0.5}], 2
+            ),
+            2,
+            3,
+        )
+        self.assertFalse((directory / "1epoch.pt").exists())
+        self.assertEqual(
+            sorted(path.name for path in directory.iterdir() if path.is_symlink() and not path.exists()), []
+        )
+        self.assertEqual(os.readlink(directory / "valid.loss.ave.pt"), "valid.loss.ave_2best.pt")
 
     def test_snapshot_datamodule_completes_one_epoch(self) -> None:
         spec = _write_snapshot(self.base / "snapshots", derived=self.base / "derived", kind="ms", name="phase4b.ms")

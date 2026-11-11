@@ -66,11 +66,6 @@ def save_waveform(path: str | Path, waveform: torch.Tensor, sample_rate: int) ->
     os.replace(temporary, file_path)
 
 
-def as_mono(waveform: torch.Tensor, sample_rate: int, max_seconds: float | None = None) -> tuple[torch.Tensor, int]:
-    wave, rate, _span = as_mono_span(waveform, sample_rate, max_seconds)
-    return wave, rate
-
-
 def as_mono_span(
     waveform: torch.Tensor,
     sample_rate: int,

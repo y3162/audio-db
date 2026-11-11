@@ -48,7 +48,6 @@ def params_from(config):
             'df_n_iter': 'df_n_iter', 'mask_pf': 'mask_pf', 'pf_beta': 'pf_beta',
             'lsnr_dropout': 'lsnr_dropout',
         }
-        unknown = []
         for key, value in flat.items():
             if key in aliases:
                 values[aliases[key]] = value

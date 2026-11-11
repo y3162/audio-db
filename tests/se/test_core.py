@@ -20,6 +20,14 @@ class CoreTests(unittest.TestCase):
         self.assertEqual(model_metadata('mp-senet').sample_rate, 16000)
         with self.assertRaises(ValueError): build_model('tf_gridnet', variant='wsj0-2mix')
 
+    def test_stft_settings_that_enhance_ignores_are_rejected(self):
+        # enhance() frames MossFormerGAN with 400/100 and SEMamba++ with 400/100/400, whatever the config says.
+        with self.assertRaises(ValueError): build_model('mossformergan', {'hop': 160})
+        with self.assertRaises(ValueError): build_model('mossformergan', {'win_len': 512})
+        with self.assertRaises(ValueError): build_model('semambapp', {'n_fft': 512})
+        model = build_model('mossformergan', {'n_fft': 400, 'win_len': 400, 'hop': 100, 'num_channel': 8})
+        self.assertEqual(model.n_fft, 400)
+
     def test_config_and_checkpoint(self):
         with tempfile.TemporaryDirectory() as tmp:
             path = Path(tmp) / 'config.json'

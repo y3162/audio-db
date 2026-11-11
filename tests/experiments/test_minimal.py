@@ -13,8 +13,11 @@ from pathlib import Path
 
 import torch
 
-from src.experiments.api import build_experiment, preflight_experiment
+from unittest import mock
+
+from src.experiments.api import Experiment, build_experiment, preflight_experiment
 from src.experiments.config import load_experiment
+from src.experiments.errors import CheckpointError
 from src.experiments.trainers import StandardTrainer
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -148,6 +151,56 @@ class MinimalExperimentTests(unittest.TestCase):
             text=True,
         )
         self.assertEqual(failed.returncode, 1)
+
+    def test_new_run_refuses_a_directory_that_holds_a_run(self) -> None:
+        directory = Path(self.enterContext(self._directory()))
+        self._run(directory, steps=2)
+        out = directory / "out"
+        kept = {path.name: path.read_bytes() for path in out.iterdir() if path.is_file()}
+        self.assertIn("complete.json", kept)
+        self.assertIn("step_00000002.pt", kept)
+
+        def unchanged() -> None:
+            self.assertEqual({path.name: path.read_bytes() for path in out.iterdir() if path.is_file()}, kept)
+
+        config = _config_text(directory, 2)
+        with self.assertRaisesRegex(CheckpointError, "already holds a run"):
+            Experiment(load_experiment(config)).run()
+        unchanged()
+        # Checkpoints alone are enough. A stopped run has no complete.json.
+        (out / "complete.json").unlink()
+        del kept["complete.json"]
+        with self.assertRaisesRegex(CheckpointError, r"step_00000001\.pt"):
+            Experiment(load_experiment(config)).run()
+        unchanged()
+        env = os.environ.copy()
+        env["CUDA_VISIBLE_DEVICES"] = ""
+        again = subprocess.run(
+            [sys.executable, "-m", "src.experiments.cli", "--config", str(config)],
+            cwd=ROOT,
+            env=env,
+            check=False,
+            capture_output=True,
+            text=True,
+        )
+        self.assertEqual(again.returncode, 1)
+        self.assertIn("--resume", again.stderr)
+        unchanged()
+        # The same directory still resumes from its own checkpoint.
+        resumed = Experiment(load_experiment(config)).run(resume=out / "step_00000001.pt")
+        self.assertEqual(resumed.logical_step, 2)
+        self.assertEqual(resumed.stop_reason, "completed")
+        self.assertEqual(len((out / "metrics.jsonl").read_text(encoding="utf-8").splitlines()), 2)
+
+    def test_ctrl_c_does_not_leave_the_status_running(self) -> None:
+        directory = Path(self.enterContext(self._directory()))
+        experiment = build_experiment(load_experiment(_config_text(directory, 2)))
+        with mock.patch.object(StandardTrainer, "_publish_step", side_effect=KeyboardInterrupt):
+            with self.assertRaises(KeyboardInterrupt):
+                experiment.run()
+        status = json.loads((directory / "out" / "status.json").read_text(encoding="utf-8"))
+        self.assertEqual(status["status"], "FAILED")
+        self.assertFalse((directory / "out" / "complete.json").exists())
 
     def _run(self, directory: Path, *, steps: int) -> dict[str, object]:
         experiment = build_experiment(load_experiment(_config_text(directory, steps)))

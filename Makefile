@@ -174,7 +174,7 @@ experiment:
 
 experiment-preflight:
 	@test -n "$(CONFIG)" || { echo "CONFIG is required"; exit 1; }
-	CUDA_VISIBLE_DEVICES="" $(WITH_ENV) $(PYTHON) -m src.experiments.cli --config "$(CONFIG)" --preflight
+	CUDA_VISIBLE_DEVICES="$${CUDA_VISIBLE_DEVICES}" $(WITH_ENV) $(PYTHON) -m src.experiments.cli --config "$(CONFIG)" --preflight
 
 test-cpu:
 	CUDA_VISIBLE_DEVICES="" $(WITH_ENV) $(PYTHON) $(ROOT)/scripts/tests/run_suite.py --cpu-only

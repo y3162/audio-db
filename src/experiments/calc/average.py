@@ -5,8 +5,10 @@ criterion value with a stable sort, sums the state dictionaries, divides
 floating tensors by n, and leaves integer tensors (``num_batches_tracked``)
 as the sum. The DNS recipe asks for ``valid.loss.ave_5best``. When fewer
 than n checkpoints exist, ESPnet does not average the shorter list: it
-symlinks ``ave_1best`` to the current best epoch file. The suffix here is
-``.pt``; pinned ESPnet writes ``.pth``.
+symlinks ``ave_1best`` to the current best epoch file. ESPnet runs this once,
+after training. The trainers here run it after every epoch, so the
+``ave_1best`` link of the early epochs is removed once n checkpoints exist.
+The suffix here is ``.pt``; pinned ESPnet writes ``.pth``.
 """
 
 from __future__ import annotations
@@ -23,6 +25,12 @@ def replace_symlink(link: Path, target_name: str) -> None:
     if link.is_symlink() or link.exists():
         link.unlink()
     link.symlink_to(target_name)
+
+
+def remove_symlink(link: Path) -> None:
+    """Drop ``link`` when it is a symlink. The target is kept."""
+    if link.is_symlink():
+        link.unlink()
 
 
 def average_state_dicts(states: list[dict[str, torch.Tensor]]) -> dict[str, torch.Tensor]:

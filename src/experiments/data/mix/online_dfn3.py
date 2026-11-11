@@ -7,19 +7,12 @@ sample is rendered from ``(protocol, snapshot, seed, split, epoch, index)``.
 from __future__ import annotations
 
 from collections.abc import Iterator
-from pathlib import Path
 from typing import Any
 
 import numpy as np
 
 from src.experiments.data.errors import ReproductionError
 from src.experiments.data.ids import digest
-from src.experiments.data.paths import (
-    DEFAULT_CORPORA,
-    DEFAULT_DERIVED,
-    DEFAULT_GENERATED,
-    DEFAULT_SNAPSHOTS,
-)
 from src.experiments.data.render.assemble import assemble
 from src.experiments.data.render.clips import Dfn3Clip as _AssetClip
 from src.experiments.data.assets.loader import GroupLoader
@@ -27,7 +20,7 @@ from src.experiments.data.snapshot_provenance import snapshot_provenance_parts
 from src.experiments.data.sampling.seeds import mix_seed
 from src.experiments.data.sampling.state import require_resume_match
 from src.experiments.data.assets.store import AssetStore
-from src.experiments.data.fixed_pair_stream import EpochStream, find_snapshot_dir
+from src.experiments.data.fixed_pair_stream import EpochStream
 from src.experiments.data.render.types import EpochPlan, MicroBatchPlan, SampleRef, UpdateGroup
 from src.experiments.data.protocols.online_dfn3 import (
     NUM_SAMPLES,
@@ -37,7 +30,6 @@ from src.experiments.data.protocols.online_dfn3 import (
     sample_seed,
     speech_key_positions,
 )
-from src.experiments.data.snapshot import load_snapshot
 
 POLICY = "dfn3_online_ceil_v1"
 
@@ -441,49 +433,6 @@ def _member_ids(store: AssetStore, slot: str) -> list[str]:
     rows = [row for row in store.members if row["material_set_id"] == material_id]
     rows.sort(key=lambda row: int(row["position"]))
     return [str(row["asset_id"]) for row in rows]
-
-
-def open_online_dfn3(
-    *,
-    dataset: str,
-    allow_test_selection: bool,
-    seed: int,
-    global_batch: int,
-    micro_batch: int,
-    accumulation: int,
-    world_size: int,
-    segment_size: int | None = None,
-    model_sample_rate: int | None = None,
-    load_workers: int = 1,
-    verify_on_read: bool = False,
-    snapshot_root: str | Path | None = None,
-    derived_root: str | Path | None = None,
-    corpora_root: str | Path | None = None,
-    generated_root: str | Path | None = None,
-) -> OnlineDFN3TrainingData:
-    del verify_on_read
-    root = Path(DEFAULT_SNAPSHOTS if snapshot_root is None else snapshot_root)
-    loaded = load_snapshot(find_snapshot_dir(root, dataset))
-    store = AssetStore.from_snapshot(
-        loaded,
-        derived=DEFAULT_DERIVED if derived_root is None else derived_root,
-        corpora=DEFAULT_CORPORA if corpora_root is None else corpora_root,
-        generated=DEFAULT_GENERATED if generated_root is None else generated_root,
-    )
-    return OnlineDFN3TrainingData(
-        store,
-        settings={
-            "allow_test_selection": allow_test_selection,
-            "seed": seed,
-            "global_batch": global_batch,
-            "micro_batch": micro_batch,
-            "accumulation": accumulation,
-            "world_size": world_size,
-            "segment_size": segment_size,
-            "model_sample_rate": model_sample_rate,
-            "load_workers": load_workers,
-        },
-    )
 
 
 def schedule_update_count(count: int, batch: int) -> int:

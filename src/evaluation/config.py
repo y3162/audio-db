@@ -478,6 +478,13 @@ def _parse_asr(raw: dict[str, Any]) -> ASRConfig:
     if not isinstance(params, dict):
         raise ConfigError("asr.params must be a mapping")
     _jsonable(params, "asr.params")
+    # The recognizer is chosen by name, model_id, decode, language, and device alone.
+    # A value here would enter the hash and the records without changing the ASR.
+    for key in ("sample_rate", "checkpoint"):
+        if raw.get(key) is not None:
+            raise ConfigError(f"asr.{key} is not implemented. The recognizer does not read it.")
+    if params:
+        raise ConfigError("asr.params is not implemented. The recognizer does not read it.")
     name = _str(raw.get("name", "mock"), "asr.name")
     from src.asr.catalog import FAMILIES, resolve_model
 
@@ -504,15 +511,13 @@ def _parse_asr(raw: dict[str, Any]) -> ASRConfig:
         default_text="" if raw.get("default_text") is None else _str(raw["default_text"], "asr.default_text"),
         scripts=scripts,
         conditions=parsed_conditions,
-        sample_rate=(
-            None if raw.get("sample_rate") is None else _int(raw["sample_rate"], "asr.sample_rate", minimum=1)
-        ),
+        sample_rate=None,
         device=None if raw.get("device") is None else _str(raw["device"], "asr.device"),
         language=language,
         decode=decode,
-        checkpoint=None if raw.get("checkpoint") is None else _str(raw["checkpoint"], "asr.checkpoint"),
+        checkpoint=None,
         model_id=model_id,
-        params=dict(params),
+        params={},
     )
 
 

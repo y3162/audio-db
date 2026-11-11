@@ -178,7 +178,7 @@ class TFLocoformerMatchTests(unittest.TestCase):
     def test_cuda_enhance_when_a_gpu_is_free(self):
         device = _free_cuda()
         if device is None:
-            self.skipTest("no CUDA GPU under 1024 MiB")
+            self.skipTest("NOT_RUN: no CUDA GPU under 1024 MiB")
         torch.manual_seed(15)
         model = build_model("tf_locoformer", TINY, variant="dns").eval()
         path = Path(self.id().replace(".", "_") + ".pt")

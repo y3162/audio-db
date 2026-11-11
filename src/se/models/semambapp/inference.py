@@ -27,13 +27,16 @@ def build(config, variant=None):
     if unknown:
         raise ValueError(f'unknown SEMamba++ config keys: {sorted(unknown)}')
     values.update(raw)
+    # enhance() always analyses with N_FFT, HOP, and WIN. Another n_fft would only resize the network.
+    if int(values['n_fft']) != N_FFT:
+        raise ValueError(f"SEMamba++ n_fft must be {N_FFT}, got {values['n_fft']!r}")
     return SEMambaPP(values)
 
 
 def load(checkpoint, device, config, variant):
     model = build(config, variant)
     path = checkpoint_paths(checkpoint, ('generator',))['generator']
-    state = torch.load(path, map_location='cpu', weights_only=False)
+    state = torch.load(path, map_location='cpu', weights_only=True)
     if isinstance(state, dict) and 'generator' in state and isinstance(state['generator'], dict):
         state = state['generator']
     model.load_state_dict(state, strict=True)

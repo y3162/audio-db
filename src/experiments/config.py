@@ -449,8 +449,8 @@ def config_sha256(config: ExperimentConfig, *, class_paths: dict[str, str] | Non
 
     ``output`` is excluded. Resume refuses a different directory by comparing
     the stored path, not this hash. ``stop_after_logical_steps`` is an
-    execution cap, analogous to ``verification_max_updates``, and is excluded
-    so a capped run can continue under the same algorithm configuration.
+    execution cap and is excluded, so a capped run can continue under the
+    same algorithm configuration.
     """
 
     payload = {

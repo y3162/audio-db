@@ -12,8 +12,10 @@ from src.evaluation.datasets.synthetic import make_synthetic_samples
 from src.evaluation.sample import AudioSample
 from src.evaluation.errors import ConfigError
 from src.evaluation.identity import checkpoint_fingerprint
+from src.evaluation import pipeline
 from src.evaluation.pipeline import execute
-from src.evaluation.results.reader import read_jsonl
+from src.evaluation.results.reader import read_json, read_jsonl
+from src.evaluation.results.summary import summarize_directory
 from tests.evaluation.support import experiment_config
 
 
@@ -37,6 +39,20 @@ class RngEnhancer:
 class ShortEnhancer:
     def enhance(self, waveform, sample_rate):
         return waveform[: waveform.numel() // 2].clone()
+
+
+class StoppingEnhancer:
+    """Enhances until the given call, then stops the process the way Ctrl-C does."""
+
+    def __init__(self, stop_at):
+        self.calls = 0
+        self.stop_at = stop_at
+
+    def enhance(self, waveform, sample_rate):
+        self.calls += 1
+        if self.calls == self.stop_at:
+            raise KeyboardInterrupt
+        return waveform.clone()
 
 
 class PipelineTests(unittest.TestCase):
@@ -414,6 +430,102 @@ class PipelineTests(unittest.TestCase):
         config.metrics.pesq = False
         config.metrics.stoi = False
         return config
+
+    def test_joined_files_are_not_rewritten_for_every_record(self):
+        with self._temporary_dir() as directory:
+            calls = {"n": 0}
+            publish = pipeline._publish
+
+            def counted(run_dir, records):
+                calls["n"] += 1
+                return publish(run_dir, records)
+
+            pipeline._publish = counted
+            try:
+                result = execute(
+                    self._plain_config(directory, "throttled"),
+                    enhancer_factory=lambda model, device: CountingEnhancer(),
+                    bundle=DatasetBundle(samples=make_synthetic_samples(6, 16000, 0.25, 0)),
+                )
+                self.assertEqual(calls["n"], 1)
+                self.assertEqual(len(read_jsonl(Path(result["run_dir"]) / "results.jsonl")), 6)
+                self.assertEqual(result["summary"]["num_ok"], 6)
+                calls["n"] = 0
+                with self._publish_interval(0.0):
+                    execute(
+                        self._plain_config(directory, "every-record"),
+                        enhancer_factory=lambda model, device: CountingEnhancer(),
+                        bundle=DatasetBundle(samples=make_synthetic_samples(6, 16000, 0.25, 0)),
+                    )
+                self.assertEqual(calls["n"], 7)
+            finally:
+                pipeline._publish = publish
+
+    def test_stopped_run_publishes_the_records_it_finished(self):
+        with self._temporary_dir() as directory:
+            box = {"enhancer": StoppingEnhancer(stop_at=3)}
+            with self.assertRaises(KeyboardInterrupt):
+                execute(
+                    self._plain_config(directory, "stopped"),
+                    enhancer_factory=lambda model, device: box["enhancer"],
+                    bundle=DatasetBundle(samples=make_synthetic_samples(4, 16000, 0.25, 0)),
+                )
+            run_dir = Path(directory) / "stopped"
+            self.assertEqual(len(list((run_dir / "records").glob("*.json"))), 2)
+            self.assertEqual(len(read_jsonl(run_dir / "results.jsonl")), 2)
+            self.assertEqual(read_json(run_dir / "summary.json")["num_records"], 2)
+            self.assertEqual(read_json(run_dir / "run.json")["status"], "running")
+
+    def test_stopped_resume_keeps_the_records_already_on_disk(self):
+        with self._temporary_dir() as directory:
+            samples = make_synthetic_samples(4, 16000, 0.25, 0)
+            config = self._plain_config(directory, "resumed")
+            first = execute(
+                config,
+                enhancer_factory=lambda model, device: CountingEnhancer(),
+                bundle=DatasetBundle(samples=samples),
+            )
+            run_dir = Path(first["run_dir"])
+            self.assertEqual(len(read_jsonl(run_dir / "results.jsonl")), 4)
+            by_utterance = {record["utterance_id"]: record["record_id"] for record in first["records"]}
+            for utterance in ("synthetic-0000", "synthetic-0002"):
+                (run_dir / "records" / f"{by_utterance[utterance]}.json").unlink()
+            config.output.resume = True
+            box = {"enhancer": StoppingEnhancer(stop_at=2)}
+            with self._publish_interval(0.0), self.assertRaises(KeyboardInterrupt):
+                execute(config, enhancer_factory=lambda model, device: box["enhancer"], bundle=DatasetBundle(samples=samples))
+            on_disk = {path.stem for path in (run_dir / "records").glob("*.json")}
+            self.assertEqual(len(on_disk), 3)
+            published = {record["record_id"] for record in read_jsonl(run_dir / "results.jsonl")}
+            self.assertEqual(published, on_disk)
+            self.assertEqual(read_json(run_dir / "summary.json")["num_records"], 3)
+            # The earlier run finished, but this one did not.
+            self.assertEqual(read_json(run_dir / "run.json")["status"], "running")
+            # A hard kill leaves the joined file behind records/. The summary is rebuilt from records/.
+            (run_dir / "results.jsonl").write_text("", encoding="utf-8")
+            self.assertEqual(summarize_directory(run_dir)["num_records"], 3)
+            box["enhancer"] = CountingEnhancer()
+            final = execute(config, enhancer_factory=lambda model, device: box["enhancer"], bundle=DatasetBundle(samples=samples))
+            self.assertEqual(box["enhancer"].calls, 1)
+            self.assertEqual(final["reused"], 3)
+            self.assertEqual(len(read_jsonl(run_dir / "results.jsonl")), 4)
+            self.assertEqual(read_json(run_dir / "run.json")["status"], "completed")
+            self.assertEqual(summarize_directory(run_dir)["num_records"], 4)
+
+    def _plain_config(self, directory, run_id):
+        config = experiment_config(directory, run_id=run_id)
+        config.experiment.limit = None
+        config.mixing.enabled = False
+        config.asr.enabled = False
+        config.metrics.wer = False
+        config.metrics.pesq = False
+        config.metrics.stoi = False
+        return config
+
+    def _publish_interval(self, seconds):
+        from unittest import mock
+
+        return mock.patch.object(pipeline, "_PUBLISH_INTERVAL_SECONDS", seconds)
 
     def _temporary_dir(self):
         import tempfile

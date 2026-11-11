@@ -288,13 +288,13 @@ def check_api(report: Report) -> None:
     code = (
         "from src.se import available_enhancers\n"
         "names = available_enhancers()\n"
-        "assert set(names) >= {'mp_senet', 'tf_gridnet', 'deepfilternet3', 'mossformergan', 'semambapp'}\n"
+        "assert set(names) >= {'mp_senet', 'tf_gridnet', 'tf_locoformer', 'deepfilternet3', 'mossformergan', 'semambapp'}\n"
         "import src.data.corpora_catalog, src.evaluation.metrics.pesq, src.asr\n"
         "print('ok')\n"
     )
     result = _run(python, code)
     if result.returncode == 0:
-        report.add("PASS", "api.se", "five enhancers and data/evaluation/asr import", required=True)
+        report.add("PASS", "api.se", "six enhancers and data/evaluation/asr import", required=True)
     else:
         report.add("FAIL", "api.se", "common API import failed", required=True)
 

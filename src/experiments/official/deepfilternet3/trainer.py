@@ -555,8 +555,8 @@ class DeepFilterNet3Trainer:
         return learning_rate, decay
 
     def _tables(self, steps_per_epoch: int) -> tuple[list[float], list[float]]:
-        group = self.optimizer.param_groups[0]
         config = {
+            # _require_adamw refuses an optimizer built with any other base values.
             "optimizer": {"lr": 0.001, "weight_decay": 1e-12},
             "scheduler": {
                 "epochs": self.schedule_epochs,
@@ -568,7 +568,6 @@ class DeepFilterNet3Trainer:
                 "weight_decay_end": self.weight_decay_end,
             },
         }
-        del group
         try:
             return deepfilter_cosine_schedules(config)
         except TrainingError as exc:

@@ -100,13 +100,6 @@ def _profile_add(bucket: str, started: float) -> None:
         profile.add(bucket, time.perf_counter() - started)
 
 
-def python_shuffle(names: Sequence[str], seed: int) -> list[str]:
-    """Sort, then shuffle with ``random.Random``. Official ``glob`` order is not stable."""
-    ordered = sorted(names)
-    random.Random(int(seed)).shuffle(ordered)
-    return ordered
-
-
 def shuffle_pools(clean: Sequence[str], noise: Sequence[str], seed: int) -> tuple[list[str], list[str]]:
     """One ``random.Random`` shuffles clean, then noise. Official uses one ``random.seed`` too."""
     rng = random.Random(int(seed))

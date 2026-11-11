@@ -3,6 +3,7 @@
 WER in a group is (S + D + I) / N. Per-utterance ratios are not averaged.
 PESQ, STOI, ESTOI, and SI-SDR are arithmetic means of finite utterance scores.
 Missing scores are left out of the mean. They are not filled with zero.
+Each group reports how many utterances its WER and each mean were computed on.
 """
 
 from __future__ import annotations
@@ -15,7 +16,7 @@ from typing import Any
 
 from src.evaluation.metrics.wer import add_counts, corpus_wer, empty_counts
 from src.evaluation.provenance import summarize_record_independence
-from src.evaluation.results.reader import read_jsonl, read_record_files
+from src.evaluation.results.reader import read_json, read_jsonl, read_record_files
 from src.evaluation.results.writer import atomic_write_json, atomic_write_text
 
 CONDITIONS = ("clean", "noisy", "enhanced")
@@ -122,8 +123,18 @@ def write_summary(run_dir: Path, summary: dict[str, Any]) -> None:
 
 
 def summarize_directory(run_dir: Path) -> dict[str, Any]:
+    """Summarize a run directory again.
+
+    A completed run is read from ``results.jsonl``. A run that stopped early
+    is read from ``records/``, because the joined file can be behind it.
+    """
     jsonl = run_dir / "results.jsonl"
-    records = read_jsonl(jsonl) if jsonl.is_file() else read_record_files(run_dir)
+    meta = read_json(run_dir / "run.json")
+    stopped_early = isinstance(meta, dict) and meta.get("status") != "completed"
+    if jsonl.is_file() and not stopped_early:
+        records = read_jsonl(jsonl)
+    else:
+        records = read_record_files(run_dir)
     summary = build_summary(records)
     write_summary(run_dir, summary)
     return summary
@@ -147,6 +158,7 @@ def format_summary(summary: dict[str, Any]) -> str:
                     f"snr={group['snr_db']}",
                     f"n={group['utterances']}",
                     f"wer={_fmt(group['wer_normalized'])}",
+                    f"wer_n={group['wer_count']}",
                     f"pesq={_fmt(group['pesq_mean'])}",
                     f"stoi={_fmt(group['stoi_mean'])}",
                     f"si_sdr={_fmt(group['si_sdr_mean'])}",
@@ -167,14 +179,15 @@ def _render_group(key: tuple, items: list[dict[str, Any]]) -> dict[str, Any]:
     config_hash, model, variant, snr_db, condition = key
     raw = empty_counts()
     normalized = empty_counts()
-    saw_wer = False
+    wer_count = 0
     for record in items:
         bucket = record.get("wer", {}).get("values", {}).get(condition)
         if not bucket or bucket.get("status") != "ok":
             continue
-        saw_wer = True
+        wer_count += 1
         add_counts(raw, bucket["raw"])
         add_counts(normalized, bucket["normalized"])
+    saw_wer = wer_count > 0
     payload: dict[str, Any] = {
         "config_hash": config_hash,
         "model": model,
@@ -185,6 +198,7 @@ def _render_group(key: tuple, items: list[dict[str, Any]]) -> dict[str, Any]:
         "wer_aggregation": "micro",
         "wer_normalized": corpus_wer(normalized) if saw_wer else None,
         "wer_raw": corpus_wer(raw) if saw_wer else None,
+        "wer_count": wer_count,
         "edits_normalized": normalized if saw_wer else None,
         "edits_raw": raw if saw_wer else None,
     }
@@ -242,6 +256,7 @@ def _write_csv(path: Path, groups: list[dict[str, Any]]) -> None:
         "wer_aggregation",
         "wer_normalized",
         "wer_raw",
+        "wer_count",
         "normalized_S",
         "normalized_D",
         "normalized_I",
@@ -272,6 +287,7 @@ def _write_csv(path: Path, groups: list[dict[str, Any]]) -> None:
                 "wer_aggregation": group["wer_aggregation"],
                 "wer_normalized": group["wer_normalized"],
                 "wer_raw": group["wer_raw"],
+                "wer_count": group["wer_count"],
                 "normalized_S": edits.get("S"),
                 "normalized_D": edits.get("D"),
                 "normalized_I": edits.get("I"),

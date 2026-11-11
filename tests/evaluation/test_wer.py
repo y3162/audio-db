@@ -60,10 +60,13 @@ class WordErrorTests(unittest.TestCase):
         summary = build_summary([scored, refused])
         group = summary["groups"][0]
         self.assertEqual(group["utterances"], 2)
+        # The WER covers one of the two utterances, and the summary says so.
+        self.assertEqual(group["wer_count"], 1)
         self.assertEqual(group["edits_normalized"]["N"], 2)
         self.assertEqual(group["edits_normalized"]["S"], 0)
         self.assertEqual(group["wer_normalized"], 0.0)
         only_na = build_summary([refused])
+        self.assertEqual(only_na["groups"][0]["wer_count"], 0)
         self.assertIsNone(only_na["groups"][0]["wer_normalized"])
         self.assertNotEqual(only_na["groups"][0]["wer_normalized"], 0)
 

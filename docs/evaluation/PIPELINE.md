@@ -294,6 +294,8 @@ Run ID を省略すると、実験名、UTC 時刻、設定ハッシュから作
 
 `results.jsonl` が再集計の入力です。WER は micro 集計、PESQ / STOI / SI-SDR は有限な発話スコアの平均です。欠けたスコアは平均に 0 として入れません。
 
+各 group の `wer_count` は、その条件で WER を計算できた発話数です。`utterances` より小さいときは、ASR の失敗や `na` で一部の発話が WER から外れています。noisy と enhanced の `wer_count` が違うとき、2 つの WER は同じ発話集合の比較ではありません。PESQ などの `<指標>_count` も同じ意味です。
+
 `summary.json` の `groups` は条件ごとの有効発話で個別に集計するため、noisy と enhanced の件数・集合が異なる場合があります。両者の比較には `paired_signal_metrics` を使います。モデル・設定・SNR・指標ごとに、同一 record で両条件とも有限かつ `ok` の case だけを採用し、両平均、enhanced − noisy の平均、case ID、除外 case と理由を記録します。共通 case が無ければ件数 0、平均と差は null です。条件別の既存集計は変えません。CLI にも paired の集計を表示します。
 
 ### 再開
@@ -301,6 +303,10 @@ Run ID を省略すると、実験名、UTC 時刻、設定ハッシュから作
 成功したレコードだけを再利用します。再利用の条件は、設定ハッシュ、torch の版、発話、モデル、variant、チェックポイント内容、SNR、サンプリングレート、入力波形、clean 参照、強調 seed が一致することです。失敗と skip はやり直します。音声やチェックポイントの内容が変わると、同じ枠を上書きして計算し直します。
 
 レコードは一時ファイルへ書いてから `os.replace` します。JSONL と summary も同様です。
+
+発話ごとの `records/<id>.json` は、その発話が終わるたびに書きます。`results.jsonl` と summary は全件を書き直すので、実行中は最大 60 秒おきと、実行が止まるときにだけ更新します。再開した実行は、まだ読み直していないディスク上のレコードも途中の `results.jsonl` に残します。再開を始めると `run.json` は `running` に戻ります。
+
+プロセスを kill すると、`results.jsonl` が `records/` より古いまま残ることがあります。`--summarize` は、`run.json` が `completed` でない run を `records/` から集計します。`--resume` で最後まで実行すれば `results.jsonl` も揃います。
 
 `output.save_audio` の既定は false です。true のときは強調波形だけを 32-bit float WAV で保存します。noisy と clean は保存しません。
 

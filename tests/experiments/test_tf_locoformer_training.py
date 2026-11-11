@@ -612,11 +612,29 @@ class TFLocoformerConnectionTests(unittest.TestCase):
         self.assertTrue((directory / "1epoch.pt").is_file())
         self.assertFalse((directory / "2epoch.pt").exists())
         self.assertTrue((directory / "3epoch.pt").is_file())
+        # The link from epoch 1 is not left pointing at an epoch that is no longer the best.
+        self.assertFalse((directory / "valid.loss.ave_1best.pt").is_symlink())
+        self.assertEqual(_dangling_links(directory), [])
         self.assertEqual(_max_abs(torch.load(directory / "valid.si_snr.best.pt", map_location="cpu", weights_only=True), third), 0.0)
         meta = json.loads((directory / "valid.si_snr.best.pt.json").read_text(encoding="utf-8"))
         self.assertEqual(meta["criterion"], "valid.si_snr.max")
         self.assertEqual(meta["validation_profile"], "scripted")
         self.assertEqual(meta["value"], 9.0)
+
+    def test_nbest_leaves_no_dangling_link_when_the_first_epoch_is_dropped(self) -> None:
+        directory = self.base / "nbest-dropped"
+        directory.mkdir()
+        states = [{"separator.weight": torch.ones(2) * value} for value in (1.0, 2.0, 3.0)]
+        rows: list[dict[str, float]] = []
+        for epoch, (loss, state) in enumerate(zip((5.0, 1.0, 0.5), states), start=1):
+            rows.append({"epoch": epoch, "loss": loss, "si_snr": float(epoch)})
+            _write_selection(
+                directory, state, epoch, rank_validation_loss(rows, 2), rank_validation_si_snr(rows, 2), 2, epoch, "scripted"
+            )
+            self.assertEqual(_dangling_links(directory), [], f"epoch {epoch}")
+        self.assertFalse((directory / "1epoch.pt").exists())
+        self.assertFalse((directory / "valid.loss.ave_1best.pt").is_symlink())
+        self.assertEqual(os.readlink(directory / "valid.loss.ave.pt"), "valid.loss.ave_2best.pt")
 
     def test_export_matches_the_inference_loader(self) -> None:
         model = TFLocoformerModel(seed=2, architecture=TINY)
@@ -1127,6 +1145,10 @@ def _metrics_file(path: Path) -> list[dict[str, object]]:
         if line:
             rows.append(json.loads(line))
     return rows
+
+
+def _dangling_links(directory: Path) -> list[str]:
+    return sorted(path.name for path in directory.iterdir() if path.is_symlink() and not path.exists())
 
 
 def _assert_artifacts(test: unittest.TestCase, left: Path, right: Path) -> None:

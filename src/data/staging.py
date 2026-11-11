@@ -138,12 +138,19 @@ def rebuild_database(staging: str | Path, database: str | Path) -> dict[str, int
 
 
 def register_run(database: str | Path, run_dir: str | Path) -> dict[str, int]:
-    """Register one finished run from its config.json and results.jsonl."""
+    """Register one finished run from its config.json and results.jsonl.
+
+    A run whose run.json does not say ``completed`` is refused. Its
+    results.jsonl can be older than the records the run has written.
+    """
     directory = Path(run_dir)
     config_path = directory / "config.json"
     results_path = directory / "results.jsonl"
     if not config_path.is_file() or not results_path.is_file():
         raise StagingError(f"run directory is missing config.json or results.jsonl: {directory}")
+    status = _run_status(directory)
+    if status is not None and status != "completed":
+        raise StagingError(f"run is not finished (run.json status is {status!r}): {directory}")
     config = json.loads(config_path.read_text(encoding="utf-8"))
     if not isinstance(config, dict):
         raise StagingError("config.json must be an object")
@@ -197,6 +204,20 @@ def register_run(database: str | Path, run_dir: str | Path) -> dict[str, int]:
     finally:
         connection.close()
     return counts
+
+
+def _run_status(directory: Path) -> str | None:
+    """Status in run.json. None when the directory has no run.json."""
+    path = directory / "run.json"
+    if not path.is_file():
+        return None
+    try:
+        meta = json.loads(path.read_text(encoding="utf-8"))
+    except json.JSONDecodeError as exc:
+        raise StagingError(f"invalid run.json: {path}: {exc}") from exc
+    if not isinstance(meta, dict):
+        raise StagingError(f"run.json must be an object: {path}")
+    return str(meta.get("status"))
 
 
 def _metadata(directory: Path) -> dict[str, Any]:

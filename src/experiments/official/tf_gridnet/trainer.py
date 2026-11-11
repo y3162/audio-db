@@ -18,8 +18,8 @@ committed boundary has two states:
 A crash between them resumes from ``validation_pending`` and runs the three
 once. They are not split into more files, because a scheduler step that was
 saved without the matching selection would run again on resume.
-``valid.si_snr`` is not a selection criterion. The old trainer's SI-SNR
-ranking stays in ``src/training`` and is not copied here.
+``valid.si_snr`` is not a selection criterion. The removed ``src/training``
+trainer also ranked by SI-SNR. That ranking is not copied here.
 """
 
 from __future__ import annotations
@@ -46,7 +46,7 @@ from src.experiments.trainers import (
     _rewind_metrics,
     _sample_path,
 )
-from src.experiments.calc.average import average_checkpoint_files, replace_symlink
+from src.experiments.calc.average import average_checkpoint_files, remove_symlink, replace_symlink
 from src.experiments.calc.rng import capture_rank_rng, restore_rank_rng
 
 _EPOCH_FILE = re.compile(r"^(\d+)epoch\.pt$")
@@ -598,6 +598,8 @@ def _write_nbest(
             },
         )
         replace_symlink(directory / "valid.loss.ave.pt", average_name)
+        # Left from the epochs before n-best existed. Its epoch file may be gone by now.
+        remove_symlink(directory / "valid.loss.ave_1best.pt")
         return
     replace_symlink(directory / "valid.loss.ave_1best.pt", best_name)
     replace_symlink(directory / "valid.loss.ave.pt", "valid.loss.ave_1best.pt")

@@ -37,7 +37,9 @@ CUDA を要求する設定は、使用メモリが空いていない GPU を拒�
 
 ## Checkpoint と再開
 
-出力先は設定の `output.directory` である。完成した checkpoint、`status.json`、`metrics.jsonl` を見る。`status.json` は `RUNNING` / `CHECKPOINTED` / `INTERRUPTED` / `COMPLETED` / `FAILED` を区別する。公式の終了だけが `complete.json` を書く。
+出力先は設定の `output.directory` である。完成した checkpoint、`status.json`、`metrics.jsonl` を見る。`status.json` の値は `RUNNING` / `INTERRUPTED` / `COMPLETED` / `FAILED` である。checkpoint を保存しても `RUNNING` のままで、プロセスが kill されたときも `RUNNING` が残る。`stop_after_logical_steps` への到達と SIGTERM は `INTERRUPTED` になる。公式の終了だけが `complete.json` を書く。
+
+`--resume` を付けない起動は、`complete.json` か `step_*.pt` のあるディレクトリを拒否する。新規の実行は step 0 から始まり、`metrics.jsonl` を空にして同じ番号の checkpoint を書き直すためである。続きは `--resume`、やり直しは別の `output.directory` で行う。
 
 ```bash
 .venvs/se/bin/python -m src.experiments.cli \
@@ -45,7 +47,7 @@ CUDA を要求する設定は、使用メモリが空いていない GPU を拒�
   --resume data/results/experiments/phase5-production/mp-senet-gan-official/step_00000001.pt
 ```
 
-`--resume` は `logging` 以外の設定差を拒否する。`config_sha256` は `output` と `stop_after_logical_steps` を除いた設定の SHA-256 で、YAML のパスはハッシュに入らない。意味の違うクラスパスは別の設定になる。公式コンポーネントへ移した Model と Trainer、および `WarmupReduceLROnPlateau` の移動前パスだけは、同じ設定として再開できる。`core/`、`execution/`、`training/` へ分けたあとも、YAML の公開クラスパスは同じ文字列なので、この分割だけではハッシュは変わらない。`audio-db-training-v1` は読まない。
+`--resume` は設定差を拒否する。比べるのは `config_sha256` で、これは `output` と `stop_after_logical_steps` を除いた設定の SHA-256 である。YAML のパスはハッシュに入らない。`stop_after_logical_steps` で止めた実行は、その上限だけを外した設定で再開できる。出力ディレクトリの違いはハッシュとは別に拒否する。意味の違うクラスパスは別の設定になる。公式コンポーネントへ移した Model と Trainer、および `WarmupReduceLROnPlateau` の移動前パスだけは、同じ設定として再開できる。`core/`、`execution/`、`training/` へ分けたあとも、YAML の公開クラスパスは同じ文字列なので、この分割だけではハッシュは変わらない。`audio-db-training-v1` は読まない。
 
 ## ディレクトリ
 

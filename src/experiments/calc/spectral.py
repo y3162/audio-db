@@ -242,7 +242,3 @@ def si_sdr_loss(estimate: torch.Tensor, reference: torch.Tensor, eps: float = 1e
     noise = estimate - projection
     ratio = torch.sum(projection.square(), dim=-1) / torch.sum(noise.square(), dim=-1).clamp_min(eps)
     return -10.0 * torch.log10(ratio.clamp_min(eps)).mean()
-
-
-def iam_mask(clean: torch.Tensor, noisy: torch.Tensor, eps: float = 1e-8) -> torch.Tensor:
-    return clean.abs() / noisy.abs().clamp_min(eps)

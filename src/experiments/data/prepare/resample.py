@@ -88,19 +88,6 @@ def resample_pcm16(audio: np.ndarray, source_rate: int) -> np.ndarray:
     return decoded
 
 
-def resample_spec() -> dict:
-    """Closed rule object stored on an on-demand fixed-pair protocol."""
-    return {
-        "tool": "soxr",
-        "quality": QUALITY,
-        "source_rate": SOURCE_RATE,
-        "target_rate": TARGET_RATE,
-        "quantization": "pcm16",
-        "length": "source_frames_plus_one_div_3",
-        "order": list(ORDER),
-    }
-
-
 def derivation_row() -> dict:
     spec = _spec()
     kind = "resample"

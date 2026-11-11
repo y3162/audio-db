@@ -199,6 +199,9 @@ def judge_independence(
         missing.append("train lineage is incomplete")
     if not eval_complete:
         missing.append("evaluation lineage is incomplete or unspecified")
+    if _optional_bool(provenance.get("selection_uses_test")) is None:
+        # Disjoint hashes do not show whether the test split chose this checkpoint.
+        missing.append("selection_uses_test is missing or not a boolean")
     if missing:
         fields.update(
             _unknown(

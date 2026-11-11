@@ -11,7 +11,7 @@ import torchaudio
 from src.data.recipe import RecipeError, canonical_recipe, case_id_for, sha256_file
 from src.data.staging import StagingError, export_database, rebuild_database, register_run, register_staging
 from src.evaluation.audio.mixing import rms_snr_db
-from src.evaluation.audio.render import render_recipe
+from src.evaluation.audio.render import _fit_rate, render_recipe
 from src.evaluation.datasets.evaldb import EvaluationDB
 from src.evaluation.errors import DatasetError
 from src.evaluation.pipeline import execute
@@ -64,6 +64,27 @@ class RecipeIdentityTests(unittest.TestCase):
 
 
 class RenderTests(unittest.TestCase):
+    def test_resampled_span_names_the_rate_of_its_frame_counts(self):
+        short = torch.zeros(1, 19200)
+        short[0, ::7] = 0.1
+        wave, span = _fit_rate((short, 48000), 16000, 0.5)
+        self.assertEqual(wave.numel(), 6400)
+        self.assertEqual(span["sample_rate"], 16000)
+        self.assertEqual(span["source_sample_rate"], 48000)
+        self.assertEqual((span["source_frames"], span["used_frames"]), (19200, 19200))
+        self.assertFalse(span["truncated"])
+        # The stored numbers give the same answer when read on the source rate.
+        self.assertFalse(span["source_frames"] > span["max_seconds"] * span["source_sample_rate"])
+        long = torch.zeros(1, 48000)
+        long[0, ::7] = 0.1
+        wave, span = _fit_rate((long, 48000), 16000, 0.5)
+        self.assertEqual(wave.numel(), 8000)
+        self.assertEqual((span["source_frames"], span["used_frames"]), (48000, 24000))
+        self.assertEqual(span["used_frames"] / span["source_sample_rate"], 0.5)
+        self.assertTrue(span["truncated"])
+        same, span = _fit_rate((torch.ones(1, 1600), 16000), 16000, None)
+        self.assertEqual((span["sample_rate"], span["source_sample_rate"]), (16000, 16000))
+
     def test_additive_noise_snr_start_rate_and_replay(self):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
@@ -235,6 +256,16 @@ class StagingTests(unittest.TestCase):
                 register_run(database, run_dir)
             (run_dir / "results.jsonl").write_text(original, encoding="utf-8")
             register_run(database, run_dir)
+            # A run that did not finish is not registered. Its results.jsonl can be partial.
+            finished = (run_dir / "run.json").read_text(encoding="utf-8")
+            meta = json.loads(finished)
+            self.assertEqual(meta["status"], "completed")
+            for status in ("running", "failed"):
+                (run_dir / "run.json").write_text(json.dumps({**meta, "status": status}), encoding="utf-8")
+                with self.assertRaises(StagingError) as unfinished:
+                    register_run(database, run_dir)
+                self.assertIn("not finished", str(unfinished.exception))
+            (run_dir / "run.json").write_text(finished, encoding="utf-8")
             staging = root / "staging"
             export_database(database, staging)
             rebuilt = root / "rebuilt.duckdb"

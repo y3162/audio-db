@@ -21,7 +21,7 @@ make setup PLATFORM=shinoda_lab
 
 | パス | 用途 |
 |---|---|
-| `.venvs/se` | 5 モデルの独立実装、DB、評価、通常のテスト |
+| `.venvs/se` | 6 モデルの独立実装、DB、評価、通常のテスト |
 | `.venvs/asr` | NeMo、Whisper、Transformers。SE と ASR を同じプロセスでつなぐ |
 | `.venvs/official` | 公式実装との比較。NumPy 2.5 |
 | `.venvs/semambapp` | SEMamba++ の fused CUDA（`mamba-ssm` 2.3.2.post1、`causal-conv1d` 1.7.0） |

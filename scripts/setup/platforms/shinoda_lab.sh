@@ -37,7 +37,8 @@ platform_prepare() {
   export TORCH_CUDA_ARCH_LIST="${TORCH_CUDA_ARCH_LIST:-7.5;8.0;8.6}"
   if command -v nvidia-smi >/dev/null 2>&1; then
     local caps
-    caps=$(nvidia-smi --query-gpu=compute_cap --format=csv,noheader 2>/dev/null | sort -u | paste -sd';' -)
+    # A failing nvidia-smi must reach the message below. Under set -e and pipefail it would end setup here.
+    caps=$(nvidia-smi --query-gpu=compute_cap --format=csv,noheader 2>/dev/null | sort -u | paste -sd';' -) || caps=""
     if [[ -z "$caps" ]]; then
       echo "nvidia-smi did not report a CUDA architecture. Fused kernels will not be built." >&2
       export AUDIO_DB_SKIP_NATIVE=1

@@ -32,7 +32,7 @@ class DeepFilterNetReferenceSpectralTest(unittest.TestCase):
         torch.testing.assert_close(left, right, rtol=0, atol=0)
         torch.testing.assert_close(official.grad, independent.grad, rtol=0, atol=0)
 
-    @unittest.skipUnless(torch.cuda.is_available(), "CUDA required")
+    @unittest.skipUnless(torch.cuda.is_available(), "NOT_RUN: CUDA required")
     def test_cuda_deterministic_fallback_remains_finite(self):
         from src.experiments.official.deepfilternet3.reference import _multi_resolution_spectral
 
