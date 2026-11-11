@@ -138,9 +138,9 @@ def _hyper():
     )
 
 
-def _build(h, device):
-    torch.manual_seed(7)
-    with seed_model_init(7):
+def _build(h, device, seed: int = 7):
+    torch.manual_seed(seed)
+    with seed_model_init(seed):
         generator = build_model("mp_senet", vars(h)).to(device)
         discriminator = MetricDiscriminator().to(device)
     official_g = MPNet(h, num_tsblocks=h.num_tsconformers).to(device)
