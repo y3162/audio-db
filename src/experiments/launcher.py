@@ -24,6 +24,8 @@ seconds without an exit, kills every process and is ``FAILED``.
 ``launch.json`` and ``failure.rank<N>.json`` describe the last launch.
 ``status.json`` is rewritten only when the training of this launch started,
 so a refused launch leaves the record of the earlier run as it was.
+``gpu_memory.jsonl`` is the whole-device ``nvidia-smi`` series for this
+launch. A failed sample does not change the verdict.
 
 Exit code: 0 ``COMPLETED``, 3 ``INTERRUPTED``, 1 ``FAILED``, 2 usage.
 """
@@ -108,6 +110,15 @@ def main(argv: list[str] | None = None) -> int:
         default=300.0,
         help="seconds a requested stop may take before every process is killed",
     )
+    parser.add_argument(
+        "--gpu-memory-interval",
+        type=float,
+        default=None,
+        help=(
+            "seconds between nvidia-smi whole-device memory samples "
+            "(default 10, or AUDIO_DB_GPU_MEMORY_INTERVAL; 0 disables)"
+        ),
+    )
     args = parser.parse_args(argv)
     if args.nproc < 1:
         parser.error("--nproc must be >= 1")
@@ -115,6 +126,12 @@ def main(argv: list[str] | None = None) -> int:
         parser.error("--stop-after must be positive")
     if args.grace <= 0:
         parser.error("--grace must be positive")
+    from src.experiments.execution.gpu_memory import resolve_interval
+
+    try:
+        args.gpu_memory_interval = resolve_interval(args.gpu_memory_interval, os.environ)
+    except ValueError as exc:
+        parser.error(str(exc))
     try:
         return _launch(args)
     except _Refused as exc:
@@ -182,6 +199,9 @@ def _launch(args: argparse.Namespace) -> int:
         }
         _write_launch(directory, record)
         stop = _Stop()
+        from src.experiments.execution.gpu_memory import GpuMemoryLog
+
+        memory = GpuMemoryLog.start(directory, float(args.gpu_memory_interval), record["launch_id"])
         previous = {
             number: signal.signal(
                 number, lambda signum, frame: stop.request(signal.Signals(signum).name, signalled=True)
@@ -193,6 +213,7 @@ def _launch(args: argparse.Namespace) -> int:
         finally:
             for number, handler in previous.items():
                 signal.signal(number, handler)
+            memory.close()
         return _finish(directory, record, code, killed, stop)
     finally:
         own.release()

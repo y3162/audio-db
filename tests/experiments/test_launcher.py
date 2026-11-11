@@ -129,6 +129,7 @@ class LauncherTests(_Base):
         self.assertEqual((launch["state"], launch["exit_code"]), ("COMPLETED", 0))
         self.assertEqual(_record(output / "complete.json"), {"logical_step": STEPS})
         self.assertEqual(liveness(output)["state"], "finished")
+        self.assertFalse((output / "gpu_memory.jsonl").exists())
         self.assert_matches_reference(output, 1)
 
         # The directory holds a finished run. A launch that cannot start leaves its record as it was.
@@ -382,7 +383,7 @@ class LauncherTests(_Base):
     def test_usage_errors_exit_2_before_anything_is_written(self) -> None:
         directory = self.directory()
         config = self.yaml(directory)
-        for extra in (("--nproc", "0"), ("--stop-after", "0"), ("--grace", "-1")):
+        for extra in (("--nproc", "0"), ("--stop-after", "0"), ("--grace", "-1"), ("--gpu-memory-interval", "-1")):
             with self.subTest(extra=extra):
                 done = self.launch(config, *extra)
                 self.assertEqual(done.returncode, 2, done.stderr)
@@ -469,6 +470,10 @@ class LauncherCudaTests(_Base):
         output = directory / "run"
         status = _record(output / "status.json")
         self.assertEqual((status["status"], status["logical_step"], status["world_size"]), ("COMPLETED", STEPS, 2))
+        summary = json.loads((output / "gpu_memory.json").read_text(encoding="utf-8"))
+        self.assertEqual(sorted(item["index"] for item in summary["peaks"]), [int(_GPU0), int(_GPU1)])
+        self.assertGreaterEqual(summary["sample_count"], 1)
+        self.assertIn("whole GPU", summary["metrics"]["memory_used_mib"])
         # A CUDA runtime with more than one rank refuses every backend but NCCL.
         runtime = _latest(output)["states"]["runtime"]
         self.assertEqual((str(runtime["device"])[:4], runtime["world_size"]), ("cuda", 2))
@@ -586,6 +591,11 @@ def _write_yaml(
 ) -> Path:
     distribute = "ddp" if nproc > 1 else "none"
     text = f"""schema: audio-db-experiment/v1
+checkpoint:
+  selector:
+    class: src.experiments.selectors.StandardSelector
+    kwargs:
+      latest_every: 1
 seed: 17
 deterministic: true
 entry: trainer

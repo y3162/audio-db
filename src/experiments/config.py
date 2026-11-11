@@ -16,6 +16,7 @@ import yaml
 
 from src.experiments.errors import ConfigError
 from src.experiments.execution.runtime import PreparePolicy
+from src.experiments.execution.selector import DEFAULT_LATEST_EVERY
 
 SCHEMA = "audio-db-experiment/v1"
 TOP_KEYS = frozenset(
@@ -203,7 +204,7 @@ def _parse_output(raw: object) -> Path:
 
 
 def _parse_checkpoint(raw: object) -> tuple[str, dict[str, Any]]:
-    """Read ``checkpoint.selector``. Without the section the standard selector saves Latest every step."""
+    """Read ``checkpoint.selector``. Without the section, StandardSelector uses its default interval."""
 
     if raw is None:
         return DEFAULT_SELECTOR, {}
@@ -549,7 +550,7 @@ def config_generations(config: ExperimentConfig) -> list[tuple[dict[str, str] | 
     """
 
     intervals: list[int | None] = [None]
-    latest_every = config.selector_kwargs.get("latest_every", 1)
+    latest_every = config.selector_kwargs.get("latest_every", DEFAULT_LATEST_EVERY)
     if isinstance(latest_every, int) and not isinstance(latest_every, bool) and latest_every >= 1:
         intervals.append(latest_every)
     partials: list[bool | None] = [None]

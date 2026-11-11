@@ -1,9 +1,12 @@
 """Optional step and checkpoint timing.
 
-``AUDIO_DB_RESOURCE_PROFILE=1`` records CPU spans and CUDA peak memory into
-the experiment directory. The default path does not synchronize CUDA and
-does not write a file. Spans do not change the loss, the optimizer, or the
-checkpoint payload.
+``AUDIO_DB_RESOURCE_PROFILE=1`` records CPU spans and this rank's peak
+``torch.cuda.max_memory_allocated`` / ``max_memory_reserved``. The default
+path does not synchronize CUDA and does not write a file. Spans do not
+change the loss, the optimizer, or the checkpoint payload.
+
+Whole-device memory over time is the launcher's ``gpu_memory.jsonl``
+(``nvidia-smi``), not this profile.
 """
 
 from __future__ import annotations

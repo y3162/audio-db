@@ -27,6 +27,7 @@ from src.experiments.config import config_generations, config_sha256, load_exper
 from src.experiments.data import TensorPairData
 from src.experiments.errors import BuildError, CheckpointError, ConfigError, StateError
 from src.experiments.selectors import (
+    DEFAULT_LATEST_EVERY,
     Decision,
     PeriodicArchiveSelector,
     SavePoint,
@@ -257,7 +258,7 @@ class ResumeTests(_Base):
 class LatestTests(_Base):
     def test_a_failed_save_keeps_the_previous_latest(self) -> None:
         directory = self._directory()
-        config = _write_yaml(directory, "out", steps=1, stop_after=None)
+        config = _write_yaml(directory, "out", steps=1, stop_after=None, selector=(STANDARD, {"latest_every": 1}))
         experiment = build_experiment(load_experiment(config))
         result = experiment.run()
         self.assertEqual(result.logical_step, 1)
@@ -327,13 +328,16 @@ class LatestTests(_Base):
             (4, 2, 3, [2, 3], "INTERRUPTED"),
             (4, 2, 2, [2], "INTERRUPTED"),
             (2, 5000, None, [2], "COMPLETED"),
+            (3, None, None, [3], "COMPLETED"),
+            (4, None, 2, [2], "INTERRUPTED"),
         ]
         original = CheckpointManager._write
         for steps, every, stop_after, expected, status in cases:
             with self.subTest(steps=steps, every=every, stop_after=stop_after):
                 directory = self._directory()
+                selector = None if every is None else (STANDARD, {"latest_every": every})
                 config = _write_yaml(
-                    directory, "out", steps=steps, stop_after=stop_after, selector=(STANDARD, {"latest_every": every})
+                    directory, "out", steps=steps, stop_after=stop_after, selector=selector
                 )
                 written: list[int] = []
 
@@ -405,6 +409,13 @@ class SelectorTests(_Base):
         self.assertEqual(selector.decide(SavePoint("final", 5, latest_is_current=True)), Decision())
         self.assertEqual(selector.decide(SavePoint("final", 5)), Decision(latest=True))
         self.assertEqual(StandardSelector(partial=True).decide(SavePoint("partial", 0)), Decision(latest=True))
+        standard = StandardSelector()
+        self.assertEqual(standard.latest_every, DEFAULT_LATEST_EVERY)
+        self.assertEqual(standard.decide(SavePoint("step", 1)), Decision())
+        self.assertEqual(standard.decide(SavePoint("step", DEFAULT_LATEST_EVERY)), Decision(latest=True))
+        self.assertEqual(StandardSelector(latest_every=1).decide(SavePoint("step", 1)), Decision(latest=True))
+        self.assertEqual(PeriodicArchiveSelector().latest_every, 1)
+        self.assertEqual(TopKSelector(metric="loss").latest_every, 1)
         self.assertEqual(selector.state_dict(), {})
         with self.assertRaises(CheckpointError):
             selector.decide(SavePoint("unknown", 1))
@@ -939,6 +950,25 @@ class LegacyTests(_Base):
                 self.assertIn(old_identity(f"      checkpoint_partial: {same}\n"), accepted)
                 self.assertNotIn(old_identity(f"      checkpoint_interval: 3\n      checkpoint_partial: {other}\n"), accepted)
 
+    def test_an_omitted_interval_matches_the_default_not_every_step(self) -> None:
+        directory = self._directory()
+        modern = load_experiment(_write_yaml(directory, "modern", steps=4, stop_after=None))
+        self.assertEqual(modern.selector_kwargs, {})
+        text = _write_yaml(directory, "old", steps=4, stop_after=None).read_text(encoding="utf-8")
+        accepted = {digest for _, digest in config_generations(modern)}
+
+        def old_identity(line: str) -> str:
+            path = directory / "old.yaml"
+            path.write_text(
+                text.replace("      accumulation: 1\n", "      accumulation: 1\n" + line),
+                encoding="utf-8",
+            )
+            return config_sha256(load_experiment(path))
+
+        self.assertIn(old_identity(""), accepted)
+        self.assertIn(old_identity(f"      checkpoint_interval: {DEFAULT_LATEST_EVERY}\n"), accepted)
+        self.assertNotIn(old_identity("      checkpoint_interval: 1\n"), accepted)
+
 
 class _Scripted(Selector):
     """Answers every offer with one fixed decision."""
@@ -1037,6 +1067,7 @@ def _kill_yaml(directory: Path, marker: Path) -> Path:
         stop_after=None,
         trainer="tests.experiments.support.KillDuringSaveTrainer",
         trainer_kwargs={"kill_step": 3, "marker": str(marker)},
+        selector=(STANDARD, {"latest_every": 1}),
     )
 
 

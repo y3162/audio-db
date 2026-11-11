@@ -72,7 +72,37 @@ def main(argv: list[str] | None = None) -> int:
             print(f"metrics_last\t{json.dumps(last, sort_keys=True)}")
     else:
         print("metrics\tabsent")
+    _gpu_memory(directory)
     return 0
+
+
+def _gpu_memory(directory: Path) -> None:
+    """Print the launcher's whole-device series, when this run recorded one."""
+
+    summary_path = directory / "gpu_memory.json"
+    series = directory / "gpu_memory.jsonl"
+    if summary_path.is_file():
+        try:
+            payload = json.loads(summary_path.read_text(encoding="utf-8"))
+        except json.JSONDecodeError:
+            print("gpu_memory\tunreadable")
+            return
+        peaks = payload.get("peaks") if isinstance(payload, dict) else None
+        shown = ",".join(
+            f"{item.get('index')}:{item.get('memory_used_mib')}MiB"
+            for item in peaks or []
+            if isinstance(item, dict)
+        )
+        count = payload.get("sample_count") if isinstance(payload, dict) else None
+        print(f"gpu_memory\tsamples={count}\tpeak={shown or 'none'}")
+        if isinstance(payload, dict) and payload.get("last_error"):
+            print(f"gpu_memory_error\t{payload['last_error']}")
+        return
+    if series.is_file():
+        lines = [line for line in series.read_text(encoding="utf-8").splitlines() if line]
+        print(f"gpu_memory\tlines={len(lines)}\tsummary=absent")
+        return
+    print("gpu_memory\tabsent")
 
 
 if __name__ == "__main__":

@@ -22,6 +22,8 @@
 #   AUDIO_DB_STOP_AFTER  seconds after which the trainer stops at a safe point.
 #                        Keep AUDIO_DB_STOP_AFTER + AUDIO_DB_GRACE below h_rt.
 #   AUDIO_DB_GRACE       seconds that stop may take (launcher default: 300)
+#   AUDIO_DB_GPU_MEMORY_INTERVAL
+#                        seconds between nvidia-smi samples (default 10; 0 disables)
 #   AUDIO_DB_PYTHON      interpreter (default: .venvs/se/bin/python)
 #
 # Exit code: 0 completed, 3 stopped at a safe point (resume it), 1 failed, 2 usage.

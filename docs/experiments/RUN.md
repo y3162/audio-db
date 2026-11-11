@@ -76,7 +76,7 @@ make experiment CONFIG=... RESUME=OUTPUT_DIRECTORY
 
 ## 保存の方針を変える
 
-YAML の `checkpoint.selector` に Selector を書く。省くと、Latest を毎 step 置き換える。
+YAML の `checkpoint.selector` に Selector を書く。省くと `StandardSelector` で、Latest は 1000 logical step ごとと、境界、安全な停止、完了で置き換える。毎 step は `latest_every: 1` である。`PeriodicArchiveSelector` と `TopKSelector` は、`latest_every` を省くと 1 のままである。
 
 ```yaml
 checkpoint:
@@ -151,6 +151,7 @@ DB の準備は学習 CLI とは別である。
 - `metrics.jsonl`: logical step ごとの損失
 - `status.json`、`launch.json`、`failure.rank<N>.json`: 実行状態と失敗の記録
 - `latest.pt`、`archive/*.pt`: `audio-db-experiment-v1` の checkpoint
+- `gpu_memory.jsonl`、`gpu_memory.json`: Launcher が書いた、デバイス全体の GPU メモリの時系列と最大値。`CUDA_VISIBLE_DEVICES` が空、または間隔が 0 のときは無い。見方は [Launcher](LAUNCHER.md)
 - `data_provenance.json`: Dataset、snapshot、使用集合の内容ハッシュ。rank 0 が一度だけ書く
 - `best_generator.pt`、`valid.loss.best.pt` など: 公式手順の推論用の重み。再開には使えない
 

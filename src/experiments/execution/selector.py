@@ -27,6 +27,11 @@ from src.experiments.errors import BuildError, CheckpointError
 # ``stop``: a safe stop was requested. The state is the state of the previous offer.
 # ``final``: training completed. The state is the state of the previous offer.
 EVENTS = ("step", "partial", "boundary_pending", "boundary", "stop", "final")
+# Logical steps between Latest replacements when a config does not set
+# ``latest_every``. Long runs still save at boundaries, a safe stop, and
+# completion. ``latest_every: 1`` is the explicit every-step policy.
+# PeriodicArchiveSelector and TopKSelector keep their own default of 1.
+DEFAULT_LATEST_EVERY = 1000
 
 
 @dataclass(frozen=True)
@@ -76,11 +81,13 @@ class StandardSelector(Selector):
     """Keep Latest only.
 
     Latest is replaced every ``latest_every`` logical steps, at each boundary,
-    on a safe stop, and when training completes. ``partial`` also replaces it
-    at safe points inside an accumulation window.
+    on a safe stop, and when training completes. The default interval is
+    :data:`DEFAULT_LATEST_EVERY`, so omitting it does not save every step.
+    ``latest_every: 1`` does. ``partial`` also replaces Latest at safe points
+    inside an accumulation window.
     """
 
-    def __init__(self, latest_every: int = 1, partial: bool = False) -> None:
+    def __init__(self, latest_every: int = DEFAULT_LATEST_EVERY, partial: bool = False) -> None:
         self.latest_every = _positive_int("latest_every", latest_every)
         if not isinstance(partial, bool):
             raise BuildError("partial must be a bool")
@@ -118,6 +125,8 @@ class PeriodicArchiveSelector(StandardSelector):
         name: str = "step_{step:08d}.pt",
         partial: bool = False,
     ) -> None:
+        # ``latest_every`` stays 1 when omitted. This class is not the standard
+        # policy, and existing configs rely on that interval.
         super().__init__(latest_every=latest_every, partial=partial)
         self.archive_every = _positive_int("archive_every", archive_every)
         self.keep_last = None if keep_last is None else _positive_int("keep_last", keep_last)
@@ -168,6 +177,7 @@ class TopKSelector(StandardSelector):
         name: str = "best_{step:08d}.pt",
         partial: bool = False,
     ) -> None:
+        # Same as PeriodicArchiveSelector: an omitted interval stays every step.
         super().__init__(latest_every=latest_every, partial=partial)
         if not isinstance(metric, str) or not metric:
             raise BuildError("metric must be a non-empty string")

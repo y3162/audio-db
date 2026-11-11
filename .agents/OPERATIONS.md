@@ -31,6 +31,7 @@ make test-cpu
 - Launcher はジョブの投入、GPU の選択、再試行をしない。それらを足さない。失敗後は `--resume <出力ディレクトリ>` で続ける。
 - 終了コードは 0 が `COMPLETED`、3 が `INTERRUPTED`、1 が `FAILED`。`status.json` の `RUNNING` は、`scripts/experiments/show_status.py` の `liveness` が `alive` のときだけ実行中とみなす。
 - 手順は `docs/experiments/RUN.md`、仕様は `docs/experiments/LAUNCHER.md`。
+- Launcher は、その起動の学習が `RUNNING` になってから、`nvidia-smi` のデバイス全体の使用メモリを実験ディレクトリの `gpu_memory.jsonl` に追記する。取得できないとき、GPU を隠したとき、間隔を 0 にしたときは学習を止めない。`torch.cuda` の allocated / reserved のピークは、これとは別の `AUDIO_DB_RESOURCE_PROFILE=1` である。
 
 ## テスト
 

@@ -16,6 +16,7 @@
 | `metrics.jsonl` | logical step ごとの記録 | Trainer |
 | `status.json`、`complete.json` | 実行状態と完了の印 | 学習プロセス、または Launcher |
 | `launch.json`、`failure.rank<N>.json` | Launcher の記録 | Launcher、各 rank |
+| `gpu_memory.jsonl`、`gpu_memory.json` | デバイス全体の GPU メモリの時系列と最大値。意味は [Launcher](LAUNCHER.md) | Launcher |
 | `data_provenance.json` | Dataset、snapshot、使用集合の内容ハッシュ。rank 0 が一度だけ書く | 共通基盤 |
 | `initialization.json`、`initialization.data_provenance.json` | 初期化元の checkpoint と、その来歴の写し。`initialize` を使った実験だけ | 共通基盤 |
 | `best_generator.pt`、`valid.loss.best.pt`、`valid.loss.ave_<n>best.pt` など | 公式手順が定める推論用の重み。再開には使えない | 各公式 Trainer |
@@ -62,9 +63,9 @@ Selector は、引数、復元した状態、差し出された点だけから�
 
 | クラス（`src.experiments.selectors.`） | 残すもの | 引数 |
 |---|---|---|
-| `StandardSelector` | Latest だけ。`latest_every` step ごと、各境界、安全な停止、完了で置き換える | `latest_every`（既定 1）、`partial`（既定 false。true なら蓄積途中の点でも置き換える） |
-| `PeriodicArchiveSelector` | 上に加え、`archive_every` step ごとの Archive | `archive_every`、`keep_last`（省略は全部残す）、`name`（既定 `step_{step:08d}.pt`） |
-| `TopKSelector` | 上に加え、境界の指標が良い順に `k` 個の Archive | `metric`、`mode`（`min` / `max`）、`k`、`name`（既定 `best_{step:08d}.pt`） |
+| `StandardSelector` | Latest だけ。`latest_every` step ごと、各境界、安全な停止、完了で置き換える | `latest_every`（既定 1000）、`partial`（既定 false。true なら蓄積途中の点でも置き換える） |
+| `PeriodicArchiveSelector` | Latest の規則は同じ。加えて `archive_every` step ごとの Archive。`latest_every` を省くと 1 のまま | `archive_every`、`keep_last`（省略は全部残す）、`name`（既定 `step_{step:08d}.pt`）、`latest_every`（既定 1） |
+| `TopKSelector` | Latest の規則は同じ。加えて境界の指標が良い順に `k` 個の Archive。`latest_every` を省くと 1 のまま | `metric`、`mode`（`min` / `max`）、`k`、`name`（既定 `best_{step:08d}.pt`）、`latest_every`（既定 1） |
 
 YAML は Selector とその設定だけを書く。Trainer に `checkpoint_interval` は無い。
 
@@ -76,7 +77,7 @@ checkpoint:
       latest_every: 5000
 ```
 
-`checkpoint` を省くと `StandardSelector` で、Latest を毎 step 置き換える。`checkpoint` は実験の同一性（`config_sha256`）に入らない。保存の方針を変えても同じ実験として再開できる。ただし、checkpoint に入っている Selector の状態は同じクラスにしか戻せないので、クラスを変えた再開は拒否する。
+`checkpoint` を省くと `StandardSelector` で、Latest は 1000 logical step ごと、各境界、安全な停止、完了で置き換える。毎 step 保存は `latest_every: 1` と書いたときだけである。`checkpoint` は実験の同一性（`config_sha256`）に入らない。保存の方針を変えても同じ実験として再開できる。ただし、checkpoint に入っている Selector の状態は同じクラスにしか戻せないので、クラスを変えた再開は拒否する。
 
 ## 書き込みの保証
 
@@ -137,7 +138,7 @@ initialize:
 checkpoint の形式は `audio-db-experiment-v1` のままである。`audio-db-training-v1` は読まない。
 
 - Selector 導入前の実験は、checkpoint をディレクトリ直下の `step_*.pt` に持つ。これは再開元として読める。再開後の保存は `latest.pt` と `archive/` に書く。古い `step_*.pt` は消さない。
-- 以前の YAML は Trainer に `checkpoint_interval`（MossFormerGAN は `checkpoint_partial` も）を持っていた。新しい YAML ではそれを消し、`StandardSelector` の `latest_every`（と `partial`）に同じ値を書く。この対応が成り立つとき、以前の `config_sha256` を同じ実験として受け付ける。以前の YAML がその引数を省いていた場合も受け付ける。
+- 以前の YAML は Trainer に `checkpoint_interval`（MossFormerGAN は `checkpoint_partial` も）を持っていた。新しい YAML ではそれを消し、`StandardSelector` の `latest_every`（と `partial`）に同じ値を書く。この対応が成り立つとき、以前の `config_sha256` を同じ実験として受け付ける。以前の YAML がその引数を省いていた場合も受け付ける。`latest_every` を省いた新しい設定が受け付ける旧間隔は 1000 であり、旧文書の `checkpoint_interval: 1` は `latest_every: 1` を書いたときだけ受け付ける。
 - クラスパスを移動した世代（`src.training.se.optim.WarmupReduceLROnPlateau`、`src.experiments.<model>`、`src.experiments.models.*`）のハッシュも、同じ設定として受け付ける。新しい保存は現在のハッシュを書く。
 - CLI の `--initialize-from` は無い。初期化は YAML の `initialize` に書く。
 - `provenance_sha256` が None の checkpoint は来歴なしのまま再開できる。後から JSON ができても証明済みにはしない。

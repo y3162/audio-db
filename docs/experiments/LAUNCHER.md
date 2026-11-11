@@ -19,8 +19,9 @@ Launcher がしないこと: ジョブの投入、GPU の選択、再試行、�
 | `--resume` | 続ける checkpoint、または出力ディレクトリ（その `latest.pt`） |
 | `--stop-after` | 起動からこの秒数で安全な停止を要求する。ジョブの時間制限より前に止めるために使う |
 | `--grace` | 停止の要求から終了までに待つ秒数（既定 300）。過ぎたら全プロセスを kill する |
+| `--gpu-memory-interval` | `nvidia-smi` でデバイス全体の使用メモリを取る間隔（秒）。既定は 10。環境変数 `AUDIO_DB_GPU_MEMORY_INTERVAL` でも指定でき、コマンドの値が優先する。0 で記録しない |
 
-`scripts/experiments/job.sh CONFIG [NPROC]` は、同じ Launcher を `exec` する薄いシェルである。環境変数 `AUDIO_DB_RESUME`、`AUDIO_DB_STOP_AFTER`、`AUDIO_DB_GRACE`、`AUDIO_DB_PYTHON` を引数に写す。`make experiment` も Launcher を呼ぶ。
+`scripts/experiments/job.sh CONFIG [NPROC]` は、同じ Launcher を `exec` する薄いシェルである。環境変数 `AUDIO_DB_RESUME`、`AUDIO_DB_STOP_AFTER`、`AUDIO_DB_GRACE`、`AUDIO_DB_PYTHON` を引数に写す。`AUDIO_DB_GPU_MEMORY_INTERVAL` はそのまま Launcher に渡る。`make experiment` も Launcher を呼ぶ。
 
 ## 終了状態
 
@@ -59,8 +60,27 @@ SIGTERM、SIGINT、SIGHUP、`--stop-after` は、Trainer に次の安全な点�
 | `status.json` | 判定。`FAILED` には `reason`、`exit_code`、各 rank の `failures` が入る |
 | `failure.rank<N>.json` | rank N が投げた例外。`kind` は `cuda_oom`、`nccl`、`interrupt`、`exception` |
 | `.launch.lock` | Launcher の排他。同じディレクトリを 2 つの Launcher が監視しない |
+| `gpu_memory.jsonl` | デバイス全体の GPU メモリの時系列。1 行が 1 つの JSON |
+| `gpu_memory.json` | その時系列のサンプル数と、GPU ごとの最大 `memory_used_mib` |
 
 シグナルで kill された rank は、自分の記録を残せない。その場合の手掛かりは `status.json` の `reason`（`terminated by SIGKILL` など）とジョブのログである。
+
+## GPU メモリ
+
+Launcher は、この起動の `status.json` が `RUNNING` になってから、`nvidia-smi` でデバイス全体の使用メモリを取る。学習プロセスの中では取らない。取得のスレッドが止まっても、学習の終了判定は変わらない。
+
+| 項目 | 内容 |
+|---|---|
+| `memory_used_mib` | `nvidia-smi` の `memory.used`。その GPU 全体の使用量（MiB）で、他のプロセスの分を含む。`torch.cuda.memory_allocated` ではない |
+| `memory_total_mib` | `nvidia-smi` の `memory.total`（MiB） |
+| 対象 | `CUDA_VISIBLE_DEVICES` に書いた index または UUID。未設定のときはホスト上の全 GPU（`scope` は `host`）。空文字のときは CPU 実行として記録しない |
+| 時刻 | 各サンプルの `recorded_at`（UTC）。同じ行の `devices` がその時刻の値 |
+| 間隔 | `--gpu-memory-interval` または `AUDIO_DB_GPU_MEMORY_INTERVAL`。既定 10 秒。0 で記録しない |
+| 最大 | `gpu_memory.json` の `peaks`。`scripts/experiments/show_status.py` もこれを出す |
+
+`gpu_memory.jsonl` の先頭行は `kind: header` で、指標の意味と `launch_id` が入る。続く行は `kind: sample` である。サンプルのたびに行を追記して fsync し、`gpu_memory.json` を置き換える。Launcher が kill されても、書き終わった行は残る。`nvidia-smi` が無い、失敗した、対象の GPU が無い、というときは `error` を記録して学習は続ける。
+
+`python -m src.experiments.cli` を直接起動した実行には、この時系列は付かない。PyTorch の allocated / reserved のピークと処理時間は、`AUDIO_DB_RESOURCE_PROFILE=1` の `resource_profile.json` である。これは CUDA を同期するため既定では書かない。GPU メモリの時系列とは別の記録である。
 
 ## `RUNNING` が生きているか
 
