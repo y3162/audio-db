@@ -19,7 +19,10 @@ class FactoryTests(unittest.TestCase):
         Marker.created = 0
 
     def test_creates_class_that_factory_source_does_not_name(self) -> None:
-        source = (ROOT / "src/experiments/factory.py").read_text(encoding="utf-8")
+        source = "\n".join(
+            (ROOT / relative).read_text(encoding="utf-8")
+            for relative in ("src/experiments/core/factory.py", "src/experiments/factory.py")
+        )
         self.assertNotIn("Marker", source)
         created = ComponentFactory().create(
             ComponentSpec("tests.experiments.support.Marker", {"value": 4})

@@ -15,7 +15,7 @@ from typing import Any
 import yaml
 
 from src.experiments.errors import ConfigError
-from src.experiments.runtime import PreparePolicy
+from src.experiments.execution.runtime import PreparePolicy
 
 SCHEMA = "audio-db-experiment/v1"
 TOP_KEYS = frozenset({"schema", "seed", "deterministic", "entry", "runtime", "components", "output"})

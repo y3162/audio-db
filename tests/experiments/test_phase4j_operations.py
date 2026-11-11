@@ -228,7 +228,7 @@ class ProvenanceContractTests(unittest.TestCase):
             again = Experiment(load_experiment(config))
             again.build()
             with patch(
-                "src.experiments.checkpoint._assert_replicated_states",
+                "src.experiments.execution.checkpoint._assert_replicated_states",
                 side_effect=CheckpointError("ranks disagree at state.model"),
             ):
                 with self.assertRaises(CheckpointError):

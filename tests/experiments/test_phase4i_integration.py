@@ -134,8 +134,14 @@ def _probe_rfft(library: str) -> dict[str, object]:
 
 class Phase4IDeclarationTests(unittest.TestCase):
     def test_factory_and_builder_do_not_branch_on_the_six_models(self) -> None:
-        factory = (ROOT / "src/experiments/factory.py").read_text(encoding="utf-8")
-        builder = (ROOT / "src/experiments/builder.py").read_text(encoding="utf-8")
+        factory = "\n".join(
+            (ROOT / relative).read_text(encoding="utf-8")
+            for relative in ("src/experiments/core/factory.py", "src/experiments/factory.py")
+        )
+        builder = "\n".join(
+            (ROOT / relative).read_text(encoding="utf-8")
+            for relative in ("src/experiments/core/builder.py", "src/experiments/builder.py")
+        )
         for name in (
             "mp_senet",
             "mossformer",

@@ -4,8 +4,8 @@
 
 ## Checkpoint
 
-- 形式は `audio-db-experiment-v1`。必須の意味は `src/experiments/checkpoint.py`。
-- `config_sha256` は `output` と `stop_after_logical_steps` を除いた設定の SHA-256。違う設定の resume は拒否する。
+- 形式は `audio-db-experiment-v1`。必須の意味は `src/experiments/execution/checkpoint.py`。公開 import は `src.experiments.checkpoint`。
+- `config_sha256` は `output` と `stop_after_logical_steps` を除いた設定の SHA-256。クラスパスは YAML の公開 import の文字列である。`core/`、`execution/`、`training/` への分割は、この文字列を変えないので新しい世代のハッシュを足さない。違う設定の resume は拒否する。
 - `WarmupReduceLROnPlateau` のクラスパスは `src.experiments.calc.optim.WarmupReduceLROnPlateau`。再開時だけ、移動前の `src.training.se.optim.WarmupReduceLROnPlateau` で計算したハッシュも同じ設定として受ける。公式コンポーネントへ移した Model と Trainer は、移動前の `src.experiments.<model>` と `src.experiments.models.*` のハッシュも受ける。scheduler の旧パスと公式コンポーネントの旧パスを同時に持つ世代も受ける。新しい保存は現在のパスのハッシュを書く。既存の `data_provenance.json` は、その世代のクラスパスで計算したときだけ同じ run として残す。
 - `provenance_sha256` が None の checkpoint は来歴なしのまま再開できる。後から同じディレクトリに JSON ができても、その checkpoint を証明済みにしない。
 - 保存前に rank 間の parameter、buffer、optimizer、scheduler、trainer、data を比べる。不一致の完成ファイルは置かない。

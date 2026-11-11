@@ -13,8 +13,8 @@ from pathlib import Path
 
 import torch
 
-from src.experiments.builder import BuiltGraph, ExperimentBuilder
-from src.experiments.checkpoint import (
+from src.experiments.core.builder import BuiltGraph, ExperimentBuilder
+from src.experiments.execution.checkpoint import (
     CheckpointManager,
     DirectoryLock,
     acquire_directory_lock,
@@ -31,8 +31,8 @@ from src.experiments.errors import (
     PrepareError,
     StateError,
 )
-from src.experiments.factory import ComponentFactory, ComponentSpec
-from src.experiments.results import RunResult
+from src.experiments.core.factory import ComponentFactory, ComponentSpec
+from src.experiments.execution.results import RunResult
 
 __all__ = [
     "Experiment",
@@ -113,15 +113,15 @@ class Experiment:
                 self._checkpoint.restore(Path(initialize_from), mode="initialize")
             self._graph.states.seal()
             self._running = True
-            from src.experiments.signals import clear_interrupt, install_interrupt_handler
+            from src.experiments.execution.signals import clear_interrupt, install_interrupt_handler
 
             clear_interrupt()
             install_interrupt_handler()
             if self._is_primary():
                 self._write_status("RUNNING")
             self._barrier()
-            from src.experiments.profile import enabled as profile_enabled
-            from src.experiments.profile import reset as reset_profile
+            from src.experiments.execution.profile import enabled as profile_enabled
+            from src.experiments.execution.profile import reset as reset_profile
 
             if profile_enabled():
                 reset_profile()
@@ -217,7 +217,7 @@ class Experiment:
         write_status(self._directory, status)
 
     def _dump_profile(self) -> None:
-        from src.experiments.profile import dump, enabled
+        from src.experiments.execution.profile import dump, enabled
 
         if not enabled() or self._directory is None or self._graph is None:
             return

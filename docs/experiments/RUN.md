@@ -45,7 +45,33 @@ CUDA を要求する設定は、使用メモリが空いていない GPU を拒�
   --resume data/results/experiments/phase5-production/mp-senet-gan-official/step_00000001.pt
 ```
 
-`--resume` は `logging` 以外の設定差を拒否する。`config_sha256` は `output` と `stop_after_logical_steps` を除いた設定の SHA-256 で、YAML のパスはハッシュに入らない。意味の違うクラスパスは別の設定になる。公式コンポーネントへ移した Model と Trainer、および `WarmupReduceLROnPlateau` の移動前パスだけは、同じ設定として再開できる。`audio-db-training-v1` は読まない。
+`--resume` は `logging` 以外の設定差を拒否する。`config_sha256` は `output` と `stop_after_logical_steps` を除いた設定の SHA-256 で、YAML のパスはハッシュに入らない。意味の違うクラスパスは別の設定になる。公式コンポーネントへ移した Model と Trainer、および `WarmupReduceLROnPlateau` の移動前パスだけは、同じ設定として再開できる。`core/`、`execution/`、`training/` へ分けたあとも、YAML の公開クラスパスは同じ文字列なので、この分割だけではハッシュは変わらない。`audio-db-training-v1` は読まない。
+
+## ディレクトリ
+
+学習の入口は `python -m src.experiments.cli` のままである。
+
+| 場所 | 責務 |
+|---|---|
+| `src/experiments/api.py`、`cli.py`、`config.py`、`errors.py` | 公開入口。YAML の読み込みと実行 |
+| `src/experiments/core/` | コンポーネントの生成、依存の解決、状態の登録 |
+| `src/experiments/execution/` | CPU/GPU/DDP、checkpoint、再開、中断、来歴、実行結果、プロファイリング |
+| `src/experiments/training/` | 共通の Trainer と損失 |
+| `src/experiments/official/<model>/` | そのモデルの公式 Model、Trainer、参照ステップ |
+| `src/experiments/calc/` | 共有する STFT、スペクトル損失、scheduler、RNG |
+| `src/experiments/data/` | スナップショットとオンデマンド描画。学習ループは持たない |
+
+直下の `runtime.py` や `trainers.py` などは公開 import パスである。実装は上のディレクトリにあり、公開パスは同じオブジェクトを返す。YAML の `class` は公開パスのまま書く。
+
+```yaml
+class: src.experiments.runtime.ProcessRuntime
+```
+
+```yaml
+class: src.experiments.trainers.StandardTrainer
+```
+
+研究用の手法を足すときは、公式再現の Model、Trainer、参照ステップを変更せず、独立した領域に置く。
 
 ## コンポーネント
 
