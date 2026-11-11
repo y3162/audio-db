@@ -1,8 +1,11 @@
 """Run dataset selection, mixing, enhancement, recognition, and metrics.
 
-Each stage is a function. A missing ASR backend or a missing transcript skips
-only the stage that needs it. Speech enhancement models are loaded once per
+Each stage is a function. Speech enhancement models are loaded once per
 model, and only when at least one utterance still needs inference.
+
+When WER is requested, every target utterance needs a score for every
+``asr.conditions`` entry. A missing score leaves the run unfinished and the
+official WER unset. An ASR exception is an utterance failure, not a hypothesis.
 """
 
 from __future__ import annotations
@@ -38,7 +41,7 @@ from src.evaluation.identity import (
     tensor_sha256,
 )
 from src.evaluation.provenance import apply_independence, judge_model_checkpoints
-from src.evaluation.metrics.compute import not_computed, score_utterance
+from src.evaluation.metrics.compute import REFERENCE_VALIDATION_REASONS, not_computed, score_utterance
 from src.evaluation.metrics.pesq import library_status as pesq_library_status
 from src.evaluation.metrics.stoi import library_status as stoi_library_status
 from src.evaluation.models.asr import load_recognizer, recognizer_settings
@@ -48,7 +51,14 @@ from src.evaluation.models.se import (
     load_evaluation_enhancer,
 )
 from src.evaluation.results.reader import read_json, read_record, read_record_files
-from src.evaluation.results.summary import build_summary, format_summary, write_summary
+from src.evaluation.results.summary import (
+    RECORD_SCHEMA_VERSION,
+    assess_completeness,
+    build_summary,
+    demote_unfinished,
+    format_summary,
+    write_summary,
+)
 from src.evaluation.results.writer import atomic_write_json, write_jsonl, write_record
 from src.evaluation.sample import AudioSample
 
@@ -98,7 +108,7 @@ def execute(
     environment = capture_environment()
     git = git_metadata()
     meta = {
-        "schema_version": 1,
+        "schema_version": 2,
         "status": "running",
         "run_id": run_id,
         "config_hash": digest,
@@ -147,14 +157,25 @@ def execute(
             )
             reused += model_reused
             written += model_written
-        meta["status"] = "completed"
+        completeness = assess_completeness(records)
+        meta["status"] = _published_status(completeness)
+        meta["completeness"] = {
+            "official_wer": completeness["official_wer"],
+            "required_wer": completeness["required_wer"],
+            "status": completeness["status"],
+            "reason": completeness["reason"],
+            "missing_count": len(completeness["missing"]),
+        }
+        meta["exit_code"] = 0 if meta["status"] == "completed" else 1
     except Exception:
         meta["status"] = "failed"
         meta["finished_at"] = _now()
+        meta["exit_code"] = 1
         atomic_write_json(run_dir / "run.json", meta)
         raise
     finally:
-        if meta["status"] != "completed":
+        # A killed run stays ``running`` and must not publish a prefix as official.
+        if meta["status"] in {"running", "failed"}:
             progress.flush_after_stop()
     meta["finished_at"] = _now()
     meta["reused"] = reused
@@ -168,6 +189,8 @@ def execute(
         "config_hash": digest,
         "reused": reused,
         "written": written,
+        "status": meta["status"],
+        "exit_code": meta["exit_code"],
         "summary": summary,
         "records": records,
     }
@@ -306,18 +329,14 @@ def _one_utterance(
     )
     slot_id = record_id(slot)
     identity_hash = sha256_json(identity)
-    if prepared["status"] == "ok":
+    if prepared["status"] == "ok" and config.output.resume:
         existing = read_record(run_dir, slot_id)
-        if (
-            config.output.resume
-            and existing
-            and existing.get("status") == "ok"
-            and existing.get("identity_hash") == identity_hash
-        ):
-            stamped = dict(existing)
-            apply_independence(stamped, judgment)
-            return stamped, True, False, enhancer
+        reused = _reuse_record(existing, identity_hash, config, judgment)
+        if reused is not None:
+            record, write_upgrade = reused
+            return record, True, write_upgrade, enhancer
     if prepared["status"] != "ok":
+        _promote_prepare_failure(config, prepared)
         record = _finish_record(
             config,
             sample,
@@ -331,7 +350,7 @@ def _one_utterance(
             git,
             environment,
             hypotheses=None,
-            metrics=not_computed(prepared["reason"] or prepared["status"]),
+            metrics=_align_wer(config, prepared, not_computed(prepared["reason"] or prepared["status"])),
             timing={"prepare": prepared["seconds"], "enhance": None, "asr": None, "metrics": None},
             saved_audio=None,
             judgment=judgment,
@@ -339,6 +358,9 @@ def _one_utterance(
         return record, False, True, enhancer
     if enhancer is None:
         enhancer = factory(model, config.runtime.device)
+    # Failed utterances are redone from enhancement through recognition.
+    # The enhanced waveform is not an input to resume: save_audio is optional
+    # and is not the waveform the next run reads.
     try:
         enhanced = enhance_utterance(
             enhancer,
@@ -347,9 +369,14 @@ def _one_utterance(
             prepared["enhance_seed"],
         )
     except Exception as exc:
-        prepared["status"] = "error"
-        prepared["error"] = _error_payload(exc)
-        prepared["reason"] = "enhancement_failed"
+        _set_terminal(
+            prepared,
+            "error",
+            "enhancement_failed",
+            retryable=True,
+            message=f"enhancement failed: {exc}",
+            error=_error_payload(exc),
+        )
         record = _finish_record(
             config,
             sample,
@@ -363,7 +390,7 @@ def _one_utterance(
             git,
             environment,
             hypotheses=None,
-            metrics=not_computed("enhancement_failed"),
+            metrics=_align_wer(config, prepared, not_computed("enhancement_failed")),
             timing={"prepare": prepared["seconds"], "enhance": None, "asr": None, "metrics": None},
             saved_audio=None,
             judgment=judgment,
@@ -387,6 +414,8 @@ def _one_utterance(
         hypotheses=hypotheses or {},
         reference_truncated=reference_audio.get("truncated"),
     )
+    _classify_recognition(config, prepared, hypotheses, metrics)
+    metrics = _align_wer(config, prepared, metrics)
     metric_seconds = _perf() - metric_begin
     saved = _save_enhanced(config, run_dir, slot_id, enhanced.waveform, prepared["sample_rate"])
     record = _finish_record(
@@ -427,6 +456,8 @@ def _prepare(config: ExperimentConfig, sample: AudioSample, noise_item: AudioSam
         "status": "ok",
         "reason": None,
         "error": None,
+        "retryable": False,
+        "validation_message": None,
         "input_wave": None,
         "clean_wave": None,
         "sample_rate": sample.sample_rate,
@@ -673,7 +704,7 @@ def _finish_record(
     judgment,
 ) -> dict[str, Any]:
     record = {
-        "schema_version": 1,
+        "schema_version": RECORD_SCHEMA_VERSION,
         "record_id": slot_id,
         "identity": identity,
         "identity_hash": identity_hash,
@@ -683,6 +714,7 @@ def _finish_record(
         "status": prepared["status"],
         "skip_reason": prepared["reason"] if prepared["status"] == "skipped" else None,
         "error": prepared["error"],
+        "evaluation": _evaluation_payload(config, prepared, hypotheses, metrics),
         "utterance_id": sample.utterance_id,
         "dataset": sample.dataset,
         "split": sample.split,
@@ -737,6 +769,10 @@ def _save_enhanced(config, run_dir, slot_id, waveform, sample_rate):
 
 def _publish(run_dir: Path, records: list[dict[str, Any]]) -> dict[str, Any]:
     summary = build_summary(records)
+    meta = read_json(run_dir / "run.json")
+    run_status = meta.get("status") if isinstance(meta, dict) else None
+    # Intermediate publishes happen while run.json still says running.
+    demote_unfinished(summary, run_status)
     write_jsonl(run_dir / "results.jsonl", records)
     write_summary(run_dir, summary)
     return summary
@@ -1036,6 +1072,281 @@ def _mark(payload, started, status, reason, error=None):
 
 def _error_payload(exc: BaseException) -> dict[str, str]:
     return {"type": type(exc).__name__, "message": str(exc)}
+
+
+def _published_status(completeness: dict[str, Any]) -> str:
+    status = completeness.get("status")
+    if status == "completed":
+        return "completed"
+    if status == "validation_failed":
+        return "validation_failed"
+    return "incomplete"
+
+
+def _reuse_record(existing, identity_hash: str, config, judgment):
+    """Reuse a successful utterance. Legacy files gain an evaluation block.
+
+    Returns ``(record, write)`` or None. ``write`` is true only when a
+    schema-1 success is stamped with the fields that show completeness.
+    The model is not run again. Records that merely look finished, with an
+    ASR error stored as a missing hypothesis, are not reused.
+    """
+    if not _reusable(existing, identity_hash, config):
+        return None
+    stamped = dict(existing)
+    apply_independence(stamped, judgment)
+    if not _needs_evaluation_upgrade(stamped):
+        return stamped, False
+    stamped["schema_version"] = RECORD_SCHEMA_VERSION
+    stamped["evaluation"] = _verified_evaluation(config)
+    return stamped, True
+
+
+def _reusable(existing, identity_hash: str, config) -> bool:
+    if not isinstance(existing, dict):
+        return False
+    if existing.get("identity_hash") != identity_hash or existing.get("status") != "ok":
+        return False
+    evaluation = existing.get("evaluation")
+    if isinstance(evaluation, dict) and evaluation.get("status") not in (None, "ok"):
+        return False
+    if not config.metrics.wer:
+        return True
+    values = (existing.get("wer") or {}).get("values") or {}
+    hypotheses = existing.get("hypotheses") or {}
+    for condition in config.asr.conditions:
+        cell = values.get(condition) or {}
+        if cell.get("status") != "ok" or not isinstance(cell.get("normalized"), dict):
+            return False
+        if "N" not in cell["normalized"]:
+            return False
+        if not isinstance((hypotheses.get(condition) or {}).get("text"), str):
+            return False
+    return True
+
+
+def _needs_evaluation_upgrade(record: dict) -> bool:
+    if record.get("schema_version") != RECORD_SCHEMA_VERSION:
+        return True
+    evaluation = record.get("evaluation")
+    return not isinstance(evaluation, dict) or "required_wer" not in evaluation
+
+
+def _verified_evaluation(config) -> dict[str, Any]:
+    required = list(config.asr.conditions) if config.metrics.wer else []
+    return {
+        "required_wer": bool(config.metrics.wer),
+        "required_conditions": required,
+        "status": "ok",
+        "retryable": False,
+        "missing_conditions": [],
+        "reasons": [],
+        "message": None,
+        "conditions": {
+            condition: {"metric": "wer", "status": "ok", "reason": None}
+            for condition in required
+        },
+    }
+
+
+def _promote_prepare_failure(config, prepared: dict[str, Any]) -> None:
+    reason = prepared.get("reason") or prepared["status"]
+    if not config.metrics.wer:
+        prepared["retryable"] = prepared["status"] == "error"
+        prepared["validation_message"] = None
+        return
+    _set_terminal(
+        prepared,
+        "validation_failed",
+        reason,
+        retryable=False,
+        message=_validation_message(reason, prepared.get("error")),
+        error=prepared.get("error"),
+    )
+
+
+def _classify_recognition(config, prepared, hypotheses, metrics) -> None:
+    """Turn a required-WER miss into an utterance failure.
+
+    An empty hypothesis string is a real recognition. ``text is None`` is not.
+    Reference and span defects are validation failures. An ASR exception is a
+    retryable error, so resume will compute that utterance again.
+    """
+    if not config.metrics.wer:
+        prepared["retryable"] = False
+        prepared["validation_message"] = None
+        return
+    wer = metrics.get("wer") or {}
+    if wer.get("status") == "validation_failed" or wer.get("reason") in REFERENCE_VALIDATION_REASONS:
+        reason = wer.get("reason") or "validation_failed"
+        _set_terminal(
+            prepared,
+            "validation_failed",
+            reason,
+            retryable=False,
+            message=_validation_message(reason, None),
+            error=None,
+        )
+        return
+    failed = []
+    unavailable = []
+    values = wer.get("values") or {}
+    for condition in config.asr.conditions:
+        cell = values.get(condition) or {}
+        hypothesis = (hypotheses or {}).get(condition) or {}
+        if (
+            cell.get("status") == "ok"
+            and isinstance(hypothesis.get("text"), str)
+            and isinstance(cell.get("normalized"), dict)
+        ):
+            continue
+        err = hypothesis.get("error") or cell.get("reason") or "not_transcribed"
+        if err == "audio_unavailable" or cell.get("status") == "validation_failed":
+            unavailable.append((condition, err))
+        else:
+            failed.append((condition, err))
+    if failed:
+        detail = "; ".join(f"{condition}: {err}" for condition, err in failed)
+        _set_terminal(
+            prepared,
+            "error",
+            "asr_failed",
+            retryable=True,
+            message=f"ASR failed: {detail}",
+            error={
+                "type": "ASRError",
+                "message": detail,
+                "conditions": {condition: err for condition, err in failed},
+            },
+        )
+        return
+    if unavailable:
+        reason = unavailable[0][1]
+        detail = "; ".join(f"{condition}: {err}" for condition, err in unavailable)
+        _set_terminal(
+            prepared,
+            "validation_failed",
+            reason,
+            retryable=False,
+            message=_validation_message(reason, {"message": detail}),
+            error=None,
+        )
+        return
+    prepared["retryable"] = False
+    prepared["validation_message"] = None
+    prepared["error"] = None
+
+
+def _align_wer(config, prepared, metrics: dict[str, Any]) -> dict[str, Any]:
+    """Make the WER block say failure when the utterance did not succeed.
+
+    A scored condition is kept so a provisional aggregate can use it. Missing
+    conditions are not left as a bare ``na`` that looks like an omitted score.
+    """
+    if not config.metrics.wer:
+        return metrics
+    status = prepared["status"]
+    if status not in {"error", "validation_failed"}:
+        return metrics
+    wer = metrics.get("wer") or {}
+    reason = prepared.get("reason") or wer.get("reason") or status
+    existing = wer.get("values") or {}
+    values = {}
+    for condition in config.asr.conditions:
+        cell = existing.get(condition) or {}
+        if cell.get("status") == "ok" and isinstance(cell.get("normalized"), dict):
+            values[condition] = cell
+            continue
+        values[condition] = {
+            "status": "validation_failed" if status == "validation_failed" else "error",
+            "reason": cell.get("reason") or reason,
+        }
+    updated = dict(metrics)
+    updated["wer"] = {
+        "status": "validation_failed" if status == "validation_failed" else "error",
+        "reason": reason,
+        "normalization": wer.get("normalization") or config.metrics.normalization,
+        "values": values,
+    }
+    return updated
+
+
+def _evaluation_payload(config, prepared, hypotheses, metrics) -> dict[str, Any]:
+    required = list(config.asr.conditions) if config.metrics.wer else []
+    values = (metrics.get("wer") or {}).get("values") or {}
+    conditions = {}
+    for condition in required:
+        cell = values.get(condition) or {}
+        hypothesis = (hypotheses or {}).get(condition) or {}
+        if (
+            cell.get("status") == "ok"
+            and isinstance(hypothesis.get("text"), str)
+            and isinstance(cell.get("normalized"), dict)
+        ):
+            conditions[condition] = {"metric": "wer", "status": "ok", "reason": None}
+            continue
+        reason = cell.get("reason") or hypothesis.get("error") or prepared.get("reason") or "missing"
+        if prepared["status"] == "validation_failed":
+            cond_status = "validation_failed"
+        elif prepared["status"] == "error":
+            cond_status = "error"
+        else:
+            cond_status = cell.get("status") or "missing"
+        conditions[condition] = {"metric": "wer", "status": cond_status, "reason": reason}
+    reasons = []
+    if prepared["status"] != "ok" and prepared.get("reason"):
+        reasons.append(prepared["reason"])
+    message = prepared.get("validation_message")
+    if prepared["status"] == "error":
+        err = prepared.get("error") or {}
+        message = message or err.get("message")
+    return {
+        "required_wer": bool(config.metrics.wer),
+        "required_conditions": required,
+        "status": prepared["status"],
+        "retryable": bool(prepared.get("retryable")),
+        "missing_conditions": [name for name, cell in conditions.items() if cell["status"] != "ok"],
+        "reasons": reasons,
+        "message": message,
+        "conditions": conditions,
+    }
+
+
+_VALIDATION_MESSAGES = {
+    "no_reference_transcript": "validation failure: required WER has no usable reference transcript",
+    "partial_audio": (
+        "validation failure: audio is only a prefix of the utterance, "
+        "so WER against the full transcript is refused"
+    ),
+    "unknown_audio_span": (
+        "validation failure: source length is unknown, so WER against the transcript is refused"
+    ),
+    "audio_unavailable": "validation failure: a required WER condition has no waveform",
+    "audio_not_found": "validation failure: audio file was not found",
+    "no_audio": "validation failure: utterance has no audio",
+    "clean_required": "validation failure: clean audio is required to build the evaluated mixture",
+    "noise_required": "validation failure: noise audio is required to build the evaluated mixture",
+    "clean_has_zero_energy": (
+        "validation failure: clean audio has zero energy, so the mixture was not evaluated"
+    ),
+    "preparation_failed": "validation failure: input audio could not be prepared for WER",
+}
+
+
+def _validation_message(reason: str, error: dict | None) -> str:
+    base = _VALIDATION_MESSAGES.get(str(reason), f"validation failure: {reason}")
+    detail = None if not isinstance(error, dict) else error.get("message")
+    if detail:
+        return f"{base}: {detail}"
+    return base
+
+
+def _set_terminal(prepared, status, reason, *, retryable, message, error) -> None:
+    prepared["status"] = status
+    prepared["reason"] = reason
+    prepared["retryable"] = retryable
+    prepared["validation_message"] = message
+    prepared["error"] = error
 
 
 def _new_run_id(name: str, digest: str) -> str:

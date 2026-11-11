@@ -15,6 +15,11 @@ runtime:
     precision: fp32
 output:
   directory: data/results/experiments/phase5-production/deepfilternet3-smoke-schedule
+checkpoint:
+  selector:
+    class: src.experiments.selectors.StandardSelector
+    kwargs:
+      latest_every: 1
 components:
   model:
     role: module
@@ -97,7 +102,6 @@ components:
         - [10, 64]
         - [20, 128]
         - [40, 9999]
-      checkpoint_interval: 1
     inject:
       model: {ref: model}
       data: {ref: data}

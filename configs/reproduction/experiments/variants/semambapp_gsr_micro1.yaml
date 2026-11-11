@@ -16,6 +16,11 @@ runtime:
     precision: fp32
 output:
   directory: data/results/experiments/phase5-production/semambapp-gsr-micro1
+checkpoint:
+  selector:
+    class: src.experiments.selectors.StandardSelector
+    kwargs:
+      latest_every: 45
 components:
   generator:
     role: module
@@ -157,7 +162,6 @@ components:
       accumulation: 1
       grad_clip: null
       validation_interval: 0
-      checkpoint_interval: 45
       best_checkpoint_start_epoch: 40
       claim_label: protocol_conformant_substitute_materials
     inject:

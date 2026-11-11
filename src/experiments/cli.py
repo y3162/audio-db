@@ -11,7 +11,7 @@ import sys
 
 from src.experiments.api import Experiment, build_experiment, preflight_experiment
 from src.experiments.config import load_experiment
-from src.experiments.errors import CheckpointError, ConfigError, ExperimentError
+from src.experiments.errors import CheckpointError, ExperimentError
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -19,8 +19,11 @@ def main(argv: list[str] | None = None) -> int:
 
     parser = argparse.ArgumentParser(description="Run an audio-db experiment")
     parser.add_argument("--config", required=True, help="audio-db-experiment/v1 YAML")
-    parser.add_argument("--resume", default=None, help="audio-db-experiment checkpoint to continue")
-    parser.add_argument("--initialize-from", default=None, help="checkpoint whose selected weights initialize a new run")
+    parser.add_argument(
+        "--resume",
+        default=None,
+        help="checkpoint of this experiment to continue, or its output directory to continue from latest.pt",
+    )
     parser.add_argument("--preflight", action="store_true", help="build and validate without training")
     parser.add_argument("--preflight-dir", default=None, help="directory for preflight.json")
     args = parser.parse_args(argv)
@@ -33,19 +36,17 @@ def main(argv: list[str] | None = None) -> int:
 
 
 def _execute(args: argparse.Namespace) -> None:
-    if args.resume is not None and args.initialize_from is not None:
-        raise ConfigError("resume and initialize_from cannot both be set")
     config = load_experiment(args.config)
     if args.preflight:
         experiment = build_experiment(config)
         try:
-            if args.resume is not None or args.initialize_from is not None:
+            if args.resume is not None:
                 raise CheckpointError("preflight does not restore a checkpoint")
             preflight_experiment(experiment, args.preflight_dir)
         finally:
             experiment.close()
         return
-    Experiment(config).run(resume=args.resume, initialize_from=args.initialize_from)
+    Experiment(config).run(resume=args.resume)
 
 
 if __name__ == "__main__":

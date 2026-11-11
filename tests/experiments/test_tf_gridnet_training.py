@@ -207,7 +207,7 @@ class TFGridNetConnectionTests(unittest.TestCase):
         self.assertEqual(seen[2][2], seen[2][3])
         rows = _metrics(directory)
         self.assertEqual([row["lr"] for row in rows], [0.001, 0.001])
-        payload = _load(directory / "step_00000002.pt")
+        payload = _load(directory / "archive/step_00000002.pt")
         trainer = payload["states"]["trainer"]
         self.assertEqual(trainer["phase"], "in_epoch")
         self.assertIsNone(trainer["boundary"])
@@ -231,7 +231,7 @@ class TFGridNetConnectionTests(unittest.TestCase):
             )
             result = result_holder.run()
             self.assertEqual(result.logical_step, 1)
-            payload = _load(directory / "step_00000001.pt")
+            payload = _load(directory / "archive/step_00000001.pt")
             self.assertEqual(payload["label"], "step")
             self.assertIsNone(payload["validation_pending"])
             self.assertEqual(payload["states"]["trainer"]["phase"], "in_epoch")
@@ -253,7 +253,7 @@ class TFGridNetConnectionTests(unittest.TestCase):
         build_experiment(
             load_experiment(_scripted_yaml(interrupted, steps=2, updates=2, max_epochs=1, stop_after=2))
         ).run()
-        pending = _load(interrupted / "step_00000002.pt")
+        pending = _load(interrupted / "archive/step_00000002.pt")
         self.assertEqual(pending["label"], "validation_pending")
         self.assertEqual(pending["validation_pending"], {"logical_step": 2})
         self.assertEqual(pending["states"]["trainer"]["phase"], "pending_validation")
@@ -265,11 +265,11 @@ class TFGridNetConnectionTests(unittest.TestCase):
         resumed = _cli(
             _scripted_yaml(interrupted, steps=2, updates=2, max_epochs=1),
             "--resume",
-            str(interrupted / "step_00000002.pt"),
+            str(interrupted / "archive/step_00000002.pt"),
         )
         self.assertEqual(resumed.returncode, 0, resumed.stderr + resumed.stdout)
-        left = _load(continuous / "step_00000002.pt")
-        right = _load(interrupted / "step_00000002.pt")
+        left = _load(continuous / "archive/step_00000002.pt")
+        right = _load(interrupted / "archive/step_00000002.pt")
         self.assertEqual(right["label"], "step")
         self.assertIsNone(right["validation_pending"])
         _assert_checkpoint(self, left, right)
@@ -286,8 +286,8 @@ class TFGridNetConnectionTests(unittest.TestCase):
         )
         self.assertEqual(first.run().stop_reason, "interrupted")
         second = build_experiment(load_experiment(_scripted_yaml(interrupted, steps=2, updates=2, max_epochs=1)))
-        self.assertEqual(second.run(resume=interrupted / "step_00000001.pt").stop_reason, "completed")
-        _assert_checkpoint(self, _load(continuous / "step_00000002.pt"), _load(interrupted / "step_00000002.pt"))
+        self.assertEqual(second.run(resume=interrupted / "archive/step_00000001.pt").stop_reason, "completed")
+        _assert_checkpoint(self, _load(continuous / "archive/step_00000002.pt"), _load(interrupted / "archive/step_00000002.pt"))
         _assert_artifacts(self, continuous, interrupted)
 
     def test_weighted_validation_uses_sample_counts(self) -> None:
@@ -298,7 +298,7 @@ class TFGridNetConnectionTests(unittest.TestCase):
         self.assertNotEqual(loss, rank_mean)
         directory = self.base / "weights"
         build_experiment(load_experiment(_scripted_yaml(directory, steps=2, updates=2, max_epochs=1))).run()
-        trainer = _load(directory / "step_00000002.pt")["states"]["trainer"]
+        trainer = _load(directory / "archive/step_00000002.pt")["states"]["trainer"]
         self.assertEqual(trainer["completed_boundaries"][0]["validation_weight"], 3)
 
     def test_nbest_rank_average_and_ties(self) -> None:
@@ -370,7 +370,7 @@ class TFGridNetConnectionTests(unittest.TestCase):
             raise
         self.assertEqual(result.stop_reason, "completed")
         self.assertGreaterEqual(result.logical_step, 1)
-        payload = _load(directory / f"step_{result.logical_step:08d}.pt")
+        payload = _load(directory / f"archive/step_{result.logical_step:08d}.pt")
         self.assertEqual(payload["states"]["trainer"]["phase"], "in_epoch")
         self.assertEqual(len(payload["states"]["trainer"]["history"]), 1)
         self.assertEqual(payload["states"]["scheduler"]["last_epoch"], 1)
@@ -381,7 +381,7 @@ class TFGridNetConnectionTests(unittest.TestCase):
         config = _scripted_yaml(directory, steps=2, updates=2, max_epochs=1, distribute="ddp")
         completed = _torchrun(config)
         self.assertEqual(completed.returncode, 0, completed.stderr + completed.stdout)
-        payload = _load(directory / "step_00000002.pt")
+        payload = _load(directory / "archive/step_00000002.pt")
         self.assertEqual(payload["world_size"], 2)
         self.assertTrue(payload["parameter_ranks_agree"])
         self.assertEqual(payload["states"]["trainer"]["optimizer_updates"], {"optimizer": 2})
@@ -515,6 +515,11 @@ def _scripted_text(
     epochs = "null" if max_epochs is None else str(max_epochs)
     stop = "" if stop_after is None else f"      stop_after_logical_steps: {stop_after}\n"
     return f"""schema: audio-db-experiment/v1
+checkpoint:
+  selector:
+    class: tests.experiments.support.StepArchiveSelector
+    kwargs:
+      interval: 1
 seed: 0
 deterministic: true
 entry: trainer
@@ -578,7 +583,6 @@ components:
       grad_clip: 5.0
       keep_nbest: 5
       max_epochs: {epochs}
-      checkpoint_interval: 1
 {stop}    inject:
       model: {{ref: model}}
       loss: {{ref: loss}}
@@ -593,6 +597,11 @@ def _snapshot_yaml(directory: Path, spec: dict[str, object]) -> Path:
     path = directory / "experiment.yaml"
     path.write_text(
         f"""schema: audio-db-experiment/v1
+checkpoint:
+  selector:
+    class: tests.experiments.support.StepArchiveSelector
+    kwargs:
+      interval: 1
 seed: 0
 deterministic: true
 entry: trainer
@@ -690,7 +699,6 @@ components:
       grad_clip: 5.0
       keep_nbest: 5
       max_epochs: 1
-      checkpoint_interval: 1
     inject:
       model: {{ref: model}}
       loss: {{ref: loss}}

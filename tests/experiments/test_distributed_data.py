@@ -194,13 +194,13 @@ class DistributedResumeTests(unittest.TestCase):
                 interrupted = base / pipeline["name"] / "interrupted"
                 _train(pipeline, continuous, steps=4, stop_after=None)
                 _train(pipeline, interrupted, steps=4, stop_after=2)
-                saved = interrupted / "run" / "step_00000002.pt"
+                saved = interrupted / "run" / "archive/step_00000002.pt"
                 self.assertTrue(saved.is_file(), pipeline["name"])
                 before = saved.read_bytes()
                 _train(pipeline, interrupted, steps=4, stop_after=None, resume=saved)
                 self.assertEqual(saved.read_bytes(), before)
-                left = torch.load(continuous / "run" / "step_00000004.pt", map_location="cpu", weights_only=False)
-                right = torch.load(interrupted / "run" / "step_00000004.pt", map_location="cpu", weights_only=False)
+                left = torch.load(continuous / "run" / "archive/step_00000004.pt", map_location="cpu", weights_only=False)
+                right = torch.load(interrupted / "run" / "archive/step_00000004.pt", map_location="cpu", weights_only=False)
                 self.assertEqual(left["states"]["data"]["epoch"], right["states"]["data"]["epoch"])
                 self.assertEqual(left["states"]["data"]["update_index"], right["states"]["data"]["update_index"])
                 self.assertEqual(left["states"]["data"]["plan_hash"], right["states"]["data"]["plan_hash"])
@@ -256,7 +256,7 @@ class DistributedFailureTests(unittest.TestCase):
             )
             self.assertNotEqual(cursor.returncode, 0)
             self.assertIn("update_index", cursor.stderr + cursor.stdout)
-            self.assertFalse((directory / "run" / "step_00000001.pt").is_file())
+            self.assertFalse((directory / "run" / "archive/step_00000001.pt").is_file())
             self.assertEqual(_status(directory / "run"), "FAILED")
             plan = _train(
                 pipeline,
@@ -268,7 +268,7 @@ class DistributedFailureTests(unittest.TestCase):
             )
             self.assertNotEqual(plan.returncode, 0)
             self.assertIn("plan_hash", plan.stderr + plan.stdout)
-            self.assertFalse((base / "plan" / "run" / "step_00000001.pt").is_file())
+            self.assertFalse((base / "plan" / "run" / "archive/step_00000001.pt").is_file())
 
     def test_tampered_data_state_is_refused(self) -> None:
         with tempfile.TemporaryDirectory() as raw:
@@ -276,7 +276,7 @@ class DistributedFailureTests(unittest.TestCase):
             pipeline = _training_pipelines(base)[0]
             directory = base / "tamper"
             _train(pipeline, directory, steps=2, stop_after=1)
-            saved = directory / "run" / "step_00000001.pt"
+            saved = directory / "run" / "archive/step_00000001.pt"
             original = saved.read_bytes()
             payload = torch.load(saved, map_location="cpu", weights_only=False)
             payload["states"]["data"]["plan_hash"] = "0" * 64
@@ -324,7 +324,7 @@ class DistributedFailureTests(unittest.TestCase):
             pipeline = _training_pipelines(base)[0]
             directory = base / "workers"
             _train(pipeline, directory, steps=1, stop_after=None, load_workers=1)
-            saved = directory / "run" / "step_00000001.pt"
+            saved = directory / "run" / "archive/step_00000001.pt"
             original = saved.read_bytes()
             refused = _train(
                 pipeline,
@@ -606,6 +606,11 @@ def _write_training_yaml(
     stop = "" if stop_after is None else f"      stop_after_logical_steps: {stop_after}\n"
     profile = '      require_profile: "leakage_safe"\n' if kind in {"fixed", "chunk"} else ""
     text = f"""schema: audio-db-experiment/v1
+checkpoint:
+  selector:
+    class: tests.experiments.support.StepArchiveSelector
+    kwargs:
+      interval: 1
 seed: 17
 deterministic: true
 entry: trainer
@@ -672,7 +677,6 @@ components:
     kwargs:
       max_logical_steps: {steps}
       accumulation: {group}
-      checkpoint_interval: 1
 {stop}    inject:
       model: {{ref: model}}
       loss: {{ref: loss}}

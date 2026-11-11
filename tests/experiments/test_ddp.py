@@ -68,7 +68,7 @@ class DistributedTrainingTests(unittest.TestCase):
         self.assertEqual(len(rank1), 2)
         for left, right in zip(rank0, rank1):
             self.assertEqual(set(str(left["sample_id"]).split(",")) & set(str(right["sample_id"]).split(",")), set())
-        payload = torch.load(output / "step_00000002.pt", map_location="cpu", weights_only=False)
+        payload = torch.load(output / "archive/step_00000002.pt", map_location="cpu", weights_only=False)
         self.assertEqual(payload["world_size"], 2)
         self.assertEqual(payload["rank_count_in_rng"], 2)
         self.assertEqual(payload["parameter_ranks_agree"], True)
@@ -104,8 +104,8 @@ class DistributedTrainingTests(unittest.TestCase):
         narrow_run = _torchrun(narrow_config)
         self.assertEqual(wide_run.returncode, 0, wide_run.stderr + wide_run.stdout)
         self.assertEqual(narrow_run.returncode, 0, narrow_run.stderr + narrow_run.stdout)
-        wide_state = torch.load(wide / "run" / "step_00000001.pt", map_location="cpu", weights_only=False)
-        narrow_state = torch.load(narrow / "run" / "step_00000001.pt", map_location="cpu", weights_only=False)
+        wide_state = torch.load(wide / "run" / "archive/step_00000001.pt", map_location="cpu", weights_only=False)
+        narrow_state = torch.load(narrow / "run" / "archive/step_00000001.pt", map_location="cpu", weights_only=False)
         wide_expected = _sgd_reference(steps=1, batch_size=2, examples=8, features=4, accumulation=1)
         narrow_expected = _sgd_reference(steps=1, batch_size=1, examples=8, features=4, accumulation=2)
         self.assertEqual(_max_abs(wide_state["states"]["model"], wide_expected), 0.0)
@@ -161,7 +161,7 @@ class DistributedTrainingTests(unittest.TestCase):
         output = interrupted_dir / "run"
         self.assertEqual(_status(output), "INTERRUPTED")
         self.assertFalse((output / "complete.json").is_file())
-        saved = output / "step_00000002.pt"
+        saved = output / "archive/step_00000002.pt"
         mismatched = _cli(resume_config, "--resume", str(saved))
         self.assertEqual(mismatched.returncode, 1, mismatched.stdout)
         self.assertIn("world size", mismatched.stderr)
@@ -198,8 +198,8 @@ class DistributedTrainingTests(unittest.TestCase):
         resumed = _torchrun(resume_config, "--resume", str(saved))
         self.assertEqual(resumed.returncode, 0, resumed.stderr + resumed.stdout)
         self.assertEqual(_status(output), "COMPLETED")
-        left = torch.load(continuous_dir / "run" / "step_00000004.pt", map_location="cpu", weights_only=False)
-        right = torch.load(output / "step_00000004.pt", map_location="cpu", weights_only=False)
+        left = torch.load(continuous_dir / "run" / "archive/step_00000004.pt", map_location="cpu", weights_only=False)
+        right = torch.load(output / "archive/step_00000004.pt", map_location="cpu", weights_only=False)
         self.assertEqual(_max_abs(left["states"], right["states"]), 0.0)
         self.assertEqual(left["logical_step"], 4)
         self.assertEqual(right["optimizer_updates"], left["optimizer_updates"])
@@ -230,13 +230,36 @@ class DistributedTrainingTests(unittest.TestCase):
                 self.assertNotEqual(completed.returncode, 0)
                 self.assertIn("ranks disagree", completed.stderr + completed.stdout)
                 output = directory / "run"
-                self.assertFalse((output / "step_00000002.pt").is_file())
+                self.assertFalse((output / "archive/step_00000002.pt").is_file())
                 self.assertFalse((output / ".step_00000002.pt.tmp").is_file())
-                previous = output / "step_00000001.pt"
+                previous = output / "archive/step_00000001.pt"
                 digest = (output / "previous.sha256").read_text(encoding="utf-8").strip()
                 self.assertEqual(_sha256(previous), digest)
                 payload = torch.load(previous, map_location="cpu", weights_only=False)
                 self.assertEqual(payload["logical_step"], 1)
+
+    def test_a_selector_that_differs_between_ranks_writes_nothing(self) -> None:
+        directory = Path(self.enterContext(self._directory()))
+        config = _write_yaml(
+            directory,
+            steps=3,
+            batch_size=4,
+            examples=32,
+            features=8,
+            accumulation=1,
+            optimizer="adamw",
+            selector="tests.experiments.support.RankSplitSelector",
+        )
+        completed = _torchrun(config)
+        self.assertNotEqual(completed.returncode, 0)
+        self.assertIn("ranks disagree on the checkpoint decision", completed.stderr + completed.stdout)
+        output = directory / "run"
+        # Step 2 was refused on every rank. The Latest of step 1 is still the good one.
+        payload = torch.load(output / "latest.pt", map_location="cpu", weights_only=False)
+        self.assertEqual(payload["logical_step"], 1)
+        self.assertFalse((output / "archive").exists())
+        self.assertEqual([path.name for path in output.glob(".*.tmp")], [])
+        self.assertEqual(_status(output), "FAILED")
 
     def test_skip_disagreement_fails_without_hanging(self) -> None:
         directory = Path(self.enterContext(self._directory()))
@@ -370,7 +393,15 @@ def _write_yaml(
     include_model: bool = True,
     world_size: int | None = None,
     filename: str = "experiment.yaml",
+    selector: str | None = None,
 ) -> Path:
+    if selector is None:
+        selector_block = """    class: tests.experiments.support.StepArchiveSelector
+    kwargs:
+      interval: 1
+"""
+    else:
+        selector_block = f"    class: {selector}\n"
     stop = "" if stop_after is None else f"      stop_after_logical_steps: {stop_after}\n"
     world = "" if world_size is None else f"    world_size: {world_size}\n"
     if model == "dropout":
@@ -447,7 +478,9 @@ def _write_yaml(
       max_logical_steps: {steps}
 """
     text = f"""schema: audio-db-experiment/v1
-seed: 17
+checkpoint:
+  selector:
+{selector_block}seed: 17
 deterministic: true
 entry: trainer
 runtime:

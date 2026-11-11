@@ -5,7 +5,7 @@
 	reproduction-plan-build reproduction-register \
 	reproduction-plan-dns reproduction-register-dns \
 	reproduction-benchmark-dns-accept reproduction-plan-dns-accept reproduction-register-dns-accept \
-	reproduction-register-p8 \
+	reproduction-register-p8 reproduction-register-p9 \
 	experiment experiment-preflight test-cpu test
 
 ROOT := $(abspath $(dir $(lastword $(MAKEFILE_LIST))))
@@ -56,10 +56,10 @@ help:
 	  '  make reproduction-rebuild-db OUT=path/to/new.duckdb' \
 	  '  make reproduction-prepare [STEP=all] [WORKERS=8]' \
 	  '  make reproduction-plan-dns-accept | reproduction-register-dns-accept | reproduction-benchmark-dns-accept' \
-	  '  make reproduction-register-p8' \
+	  '  make reproduction-register-p8 | reproduction-register-p9' \
 	  '' \
 	  'Experiments:' \
-	  '  make experiment CONFIG=configs/reproduction/experiments/....yaml' \
+	  '  make experiment CONFIG=configs/reproduction/experiments/....yaml [NPROC=2] [RESUME=dir-or-checkpoint] [STOP_AFTER=seconds]' \
 	  '  make experiment-preflight CONFIG=configs/reproduction/experiments/....yaml' \
 	  '  make test-cpu | make test'
 
@@ -164,13 +164,18 @@ reproduction-register-dns-accept:
 reproduction-register-p8:
 	$(WITH_ENV) $(PYTHON) -c 'from src.experiments.data.prepare.dfn3_online import register_p8; print(register_p8())'
 
+reproduction-register-p9:
+	$(WITH_ENV) $(PYTHON) -c 'from src.experiments.data.prepare.semamba_online import register_p9; print(register_p9())'
+
 CONFIG ?=
 RESUME ?=
-INITIALIZE_FROM ?=
+NPROC ?= 1
+STOP_AFTER ?=
 
+# Runs under the launcher. NPROC is the number of DDP ranks; the caller chooses the GPUs.
 experiment:
 	@test -n "$(CONFIG)" || { echo "CONFIG is required"; exit 1; }
-	CUDA_VISIBLE_DEVICES="$${CUDA_VISIBLE_DEVICES}" $(WITH_ENV) $(PYTHON) -m src.experiments.cli --config "$(CONFIG)" $(if $(RESUME),--resume "$(RESUME)",) $(if $(INITIALIZE_FROM),--initialize-from "$(INITIALIZE_FROM)",)
+	CUDA_VISIBLE_DEVICES="$${CUDA_VISIBLE_DEVICES}" $(WITH_ENV) $(PYTHON) -m src.experiments.launcher --config "$(CONFIG)" --nproc "$(NPROC)" $(if $(RESUME),--resume "$(RESUME)",) $(if $(STOP_AFTER),--stop-after "$(STOP_AFTER)",)
 
 experiment-preflight:
 	@test -n "$(CONFIG)" || { echo "CONFIG is required"; exit 1; }

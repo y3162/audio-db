@@ -20,34 +20,26 @@
 - CPU テストは `CUDA_VISIBLE_DEVICES=""` で実行する。CPU の成功を GPU テストの PASS にしない。
 
 ```bash
-make experiment CONFIG=configs/reproduction/experiments/official/mp_senet_gan.yaml
 make experiment-preflight CONFIG=tests/fixtures/configs/experiments/mp_senet_gan.yaml
+make experiment CONFIG=configs/reproduction/experiments/official/mp_senet_gan.yaml [NPROC=2] [RESUME=dir]
 make test-cpu
 ```
 
-`make experiment` は学習を始める。preflight は Optimizer を更新しない。
+## 学習の起動
+
+- 学習は Launcher（`python -m src.experiments.launcher`、`make experiment`、`scripts/experiments/job.sh`）から起動する。単一 GPU と DDP、TSUBAME のジョブ内、研究室サーバー、ローカルで同じである。preflight は Optimizer を更新しない。
+- Launcher はジョブの投入、GPU の選択、再試行をしない。それらを足さない。失敗後は `--resume <出力ディレクトリ>` で続ける。
+- 終了コードは 0 が `COMPLETED`、3 が `INTERRUPTED`、1 が `FAILED`。`status.json` の `RUNNING` は、`scripts/experiments/show_status.py` の `liveness` が `alive` のときだけ実行中とみなす。
+- 手順は `docs/experiments/RUN.md`、仕様は `docs/experiments/LAUNCHER.md`。
 
 ## テスト
 
-`make test-cpu` は下の 7 ディレクトリを CPU だけで実行する。`make test` は同じ CPU 実行に加え、親プロセスの `CUDA_VISIBLE_DEVICES` の範囲で空いている GPU があるときだけ GPU のテストも実行する。変数が未設定なら全物理 GPU、空文字なら GPU レーンは NOT_RUN で、CPU テストは実行する。CPU 側は `CUDA_VISIBLE_DEVICES=""` なので、CPU の成功は GPU の成功ではない。GPU が無い、nvidia-smi が使えない、または範囲内に 1024 MiB 未満かつ計算プロセスの無い GPU が無いときは、その GPU テストは NOT_RUN であり PASS ではない。
-
-モジュールはプロセスプールで並列になる。同時数は `AUDIO_DB_TEST_WORKERS`、プロセス内スレッドは `AUDIO_DB_TEST_THREADS`。未指定なら、affinity と cgroup の CPU 上限のうち小さい方から決める。`os.cpu_count()` は、そのどちらも取れないときの代替である。明示したワーカー数・スレッド数・`AUDIO_DB_DFN3_WORKERS` は、その数をそのまま使う。スレッドの既定上限は 8 で、全コアを 1 プロセスに渡すと実チェックポイントの評価が遅くなるためである。GPU レーンも走るときは、CPU ワーカーと GPU スロットでこのスレッド幅を分ける。`deterministic: true` は従来どおり `torch.set_num_threads(1)` にする。使う GPU の物理番号は `AUDIO_DB_TEST_GPUS` で、親の可視範囲の外は選ばない。この明示リストは空き確認を省く。整数と `GPU-` UUID は物理 GPU で、MIG やそれ以外の表記は別の GPU に読み替えず、GPU レーンを NOT_RUN にする。見える GPU が 1 枚のとき、2 枚必要なテストは NOT_RUN である。同一 GPU 群で同時に走らせる GPU モジュール数は `AUDIO_DB_TEST_GPU_SLOTS` で、既定は 1。DeepFilterNet3 の分布確認のプロセス数は `AUDIO_DB_DFN3_WORKERS`。未指定でスイートから走っているときは、利用可能な CPU を `AUDIO_DB_TEST_WORKERS` で割った数にする。各プロセスは 1 スレッドである。1 モジュールの上限秒は `AUDIO_DB_TEST_TIMEOUT`（既定 1800）。`tests/data/reproduction/test_p1.py`、`test_p9_semamba.py`、`tests/experiments/test_phase4i_integration.py` は `data/db` の本番ファイルを書くか、そのディレクトリ名を見る。この 3 つは同時に走らない。`test_p9_semamba.py` と `tests/experiments/test_semambapp.py` も同時に走らない。p9 が smoke snapshot を公開する前に、semambapp がそのディレクトリを走査するからである。GPU レーンは選んだ物理番号を `CUDA_VISIBLE_DEVICES` と `AUDIO_DB_CUDA_GPU0` / `AUDIO_DB_CUDA_GPU1` の両方に入れる。CUDA の子プロセスは後者を自分の `CUDA_VISIBLE_DEVICES` に書き戻す。
-
-ディレクトリ単体は今までどおり次のコマンドでよい。この経路はプールしない。スレッドは起動前の `OMP_NUM_THREADS` に従い、実モデルの評価スモークは自分でも上限を掛ける。
-
-```bash
-CUDA_VISIBLE_DEVICES="" .venvs/se/bin/python -m unittest discover -s tests/se -v
-CUDA_VISIBLE_DEVICES="" .venvs/se/bin/python -m unittest discover -s tests/asr -v
-CUDA_VISIBLE_DEVICES="" .venvs/se/bin/python -m unittest discover -s tests/data -v
-CUDA_VISIBLE_DEVICES="" .venvs/se/bin/python -m unittest discover -s tests/evaluation -v
-CUDA_VISIBLE_DEVICES="" .venvs/se/bin/python -m unittest discover -s tests/experiments -v
-CUDA_VISIBLE_DEVICES="" .venvs/se/bin/python -m unittest discover -s tests/numerics -v
-CUDA_VISIBLE_DEVICES="" .venvs/se/bin/python -m unittest discover -s tests/setup -v
-```
-
-`tests/numerics/` は損失、STFT、scheduler、参照ステップの数値比較。`tests/experiments/` は組み立て、checkpoint、6 モデルの学習ループ。再現 DB とスナップショットのテストは `tests/data/reproduction/` にあり、`tests/data` の discover がまとめて実行する。チェックポイントや公式ツリーが無いテストは skip する。SKIP は PASS ではない。
-
-CUDA が要るテストは、見える GPU が無いとき、理由が `NOT_RUN` で始まる skip にする。ランナーはそれを SKIP と分けて NOT_RUN と数える。CUDA / NCCL の `tests/experiments/test_cuda_amp.py` と、GPU レーンに入る実モデルのテストがこれに当たる。見えるのが 1 枚のときは、2 枚必要なテストだけ NOT_RUN になる。CPU スイートの成功には数えない。`make test` は、親の可視範囲で空いている GPU の物理番号を `CUDA_VISIBLE_DEVICES` に並べ、このファイルと、GPU がないと実行できない実モデルの少数のテストを別レーンで実行する。評価の GPU 使用前検査は、見える番号を `nvidia-smi` の物理番号へ戻してからメモリを見る。空の `CUDA_VISIBLE_DEVICES` では番号を物理番号のまま見る。
+- `make test-cpu` は CPU だけ。`make test` は、空いている GPU があるときだけ GPU レーンも実行する。CPU の成功を GPU の PASS にしない。
+- テストは `data/` の下に書かない。書き込みは一時ディレクトリで行う。本番の DB やスナップショットを作る処理をテストに入れない。
+- ランナーは `data/` とコーパスのリンク先を読み取り専用にしてからテストを起動する（`tests/suite_guard.py`）。保護できない環境では起動を拒否する。`AUDIO_DB_TEST_UNGUARDED=1` は、ユーザーが保護なしの実行を明示したときだけ使う。
+- 単体の `unittest` に保護を付けるときは `python -m tests.suite_guard COMMAND` を前に置く。
+- SKIP と NOT_RUN は PASS ではない。チェックポイントや公式ツリーが無いテストは skip、CUDA や user namespace が無いテストは NOT_RUN になる。
+- 並列数、GPU の選び方、環境変数、結果の読み方は `docs/TESTING.md`。
 
 ## 検証の区別
 
@@ -56,5 +48,6 @@ CUDA が要るテストは、見える GPU が無いとき、理由が `NOT_RUN`
 | Mock | 配線、集計、再開、設定の拒否 |
 | 実モデルのスモーク | その環境と入力で形状と有限値が正しい |
 | 公式一致 | 記録したモデル、長さ、sample rate、device、seed での最大絶対誤差 |
+| DDP と障害 | 小さな設定で、rank の例外、kill、OOM、停止のあとの状態と、再開の一致。CPU は Gloo、GPU は NCCL |
 
-未計測の条件での一致や、論文スコアの再現とは書かない。
+未計測の条件での一致や、論文スコアの再現とは書かない。TSUBAME の実ジョブでの動作を、研究室サーバーのテストから言わない。

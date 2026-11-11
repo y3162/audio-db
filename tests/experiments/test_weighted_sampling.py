@@ -452,10 +452,10 @@ class WeightedDistributedTests(unittest.TestCase):
             interrupted = base / "interrupted"
             _train(pipeline, continuous, steps=4, stop_after=None, data_class=data_class, timeout_seconds=60)
             _train(pipeline, interrupted, steps=4, stop_after=2, data_class=data_class, timeout_seconds=60)
-            saved = interrupted / "run" / "step_00000002.pt"
+            saved = interrupted / "run" / "archive/step_00000002.pt"
             _train(pipeline, interrupted, steps=4, stop_after=None, resume=saved, data_class=data_class, timeout_seconds=60)
-            left = torch.load(continuous / "run" / "step_00000004.pt", map_location="cpu", weights_only=False)
-            right = torch.load(interrupted / "run" / "step_00000004.pt", map_location="cpu", weights_only=False)
+            left = torch.load(continuous / "run" / "archive/step_00000004.pt", map_location="cpu", weights_only=False)
+            right = torch.load(interrupted / "run" / "archive/step_00000004.pt", map_location="cpu", weights_only=False)
             self.assertEqual(left["states"]["data"]["weights"], right["states"]["data"]["weights"])
             self.assertIsNotNone(left["states"]["data"]["weights"])
             self.assertEqual(left["states"]["data"]["plan_hash"], right["states"]["data"]["plan_hash"])
@@ -473,7 +473,7 @@ class WeightedDistributedTests(unittest.TestCase):
             self.assertTrue(_same_tree(left["rng_by_rank"], right["rng_by_rank"]))
             self.assertEqual(_losses(continuous / "run"), _losses(interrupted / "run"))
             _train(semamba_pipeline, base / "semamba", steps=1, stop_after=None, data_class=data_class, timeout_seconds=60)
-            semamba_state = torch.load(base / "semamba" / "run" / "step_00000001.pt", map_location="cpu", weights_only=False)
+            semamba_state = torch.load(base / "semamba" / "run" / "archive/step_00000001.pt", map_location="cpu", weights_only=False)
             self.assertTrue(any(str(key).endswith(":train:0") for key in semamba_state["states"]["data"]["weights"]))
             skew = _train(
                 pipeline,

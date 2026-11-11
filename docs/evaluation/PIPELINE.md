@@ -37,7 +37,7 @@ tests/evaluation/
 3. 必要なときだけ雑音混合
 4. SE
 5. ASR（無効ならここを飛ばす）
-6. 指標（正解テキストが無ければ WER を記録しない。clean が無ければ PESQ / STOI を記録しない）
+6. 指標（WER を要求した条件で参照や音声区間が使えなければ `validation_failed`。clean が無ければ PESQ / STOI は `na` で、それだけでは公式 WER を止めない）
 7. 結果の保存と集計
 
 ASR が未導入でも SE までは実行できます。指標ライブラリが無い場合も、その指標だけ `unavailable` になり、ほかの指標は続きます。
@@ -168,7 +168,7 @@ db.create_set_from_corpus(
 
 - 評価セットも DuckDB も無い: 実行はエラー。合成設定には影響しません。
 - セットが未登録、またはクエリが 0 件: エラー。
-- 行はあるが音声ファイルが無い: その発話は `skipped`。
+- 行はあるが音声ファイルが無い: 実行前の計画が拒否する（終了コード 2）。計画のあとで読めなくなった入力は、WER を要求しているとき `validation_failed`、要求していないとき `skipped` または `error`。
 
 ## レシピからの波形
 
@@ -244,9 +244,20 @@ WER は発話ごとの編集回数を足してから割ります。
 WER = (S + D + I) / N
 ```
 
-`N` は参照の語数です。発話 WER の平均は出しません。`N = 0` の発話は分母に入れず、値は null です。0 にはしません。
+`N` は参照の語数です。発話 WER の平均は出しません。`N = 0` の発話は分母に入れず、値は null です。0 にはしません。スコア自体は付いているので、公式 WER の対象から外れたことにはなりません。
 
-認識に使った音声が元の発話より短い接頭辞で、その区間に対応する部分テキストが無いとき、WER は `na`、理由は `partial_audio` です。`max_seconds` があるだけでは切り出し済みにしません。元の長さがその秒数以下なら全文として計算します。長さが取れないときは `unknown_audio_span` で `na` にします。正解テキストが無いときも `na`（`no_reference_transcript`）です。これらの発話は micro 集計の `N` に入れません。
+### どの WER が必須か
+
+WER を計算するかは、欠けた値からは判断しません。
+
+- `metrics.wer: true` の実行だけが WER を要求します。このとき `asr.enabled` は必須です。要求する条件は `asr.conditions` そのものです。既定は `noisy` と `enhanced` です。`clean` を含めたときは、その条件も全発話に必要です。
+- 対象発話のすべてで、要求した条件の WER が揃ったときだけ公式 WER を確定します。1 件でも欠ければ公式値は出さず、実行は `completed` になりません。noisy と enhanced は同じ対象発話の集合です。片方だけ揃っていても、もう片方が欠けるとその実行の公式 WER は両方とも確定しません。
+- 参照テキストが空、音声が発話より短い接頭辞（`partial_audio`）、元の長さが不明（`unknown_audio_span`）、要求した条件の波形が無い、入力音声が用意できない、は `validation_failed` です。黙って `na` のまま集計から外すことはしません。部分音声に全文テキストの WER は計算しません。`max_seconds` があるだけでは切り出し済みにしません。元の長さがその秒数以下なら全文として計算します。
+- 仮説が空文字のときは、失敗ではなく認識結果です。削除として数えます。認識が例外で落ちた発話は成功にしません。
+- `metrics.wer: false` は、その実行が WER を要求しないという明示です。信号指標だけの評価セットはこちらにします。参照テキストが無いことから WER 不要とは推断しません。
+- PESQ / STOI / SI-SDR が `na` や `unavailable` であることだけでは、公式 WER を止めません。
+
+計画の時点で音声パスが無い実行は、推論の前に「not ready」で拒否します。終了コードは 2 です。
 
 正規化は `wer-norm-v1` です。NFKC、小文字化、Unicode の句読点を空白に置換、空白の圧縮、です。生の空白区切りも同時に保存します。正規化バージョンを変えると設定ハッシュが変わり、以前の結果は再利用しません。
 
@@ -273,6 +284,16 @@ python -m src.evaluation.cli --summarize data/results/se-evaluation/libri-2s
 
 Dry-run はモデルをロードしません。対象発話、モデル、チェックポイントの有無、SNR、出力先、予定件数を表示します。準備ができていなければ終了コード 2 です。
 
+終了コードは次のとおりです。
+
+| コード | とき |
+|---|---|
+| 0 | 実行が `completed`。dry-run が ready。`--summarize` は報告なので、公式でなくても 0 |
+| 1 | 評価は最後まで走ったが完了していない。`incomplete`（認識や強調の失敗で、再開すれば埋まる）か `validation_failed`（参照や入力の欠陥） |
+| 2 | 設定またはデータセットのエラー。dry-run が ready でないとき |
+
+`--summarize` の表示には `official_wer:` が出ます。`wer=official:` だけが公式値です。`wer=provisional:` は欠けがあるときの参考値で、公式ではありません。
+
 CUDA を指定した実行は `nvidia-smi` を見て、使用メモリが 1024 MiB 以上の GPU を拒否します。空いている GPU だけを指定してください。`runtime.allow_busy_gpu: true` は、その GPU が自分のジョブだと分かっているときだけ使います。試験の多くは CPU で足ります。
 
 ## 結果
@@ -292,15 +313,35 @@ Run ID を省略すると、実験名、UTC 時刻、設定ハッシュから作
 
 各レコードには、run ID、git commit、設定ハッシュ、データセット、発話 ID、パス、SNR、seed、モデル名、variant、チェックポイント SHA-256、ASR 設定、認識結果、正解、WER の編集数、PESQ / STOI、処理時間、エラーまたは skip 理由、Python / torch / デバイスが入ります。チェックポイントの SHA-256 はサイズと mtime が変わるまで再計算しません。
 
-`results.jsonl` が再集計の入力です。WER は micro 集計、PESQ / STOI / SI-SDR は有限な発話スコアの平均です。欠けたスコアは平均に 0 として入れません。
+`results.jsonl` が再集計の入力です。WER は対象発話全体の micro 集計です。欠けた発話を分母から外して公式値にはしません。PESQ / STOI / SI-SDR は有限な発話スコアの平均です。欠けたスコアは平均に 0 として入れません。
 
-各 group の `wer_count` は、その条件で WER を計算できた発話数です。`utterances` より小さいときは、ASR の失敗や `na` で一部の発話が WER から外れています。noisy と enhanced の `wer_count` が違うとき、2 つの WER は同じ発話集合の比較ではありません。PESQ などの `<指標>_count` も同じ意味です。
+`summary.json` と `run.json` と発話レコードの `schema_version` は 2 です。公式かどうかは `official_wer` と、group の `wer_official` で分かります。
 
-`summary.json` の `groups` は条件ごとの有効発話で個別に集計するため、noisy と enhanced の件数・集合が異なる場合があります。両者の比較には `paired_signal_metrics` を使います。モデル・設定・SNR・指標ごとに、同一 record で両条件とも有限かつ `ok` の case だけを採用し、両平均、enhanced − noisy の平均、case ID、除外 case と理由を記録します。共通 case が無ければ件数 0、平均と差は null です。条件別の既存集計は変えません。CLI にも paired の集計を表示します。
+| 場所 | フィールド | 意味 |
+|---|---|---|
+| 実行 | `status` | `running` / `completed` / `incomplete` / `validation_failed` / `failed` |
+| 実行 | `completeness.official_wer` | 公式 WER を確定したか |
+| 発話 | `status` | `ok` / `error` / `skipped` / `validation_failed` |
+| 発話 | `evaluation` | 要求した WER 条件、欠けた条件、再開できるか、メッセージ |
+| 条件 | `evaluation.conditions.<name>.status` | その条件の `ok` / `error` / `validation_failed` |
+| group | `wer_normalized` | 公式の micro WER。公式でないときは null |
+| group | `wer_provisional` | 揃っている分だけの参考値。公式ではない |
+| group | `utterances` | その group の対象発話数。失敗した発話も含む |
+| group | `wer_count` | 参考値または公式値に入った、スコアのある発話数 |
+
+`wer_count` が `utterances` より小さいとき、その数は対象全体の WER ではありません。`wer_normalized` は null です。noisy と enhanced の `target_utterance_ids` は同じ対象です。PESQ などの `<指標>_count` は、これまでどおり有限なスコアの件数です。補助指標の `na` は公式 WER を止めません。
+
+`summary.json` の `paired_signal_metrics` は、noisy と enhanced の補助指標を同じ case で比べます。両条件とも有限な case だけを採用し、両平均、enhanced − noisy の平均、case ID、除外 case と理由を記録します。共通 case が無ければ件数 0、平均と差は null です。異なる集合の単独平均を差として扱いません。
+
+スキーマ 1 の結果ディレクトリ、または `evaluation` の無いレコードは、完全だったと示せません。`--summarize` は落ちませんが、`official_wer` は false で、`wer_normalized` は null です。以前の集計値が計算できるときは `wer_provisional` に置き、表示は `wer=provisional:` です。公式値が必要なら、新しい `run_id` で実行し直します。スキーマ 1 でも、要求した条件の WER と仮説文字列が既に揃っている成功レコードは、`--resume` がモデルを再実行せず `evaluation` を書き足します。仮説が無いレコードは失敗として計算し直します。
 
 ### 再開
 
-成功したレコードだけを再利用します。再利用の条件は、設定ハッシュ、torch の版、発話、モデル、variant、チェックポイント内容、SNR、サンプリングレート、入力波形、clean 参照、強調 seed が一致することです。失敗と skip はやり直します。音声やチェックポイントの内容が変わると、同じ枠を上書きして計算し直します。
+成功した発話だけを再利用します。再利用の条件は、設定ハッシュ、torch の版、発話、モデル、variant、チェックポイント内容、SNR、サンプリングレート、入力波形、clean 参照、強調 seed が一致し、発話の `status` が `ok` であることです。WER を要求しているときは、要求した条件のすべてに仮説の文字列と WER のカウントがあることも条件です。認識が落ちて仮説が無いレコードは、`status` が `ok` でも再利用しません。
+
+失敗した発話は、強調から認識までやり直します。強調だけ成功して認識が失敗したときも、強調波形はレコードに残さないので、その発話の強調からやり直します。`save_audio` の WAV は再開の入力にしません。成功した発話の強調と認識は呼び直しません。
+
+`validation_failed` も `ok` ではないので、再開するとその発話をやり直します。参照やファイルが直っていなければ、同じ検証失敗になります。
 
 レコードは一時ファイルへ書いてから `os.replace` します。JSONL と summary も同様です。
 
@@ -319,7 +360,7 @@ CUDA_VISIBLE_DEVICES="" .venvs/se/bin/python -m unittest discover -s tests/evalu
 
 `make test-cpu` は、この評価テストを含む 7 ディレクトリを CPU 上でプロセス並列かつスレッド上限つきで実行する。上の discover はディレクトリ単体の実行である。
 
-合成音声、Mock SE、Mock ASR で、混合、SNR、WER の micro 集計、指標の skip、保存、再開、設定変更によるキャッシュ無効化、dry-run を確認します。GPU も巨大チェックポイントも要りません。
+合成音声、Mock SE、Mock ASR で、混合、SNR、WER の micro 集計、指標の skip、保存、再開、設定変更によるキャッシュ無効化、dry-run を確認します。`tests/evaluation/test_wer_completeness.py` は、認識の例外、空の仮説、強調の失敗、参照の欠陥、未完了ディレクトリとスキーマ 1 の再集計を、Mock だけで見ます。実モデルは載せていません。GPU も巨大チェックポイントも要りません。
 
 `tests/evaluation/test_real_smoke.py` は、MP-SENet の `g_best_vb` と DuckDB と音声ファイルがあるときだけ、LibriSpeech test-clean の 1 発話を先頭 2 秒、DEMAND の先頭 2 秒、SNR 0 dB、CPU で実行します。これは接続の確認であり、論文用のスコアではありません。Mock の成功とも別です。チェックポイントが無い環境では skip します。
 

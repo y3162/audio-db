@@ -168,20 +168,22 @@ class Phase4IDeclarationTests(unittest.TestCase):
             self.assertNotIn("world_size", config.runtime_kwargs, name)
             trainer = config.components["trainer"]
             self.assertEqual(trainer.kwargs["max_logical_steps"], 1, name)
-            self.assertGreaterEqual(int(trainer.kwargs["checkpoint_interval"]), 1, name)
+            self.assertNotIn("checkpoint_interval", trainer.kwargs, name)
+            self.assertEqual(config.selector_class, "tests.experiments.support.StepArchiveSelector", name)
+            self.assertGreaterEqual(int(config.selector_kwargs["interval"]), 1, name)
             self.assertEqual(config.components["data"].class_path, "src.experiments.data.SnapshotDataModule", name)
         mp = configs["mp_senet"]
         self.assertEqual(mp.components["optim_g"].parameters_of[0].component, "generator")
         self.assertEqual(mp.components["optim_d"].parameters_of[0].component, "metric_discriminator")
         self.assertEqual(mp.components["generator"].prepare.distribute, "none")
-        self.assertEqual(mp.components["trainer"].kwargs["checkpoint_interval"], 5000)
+        self.assertEqual(mp.selector_kwargs["interval"], 5000)
         moss = configs["mossformergan"]
         self.assertNotIn("scheduler", moss.components)
         self.assertEqual(moss.components["optim_g"].parameters_of[0].component, "generator")
         self.assertEqual(moss.components["optim_d"].parameters_of[0].component, "discriminator")
         self.assertTrue(moss.components["generator"].prepare.sync_batchnorm)
         self.assertEqual(moss.components["trainer"].kwargs["accumulation"], 2)
-        self.assertEqual(moss.components["trainer"].kwargs["checkpoint_interval"], 5786)
+        self.assertEqual(moss.selector_kwargs["interval"], 5786)
         grid = configs["tf_gridnet"]
         self.assertEqual(grid.components["optimizer"].class_path, "torch.optim.Adam")
         self.assertEqual(grid.components["scheduler"].class_path, "torch.optim.lr_scheduler.ReduceLROnPlateau")
@@ -202,7 +204,7 @@ class Phase4IDeclarationTests(unittest.TestCase):
         self.assertFalse(dfn.components["model"].prepare.sync_batchnorm)
         self.assertEqual(dfn.components["optimizer"].class_path, "torch.optim.AdamW")
         self.assertEqual(dfn.components["source"].kwargs["snapshot"], "dfn3.online.smoke@1")
-        self.assertEqual(dfn.components["trainer"].kwargs["checkpoint_interval"], 1)
+        self.assertEqual(dfn.selector_kwargs["interval"], 1)
         self.assertEqual(dfn.components["trainer"].kwargs["batch_schedule"][0], [0, 16])
         semamba = configs["semambapp"]
         self.assertEqual(semamba.components["optim_g"].parameters_of[0].component, "generator")
@@ -346,12 +348,16 @@ class Phase4ICheckpointTests(unittest.TestCase):
         set_determinism(False, cuda=False)
         cls._temporary.cleanup()
 
-    def test_a_wide_checkpoint_interval_completes_without_a_step_file(self) -> None:
+    def test_a_wide_latest_interval_still_saves_the_final_state_once(self) -> None:
         for directory in (self.wide_interval, self.mp_wide_interval):
             self.assertEqual(json.loads((directory / "status.json").read_text(encoding="utf-8"))["status"], "COMPLETED")
             self.assertTrue((directory / "complete.json").is_file())
-            self.assertFalse(list(directory.glob("step_*.pt")))
-            self.assertFalse((directory / "data_provenance.json").exists())
+            self.assertFalse((directory / "archive").exists())
+            self.assertTrue((directory / "latest.pt").is_file())
+            self.assertFalse(list(directory.glob(".*.tmp")))
+            latest = torch.load(directory / "latest.pt", map_location="cpu", weights_only=False)
+            self.assertEqual(latest["logical_step"], 1)
+            self.assertTrue((directory / "data_provenance.json").is_file())
             metrics = [json.loads(line) for line in (directory / "metrics.jsonl").read_text(encoding="utf-8").splitlines() if line]
             self.assertEqual([row["logical_step"] for row in metrics], [1])
             saved = (directory / "metrics.jsonl").read_bytes()
@@ -362,23 +368,23 @@ class Phase4ICheckpointTests(unittest.TestCase):
 
     def test_saved_checkpoints_keep_the_experiment_contract(self) -> None:
         for directory in (self.dfn, self.semamba):
-            payload = _load(directory / "step_00000001.pt")
+            payload = _load(directory / "archive/step_00000001.pt")
             self.assertEqual(payload["format"], FORMAT)
             digest = payload["provenance_sha256"]
             self.assertIsInstance(digest, str)
             self.assertEqual(len(digest), 64)
             raw = (directory / "data_provenance.json").read_bytes()
-            sidecar = (directory / "step_00000001.data_provenance.json").read_bytes()
+            sidecar = (directory / "archive/step_00000001.data_provenance.json").read_bytes()
             self.assertEqual(hashlib.sha256(raw).hexdigest(), digest)
             self.assertEqual(sidecar, raw)
-            judgment = judge_checkpoint(directory / "step_00000001.pt", [])
+            judgment = judge_checkpoint(directory / "archive/step_00000001.pt", [])
             self.assertNotEqual(judgment["independent"], True)
             self.assertFalse(judgment["confirmed_independent"])
 
     def test_trainers_refuse_each_others_checkpoints(self) -> None:
         donors = {
-            "deepfilternet3": self.dfn / "step_00000001.pt",
-            "semambapp": self.semamba / "step_00000001.pt",
+            "deepfilternet3": self.dfn / "archive/step_00000001.pt",
+            "semambapp": self.semamba / "archive/step_00000001.pt",
         }
         targets = {
             "mp_senet": lambda directory: mp_yaml(directory, steps=1, updates=1, validation_interval=100),
@@ -406,7 +412,7 @@ class Phase4ICheckpointTests(unittest.TestCase):
                 self.assertEqual(donor.read_bytes(), original)
 
     def test_dfn3_resume_refuses_plan_identity_world_and_corrupt_bytes(self) -> None:
-        original = (self.dfn / "step_00000001.pt").read_bytes()
+        original = (self.dfn / "archive/step_00000001.pt").read_bytes()
         metrics = (self.dfn / "metrics.jsonl").read_bytes()
         complete = self.dfn / "complete.json"
         held = complete.read_bytes()
@@ -419,7 +425,7 @@ class Phase4ICheckpointTests(unittest.TestCase):
                 "components": lambda payload: payload.__setitem__("component_ids", ["not-a-model"]),
             }
             for name, mutate in cases.items():
-                payload = _load(self.dfn / "step_00000001.pt")
+                payload = _load(self.dfn / "archive/step_00000001.pt")
                 mutate(payload)
                 foreign = self.dfn / f"tamper-{name}.pt"
                 torch.save(payload, foreign)
@@ -433,7 +439,7 @@ class Phase4ICheckpointTests(unittest.TestCase):
                 Experiment(load_experiment(self.dfn / "experiment.yaml")).run(resume=broken)
         finally:
             complete.write_bytes(held)
-        self.assertEqual((self.dfn / "step_00000001.pt").read_bytes(), original)
+        self.assertEqual((self.dfn / "archive/step_00000001.pt").read_bytes(), original)
         self.assertEqual((self.dfn / "metrics.jsonl").read_bytes(), metrics)
 
 
@@ -445,10 +451,29 @@ def _dfn_config(directory: Path, *, steps: int, interval: int) -> Path:
     directory.mkdir(parents=True, exist_ok=True)
     text = _tiny_yaml(directory, stop_after=None)
     text = text.replace("      max_logical_steps: 2\n", f"      max_logical_steps: {steps}\n")
-    text = text.replace("      checkpoint_interval: 1\n", f"      checkpoint_interval: {interval}\n")
+    if interval != 1:
+        text = _standard_selector(text, interval)
     path = directory / "experiment.yaml"
     path.write_text(text, encoding="utf-8")
     return path
+
+
+def _standard_selector(text: str, latest_every: int) -> str:
+    """Swap the per-step test selector for the standard one with a wide Latest interval."""
+
+    old = (
+        "    class: tests.experiments.support.StepArchiveSelector\n"
+        "    kwargs:\n"
+        "      interval: 1\n"
+    )
+    new = (
+        "    class: src.experiments.selectors.StandardSelector\n"
+        "    kwargs:\n"
+        f"      latest_every: {latest_every}\n"
+    )
+    if old not in text:
+        raise AssertionError("the test selector section was not found")
+    return text.replace(old, new, 1)
 
 
 def _semamba_config(directory: Path) -> Path:
@@ -457,7 +482,7 @@ def _semamba_config(directory: Path) -> Path:
 
 def _mp_wide(directory: Path) -> Path:
     path = mp_yaml(directory, steps=1, updates=4, validation_interval=100)
-    text = path.read_text(encoding="utf-8").replace("      checkpoint_interval: 1\n", "      checkpoint_interval: 5000\n", 1)
+    text = _standard_selector(path.read_text(encoding="utf-8"), 5000)
     path.write_text(text, encoding="utf-8")
     return path
 

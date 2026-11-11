@@ -28,8 +28,8 @@ from models.mossformer_gan.generator import SyncANet  # noqa: E402
 from losses import loss as official_loss  # noqa: E402
 from solver import Solver  # noqa: E402
 from utils.misc import pesq_loss  # noqa: E402
-from src.experiments.checkpoint import CheckpointManager  # noqa: E402
 from src.experiments.data import Batch  # noqa: E402
+from tests.numerics.reference.common import NoCheckpoints  # noqa: E402
 from src.experiments.official.mossformergan.models import (  # noqa: E402
     MossFormerGANDiscriminator,
     MossFormerGANGenerator,
@@ -223,9 +223,8 @@ def main() -> None:
         accumulation=2,
         grad_clip=10.0,
         validate_on_epoch_end=False,
-        checkpoint_interval=10**9,
     )
-    checkpoint = CheckpointManager(OUT / "mossformer-trainer")
+    checkpoint = NoCheckpoints(OUT / "mossformer-trainer")
     checkpoint.directory.mkdir(parents=True, exist_ok=True)
     _seed()
     result = trainer.run(runtime, checkpoint)

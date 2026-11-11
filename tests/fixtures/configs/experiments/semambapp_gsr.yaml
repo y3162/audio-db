@@ -23,6 +23,11 @@ runtime:
     precision: fp32
 output:
   directory: runs/semambapp-gsr
+checkpoint:
+  selector:
+    class: tests.experiments.support.StepArchiveSelector
+    kwargs:
+      interval: 1
 components:
   generator:
     role: module
@@ -164,7 +169,6 @@ components:
       accumulation: 1
       grad_clip: null
       validation_interval: 0
-      checkpoint_interval: 1
       best_checkpoint_start_epoch: 40
       claim_label: protocol_conformant_substitute_materials
     inject:

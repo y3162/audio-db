@@ -18,6 +18,11 @@ runtime:
     precision: fp32
 output:
   directory: runs/tf-locoformer-dns
+checkpoint:
+  selector:
+    class: tests.experiments.support.StepArchiveSelector
+    kwargs:
+      interval: 1
 components:
   model:
     role: module
@@ -129,7 +134,6 @@ components:
       keep_nbest: 5
       max_epochs: 150
       early_stopping_patience: 10
-      checkpoint_interval: 1
       validation_profile: tf_locoformer.dns.accept_recipe.research_valid_fixed@1
     inject:
       model: {ref: model}

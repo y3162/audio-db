@@ -1,3 +1,7 @@
+# コーパスの内訳
+
+収録条件と、文書に残っている件数。ファイル数のうち CHiME3、DEMAND、LibriSpeech、LibriTTS、VCTK、DNS2020、MS-SNSD は、2026-11-12 の `resource.duckdb` の件数と一致する。その表と、日付つきの構築記録は [配置と記録](INVENTORY.md)。時間、話者の内訳、DNS2020 の非 16 kHz の内訳は、その日には再計算していない。
+
 ## CHiME3
 
 #### 概要

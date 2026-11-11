@@ -58,7 +58,7 @@ class MetricTests(unittest.TestCase):
             self.assertEqual(scored[name]["reason"], "no_clean_reference")
             self.assertIsNone(scored[name]["values"]["enhanced"]["value"])
             self.assertNotEqual(scored[name]["values"]["enhanced"]["value"], 0)
-        self.assertEqual(scored["wer"]["status"], "na")
+        self.assertEqual(scored["wer"]["status"], "validation_failed")
         self.assertEqual(scored["wer"]["reason"], "no_reference_transcript")
 
     def test_wer_requires_the_full_utterance_and_a_transcript(self):
@@ -86,7 +86,7 @@ class MetricTests(unittest.TestCase):
             hypotheses=hypotheses,
             reference_truncated=True,
         )
-        self.assertEqual(partial["wer"]["status"], "na")
+        self.assertEqual(partial["wer"]["status"], "validation_failed")
         self.assertEqual(partial["wer"]["reason"], "partial_audio")
         self.assertNotIn("normalized", partial["wer"]["values"]["enhanced"])
         self.assertIsNone(partial["wer"]["values"]["enhanced"].get("wer"))
@@ -100,7 +100,7 @@ class MetricTests(unittest.TestCase):
             hypotheses=hypotheses,
             reference_truncated=False,
         )
-        self.assertEqual(missing["wer"]["status"], "na")
+        self.assertEqual(missing["wer"]["status"], "validation_failed")
         self.assertEqual(missing["wer"]["reason"], "no_reference_transcript")
         self.assertEqual(missing["wer"]["values"], {})
 
@@ -113,7 +113,7 @@ class MetricTests(unittest.TestCase):
             hypotheses=hypotheses,
             reference_truncated=None,
         )
-        self.assertEqual(unknown["wer"]["status"], "na")
+        self.assertEqual(unknown["wer"]["status"], "validation_failed")
         self.assertEqual(unknown["wer"]["reason"], "unknown_audio_span")
 
     def test_si_sdr_matches_the_definition(self):

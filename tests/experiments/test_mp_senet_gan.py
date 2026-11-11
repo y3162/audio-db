@@ -95,7 +95,8 @@ class MPSENetGANTests(unittest.TestCase):
         self.assertNotIn("cv_synthetic_small", text)
         trainer = config.components["trainer"]
         self.assertEqual(trainer.kwargs["validation_interval"], OFFICIAL_VALIDATION_INTERVAL)
-        self.assertEqual(trainer.kwargs["checkpoint_interval"], OFFICIAL_CHECKPOINT_INTERVAL)
+        self.assertNotIn("checkpoint_interval", trainer.kwargs)
+        self.assertEqual(config.selector_kwargs["interval"], OFFICIAL_CHECKPOINT_INTERVAL)
         self.assertEqual(trainer.kwargs["best_checkpoint_start_epoch"], BEST_CHECKPOINT_START_EPOCH)
         self.assertEqual(trainer.kwargs["max_logical_steps"], 1)
         self.assertEqual(config.components["optim_g"].kwargs["lr"], OFFICIAL_LEARNING_RATE)
@@ -263,7 +264,7 @@ class MPSENetGANTests(unittest.TestCase):
             runtime.precision = "fp32"
             trainer._in_official_step = True
             with self.assertRaises(RuntimeFailure):
-                trainer._checkpoint(experiment_checkpoint := _FakeCheckpoint(), logical_step=1, label="step")
+                trainer._offer(experiment_checkpoint := _FakeCheckpoint(), "step")
             self.assertEqual(experiment_checkpoint.saves, [])
         finally:
             runtime.shutdown()
@@ -286,7 +287,7 @@ class MPSENetGANTests(unittest.TestCase):
         self.assertEqual(experiment.get("optim_g").param_groups[0]["lr"], OFFICIAL_LEARNING_RATE)
         self.assertEqual(experiment.get("optim_d").param_groups[0]["lr"], OFFICIAL_LEARNING_RATE)
         self.assertEqual(phases, ["pending_boundary", "in_epoch"])
-        payload = _load(mid / "step_00000001.pt")
+        payload = _load(mid / "archive/step_00000001.pt")
         self.assertEqual(payload["label"], "step")
         self.assertIsNone(payload["validation_pending"])
 
@@ -348,8 +349,8 @@ class MPSENetGANTests(unittest.TestCase):
         first = build_experiment(load_experiment(_yaml(interrupted, steps=2, updates=4, validation_interval=100, stop_after=1)))
         self.assertEqual(first.run().stop_reason, "interrupted")
         second = build_experiment(load_experiment(_yaml(interrupted, steps=2, updates=4, validation_interval=100)))
-        self.assertEqual(second.run(resume=interrupted / "step_00000001.pt").stop_reason, "completed")
-        _assert_same_checkpoint(continuous / "step_00000002.pt", interrupted / "step_00000002.pt")
+        self.assertEqual(second.run(resume=interrupted / "archive/step_00000001.pt").stop_reason, "completed")
+        _assert_same_checkpoint(continuous / "archive/step_00000002.pt", interrupted / "archive/step_00000002.pt")
         self.assertEqual(_metrics(continuous), _metrics(interrupted))
 
         boundary = self.base / "boundary"
@@ -359,18 +360,18 @@ class MPSENetGANTests(unittest.TestCase):
             load_experiment(_yaml(boundary, steps=2, updates=2, validation_interval=2, best_start=0, stop_after=2))
         )
         self.assertEqual(stopped.run().stop_reason, "interrupted")
-        pending = _load(boundary / "step_00000002.pt")
+        pending = _load(boundary / "archive/step_00000002.pt")
         self.assertEqual(pending["label"], "validation_pending")
         self.assertFalse(pending["states"]["trainer"]["boundary"]["validation_done"])
         self.assertFalse(pending["states"]["trainer"]["boundary"]["scheduler_done"])
         resumed = _cli(
             _yaml(boundary, steps=2, updates=2, validation_interval=2, best_start=0),
             "--resume",
-            str(boundary / "step_00000002.pt"),
+            str(boundary / "archive/step_00000002.pt"),
         )
         self.assertEqual(resumed.returncode, 0, resumed.stderr + resumed.stdout)
-        _assert_same_checkpoint(full / "step_00000002.pt", boundary / "step_00000002.pt")
-        self.assertEqual(_load(boundary / "step_00000002.pt")["label"], "step")
+        _assert_same_checkpoint(full / "archive/step_00000002.pt", boundary / "archive/step_00000002.pt")
+        self.assertEqual(_load(boundary / "archive/step_00000002.pt")["label"], "step")
         self.assertEqual(_metrics(full), _metrics(boundary))
 
     def test_corrupt_checkpoint_is_refused(self) -> None:
@@ -379,7 +380,7 @@ class MPSENetGANTests(unittest.TestCase):
             load_experiment(_yaml(directory, steps=2, updates=2, validation_interval=100, stop_after=1))
         )
         self.assertEqual(experiment.run().stop_reason, "interrupted")
-        broken = directory / "step_00000001.pt"
+        broken = directory / "archive/step_00000001.pt"
         broken.write_bytes(b"not-a-checkpoint")
         again = build_experiment(load_experiment(_yaml(directory, steps=2, updates=2, validation_interval=100)))
         with self.assertRaises(CheckpointError):
@@ -429,7 +430,7 @@ class MPSENetGANTests(unittest.TestCase):
         self.assertEqual([row["synced_during_generator_backward"] for row in ranks], [False, False])
         self.assertEqual([row["optimizer_updates"]["optim_g"] for row in ranks], [1, 1])
         self.assertEqual([row["optimizer_updates"]["optim_d"] for row in ranks], [1, 1])
-        payload = _load(directory / "step_00000001.pt")
+        payload = _load(directory / "archive/step_00000001.pt")
         self.assertEqual(payload["world_size"], 2)
         self.assertTrue(payload["parameter_ranks_agree"])
         self.assertEqual(payload["states"]["trainer"]["logical_step"], 1)
@@ -441,10 +442,10 @@ class MPSENetGANTests(unittest.TestCase):
         second = _torchrun_cli(
             _yaml(resume_dir, steps=2, updates=2, validation_interval=100, distribute="ddp"),
             "--resume",
-            str(resume_dir / "step_00000001.pt"),
+            str(resume_dir / "archive/step_00000001.pt"),
         )
         self.assertEqual(second.returncode, 0, second.stderr + second.stdout)
-        restored = _load(resume_dir / "step_00000002.pt")
+        restored = _load(resume_dir / "archive/step_00000002.pt")
         self.assertEqual(restored["world_size"], 2)
         self.assertTrue(restored["parameter_ranks_agree"])
         self.assertEqual(restored["states"]["trainer"]["logical_step"], 2)
@@ -461,7 +462,7 @@ class MPSENetGANTests(unittest.TestCase):
             "pesq_split",
         )
         self.assertEqual(split.returncode, 0, split.stderr + split.stdout)
-        payload = _load(split_dir / "step_00000001.pt")
+        payload = _load(split_dir / "archive/step_00000001.pt")
         self.assertTrue(payload["parameter_ranks_agree"])
         self.assertEqual(payload["states"]["trainer"]["optimizer_updates"]["optim_g"], 1)
         self.assertEqual(payload["states"]["trainer"]["optimizer_updates"]["optim_d"], 1)
@@ -472,9 +473,9 @@ class _FakeCheckpoint:
         self.saves: list[str] = []
         self.directory = Path(".")
 
-    def save(self, directory: Path, *, logical_step: int, label: str) -> None:
-        del directory, logical_step
-        self.saves.append(label)
+    def offer(self, event: str, *, logical_step: int, metrics: object = None, prepare: object = None) -> None:
+        del logical_step, metrics, prepare
+        self.saves.append(event)
 
 
 def _task() -> MPSENetTask:
@@ -534,7 +535,6 @@ def _manual_trainer(runtime: ProcessRuntime, accumulation: int) -> tuple[object,
         experiment_claim="official_faithful",
         accumulation=accumulation,
         validation_interval=0,
-        checkpoint_interval=1,
         best_checkpoint_start_epoch=40,
     )
     return trainer, generator, discriminator.discriminator
@@ -784,6 +784,11 @@ def _yaml_text(
     claim = profile
     arch = ", ".join(f"{key}: {value}" for key, value in ARCH.items())
     return f"""schema: audio-db-experiment/v1
+checkpoint:
+  selector:
+    class: tests.experiments.support.StepArchiveSelector
+    kwargs:
+      interval: 1
 seed: 7
 deterministic: true
 entry: trainer
@@ -855,7 +860,6 @@ components:
       accumulation: {accumulation}
       experiment_claim: {claim}
       validation_interval: {validation_interval}
-      checkpoint_interval: 1
       best_checkpoint_start_epoch: {best_start}
 {stop}    inject:
       generator: {{ref: generator}}
@@ -874,6 +878,11 @@ def _snapshot_yaml(directory: Path, spec: dict[str, object], *, claim: str, prof
     arch = ", ".join(f"{key}: {value}" for key, value in ARCH.items())
     path.write_text(
         f"""schema: audio-db-experiment/v1
+checkpoint:
+  selector:
+    class: tests.experiments.support.StepArchiveSelector
+    kwargs:
+      interval: 1
 seed: 7
 deterministic: true
 entry: trainer
@@ -974,7 +983,6 @@ components:
       accumulation: 1
       experiment_claim: {claim}
       validation_interval: 100
-      checkpoint_interval: 1
       best_checkpoint_start_epoch: 40
     inject:
       generator: {{ref: generator}}

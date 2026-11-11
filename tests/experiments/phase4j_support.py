@@ -11,15 +11,14 @@ from src.experiments.trainers import _append_jsonl, _rewind_metrics
 
 
 class InterruptProbe:
-    """Sleeps between logical steps and saves each one.
+    """Sleeps between logical steps and offers each one to the selector.
 
     ``SIGTERM`` is observed at the next loop check, after the step that was
     already in progress has been saved. It does not save from inside a step.
     """
 
-    def __init__(self, max_logical_steps: int = 20, checkpoint_interval: int = 1) -> None:
+    def __init__(self, max_logical_steps: int = 20) -> None:
         self.max_logical_steps = max_logical_steps
-        self.checkpoint_interval = checkpoint_interval
         self.logical_step = 0
         self.optimizer_updates = {"probe": 0}
         self.stop_reason = "initialized"
@@ -55,6 +54,8 @@ class InterruptProbe:
         while self.logical_step < self.max_logical_steps:
             if ranks_should_stop(runtime):
                 self.stop_reason = "interrupted"
+                if self.logical_step > 0:
+                    checkpoint.offer("stop", logical_step=self.logical_step)  # type: ignore[attr-defined]
                 return RunResult(
                     stop_reason="interrupted",
                     logical_step=self.logical_step,
@@ -74,9 +75,9 @@ class InterruptProbe:
                         "sample_id": f"probe-{self.logical_step}",
                     },
                 )
-            if self.logical_step % self.checkpoint_interval == 0:
-                checkpoint.save(checkpoint.directory, logical_step=self.logical_step, label="step")  # type: ignore[attr-defined]
+            checkpoint.offer("step", logical_step=self.logical_step)  # type: ignore[attr-defined]
         self.stop_reason = "completed"
+        checkpoint.offer("final", logical_step=self.logical_step)  # type: ignore[attr-defined]
         return RunResult(
             stop_reason="completed",
             logical_step=self.logical_step,

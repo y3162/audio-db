@@ -2,7 +2,7 @@
 
 再現実験の Dataset と Protocol は `configs/data/datasets/` と `configs/data/protocols/` にある。学習が読むのはスナップショットで、選び方は [学習](../experiments/RUN.md)。
 
-標準リンクと索引対象は `src/data/corpora_catalog.py` の 14 コーパス。索引は学習に使うかどうかを理由に音声を除外せず、元の sample rate・フレーム数・チャンネル数を保存する。列の意味と各コーパスの対応は [audio_files](tables/AUDIO_FILES.md)、既存コーパスの収録条件と内訳は [データセット](DATASETS.md)、TSUBAME 初回構築時の件数は [初回構築記録](TSUBAME_INITIAL.md) を参照する。後者の件数は取得したファイル集合の記録であり、現在の DB 全件の保証ではない。
+標準リンクと索引対象は `src/data/corpora_catalog.py` の 14 コーパス。索引は学習に使うかどうかを理由に音声を除外せず、元の sample rate・フレーム数・チャンネル数を保存する。列の意味と各コーパスの対応は [audio_files](tables/AUDIO_FILES.md)、既存コーパスの収録条件と内訳は [データセット](DATASETS.md)。TSUBAME 初回構築の件数と、その後の再索引は [配置と記録](INVENTORY.md) にある。初回の件数は、そのとき取得した 12 コーパスの記録であり、現在の 14 コーパス DB の全件ではない。
 
 ## リンクと索引
 
@@ -31,12 +31,12 @@
 | WHAM48 | `WHAM48` | 48 kHz 雑音。汎用索引を使う。雑音単体を音声混合の評価セットとはみなさない。 |
 | musan | `musan` | music / noise / speech の素材。汎用索引を使い、ディレクトリを確認して用途を選択する。 |
 
-2026-11-04 に SHINODA-LAB の `resource.duckdb` を、この 14 コーパスを最初から含む索引として作り直した。退避は `data/db/backups/resource-before-dns-mssnsd-20261104.duckdb`。再索引は 1,375,481 行、読めないファイルは 0。DNS2020 は 132,150、MS-SNSD は 24,374（`clean_train` 23,075、`clean_test` 1,100、`noise_train` 128、`noise_test` 51、`hitapps` 20）。その後の `make db-init` は既存の評価セットを増やさず、`corpora.audio_files` の指紋は変わらなかった。
+2026-11-04 の再索引の件数、退避ファイル、指紋については [配置と記録](INVENTORY.md) の「2026-11-04 再索引」。
 
-専用パーサーを持たない DNS5、DNS2020、MS-SNSD、OpenSLR26、OpenSLR28、URGENT2024、VoiceBank-DEMAND、WHAM48、musan は `.wav` / `.flac` を再帰走査する。`_archives`、`__MACOSX`、`.git` は除外する。`subset` はリンク直下の最初のディレクトリ名であり、ファイルが直下なら null。公式 train / validation / test を自動判定する列ではない。読み取れない音声は除外し、`data/staging/ingest/unreadable.jsonl` に理由を記録する。VoiceBank 以外の汎用索引では話者や transcript を推定しない。
+専用パーサーを持たない DNS5、DNS2020、MS-SNSD、OpenSLR26、OpenSLR28、URGENT2024、VoiceBank-DEMAND、WHAM48、musan は `.wav` / `.flac` を再帰走査する。`_archives`、`__MACOSX`、`.git` は除外する。`subset` はリンク直下の最初のディレクトリ名であり、ファイルが直下なら null。公式 train / validation / test を自動判定する列ではない。読み取れない音声は除外し、`data/staging/ingest/unreadable.jsonl` に理由を記録する。2026-11-12 にはこのファイルは無かった（[配置と記録](INVENTORY.md)）。VoiceBank 以外の汎用索引では話者や transcript を推定しない。
 
 公式 transcript の原文と WER 正規化は別である。LibriSpeech、LibriTTS、VCTK、VoiceBank-DEMAND は対応テキストを読み取れる場合に原文を索引する。CHiME3 の transcript は `corpora.audio_files` ではなく上記の公式注釈から評価セットに登録する。
 
 ## VoiceBank-DEMAND の分割
 
-公式 test は `clean_testset_wav` と `noisy_testset_wav` の 824 ペア。公式 28 話者 train の 11,572 ペアのうち、p286 と p287 の 872 ペアを validation、残り 10,700 ペアを train とする。test 話者とは重ならない。test のセット定義は `configs/db/init.yaml`、学習用 DB と staging の場所は [.agents/DATA.md](../../.agents/DATA.md) を参照する。28 話者と 56 話者の train 素材は別に索引されるが、上記の学習分割は 28 話者版に基づく。
+公式 test は `clean_testset_wav` と `noisy_testset_wav` の 824 ペア。公式 28 話者 train の 11,572 ペアのうち、p286 と p287 の 872 ペアを validation、残り 10,700 ペアを train とする。test 話者とは重ならない。test のセット定義は `configs/db/init.yaml`。学習用 DB と staging の場所は [配置と記録](INVENTORY.md)。28 話者と 56 話者の train 素材は別に索引されるが、上記の学習分割は 28 話者版に基づく。

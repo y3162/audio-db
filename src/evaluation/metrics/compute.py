@@ -1,4 +1,9 @@
-"""Score the conditions produced for one utterance."""
+"""Score the conditions produced for one utterance.
+
+A required WER that cannot be scored because the reference or the audio span
+is unusable is ``validation_failed``. It is not a numeric score. An empty
+hypothesis string is scored as a real recognition.
+"""
 
 from __future__ import annotations
 
@@ -56,6 +61,16 @@ def not_computed(reason: str = "not_computed") -> dict[str, Any]:
     }
 
 
+# These are defects of the reference or the audio span. They are not scores,
+# and they are not filled with zero. An empty hypothesis string is not one of
+# them: that is a real recognition and is scored, including its deletions.
+REFERENCE_VALIDATION_REASONS = frozenset({
+    "no_reference_transcript",
+    "partial_audio",
+    "unknown_audio_span",
+})
+
+
 def _wer(
     metrics: MetricsConfig,
     reference: str | None,
@@ -65,30 +80,63 @@ def _wer(
     if not metrics.wer:
         return {"status": "disabled", "normalization": metrics.normalization, "values": {}}
     if reference is None or not str(reference).strip():
-        return _na_wer(metrics, {}, "no_reference_transcript")
+        return _failed_wer(metrics, {}, "no_reference_transcript")
     if reference_truncated is None:
-        return _na_wer(metrics, hypotheses, "unknown_audio_span")
+        return _failed_wer(metrics, hypotheses, "unknown_audio_span")
     if reference_truncated:
-        return _na_wer(metrics, hypotheses, "partial_audio")
+        return _failed_wer(metrics, hypotheses, "partial_audio")
     values = {}
     for condition, hypothesis in hypotheses.items():
-        if hypothesis.get("text") is None:
-            values[condition] = {
-                "status": "na",
-                "reason": hypothesis.get("error") or "not_transcribed",
-            }
+        text = hypothesis.get("text")
+        if not isinstance(text, str):
+            err = hypothesis.get("error") or "not_transcribed"
+            if err == "audio_unavailable":
+                values[condition] = {"status": "validation_failed", "reason": err}
+            else:
+                values[condition] = {"status": "error", "reason": err}
             continue
-        values[condition] = score_pair(reference, hypothesis["text"], metrics.normalization)
-    return {"status": "ok", "normalization": metrics.normalization, "values": values}
-
-
-def _na_wer(metrics: MetricsConfig, hypotheses: dict[str, dict[str, Any]], reason: str) -> dict[str, Any]:
+        values[condition] = score_pair(reference, text, metrics.normalization)
+    status, reason = _wer_rollup(values)
     return {
-        "status": "na",
+        "status": status,
         "reason": reason,
         "normalization": metrics.normalization,
-        "values": {condition: {"status": "na", "reason": reason} for condition in hypotheses},
+        "values": values,
     }
+
+
+def _failed_wer(
+    metrics: MetricsConfig,
+    hypotheses: dict[str, dict[str, Any]],
+    reason: str,
+) -> dict[str, Any]:
+    return {
+        "status": "validation_failed",
+        "reason": reason,
+        "normalization": metrics.normalization,
+        "values": {
+            condition: {"status": "validation_failed", "reason": reason}
+            for condition in hypotheses
+        },
+    }
+
+
+def _wer_rollup(values: dict[str, dict[str, Any]]) -> tuple[str, str | None]:
+    if not values:
+        return "error", "not_transcribed"
+    statuses = {item.get("status") for item in values.values()}
+    if statuses == {"ok"}:
+        return "ok", None
+    if "error" in statuses:
+        reason = next(item.get("reason") for item in values.values() if item.get("status") == "error")
+        return "error", reason
+    if "validation_failed" in statuses:
+        reason = next(
+            item.get("reason") for item in values.values() if item.get("status") == "validation_failed"
+        )
+        return "validation_failed", reason
+    reason = next((item.get("reason") for item in values.values() if item.get("reason")), "not_transcribed")
+    return "na", reason
 
 
 def _reference_metric(name, enabled, clean, estimates, sample_rate, function) -> dict[str, Any]:

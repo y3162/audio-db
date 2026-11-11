@@ -17,6 +17,11 @@ runtime:
     precision: fp32
 output:
   directory: runs/mp-senet-gan
+checkpoint:
+  selector:
+    class: tests.experiments.support.StepArchiveSelector
+    kwargs:
+      interval: 5000
 components:
   generator:
     role: module
@@ -122,7 +127,6 @@ components:
       accumulation: 1
       experiment_claim: official_faithful
       validation_interval: 5000
-      checkpoint_interval: 5000
       best_checkpoint_start_epoch: 40
     inject:
       generator: {ref: generator}

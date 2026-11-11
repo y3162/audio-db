@@ -21,6 +21,11 @@ def _yaml(directory: Path, *, steps: int, stop_after: int | None, interval: int)
     text = textwrap.dedent(
         f"""\
         schema: audio-db-experiment/v1
+        checkpoint:
+          selector:
+            class: tests.experiments.support.StepArchiveSelector
+            kwargs:
+              interval: {interval}
         seed: 17
         deterministic: true
         entry: trainer
@@ -64,7 +69,6 @@ def _yaml(directory: Path, *, steps: int, stop_after: int | None, interval: int)
             kwargs:
               max_logical_steps: {steps}
               accumulation: 1
-              checkpoint_interval: {interval}
               stop_after_logical_steps: {stop}
             inject:
               model: {{ref: model}}
@@ -144,15 +148,15 @@ class InterruptPublishTests(unittest.TestCase):
             status = json.loads((stopped / "status.json").read_text(encoding="utf-8"))
             self.assertEqual(status["status"], "INTERRUPTED")
             self.assertFalse((stopped / "complete.json").is_file())
-            saved = stopped / "step_00000001.pt"
+            saved = stopped / "archive/step_00000001.pt"
             self.assertTrue(saved.is_file())
-            self.assertFalse((stopped / "step_00000002.pt").is_file())
+            self.assertFalse((stopped / "archive/step_00000002.pt").is_file())
             resumed = _run(_yaml(stopped, steps=3, stop_after=None, interval=3), "--resume", str(saved))
             self.assertEqual(resumed.returncode, 0, resumed.stderr + resumed.stdout)
             full = _run(_yaml(continuous, steps=3, stop_after=None, interval=3))
             self.assertEqual(full.returncode, 0, full.stderr + full.stdout)
-            left = torch.load(continuous / "step_00000003.pt", map_location="cpu", weights_only=False)
-            right = torch.load(stopped / "step_00000003.pt", map_location="cpu", weights_only=False)
+            left = torch.load(continuous / "archive/step_00000003.pt", map_location="cpu", weights_only=False)
+            right = torch.load(stopped / "archive/step_00000003.pt", map_location="cpu", weights_only=False)
             self.assertEqual(left["logical_step"], 3)
             self.assertEqual(right["logical_step"], 3)
             self.assertEqual(left["states"]["data"]["update_index"], right["states"]["data"]["update_index"])

@@ -16,6 +16,11 @@ runtime:
     precision: fp32
 output:
   directory: runs/deepfilternet3
+checkpoint:
+  selector:
+    class: tests.experiments.support.StepArchiveSelector
+    kwargs:
+      interval: 1
 components:
   model:
     role: module
@@ -98,7 +103,6 @@ components:
         - [10, 64]
         - [20, 128]
         - [40, 9999]
-      checkpoint_interval: 1
     inject:
       model: {ref: model}
       data: {ref: data}

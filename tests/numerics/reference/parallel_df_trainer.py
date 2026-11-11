@@ -21,14 +21,13 @@ libdf_dir = os.environ.get("AUDIO_DB_LIBDF_PY", "/tmp/audio-db-official-numerics
 if libdf_dir not in sys.path:
     sys.path.insert(0, libdf_dir)
 
-from src.experiments.checkpoint import CheckpointManager  # noqa: E402
 from src.experiments.data import Batch  # noqa: E402
 from src.experiments.official.deepfilternet3.model import DeepFilterNet3Model  # noqa: E402
 from src.experiments.official.deepfilternet3.reference import DeepFilterNetTask  # noqa: E402
 from src.experiments.official.deepfilternet3.trainer import DeepFilterNet3Trainer  # noqa: E402
 from src.experiments.runtime import PreparePolicy, ProcessRuntime  # noqa: E402
 from tests.numerics.reference.compare_deepfilternet import _resample, _task_config  # noqa: E402
-from tests.numerics.reference.common import optim_report, weight_report  # noqa: E402
+from tests.numerics.reference.common import NoCheckpoints, optim_report, weight_report  # noqa: E402
 
 
 class _Epoch:
@@ -94,10 +93,9 @@ def main() -> None:
         grad_clip=1.0,
         steps_per_epoch=8,
         stop_after_logical_steps=3,
-        checkpoint_interval=10**9,
     )
     directory = OUT / "df-trainer"
-    checkpoint = CheckpointManager(directory)
+    checkpoint = NoCheckpoints(directory)
     checkpoint.directory.mkdir(parents=True, exist_ok=True)
     result = trainer.run(runtime, checkpoint)
     valid_batch = batches[0]

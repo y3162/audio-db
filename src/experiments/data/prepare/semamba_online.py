@@ -32,7 +32,7 @@ from src.experiments.data.ids import (
     protocol_id_for,
     weakest_integrity,
 )
-from src.experiments.data.paths import DEFAULT_CORPORA, ROOT
+from src.experiments.data.paths import DEFAULT_CORPORA, DEFAULT_SNAPSHOTS, ROOT
 
 OFFICIAL_COMMIT = SEMAMBA_GSR_V1["official_commit"]
 STAGING = ROOT / "data/staging/reproduction-p9"
@@ -80,19 +80,23 @@ def register_p9(
     corpora: Path = DEFAULT_CORPORA,
     staging: Path = STAGING,
     database: Path = DATABASE,
+    snapshots: Path = DEFAULT_SNAPSHOTS,
 ) -> dict[str, Any]:
-    """Stage, register, and export the substitute datasets. Existing rows stay."""
+    """Stage, register, and export the substitute datasets. Existing rows stay.
+
+    The defaults are the production locations. Tests pass their own.
+    """
     graph = build_graph(corpora)
     validate_graph(graph, resource_db=None, require_verified=set())
     write_graph(staging, graph)
     initialize_database(database)
     counts = register_staging(staging, database, resource_db=None)
-    snapshots = {}
+    published = {}
     for dataset in graph.datasets:
         if dataset["declared_status"] != "ready":
             continue
-        snapshots[dataset["name"]] = export_snapshot(database, f"{dataset['name']}@1")
-    return {"counts": counts, "snapshots": snapshots, "database": str(database), "datasets": _ids(graph)}
+        published[dataset["name"]] = export_snapshot(database, f"{dataset['name']}@1", snapshots)
+    return {"counts": counts, "snapshots": published, "database": str(database), "datasets": _ids(graph)}
 
 
 def build_graph(corpora: Path = DEFAULT_CORPORA) -> Graph:

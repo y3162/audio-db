@@ -142,6 +142,12 @@ def _yaml(directory: Path, **kwargs: object) -> Path:
     deterministic = "true" if kwargs.get("deterministic", True) else "false"
     text = f"""
 schema: audio-db-experiment/v1
+checkpoint:
+  selector:
+    class: tests.experiments.support.StepArchiveSelector
+    kwargs:
+      interval: 1
+      partial: {partial}
 seed: 7
 deterministic: {deterministic}
 entry: trainer
@@ -222,8 +228,6 @@ components:
       accumulation: {accumulation}
       grad_clip: 10.0
       experiment_claim: official_faithful
-      checkpoint_interval: 1
-      checkpoint_partial: {partial}
       validate_on_epoch_end: {validate}
     inject:
       generator: {{ref: generator}}
@@ -789,7 +793,7 @@ class MossFormerGANAlgorithmTests(unittest.TestCase):
             trainer._refuse_amp(type("Runtime", (), {"precision": "amp_fp16"})())
         trainer._in_optimizer_pair = True
         with self.assertRaises(RuntimeFailure):
-            trainer._checkpoint(self.runtime, _CheckpointStub(), logical_step=0, label="step")
+            trainer._offer(self.runtime, _CheckpointStub(), "step")
         trainer._in_optimizer_pair = False
 
     def test_partial_resume_and_all_fail_stop(self) -> None:
@@ -816,22 +820,22 @@ class MossFormerGANAlgorithmTests(unittest.TestCase):
             failed.get("trainer").fail_phase = "after_generator_step"
             with self.assertRaises(RuntimeFailure):
                 failed.run()
-            self.assertTrue((failed_dir / "step_00000000.pt").is_file())
-            self.assertFalse((failed_dir / "step_00000001.pt").is_file())
+            self.assertTrue((failed_dir / "archive/step_00000000.pt").is_file())
+            self.assertFalse((failed_dir / "archive/step_00000001.pt").is_file())
             resumed = build_experiment(load_experiment(_yaml(failed_dir, partial=True, steps=1, updates=4, accumulation=2)))
             try:
-                resumed_result = resumed.run(resume=failed_dir / "step_00000000.pt")
+                resumed_result = resumed.run(resume=failed_dir / "archive/step_00000000.pt")
             finally:
                 resumed.close()
             self.assertEqual(resumed_result.logical_step, 1)
-            clean_state = _load(first_dir / "step_00000001.pt")["states"]
-            resumed_state = _load(failed_dir / "step_00000001.pt")["states"]
+            clean_state = _load(first_dir / "archive/step_00000001.pt")["states"]
+            resumed_state = _load(failed_dir / "archive/step_00000001.pt")["states"]
             for key in ("generator", "discriminator", "optim_g", "optim_d"):
                 self.assertEqual(_max_tree(clean_state[key], resumed_state[key], key), 0.0)
             self.assertEqual(resumed_state["trainer"]["logical_step"], 1)
             self.assertEqual(resumed_state["trainer"]["accu_count"], 0)
             self.assertEqual(resumed_state["data"]["update_index"], 2)
-            broken = failed_dir / "step_00000001.pt"
+            broken = failed_dir / "archive/step_00000001.pt"
             broken.write_bytes(b"not-a-checkpoint")
             again = build_experiment(load_experiment(_yaml(failed_dir, partial=True, steps=1, updates=4, accumulation=2)))
             with self.assertRaises(CheckpointError):
@@ -854,7 +858,7 @@ class MossFormerGANAlgorithmTests(unittest.TestCase):
                     experiment.close()
             self.assertEqual(result.stop_reason, "completed")
             self.assertEqual(result.logical_step, 0)
-            payload = _load(directory / "step_00000000.pt")
+            payload = _load(directory / "archive/step_00000000.pt")
             trainer_state = payload["states"]["trainer"]
             self.assertEqual(trainer_state["halt_reason"], "no_successful_micro_batch")
             self.assertEqual(trainer_state["counters"]["micro_batches_failed"], 2)
@@ -923,7 +927,7 @@ class MossFormerGANAlgorithmTests(unittest.TestCase):
             self.assertEqual([row["logical_step"] for row in trained_ranks], [1, 1])
             self.assertEqual([row["counters"]["optimizer_updates"] for row in trained_ranks], [1, 1])
             self.assertGreaterEqual(trained_ranks[0]["average_calls"], 2)
-            payload = _load(trained / "step_00000001.pt")
+            payload = _load(trained / "archive/step_00000001.pt")
             self.assertEqual(payload["world_size"], 2)
             self.assertTrue(payload["parameter_ranks_agree"])
             self.assertEqual(payload["states"]["trainer"]["plateau_history"][-1]["action"], "improve")
@@ -1003,9 +1007,9 @@ class _IdleData:
 class _CheckpointStub:
     directory = Path("/tmp")
 
-    def save(self, directory: Path, *, logical_step: int, label: str) -> None:
-        del directory, logical_step, label
-        raise AssertionError("checkpoint save ran inside an optimizer pair")
+    def offer(self, event: str, *, logical_step: int, metrics: object = None, prepare: object = None) -> None:
+        del event, logical_step, metrics, prepare
+        raise AssertionError("checkpoint offer ran inside an optimizer pair")
 
 
 if __name__ == "__main__":

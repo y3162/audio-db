@@ -45,13 +45,17 @@ class WordErrorTests(unittest.TestCase):
         self.assertEqual(group["edits_normalized"]["S"], 1)
         self.assertEqual(group["edits_normalized"]["N"], 101)
         self.assertAlmostEqual(group["wer_normalized"], 1 / 101)
+        self.assertTrue(group["wer_official"])
+        self.assertTrue(summary["official_wer"])
         macro = (1.0 + 0.0) / 2.0
         self.assertNotAlmostEqual(group["wer_normalized"], macro)
         self.assertEqual(summary["wer_aggregation"], "micro")
 
-    def test_na_utterances_stay_out_of_the_denominator(self):
+    def test_missing_wer_is_not_an_official_subset(self):
         scored = _record("full", substitutions=0, length=2)
         refused = _record("partial", substitutions=9, length=40)
+        # A status of ok with a missing condition is the old shape. It must
+        # not become the official WER of the remaining utterance.
         refused["wer"] = {
             "status": "na",
             "reason": "partial_audio",
@@ -60,15 +64,19 @@ class WordErrorTests(unittest.TestCase):
         summary = build_summary([scored, refused])
         group = summary["groups"][0]
         self.assertEqual(group["utterances"], 2)
-        # The WER covers one of the two utterances, and the summary says so.
         self.assertEqual(group["wer_count"], 1)
-        self.assertEqual(group["edits_normalized"]["N"], 2)
-        self.assertEqual(group["edits_normalized"]["S"], 0)
-        self.assertEqual(group["wer_normalized"], 0.0)
-        only_na = build_summary([refused])
-        self.assertEqual(only_na["groups"][0]["wer_count"], 0)
-        self.assertIsNone(only_na["groups"][0]["wer_normalized"])
-        self.assertNotEqual(only_na["groups"][0]["wer_normalized"], 0)
+        self.assertFalse(summary["official_wer"])
+        self.assertFalse(group["wer_official"])
+        self.assertIsNone(group["wer_normalized"])
+        self.assertIsNone(group["edits_normalized"])
+        self.assertEqual(group["edits_provisional"]["N"], 2)
+        self.assertEqual(group["edits_provisional"]["S"], 0)
+        self.assertEqual(group["wer_provisional"], 0.0)
+        only_missing = build_summary([refused])
+        self.assertEqual(only_missing["groups"][0]["wer_count"], 0)
+        self.assertIsNone(only_missing["groups"][0]["wer_normalized"])
+        self.assertIsNone(only_missing["groups"][0]["wer_provisional"])
+        self.assertNotEqual(only_missing["groups"][0]["wer_normalized"], 0)
 
     def test_corpus_helper_skips_empty_references(self):
         total = empty_counts()
@@ -81,11 +89,22 @@ class WordErrorTests(unittest.TestCase):
 def _record(utterance_id, substitutions, length):
     counts = {"S": substitutions, "D": 0, "I": 0, "N": length, "wer": None if length == 0 else substitutions / length}
     return {
+        "schema_version": 2,
         "status": "ok",
         "identity": {"config_hash": "abc"},
         "model": {"name": "mock", "variant": None},
         "snr_db": 0.0,
         "utterance_id": utterance_id,
+        "evaluation": {
+            "required_wer": True,
+            "required_conditions": ["enhanced"],
+            "status": "ok",
+            "retryable": False,
+            "missing_conditions": [],
+            "reasons": [],
+            "message": None,
+            "conditions": {"enhanced": {"metric": "wer", "status": "ok", "reason": None}},
+        },
         "wer": {"status": "ok", "values": {"enhanced": {"status": "ok", "raw": counts, "normalized": counts}}},
         "pesq": {"values": {}},
         "stoi": {"values": {}},

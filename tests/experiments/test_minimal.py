@@ -158,7 +158,7 @@ class MinimalExperimentTests(unittest.TestCase):
         out = directory / "out"
         kept = {path.name: path.read_bytes() for path in out.iterdir() if path.is_file()}
         self.assertIn("complete.json", kept)
-        self.assertIn("step_00000002.pt", kept)
+        self.assertIn("latest.pt", kept)
 
         def unchanged() -> None:
             self.assertEqual({path.name: path.read_bytes() for path in out.iterdir() if path.is_file()}, kept)
@@ -170,7 +170,7 @@ class MinimalExperimentTests(unittest.TestCase):
         # Checkpoints alone are enough. A stopped run has no complete.json.
         (out / "complete.json").unlink()
         del kept["complete.json"]
-        with self.assertRaisesRegex(CheckpointError, r"step_00000001\.pt"):
+        with self.assertRaisesRegex(CheckpointError, r"latest\.pt"):
             Experiment(load_experiment(config)).run()
         unchanged()
         env = os.environ.copy()
@@ -186,8 +186,8 @@ class MinimalExperimentTests(unittest.TestCase):
         self.assertEqual(again.returncode, 1)
         self.assertIn("--resume", again.stderr)
         unchanged()
-        # The same directory still resumes from its own checkpoint.
-        resumed = Experiment(load_experiment(config)).run(resume=out / "step_00000001.pt")
+        # The same directory still resumes from its own Latest.
+        resumed = Experiment(load_experiment(config)).run(resume=out)
         self.assertEqual(resumed.logical_step, 2)
         self.assertEqual(resumed.stop_reason, "completed")
         self.assertEqual(len((out / "metrics.jsonl").read_text(encoding="utf-8").splitlines()), 2)
@@ -195,7 +195,7 @@ class MinimalExperimentTests(unittest.TestCase):
     def test_ctrl_c_does_not_leave_the_status_running(self) -> None:
         directory = Path(self.enterContext(self._directory()))
         experiment = build_experiment(load_experiment(_config_text(directory, 2)))
-        with mock.patch.object(StandardTrainer, "_publish_step", side_effect=KeyboardInterrupt):
+        with mock.patch.object(StandardTrainer, "_offer", side_effect=KeyboardInterrupt):
             with self.assertRaises(KeyboardInterrupt):
                 experiment.run()
         status = json.loads((directory / "out" / "status.json").read_text(encoding="utf-8"))

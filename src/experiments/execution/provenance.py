@@ -23,7 +23,7 @@ from src.evaluation.provenance import (
     parse_provenance_bytes,
     sidecar_path,
 )
-from src.experiments.config import LEGACY_CLASS_PATHS, ExperimentConfig, config_sha256
+from src.experiments.config import ExperimentConfig, config_generations, config_sha256
 from src.experiments.errors import CheckpointError
 from src.experiments.calc.errors import TrainingError
 from src.experiments.calc.provenance import build_provenance, provenance_sha256, publish_provenance
@@ -84,7 +84,7 @@ def bind_provenance(
 ) -> tuple[bytes, str]:
     """Publish the run provenance once and return its canonical bytes and SHA-256."""
 
-    generations = _config_generations(config)
+    generations = config_generations(config)
     provenance_path = directory / PROVENANCE_NAME
     if not provenance_path.is_file():
         generations = generations[:1]
@@ -95,6 +95,7 @@ def bind_provenance(
                 config,
                 components,
                 runtime,
+                directory=directory,
                 config_digest=digest,
                 class_paths=class_paths,
             )
@@ -136,7 +137,7 @@ def require_provenance(
         return
     if not isinstance(expected, str) or len(expected) != 64:
         raise CheckpointError("checkpoint provenance_sha256 is invalid")
-    directory_file = source.parent / PROVENANCE_NAME
+    directory_file = experiment_directory(source) / PROVENANCE_NAME
     side = sidecar_path(source)
     paths = (side, directory_file)
     for path in paths:
@@ -199,22 +200,13 @@ def judge_experiment_checkpoint(
     return result
 
 
-def _config_generations(config: ExperimentConfig) -> list[tuple[dict[str, str] | None, str]]:
-    """Current class paths, then each explicit historical generation.
+def experiment_directory(checkpoint: Path) -> Path:
+    """Directory of the experiment that wrote ``checkpoint``. Archives sit one level below it."""
 
-    A generation is one complete rewrite. Mixing paths from different
-    generations is not a separate accepted identity.
-    """
-
-    generations: list[tuple[dict[str, str] | None, str]] = [(None, config_sha256(config))]
-    seen = {generations[0][1]}
-    for mapping in LEGACY_CLASS_PATHS:
-        digest = config_sha256(config, class_paths=mapping)
-        if digest in seen:
-            continue
-        seen.add(digest)
-        generations.append((mapping, digest))
-    return generations
+    parent = checkpoint.resolve().parent
+    if parent.name == "archive":
+        return parent.parent
+    return parent
 
 
 def _document(
@@ -222,11 +214,16 @@ def _document(
     components: Any,
     runtime: Any,
     *,
+    directory: Path | None = None,
     config_digest: str | None = None,
     class_paths: dict[str, str] | None = None,
 ) -> dict[str, Any]:
     identity_map = dataset_identity_map(config, components)
-    view = _DatasetView(_view_identity(identity_map), _parts(components, identity_map))
+    parts = _parts(components, identity_map)
+    initialized_from = None
+    if config.initialize is not None:
+        initialized_from = _merge_initialization(parts, directory)
+    view = _DatasetView(_view_identity(identity_map), parts)
     process = _Process(int(getattr(runtime, "world_size", 1)))
     digest = config_sha256(config) if config_digest is None else config_digest
     training_config = {
@@ -238,6 +235,8 @@ def _document(
     document = build_provenance(view, training_config, process)
     document["dataset_identity"] = identity_map
     document["experiment_config_sha256"] = digest
+    if initialized_from is not None:
+        document["initialized_from"] = initialized_from
     limitations = list(document.get("limitations") or [])
     if not _parts_have_content(document):
         note = "a provenance file without content hashes is not evidence of independence"
@@ -320,6 +319,85 @@ def _parts(components: Any, identity_map: dict[str, Any] | None) -> dict[str, An
     header["lineage_counts"] = lineage_counts
     header["limitations"] = limitations
     return header
+
+
+def _merge_initialization(parts: dict[str, Any], directory: Path | None) -> dict[str, Any]:
+    """Add the lineage of the checkpoint this experiment was initialized from.
+
+    The weights depend on the source's train and selection data. A source
+    without content-addressed lineage adds one train row of unknown lineage,
+    so independence stays ``UNKNOWN`` instead of being judged on this
+    experiment's data alone.
+    """
+
+    from src.experiments.execution.checkpoint import INITIALIZATION_NAME, INITIALIZATION_PROVENANCE_NAME
+
+    if directory is None:
+        raise CheckpointError("an initialized experiment needs its directory to build data provenance")
+    try:
+        record = json.loads((directory / INITIALIZATION_NAME).read_text(encoding="utf-8"))
+    except (OSError, ValueError) as exc:
+        raise CheckpointError(f"{INITIALIZATION_NAME} is missing or unreadable: {exc}") from exc
+    if not isinstance(record, dict):
+        raise CheckpointError(f"{INITIALIZATION_NAME} is not an object")
+    expected = record.get("provenance_sha256")
+    source: dict[str, Any] | None = None
+    if expected is not None:
+        try:
+            raw = (directory / INITIALIZATION_PROVENANCE_NAME).read_bytes()
+            source = parse_provenance_bytes(raw)
+        except (OSError, UnicodeError, ValueError) as exc:
+            raise CheckpointError(f"{INITIALIZATION_PROVENANCE_NAME} is missing or unreadable: {exc}") from exc
+        if hashlib.sha256(raw).hexdigest() != expected:
+            raise CheckpointError(f"{INITIALIZATION_PROVENANCE_NAME} does not match {INITIALIZATION_NAME}")
+    source_materials = source.get("materials") if source is not None else None
+    if source is not None and source.get("pipeline") == "reproduction" and source_materials:
+        parts["materials"] = [*parts["materials"], *(row for row in source_materials if isinstance(row, dict))]
+        parts["sets"] = [*parts["sets"], *(row for row in source.get("sets") or [] if isinstance(row, dict))]
+        counts = source.get("lineage_counts") or {}
+        if isinstance(counts, dict):
+            for key in parts["lineage_counts"]:
+                parts["lineage_counts"][key] += int(counts.get(key) or 0)
+        uses_test = source.get("selection_uses_test")
+        parts["limitations"] = [
+            *parts["limitations"],
+            "materials include the lineage of the checkpoint this experiment was initialized from",
+        ]
+    else:
+        parts["materials"] = [
+            *parts["materials"],
+            {
+                "asset_id": None,
+                "case_set_id": None,
+                "derivation_id": None,
+                "lineage": "unknown",
+                "role": "train",
+                "sha256": None,
+                "slot": "initialize",
+                "source_sha256": None,
+            },
+        ]
+        parts["lineage_counts"]["unknown"] += 1
+        uses_test = None
+        parts["limitations"] = [
+            *parts["limitations"],
+            "initialized from a checkpoint without content-addressed data lineage; independence cannot be confirmed",
+        ]
+    own = parts.get("selection_uses_test")
+    if own is True or uses_test is True:
+        parts["selection_uses_test"] = True
+    elif own is None or uses_test is None:
+        parts["selection_uses_test"] = None
+    else:
+        parts["selection_uses_test"] = False
+    return {
+        "checkpoint_sha256": record.get("checkpoint_sha256"),
+        "config_sha256": record.get("config_sha256"),
+        "logical_step": record.get("logical_step"),
+        "provenance_sha256": expected,
+        "run_id": source.get("run_id") if source is not None else None,
+        "states": record.get("states"),
+    }
 
 
 def _component_for(components: Any, component_id: str) -> Any:

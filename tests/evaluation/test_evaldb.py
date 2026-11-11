@@ -187,7 +187,9 @@ class EvaluationDBTests(unittest.TestCase):
                 db.import_manifest(missing, "gone")
             self.assertIn("no-such.wav", str(caught.exception))
             outside = root / "outside.jsonl"
-            audio = Path(tempfile.gettempdir()) / "audio-db-outside-eval.wav"
+            elsewhere = tempfile.TemporaryDirectory(prefix="audio-db-outside-")
+            self.addCleanup(elsewhere.cleanup)
+            audio = Path(elsewhere.name) / "outside.wav"
             _write_wav(audio, 1600, 220)
             outside.write_text(
                 json.dumps(

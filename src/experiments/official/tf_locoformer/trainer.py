@@ -109,7 +109,6 @@ class TFLocoformerTrainer:
         max_epochs: int | None = None,
         early_stopping_patience: int | None = None,
         stop_after_logical_steps: int | None = None,
-        checkpoint_interval: int = 1,
         validation_profile: str = RESEARCH_VALIDATION_PROFILE,
     ) -> None:
         if not isinstance(model, PreparedModel):
@@ -151,7 +150,6 @@ class TFLocoformerTrainer:
         if stop_after_logical_steps is not None:
             stop_after_logical_steps = _positive_int("stop_after_logical_steps", stop_after_logical_steps)
         self.stop_after_logical_steps = stop_after_logical_steps
-        self.checkpoint_interval = _positive_int("checkpoint_interval", checkpoint_interval)
         self.logical_step = 0
         self.optimizer_updates = {optimizer_id: 0}
         self.losses: list[float] = []
@@ -215,7 +213,7 @@ class TFLocoformerTrainer:
         while self.logical_step < self.max_logical_steps:
             if self._stop_requested(runtime):
                 if self.logical_step > 0:
-                    checkpoint.save(checkpoint.directory, logical_step=self.logical_step, label="step")
+                    checkpoint.offer("stop", logical_step=self.logical_step)
                 return self._result(checkpoint, "interrupted")
             if self._epoch_cap_reached():
                 return self._result(checkpoint, "completed")
@@ -307,18 +305,13 @@ class TFLocoformerTrainer:
                     )
                 epoch_done = index == view.updates
                 if not epoch_done:
-                    if self.logical_step % self.checkpoint_interval == 0:
-                        checkpoint.save(checkpoint.directory, logical_step=self.logical_step, label="step")
+                    checkpoint.offer("step", logical_step=self.logical_step)
                     continue
                 self.phase = _PENDING
                 self.finished_epoch = epoch
                 self.boundary = _open_boundary(epoch, warmup_updated=bool(result.applied))
                 self._on_boundary_phase(_PENDING)
-                checkpoint.save(
-                    checkpoint.directory,
-                    logical_step=self.logical_step,
-                    label="validation_pending",
-                )
+                checkpoint.offer("boundary_pending", logical_step=self.logical_step)
                 if self._stop_requested(runtime):
                     return self._result(checkpoint, "interrupted")
                 self._finish_boundary(runtime, checkpoint, component_id)
@@ -435,7 +428,11 @@ class TFLocoformerTrainer:
             and early_stop(self.history, espnet_epoch, self.early_stopping_patience)
         ):
             self.early_stopped = True
-        checkpoint.save(checkpoint.directory, logical_step=self.logical_step, label="step")
+        checkpoint.offer(
+            "boundary",
+            logical_step=self.logical_step,
+            metrics={"loss": float(summary["loss"]), "si_snr": float(summary["si_snr"])},
+        )
 
     def _validate(self, runtime: ProcessRuntime, trainer_epoch: int, component_id: str) -> dict[str, float | int]:
         module = self.model.module
@@ -580,6 +577,8 @@ class TFLocoformerTrainer:
         return self.max_epochs is not None and int(self.data.epoch) >= self.max_epochs
 
     def _result(self, checkpoint: CheckpointManager, reason: str) -> RunResult:
+        if reason == "completed":
+            checkpoint.offer("final", logical_step=self.logical_step)
         self.stop_reason = reason
         return RunResult(
             stop_reason=reason,

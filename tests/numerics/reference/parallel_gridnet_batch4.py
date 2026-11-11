@@ -18,7 +18,6 @@ ROOT = Path(__file__).resolve().parents[3]
 sys.path.insert(0, str(ROOT))
 OUT = Path(os.environ.get("AUDIO_DB_NUMERICS_OUT", "/tmp/audio-db-official-continue"))
 
-from src.experiments.checkpoint import CheckpointManager  # noqa: E402
 from src.experiments.data import Batch  # noqa: E402
 from src.experiments.losses import MultiResolutionL1Loss  # noqa: E402
 from src.experiments.official.tf_gridnet.model import TFGridNetModel  # noqa: E402
@@ -36,7 +35,7 @@ from tests.numerics.reference.compare_tf_gridnet import (  # noqa: E402
 )
 from tests.numerics.reference.parallel_gridnet_trainer import _cpu_state, _task_config  # noqa: E402
 from src.experiments.official.tf_gridnet.reference import TFGridNetTask  # noqa: E402
-from tests.numerics.reference.common import weight_report  # noqa: E402
+from tests.numerics.reference.common import NoCheckpoints, weight_report  # noqa: E402
 
 
 class _Epoch:
@@ -126,11 +125,10 @@ def _trainer_steps(device, initial, clean, noisy) -> dict:
         accumulation=1,
         grad_clip=CLIP,
         stop_after_logical_steps=clean.shape[0],
-        checkpoint_interval=10**9,
         max_epochs=1,
     )
     directory = OUT / "gridnet-trainer-48000-b4"
-    checkpoint = CheckpointManager(directory)
+    checkpoint = NoCheckpoints(directory)
     checkpoint.directory.mkdir(parents=True, exist_ok=True)
     result = trainer.run(runtime, checkpoint)
     state = _cpu_state(model.state_module.generator)

@@ -405,7 +405,7 @@ class TFLocoformerConnectionTests(unittest.TestCase):
         self.assertEqual(seen[1][1:], (2, 0))
         self.assertEqual(seen[2][1:], (2, 1))
         self.assertEqual(seen[3][1:], (2, 1))
-        payload = _load(directory / "step_00000002.pt")
+        payload = _load(directory / "archive/step_00000002.pt")
         trainer = payload["states"]["trainer"]
         self.assertEqual(trainer["phase"], "in_epoch")
         self.assertIsNone(trainer["boundary"])
@@ -440,7 +440,7 @@ class TFLocoformerConnectionTests(unittest.TestCase):
             )
             result = result_holder.run()
             self.assertEqual(result.logical_step, 1)
-            payload = _load(directory / "step_00000001.pt")
+            payload = _load(directory / "archive/step_00000001.pt")
             self.assertEqual(payload["label"], "step")
             self.assertIsNone(payload["validation_pending"])
             self.assertEqual(payload["states"]["trainer"]["phase"], "in_epoch")
@@ -468,7 +468,7 @@ class TFLocoformerConnectionTests(unittest.TestCase):
             result = experiment.run()
         self.assertEqual(result.logical_step, 1)
         self.assertEqual(result.optimizer_updates, {"optimizer": 0})
-        payload = _load(directory / "step_00000001.pt")
+        payload = _load(directory / "archive/step_00000001.pt")
         self.assertEqual(payload["states"]["scheduler"]["step_num"], 0)
         self.assertEqual(payload["states"]["scheduler"]["last_epoch"], 1)
         self.assertEqual(payload["states"]["trainer"]["completed_boundaries"][0]["warmup_updated"], False)
@@ -486,7 +486,7 @@ class TFLocoformerConnectionTests(unittest.TestCase):
         build_experiment(
             load_experiment(_scripted_yaml(interrupted, steps=2, updates=2, max_epochs=1, stop_after=2))
         ).run()
-        pending = _load(interrupted / "step_00000002.pt")
+        pending = _load(interrupted / "archive/step_00000002.pt")
         self.assertEqual(pending["label"], "validation_pending")
         self.assertEqual(pending["validation_pending"], {"logical_step": 2})
         self.assertEqual(pending["states"]["trainer"]["phase"], "pending_validation")
@@ -499,11 +499,11 @@ class TFLocoformerConnectionTests(unittest.TestCase):
         resumed = _cli(
             _scripted_yaml(interrupted, steps=2, updates=2, max_epochs=1),
             "--resume",
-            str(interrupted / "step_00000002.pt"),
+            str(interrupted / "archive/step_00000002.pt"),
         )
         self.assertEqual(resumed.returncode, 0, resumed.stderr + resumed.stdout)
-        left = _load(continuous / "step_00000002.pt")
-        right = _load(interrupted / "step_00000002.pt")
+        left = _load(continuous / "archive/step_00000002.pt")
+        right = _load(interrupted / "archive/step_00000002.pt")
         self.assertEqual(right["label"], "step")
         self.assertIsNone(right["validation_pending"])
         _assert_checkpoint(self, left, right)
@@ -525,16 +525,16 @@ class TFLocoformerConnectionTests(unittest.TestCase):
         with patch.object(TFLocoformerTrainer, "_select", fail_once):
             with self.assertRaises(RuntimeError):
                 experiment.run()
-        pending = _load(interrupted / "step_00000002.pt")
+        pending = _load(interrupted / "archive/step_00000002.pt")
         self.assertEqual(pending["label"], "validation_pending")
         self.assertEqual(pending["states"]["trainer"]["history"], [])
         resumed = _cli(
             _scripted_yaml(interrupted, steps=2, updates=2, max_epochs=1),
             "--resume",
-            str(interrupted / "step_00000002.pt"),
+            str(interrupted / "archive/step_00000002.pt"),
         )
         self.assertEqual(resumed.returncode, 0, resumed.stderr + resumed.stdout)
-        _assert_checkpoint(self, _load(continuous / "step_00000002.pt"), _load(interrupted / "step_00000002.pt"))
+        _assert_checkpoint(self, _load(continuous / "archive/step_00000002.pt"), _load(interrupted / "archive/step_00000002.pt"))
         _assert_artifacts(self, continuous, interrupted)
 
     def test_mid_epoch_resume_matches_a_continuous_run(self) -> None:
@@ -545,12 +545,12 @@ class TFLocoformerConnectionTests(unittest.TestCase):
             load_experiment(_scripted_yaml(interrupted, steps=2, updates=2, max_epochs=1, stop_after=1))
         )
         self.assertEqual(first.run().stop_reason, "interrupted")
-        pending = _load(interrupted / "step_00000001.pt")
+        pending = _load(interrupted / "archive/step_00000001.pt")
         self.assertEqual(pending["states"]["scheduler"]["step_num"], 1)
         self.assertEqual(pending["states"]["optimizer"]["param_groups"][0]["lr"], 0.001 / WARMUP)
         second = build_experiment(load_experiment(_scripted_yaml(interrupted, steps=2, updates=2, max_epochs=1)))
-        self.assertEqual(second.run(resume=interrupted / "step_00000001.pt").stop_reason, "completed")
-        _assert_checkpoint(self, _load(continuous / "step_00000002.pt"), _load(interrupted / "step_00000002.pt"))
+        self.assertEqual(second.run(resume=interrupted / "archive/step_00000001.pt").stop_reason, "completed")
+        _assert_checkpoint(self, _load(continuous / "archive/step_00000002.pt"), _load(interrupted / "archive/step_00000002.pt"))
         _assert_artifacts(self, continuous, interrupted)
         rows = _metrics(interrupted)
         self.assertEqual(rows[1]["lr"], 0.001 / WARMUP)
@@ -559,7 +559,7 @@ class TFLocoformerConnectionTests(unittest.TestCase):
         directory = self.base / "weights"
         experiment = build_experiment(load_experiment(_scripted_yaml(directory, steps=2, updates=2, max_epochs=1)))
         experiment.run()
-        trainer = _load(directory / "step_00000002.pt")["states"]["trainer"]
+        trainer = _load(directory / "archive/step_00000002.pt")["states"]["trainer"]
         self.assertEqual(trainer["completed_boundaries"][0]["validation_weight"], 3)
         expected = _expected_validation(experiment.get("model").state_module)
         self.assertEqual(trainer["history"][0]["loss"], expected["loss"])
@@ -664,7 +664,7 @@ class TFLocoformerConnectionTests(unittest.TestCase):
             raise
         self.assertEqual(result.stop_reason, "completed")
         self.assertGreaterEqual(result.logical_step, 1)
-        payload = _load(directory / f"step_{result.logical_step:08d}.pt")
+        payload = _load(directory / f"archive/step_{result.logical_step:08d}.pt")
         self.assertEqual(payload["states"]["trainer"]["phase"], "in_epoch")
         self.assertEqual(len(payload["states"]["trainer"]["history"]), 1)
         self.assertEqual(payload["states"]["scheduler"]["last_epoch"], 1)
@@ -677,7 +677,7 @@ class TFLocoformerConnectionTests(unittest.TestCase):
         config = _scripted_yaml(directory, steps=2, updates=2, max_epochs=1, distribute="ddp")
         completed = _torchrun(config)
         self.assertEqual(completed.returncode, 0, completed.stderr + completed.stdout)
-        payload = _load(directory / "step_00000002.pt")
+        payload = _load(directory / "archive/step_00000002.pt")
         self.assertEqual(payload["world_size"], 2)
         self.assertTrue(payload["parameter_ranks_agree"])
         self.assertEqual(payload["states"]["trainer"]["optimizer_updates"], {"optimizer": 2})
@@ -925,6 +925,11 @@ def _scripted_text(
     epochs = "null" if max_epochs is None else str(max_epochs)
     stop = "" if stop_after is None else f"      stop_after_logical_steps: {stop_after}\n"
     return f"""schema: audio-db-experiment/v1
+checkpoint:
+  selector:
+    class: tests.experiments.support.StepArchiveSelector
+    kwargs:
+      interval: 1
 seed: 0
 deterministic: true
 entry: trainer
@@ -994,7 +999,6 @@ components:
       grad_clip: 5.0
       keep_nbest: 5
       max_epochs: {epochs}
-      checkpoint_interval: 1
       validation_profile: scripted
 {stop}    inject:
       model: {{ref: model}}
@@ -1010,6 +1014,11 @@ def _snapshot_yaml(directory: Path, spec: dict[str, object]) -> Path:
     path = directory / "experiment.yaml"
     path.write_text(
         f"""schema: audio-db-experiment/v1
+checkpoint:
+  selector:
+    class: tests.experiments.support.StepArchiveSelector
+    kwargs:
+      interval: 1
 seed: 0
 deterministic: true
 entry: trainer
@@ -1113,7 +1122,6 @@ components:
       grad_clip: 5.0
       keep_nbest: 5
       max_epochs: 1
-      checkpoint_interval: 1
       validation_profile: scripted
     inject:
       model: {{ref: model}}

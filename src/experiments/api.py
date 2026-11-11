@@ -19,20 +19,24 @@ from src.experiments.execution.checkpoint import (
     DirectoryLock,
     acquire_directory_lock,
     assert_output_allowed,
+    used_directory_marker,
     write_complete,
     write_status,
 )
+from src.experiments.execution.status import record_failure
 from src.experiments.config import ExperimentConfig, load_experiment
 from src.experiments.errors import (
     BuildError,
     CheckpointError,
-    ConfigError,
     ExperimentError,
     PrepareError,
     StateError,
 )
 from src.experiments.core.factory import ComponentFactory, ComponentSpec
 from src.experiments.execution.results import RunResult
+
+# Set by the launcher to the identity of its launch.
+SUPERVISED_ENV = "AUDIO_DB_LAUNCH_ID"
 
 __all__ = [
     "Experiment",
@@ -74,30 +78,29 @@ class Experiment:
             self._graph = builder.build(self.config, runtime)
             if self._checkpoint is not None:
                 self._checkpoint.attach(self.config, self._graph)
-        except Exception:
+        except Exception as exc:
             self._partial_components = builder.components
-            self._mark_failed()
+            self._mark_failed(exc)
             raise
         self._built = True
         return self
 
-    def run(
-        self,
-        *,
-        resume: str | Path | None = None,
-        initialize_from: str | Path | None = None,
-    ) -> RunResult:
+    def run(self, *, resume: str | Path | None = None) -> RunResult:
         """Build if needed, restore when asked, then run the entry trainer.
 
-        ``resume`` and ``initialize_from`` cannot be combined. A failed
+        ``resume`` continues this experiment from one of its own checkpoints
+        or, given the experiment directory, from its Latest. Without it, a
+        directory that already holds checkpoints or a finished run is refused
+        before anything is built or written, and the states listed under
+        ``initialize`` in the YAML are loaded from that checkpoint. A failed
         restore does not start the trainer. CPU restore writes into the
         prepared module in place, so the optimizer keeps those parameters.
-        Without ``resume``, a directory that already holds checkpoints or a
-        finished run is refused before anything is built or written.
+
+        Under the launcher this process reports the trainer's outcome and the
+        launcher confirms it after every rank has exited. Run directly, this
+        process writes the final status itself.
         """
 
-        if resume is not None and initialize_from is not None:
-            raise ConfigError("resume and initialize_from cannot both be set")
         if self._closed:
             raise StateError("experiment is closed")
         if self._ran:
@@ -112,15 +115,22 @@ class Experiment:
             if resume is not None and (self._directory / "complete.json").is_file():
                 raise CheckpointError("resume refused because complete.json exists")
             if resume is not None:
-                self._checkpoint.restore(Path(resume), mode="resume")
-            elif initialize_from is not None:
-                self._checkpoint.restore(Path(initialize_from), mode="initialize")
+                restored = self._checkpoint.restore(Path(resume), mode="resume")
+                self._checkpoint.refuse_rewind(restored.logical_step)
+            elif self.config.initialize is not None:
+                self._checkpoint.restore(
+                    self.config.initialize.checkpoint,
+                    mode="initialize",
+                    states=self.config.initialize.states,
+                )
             self._graph.states.seal()
             self._running = True
             from src.experiments.execution.signals import clear_interrupt, install_interrupt_handler
 
             clear_interrupt()
             install_interrupt_handler()
+            # After this barrier every rank handles SIGTERM as a stop request. RUNNING tells the launcher so.
+            self._barrier()
             if self._is_primary():
                 self._write_status("RUNNING")
             self._barrier()
@@ -136,21 +146,23 @@ class Experiment:
             result = self._graph.trainer.run(self._graph.runtime, self._checkpoint)  # type: ignore[attr-defined]
             if not isinstance(result, RunResult):
                 raise BuildError(f"component {self.config.entry}: trainer did not return RunResult")
-            if result.stop_reason == "completed":
-                if self._is_primary():
-                    write_complete(self._directory, result.logical_step)
-                    self._write_status("COMPLETED")
-            elif result.stop_reason == "interrupted":
-                if self._is_primary():
-                    self._write_status("INTERRUPTED")
-            else:
+            if result.stop_reason not in {"completed", "interrupted"}:
                 raise BuildError(f"component {self.config.entry}: unknown stop reason {result.stop_reason}")
+            if self._is_primary():
+                if launch_id() is not None:
+                    # The launcher finalizes after it has seen every rank exit.
+                    self._write_status("RUNNING", outcome=result.stop_reason, logical_step=result.logical_step)
+                elif result.stop_reason == "completed":
+                    write_complete(self._directory, result.logical_step)
+                    self._write_status("COMPLETED", logical_step=result.logical_step)
+                else:
+                    self._write_status("INTERRUPTED", logical_step=result.logical_step)
             self._barrier()
             self._ran = True
             return result
-        except BaseException:
+        except BaseException as exc:
             # Ctrl-C is not an Exception. Without this the status would stay RUNNING.
-            self._mark_failed()
+            self._mark_failed(exc)
             raise
         finally:
             self._dump_profile()
@@ -199,19 +211,13 @@ class Experiment:
             self._lock = None
 
     def _output_directory(self) -> Path:
-        directory = self.config.output_directory
-        if not directory.is_absolute():
-            directory = Path.cwd() / directory
-        return directory.resolve()
+        return output_directory(self.config)
 
     def _refuse_used_directory(self) -> None:
-        """A new run starts at step 0, clears metrics.jsonl, and rewrites step files in place."""
+        """A new run starts at step 0, clears metrics.jsonl, and replaces Latest."""
 
         directory = self._directory if self._directory is not None else self._output_directory()
-        if (directory / "complete.json").is_file():
-            found = "complete.json"
-        else:
-            found = next((path.name for path in sorted(directory.glob("step_*.pt"))), None)
+        found = used_directory_marker(directory)
         if found is not None:
             raise CheckpointError(
                 f"output directory already holds a run ({found}): {directory}. "
@@ -233,10 +239,14 @@ class Experiment:
             raise
         self._directory = directory
 
-    def _write_status(self, status: str) -> None:
+    def _write_status(self, status: str, **details: object) -> None:
         if self._directory is None:
             return
-        write_status(self._directory, status)
+        supervisor = launch_id()
+        if supervisor is not None:
+            # Lets the launcher tell this launch's record from one an earlier run left.
+            details = {**details, "launch_id": supervisor}
+        write_status(self._directory, status, **details)
 
     def _dump_profile(self) -> None:
         from src.experiments.execution.profile import dump, enabled
@@ -248,23 +258,30 @@ class Experiment:
         except Exception as exc:
             print(f"resource profile was not written: {exc}", file=sys.stderr)
 
-    def _mark_failed(self) -> None:
+    def _mark_failed(self, error: BaseException | None = None) -> None:
         if self._closed:
             return
+        if self._directory is not None and error is not None and launch_id() is not None:
+            # The launcher collects what each rank raised. Rank 0 alone owns status.json.
+            record_failure(self._directory, self._rank(), error)
         if self._directory is not None and self._is_primary():
             status_path = self._directory / "status.json"
             if self._running or not status_path.is_file():
+                details = {} if error is None else {"error": f"{type(error).__name__}: {error}"[:2000]}
                 try:
-                    self._write_status("FAILED")
+                    self._write_status("FAILED", **details)
                 except OSError:
                     pass
         self.close()
 
     def _is_primary(self) -> bool:
+        return self._rank() == 0
+
+    def _rank(self) -> int:
         runtime = self._runtime
         if runtime is None and self._graph is not None:
             runtime = self._graph.runtime
-        return int(getattr(runtime, "rank", 0)) == 0
+        return int(getattr(runtime, "rank", 0))
 
     def _barrier(self) -> None:
         runtime = self._runtime
@@ -273,6 +290,21 @@ class Experiment:
         barrier = getattr(runtime, "barrier", None)
         if callable(barrier):
             barrier()
+
+
+def output_directory(config: ExperimentConfig) -> Path:
+    """The experiment directory. A relative ``output.directory`` is under the working directory."""
+
+    directory = config.output_directory
+    if not directory.is_absolute():
+        directory = Path.cwd() / directory
+    return directory.resolve()
+
+
+def launch_id() -> str | None:
+    """Identity of the launch that supervises this process, or ``None`` when it runs on its own."""
+
+    return os.environ.get(SUPERVISED_ENV) or None
 
 
 def build_experiment(config: ExperimentConfig) -> Experiment:

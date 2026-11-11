@@ -14,17 +14,29 @@ ROOT = Path(__file__).resolve().parents[3]
 HISTORICAL_DIR = ROOT / "data" / "results" / "training" / "official-compare-20261101"
 
 
+class NoCheckpoints:
+    """Checkpoint argument for a trainer that is driven without an experiment.
+
+    A trainer offers every safe point. A comparison script has no experiment
+    to save, so each offer is declined and no file is written.
+    """
+
+    def __init__(self, directory: Path) -> None:
+        self.directory = Path(directory)
+
+    def offer(self, event: str, *, logical_step: int, metrics: object = None, prepare: object = None) -> None:
+        del event, logical_step, metrics, prepare
+
+
 def numerics_output_dir() -> Path:
     """Directory for this run's reports.
 
-    ``AUDIO_DB_NUMERICS_OUT`` redirects writes away from ``data/results``.
-    The historical speech cache is never created or replaced here.
+    ``AUDIO_DB_NUMERICS_OUT`` names it. The default is outside ``data/``, so a
+    comparison script never writes into the results tree unless told to. The
+    historical speech cache is only read.
     """
 
-    raw = os.environ.get("AUDIO_DB_NUMERICS_OUT")
-    if raw:
-        return Path(raw)
-    return HISTORICAL_DIR
+    return Path(os.environ.get("AUDIO_DB_NUMERICS_OUT") or "/tmp/audio-db-official-compare")
 
 
 REPORT_DIR = numerics_output_dir()

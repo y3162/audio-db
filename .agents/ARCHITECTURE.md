@@ -4,12 +4,20 @@
 
 ## Checkpoint
 
-- 形式は `audio-db-experiment-v1`。必須の意味は `src/experiments/execution/checkpoint.py`。公開 import は `src.experiments.checkpoint`。
-- `config_sha256` は `output` と `stop_after_logical_steps` を除いた設定の SHA-256。クラスパスは YAML の公開 import の文字列である。`core/`、`execution/`、`training/` への分割は、この文字列を変えないので新しい世代のハッシュを足さない。違う設定の resume は拒否する。
-- `WarmupReduceLROnPlateau` のクラスパスは `src.experiments.calc.optim.WarmupReduceLROnPlateau`。再開時だけ、移動前の `src.training.se.optim.WarmupReduceLROnPlateau` で計算したハッシュも同じ設定として受ける。公式コンポーネントへ移した Model と Trainer は、移動前の `src.experiments.<model>` と `src.experiments.models.*` のハッシュも受ける。scheduler の旧パスと公式コンポーネントの旧パスを同時に持つ世代も受ける。新しい保存は現在のパスのハッシュを書く。既存の `data_provenance.json` は、その世代のクラスパスで計算したときだけ同じ run として残す。
+仕様は `docs/experiments/CHECKPOINT.md`、プロセスの監視は `docs/experiments/LAUNCHER.md`。ここは変えてはいけない条件だけを書く。
+
+- 形式は `audio-db-experiment-v1`。実装は `src/experiments/execution/checkpoint.py`。`audio-db-training-v1` は読まない。
+- 保存の方針は Selector（`src/experiments/selectors.py`）だけが持つ。Trainer は整合した点を `checkpoint.offer(...)` で差し出すだけで、いつ保存するかを決めない。Trainer に保存間隔の引数を足さない。YAML は `checkpoint.selector` だけを書く。
+- Latest は `latest.pt` の 1 つだけ。共通基盤が一時ファイルに書き、検証してから `os.replace` する。失敗した保存が以前の Latest を壊す経路を作らない。Selector は Latest の名前、形式、削除に触れない。
+- Archive は `archive/` の中だけ。Selector の削除は `archive/` の外に届かない。Latest と Archive はどちらも完全な checkpoint で、どちらからも再開できる。
+- 公式の推論用の重み（`best_generator.pt`、`valid.loss.best.pt` など）は公式 Trainer の成果物で、checkpoint ではない。Selector に移さない。
+- 保存前に rank 間の parameter、buffer、optimizer、scheduler、trainer、data、Selector の決定と状態を比べる。不一致なら書かない。
+- 保存点は完了した logical step の境界と、Trainer が安全と宣言した点だけ。GAN の optimizer 対の途中では書かない。
+- 再開は同じ実験の厳密な続きである。`config_sha256` は `output`、`checkpoint`、`stop_after_logical_steps` を除いた設定の SHA-256 で、違う設定、違う出力ディレクトリ、違う world size を拒否する。Latest より前の Archive から続けることも拒否する。古い状態から始めるのは、`initialize` を使う別の実験である。
+- `initialize` は module、optimizer、scheduler の状態だけを読み、元の実験のファイルを変更しない。データ位置、Trainer の履歴、RNG は引き継がない。
+- 以前の世代のハッシュ（クラスパスの移動、Trainer の `checkpoint_interval` / `checkpoint_partial`）は `config_generations` が列挙したものだけを同じ設定として受ける。任意のハッシュは受けない。新しい保存は現在のハッシュを書く。
+- `COMPLETED` と `complete.json` は、全プロセスが正常終了したあとに書く。Launcher の下では Launcher が書く。一部の rank だけが学習を続ける経路を作らない。
 - `provenance_sha256` が None の checkpoint は来歴なしのまま再開できる。後から同じディレクトリに JSON ができても、その checkpoint を証明済みにしない。
-- 保存前に rank 間の parameter、buffer、optimizer、scheduler、trainer、data を比べる。不一致の完成ファイルは置かない。
-- SIGTERM は完了した logical step の境界で書く。GAN の optimizer 対の途中では書かない。
 - FSDP、sharded checkpoint、AMP BF16 は未実装。複数 Optimizer の `amp_fp16` は拒否する。
 
 ## 公式再現と研究
@@ -18,7 +26,7 @@
 - `leakage_safe` は test を選択に使わない。profile または `selection_uses_test` が claim と矛盾する設定は拒否する。
 - 本格候補は `configs/reproduction/experiments/official/`（`official_faithful`）と `configs/reproduction/experiments/variants/`（`leakage_safe` と比較用の代替条件）。1 step の宣言は `tests/fixtures/configs/experiments/`。Dataset と Protocol の定義は `configs/data/`。評価 DB の登録は `configs/db/init.yaml`。
 - `dfn3.online.official@1` と `semambapp.gsr.official@1` は blocked。代替素材を公式データの再現と呼ばない。
-- 追跡中の `libdf_rfft.so` は置き換えない。読めないときは、ABI が合うローカル再ビルドだけを使い、PyTorch fallback にしない。
+- 追跡中の `libdf_rfft.so` は置き換えない。ファイルが在るのに読めないときは、ABI が合うローカル再ビルドだけを使い、無ければエラーにする。PyTorch に戻るのは、ファイル自体が無く `DF_RFFT_REQUIRED=1` でもないときだけで、そのとき libdf とのビット一致は成り立たない（`src/se/models/deepfilternet3/dsp.py`）。
 
 ## モデルごとの更新
 

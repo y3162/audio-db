@@ -228,7 +228,7 @@ class SEMambaPPAlgorithmTests(unittest.TestCase):
             root = Path(directory)
             mid = root / "mid"
             build_experiment(load_experiment(_yaml(mid, steps=1, count=4, validation_interval=0))).run()
-            saved = torch.load(mid / "step_00000001.pt", map_location="cpu", weights_only=False)
+            saved = torch.load(mid / "archive/step_00000001.pt", map_location="cpu", weights_only=False)
             self.assertEqual(saved["states"]["trainer"]["scheduler_steps"], 0)
             self.assertEqual(saved["states"]["optim_g"]["param_groups"][0]["lr"], 0.0002)
             self.assertEqual(saved["states"]["optim_d"]["param_groups"][0]["lr"], 0.0002)
@@ -238,7 +238,7 @@ class SEMambaPPAlgorithmTests(unittest.TestCase):
             build_experiment(
                 load_experiment(_yaml(done, steps=2, count=2, validation_interval=2, best_start=0))
             ).run()
-            finished = torch.load(done / "step_00000002.pt", map_location="cpu", weights_only=False)
+            finished = torch.load(done / "archive/step_00000002.pt", map_location="cpu", weights_only=False)
             trainer_state = finished["states"]["trainer"]
             self.assertEqual(trainer_state["scheduler_steps"], 1)
             self.assertEqual(trainer_state["phase"], "in_epoch")
@@ -267,8 +267,8 @@ class SEMambaPPAlgorithmTests(unittest.TestCase):
             first = build_experiment(load_experiment(_yaml(interrupted, steps=2, count=4, validation_interval=0, stop_after=1)))
             self.assertEqual(first.run().stop_reason, "interrupted")
             second = build_experiment(load_experiment(_yaml(interrupted, steps=2, count=4, validation_interval=0)))
-            self.assertEqual(second.run(resume=interrupted / "step_00000001.pt").stop_reason, "completed")
-            _assert_same_checkpoint(continuous / "step_00000002.pt", interrupted / "step_00000002.pt")
+            self.assertEqual(second.run(resume=interrupted / "archive/step_00000001.pt").stop_reason, "completed")
+            _assert_same_checkpoint(continuous / "archive/step_00000002.pt", interrupted / "archive/step_00000002.pt")
             self.assertEqual(_metric_lines(continuous), _metric_lines(interrupted))
 
     def test_epoch_boundary_resume_matches(self) -> None:
@@ -281,17 +281,17 @@ class SEMambaPPAlgorithmTests(unittest.TestCase):
                 load_experiment(_yaml(boundary, steps=2, count=2, validation_interval=2, best_start=0, stop_after=2))
             )
             self.assertEqual(stopped.run().stop_reason, "interrupted")
-            pending = torch.load(boundary / "step_00000002.pt", map_location="cpu", weights_only=False)
+            pending = torch.load(boundary / "archive/step_00000002.pt", map_location="cpu", weights_only=False)
             self.assertEqual(pending["label"], "validation_pending")
             self.assertFalse(pending["states"]["trainer"]["boundary"]["validation_done"])
             self.assertFalse(pending["states"]["trainer"]["boundary"]["scheduler_done"])
             resumed = _cli(
                 _yaml(boundary, steps=2, count=2, validation_interval=2, best_start=0),
                 "--resume",
-                str(boundary / "step_00000002.pt"),
+                str(boundary / "archive/step_00000002.pt"),
             )
             self.assertEqual(resumed.returncode, 0, resumed.stderr[-2000:] + resumed.stdout[-500:])
-            _assert_same_checkpoint(full / "step_00000002.pt", boundary / "step_00000002.pt")
+            _assert_same_checkpoint(full / "archive/step_00000002.pt", boundary / "archive/step_00000002.pt")
             self.assertEqual(_metric_lines(full), _metric_lines(boundary))
 
     def test_corrupt_checkpoint_is_refused(self) -> None:
@@ -299,7 +299,7 @@ class SEMambaPPAlgorithmTests(unittest.TestCase):
             root = Path(directory)
             experiment = build_experiment(load_experiment(_yaml(root, steps=2, count=2, validation_interval=0, stop_after=1)))
             self.assertEqual(experiment.run().stop_reason, "interrupted")
-            broken = root / "step_00000001.pt"
+            broken = root / "archive/step_00000001.pt"
             broken.write_bytes(b"not-a-checkpoint")
             again = build_experiment(load_experiment(_yaml(root, steps=2, count=2, validation_interval=0)))
             with self.assertRaises(CheckpointError):
@@ -309,7 +309,7 @@ class SEMambaPPAlgorithmTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
             build_experiment(load_experiment(_yaml(root, steps=2, count=1, validation_interval=0, stop_after=1))).run()
-            path = root / "step_00000001.pt"
+            path = root / "archive/step_00000001.pt"
             payload = torch.load(path, map_location="cpu", weights_only=False)
             payload["dataset_identity"]["data"]["claim_label"] = "other-claim"
             torch.save(payload, path)
@@ -345,7 +345,7 @@ class SEMambaPPAlgorithmTests(unittest.TestCase):
                     _yaml(target, steps=1, count=count, group_size=accumulation, accumulation=accumulation, validation_interval=0)
                 )
                 self.assertEqual(completed.returncode, 0, completed.stderr[-2500:])
-                payload = torch.load(target / "step_00000001.pt", map_location="cpu", weights_only=False)
+                payload = torch.load(target / "archive/step_00000001.pt", map_location="cpu", weights_only=False)
                 self.assertTrue(payload["parameter_ranks_agree"])
                 self.assertEqual(payload["world_size"], 2)
                 trainer_state = payload["states"]["trainer"]
@@ -608,6 +608,11 @@ def _yaml(
     path = directory / "experiment.yaml"
     path.write_text(
         f"""schema: audio-db-experiment/v1
+checkpoint:
+  selector:
+    class: tests.experiments.support.StepArchiveSelector
+    kwargs:
+      interval: 1
 seed: 1234
 deterministic: {str(deterministic).lower()}
 entry: trainer
@@ -730,7 +735,6 @@ components:
       max_logical_steps: {steps}
       accumulation: {accumulation}
       validation_interval: {validation_interval}
-      checkpoint_interval: 1
       best_checkpoint_start_epoch: {best_start}
       claim_label: {claim}
 {stop}    inject:

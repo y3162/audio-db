@@ -38,7 +38,6 @@ class StandardTrainer:
         grad_clip: float | None = None,
         scheduler: Any | None = None,
         stop_after_logical_steps: int | None = None,
-        checkpoint_interval: int = 1,
     ) -> None:
         if not isinstance(model, PreparedModel):
             raise BuildError("model must be a prepared module handle")
@@ -63,12 +62,6 @@ class StandardTrainer:
             or stop_after_logical_steps < 1
         ):
             raise BuildError("stop_after_logical_steps must be a positive integer")
-        if (
-            isinstance(checkpoint_interval, bool)
-            or not isinstance(checkpoint_interval, int)
-            or checkpoint_interval < 1
-        ):
-            raise BuildError("checkpoint_interval must be a positive integer")
         self.model = model
         self.loss = loss
         self.data = data
@@ -79,13 +72,11 @@ class StandardTrainer:
         self.grad_clip = None if grad_clip is None else float(grad_clip)
         self.scheduler = scheduler
         self.stop_after_logical_steps = stop_after_logical_steps
-        self.checkpoint_interval = checkpoint_interval
         self.logical_step = 0
         self.optimizer_updates = {optimizer_id: 0}
         self.losses: list[float] = []
         self.stop_reason = "initialized"
         self._restored = False
-        self._published_logical_step: int | None = None
 
     def run(self, runtime: ProcessRuntime, checkpoint: CheckpointManager) -> RunResult:
         """Run until ``max_logical_steps``. A restored trainer continues.
@@ -130,8 +121,8 @@ class StandardTrainer:
                 and self.logical_step >= self.stop_after_logical_steps
             )
             if ranks_should_stop(runtime, extra=capped):
-                if self._stop_needs_checkpoint(runtime, checkpoint):
-                    self._publish_step(runtime, checkpoint)
+                if self.logical_step > 0:
+                    self._offer(checkpoint, "stop")
                 self.stop_reason = "interrupted"
                 return RunResult(
                     stop_reason="interrupted",
@@ -197,10 +188,10 @@ class StandardTrainer:
                             "sample_id": sample_id,
                         },
                     )
-                if self.logical_step % self.checkpoint_interval == 0:
-                    self._publish_step(runtime, checkpoint)
+                self._offer(checkpoint, "step")
             finally:
                 _close_epoch_view(view)
+        self._offer(checkpoint, "final")
         self.stop_reason = "completed"
         return RunResult(
             stop_reason="completed",
@@ -243,38 +234,20 @@ class StandardTrainer:
 
         del runtime, checkpoint
 
-    def _stop_needs_checkpoint(self, runtime: ProcessRuntime, checkpoint: CheckpointManager) -> bool:
-        """Save on stop unless this logical step already has a finished step file.
+    def _offer(self, checkpoint: CheckpointManager, event: str) -> None:
+        """Offer this state to the selector. ``_before_checkpoint`` runs only when a file is written.
 
-        The interval publish and the stop publish can land on the same step.
-        Writing it twice runs ``_before_checkpoint`` again and advances CUDA
-        RNG, so a resumed run no longer matches a continuous one. A temporary
-        ``.step_*.pt.tmp`` is not finished: only a successful ``save`` plus the
-        replaced ``step_*.pt`` counts. Ranks follow rank 0's file check.
+        ``stop`` and ``final`` follow the offer of the last finished step
+        without a state change, so the selector can see that Latest already
+        holds this state. Saving it again would run ``_before_checkpoint``
+        twice and a resumed run would no longer match a continuous one.
         """
 
-        if self.logical_step <= 0:
-            return False
-        if self._published_logical_step != self.logical_step:
-            return True
-        finished = _finished_step_file(checkpoint.directory, self.logical_step)
-        world = int(getattr(runtime, "world_size", 1))
-        if world > 1:
-            flags = runtime.gather_objects(finished if _rank(runtime) == 0 else False)
-            finished = bool(flags[0])
-        return not finished
-
-    def _publish_step(self, runtime: ProcessRuntime, checkpoint: CheckpointManager) -> None:
-        self._before_checkpoint(runtime, checkpoint)
-        path = checkpoint.save(checkpoint.directory, logical_step=self.logical_step, label="step")
-        finished = _finished_step_file(Path(path).parent, self.logical_step)
-        world = int(getattr(runtime, "world_size", 1))
-        if world > 1:
-            flags = runtime.gather_objects(finished if _rank(runtime) == 0 else False)
-            finished = bool(flags[0])
-        if not finished:
-            raise CheckpointError("checkpoint save did not leave a finished step file")
-        self._published_logical_step = self.logical_step
+        checkpoint.offer(
+            event,
+            logical_step=self.logical_step,
+            prepare=lambda runtime: self._before_checkpoint(runtime, checkpoint),
+        )
 
     def _require_group_size(self, component_id: str) -> None:
         group_size = getattr(self.data, "group_size", None)
@@ -339,13 +312,6 @@ def _batch_on_device(batch: Batch, device: torch.device) -> Batch:
     if not changed:
         return batch
     return replace(batch, inputs=inputs, targets=targets, lengths=lengths)
-
-
-def _finished_step_file(directory: Path, logical_step: int) -> bool:
-    """True for the replaced step file. Dotfile temporaries do not count."""
-
-    path = Path(directory) / f"step_{logical_step:08d}.pt"
-    return path.is_file() and not path.name.startswith(".")
 
 
 def _rank(runtime: ProcessRuntime) -> int:

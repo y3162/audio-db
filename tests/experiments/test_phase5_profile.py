@@ -38,9 +38,9 @@ class Phase5ProfileTests(unittest.TestCase):
             self.assertIn("optimizer_step", names)
             self.assertIn("replicated_state_compare", names)
             self.assertIn("checkpoint_write", names)
-            checkpoint = directory / "step_00000001.pt"
+            checkpoint = directory / "latest.pt"
             self.assertTrue(checkpoint.is_file())
-            self.assertTrue((directory / "step_00000001.data_provenance.json").is_file())
+            self.assertTrue((directory / "latest.data_provenance.json").is_file())
             self.assertTrue((directory / "data_provenance.json").is_file())
 
 

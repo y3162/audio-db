@@ -4,7 +4,7 @@
 # World size 2, micro-batch 1, accumulation 2, global batch 4: 2,675 updates per pass.
 # 121 passes are 323,675 updates. Validation is p286/p287. Test is not a selection split.
 # Scratch start: do not pass an initialization checkpoint.
-# checkpoint_interval is 90 logical steps, the same audit value as the official file.
+# latest_every is 90 logical steps, the same audit value as the official file.
 # Launch with 2 visible GPUs. World size 1 is a different global batch.
 schema: audio-db-experiment/v1
 seed: 777
@@ -17,6 +17,11 @@ runtime:
     precision: fp32
 output:
   directory: data/results/experiments/phase6-production/mossformergan-se-16k-leakage-safe
+checkpoint:
+  selector:
+    class: src.experiments.selectors.StandardSelector
+    kwargs:
+      latest_every: 90
 components:
   generator:
     role: module
@@ -114,7 +119,6 @@ components:
       accumulation: 2
       grad_clip: 10.0
       experiment_claim: leakage_safe
-      checkpoint_interval: 90
       validate_on_epoch_end: true
     inject:
       generator: {ref: generator}

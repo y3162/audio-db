@@ -3,7 +3,7 @@
 # Selection uses tf_locoformer.dns.accept_recipe.research_valid_fixed@1.
 # World size 4, global batch 4, micro-batch 1, chunk 64,000, 150 epochs.
 # 1,000 utterances per rank and 14,000 updates per epoch give 2,100,000 updates.
-# checkpoint_interval is 60 logical steps. Phase 5 estimated 7.4 s/update, so
+# latest_every is 60 logical steps. Phase 5 estimated 7.4 s/update, so
 # this is about 7.4 minutes plus the 6.8 s write. Validation stays at the epoch end.
 # Launch with 4 visible GPUs. Fewer GPUs are a different, refused condition.
 schema: audio-db-experiment/v1
@@ -17,6 +17,11 @@ runtime:
     precision: fp32
 output:
   directory: data/results/experiments/phase5-production/tf-locoformer-dns-research
+checkpoint:
+  selector:
+    class: src.experiments.selectors.StandardSelector
+    kwargs:
+      latest_every: 60
 components:
   model:
     role: module
@@ -128,7 +133,6 @@ components:
       keep_nbest: 5
       max_epochs: 150
       early_stopping_patience: 10
-      checkpoint_interval: 60
       validation_profile: tf_locoformer.dns.accept_recipe.research_valid_fixed@1
     inject:
       model: {ref: model}

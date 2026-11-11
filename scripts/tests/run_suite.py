@@ -4,7 +4,13 @@ CPU modules hide CUDA. GPU targets run only on devices the caller named or
 on devices that are idle inside the parent's ``CUDA_VISIBLE_DEVICES``.
 An empty value does not widen back to the machine. A CPU pass is not a GPU pass.
 
+The runner first makes the production data read-only for itself and for every
+test process (``tests.suite_guard``). Where that is not possible it refuses to
+run unless ``AUDIO_DB_TEST_UNGUARDED=1``. No test writes below ``data/``, so
+modules need no ordering between them.
+
 ``unittest discover`` remains the single-directory, single-process command.
+``python -m tests.suite_guard COMMAND`` puts it behind the same guard.
 """
 
 from __future__ import annotations
@@ -26,6 +32,7 @@ ROOT = Path(__file__).resolve().parents[2]
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
+from tests import suite_guard  # noqa: E402
 from tests.suite_resources import (  # noqa: E402
     available_cpus,
     gpu_inventory_required,
@@ -57,27 +64,7 @@ GPU_TARGETS = (
     "tests.numerics.test_moss_probe_accumulation.MossProbeAccumulationTest.test_cuda_stft_uses_official_cpu_window",
     "tests.numerics.test_model_tasks",
     "tests.experiments.test_cuda_amp",
-)
-
-# p9 rewrites data/db/reproduction-p9.duckdb and may leave a short-lived WAL
-# beside it. p1 fails if the names in data/db change while it runs. phase4i
-# reads that database. These three do not share a pool slot.
-PRODUCTION_DB_MODULES = frozenset(
-    {
-        "tests.data.reproduction.test_p1",
-        "tests.data.reproduction.test_p9_semamba",
-        "tests.experiments.test_phase4i_integration",
-    }
-)
-
-# p9 publishes semambapp.gsr.smoke by writing a dot-prefixed partial directory
-# and renaming it into data/db/snapshots. test_semambapp resolves that selector
-# by scanning the directory. The two do not share a pool slot.
-SNAPSHOT_PUBLISH_MODULES = frozenset(
-    {
-        "tests.data.reproduction.test_p9_semamba",
-        "tests.experiments.test_semambapp",
-    }
+    "tests.experiments.test_launcher.LauncherCudaTests",
 )
 
 _PRINT = threading.Lock()
@@ -388,12 +375,8 @@ def run_lane(
     root = Path(directory.name)
     try:
         while pending or running:
-            deferred: list[str] = []
             while pending and len(running) < slots:
                 name = pending.pop(0)
-                if blocked_by_production_db(name, {str(job["name"]) for job in running}):
-                    deferred.append(name)
-                    continue
                 token = str(len(finished) + len(running))
                 result_path = root / f"{token}.json"
                 log_path = root / f"{token}.log"
@@ -408,11 +391,6 @@ def run_lane(
                         "start": time.perf_counter(),
                     }
                 )
-            pending = deferred + pending
-            if not running:
-                if pending:
-                    raise RuntimeError("scheduler stopped with modules still waiting: " + ", ".join(pending))
-                break
             time.sleep(0.05)
             still: list[dict[str, object]] = []
             now = time.perf_counter()
@@ -446,11 +424,21 @@ def run_lane(
     return finished, time.perf_counter() - started
 
 
-def blocked_by_production_db(name: str, running: set[str]) -> bool:
-    """True when ``name`` must wait for a module that shares production data."""
-    if name in PRODUCTION_DB_MODULES and bool(PRODUCTION_DB_MODULES & running):
-        return True
-    return name in SNAPSHOT_PUBLISH_MODULES and bool(SNAPSHOT_PUBLISH_MODULES & running)
+def guard_production_data() -> tuple[str, list[str]]:
+    """Make the production data read-only for this process and its children.
+
+    Returns the state and the guarded paths. ``read-only`` is the guarded
+    state, ``off`` is the caller's ``AUDIO_DB_TEST_UNGUARDED=1``, and ``none``
+    means there is no ``data/`` to guard. Must run before any thread starts.
+    """
+    if suite_guard.unguarded():
+        return "off", []
+    paths = suite_guard.production_paths(ROOT)
+    if not paths:
+        return "none", []
+    if not suite_guard.protected(paths):
+        suite_guard.enter(paths)
+    return "read-only", [str(path) for path in paths]
 
 
 def _problems(rows: list[dict[str, object]]) -> list[str]:
@@ -544,6 +532,15 @@ def main(argv: list[str] | None = None) -> int:
             print(name)
         return 0
 
+    try:
+        guard, guarded = guard_production_data()
+    except suite_guard.GuardError as exc:
+        print(
+            f"production data cannot be made read-only: {exc}. "
+            f"Set {suite_guard.UNGUARDED_ENV}=1 to run the tests without the guard.",
+            file=sys.stderr,
+        )
+        return 2
     workers = module_workers()
     timeout = _timeout_seconds()
     gpu_devices: list[int] = []
@@ -553,6 +550,7 @@ def main(argv: list[str] | None = None) -> int:
     slots = _gpu_slots()
     threads = process_threads(workers, slots if gpu_devices else 0)
     parent_visible = _parent_visible_label(_parent_visible())
+    os.environ[suite_guard.STATE_ENV] = guard
     cpu_env = os.environ.copy()
     cpu_env["CUDA_VISIBLE_DEVICES"] = ""
     cpu_env.update(thread_environment(threads))
@@ -562,6 +560,7 @@ def main(argv: list[str] | None = None) -> int:
         f"cpu_workers={workers} threads={threads} timeout_s={timeout:.0f}",
         flush=True,
     )
+    print(f"data_guard={guard} guarded_paths={len(guarded)}", flush=True)
     print(f"cpu_modules={len(names)} cuda_visible_devices=hidden", flush=True)
     if gpu_devices:
         print(
@@ -624,6 +623,7 @@ def main(argv: list[str] | None = None) -> int:
         "cpu_workers": workers,
         "threads": threads,
         "wall_seconds": wall,
+        "data_guard": {"state": guard, "paths": guarded},
         "cpu": _lane_summary(
             cpu_rows,
             float(cpu_box.get("seconds") or 0.0),

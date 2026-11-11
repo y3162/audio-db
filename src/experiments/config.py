@@ -8,7 +8,7 @@ from __future__ import annotations
 import hashlib
 import json
 import re
-from dataclasses import asdict, dataclass
+from dataclasses import asdict, dataclass, field, replace
 from pathlib import Path
 from typing import Any
 
@@ -18,7 +18,10 @@ from src.experiments.errors import ConfigError
 from src.experiments.execution.runtime import PreparePolicy
 
 SCHEMA = "audio-db-experiment/v1"
-TOP_KEYS = frozenset({"schema", "seed", "deterministic", "entry", "runtime", "components", "output"})
+TOP_KEYS = frozenset(
+    {"schema", "seed", "deterministic", "entry", "runtime", "components", "output", "checkpoint", "initialize"}
+)
+DEFAULT_SELECTOR = "src.experiments.selectors.StandardSelector"
 CONCRETE_KEYS = frozenset({"role", "class", "kwargs", "inject", "parameters_of", "prepare", "state"})
 ROLES = frozenset({"module", "optimizer", "scheduler", "trainer", "data", "loss", "metric", "other"})
 PREPARE_KEYS = frozenset(
@@ -61,6 +64,14 @@ class ComponentConfig:
 
 
 @dataclass(frozen=True)
+class InitializeConfig:
+    """Checkpoint that supplies the initial state of a new experiment."""
+
+    checkpoint: Path
+    states: tuple[str, ...]
+
+
+@dataclass(frozen=True)
 class ExperimentConfig:
     """A validated experiment document. Instances are not created yet."""
 
@@ -73,6 +84,9 @@ class ExperimentConfig:
     components: dict[str, ComponentConfig]
     output_directory: Path
     source_path: Path | None = None
+    selector_class: str = DEFAULT_SELECTOR
+    selector_kwargs: dict[str, Any] = field(default_factory=dict)
+    initialize: InitializeConfig | None = None
 
 
 class _UniqueKeyLoader(yaml.SafeLoader):
@@ -111,18 +125,7 @@ def load_experiment(path: str | Path) -> ExperimentConfig:
         raise ConfigError(f"invalid YAML in {source}: {exc}") from exc
     if not isinstance(raw, dict):
         raise ConfigError("experiment config must be a mapping")
-    config = _parse_document(raw)
-    return ExperimentConfig(
-        schema=config.schema,
-        seed=config.seed,
-        deterministic=config.deterministic,
-        entry=config.entry,
-        runtime_class=config.runtime_class,
-        runtime_kwargs=config.runtime_kwargs,
-        components=config.components,
-        output_directory=config.output_directory,
-        source_path=source,
-    )
+    return replace(_parse_document(raw), source_path=source)
 
 
 def _parse_document(raw: dict[str, Any]) -> ExperimentConfig:
@@ -141,6 +144,8 @@ def _parse_document(raw: dict[str, Any]) -> ExperimentConfig:
         raise ConfigError("entry must be a component id")
     runtime_class, runtime_kwargs = _parse_runtime(raw.get("runtime"))
     output_directory = _parse_output(raw.get("output"))
+    selector_class, selector_kwargs = _parse_checkpoint(raw.get("checkpoint"))
+    initialize = _parse_initialize(raw.get("initialize"))
     components = _parse_components(raw.get("components"))
     _reject_differentiable(components)
     trainers = [
@@ -164,6 +169,9 @@ def _parse_document(raw: dict[str, Any]) -> ExperimentConfig:
         runtime_kwargs=runtime_kwargs,
         components=components,
         output_directory=output_directory,
+        selector_class=selector_class,
+        selector_kwargs=selector_kwargs,
+        initialize=initialize,
     )
 
 
@@ -192,6 +200,46 @@ def _parse_output(raw: object) -> Path:
     if not isinstance(directory, str) or not directory:
         raise ConfigError("output.directory must be a non-empty string")
     return Path(directory)
+
+
+def _parse_checkpoint(raw: object) -> tuple[str, dict[str, Any]]:
+    """Read ``checkpoint.selector``. Without the section the standard selector saves Latest every step."""
+
+    if raw is None:
+        return DEFAULT_SELECTOR, {}
+    mapping = _expect_mapping(raw, "checkpoint")
+    _reject_unknown(mapping, frozenset({"selector"}), "checkpoint")
+    selector = _expect_mapping(mapping.get("selector"), "checkpoint.selector")
+    _reject_unknown(selector, frozenset({"class", "kwargs"}), "checkpoint.selector")
+    class_path = selector.get("class")
+    if not isinstance(class_path, str) or "." not in class_path:
+        raise ConfigError("checkpoint.selector class must be a fully qualified class name")
+    kwargs = dict(_expect_mapping(selector.get("kwargs", {}), "checkpoint.selector.kwargs"))
+    _reject_nested_ref(kwargs, "checkpoint.selector")
+    return class_path, kwargs
+
+
+def _parse_initialize(raw: object) -> InitializeConfig | None:
+    """Read ``initialize``: the checkpoint and the state ids a new experiment starts from."""
+
+    if raw is None:
+        return None
+    mapping = _expect_mapping(raw, "initialize")
+    _reject_unknown(mapping, frozenset({"checkpoint", "states"}), "initialize")
+    checkpoint = mapping.get("checkpoint")
+    if not isinstance(checkpoint, str) or not checkpoint:
+        raise ConfigError("initialize.checkpoint must be a non-empty string")
+    states = mapping.get("states")
+    if not isinstance(states, list) or not states:
+        raise ConfigError("initialize.states must be a non-empty list of state ids")
+    cleaned: list[str] = []
+    for state_id in states:
+        if not isinstance(state_id, str) or _COMPONENT_ID.fullmatch(state_id) is None:
+            raise ConfigError(f"initialize.states has an invalid state id {state_id!r}")
+        if state_id in cleaned:
+            raise ConfigError(f"initialize.states repeats {state_id}")
+        cleaned.append(state_id)
+    return InitializeConfig(checkpoint=Path(checkpoint), states=tuple(cleaned))
 
 
 def _parse_components(raw: object) -> dict[str, ComponentConfig]:
@@ -444,18 +492,34 @@ LEGACY_CLASS_PATHS = (
 )
 
 
-def config_sha256(config: ExperimentConfig, *, class_paths: dict[str, str] | None = None) -> str:
+def config_sha256(
+    config: ExperimentConfig,
+    *,
+    class_paths: dict[str, str] | None = None,
+    legacy_trainer_kwargs: dict[str, Any] | None = None,
+) -> str:
     """Hash the experiment identity.
 
     ``output`` is excluded. Resume refuses a different directory by comparing
     the stored path, not this hash. ``stop_after_logical_steps`` is an
     execution cap and is excluded, so a capped run can continue under the
-    same algorithm configuration.
+    same algorithm configuration. ``checkpoint`` is excluded: a selector
+    decides which states are kept and does not change a training step.
+    ``initialize`` is included when present, because another initial state is
+    another experiment. A document without it hashes as before.
+
+    ``legacy_trainer_kwargs`` reproduces the hash of a document written before
+    selectors, where the entry trainer took ``checkpoint_interval`` and, for
+    MossFormerGAN, ``checkpoint_partial``.
     """
 
-    payload = {
+    payload: dict[str, Any] = {
         "components": {
-            component_id: _component_identity(spec, class_paths)
+            component_id: _component_identity(
+                spec,
+                class_paths,
+                legacy_trainer_kwargs if component_id == config.entry else None,
+            )
             for component_id, spec in config.components.items()
         },
         "deterministic": config.deterministic,
@@ -464,16 +528,63 @@ def config_sha256(config: ExperimentConfig, *, class_paths: dict[str, str] | Non
         "schema": config.schema,
         "seed": config.seed,
     }
+    if config.initialize is not None:
+        payload["initialize"] = {
+            "checkpoint": str(config.initialize.checkpoint),
+            "states": list(config.initialize.states),
+        }
     encoded = json.dumps(payload, ensure_ascii=True, separators=(",", ":"), sort_keys=True)
     return hashlib.sha256(encoded.encode("utf-8")).hexdigest()
 
 
-def _component_identity(spec: ComponentConfig, class_paths: dict[str, str] | None = None) -> dict[str, Any]:
+def config_generations(config: ExperimentConfig) -> list[tuple[dict[str, str] | None, str]]:
+    """Current identity first, then each accepted historical one, as ``(class_paths, hash)``.
+
+    A generation is one complete rewrite: a set of historical class paths,
+    with or without the entry trainer's former checkpoint arguments. Those
+    values are not stored in a new document. A run migrated to a selector is
+    recognized when the selector's ``latest_every`` equals the
+    ``checkpoint_interval`` it was started with and its ``partial`` equals the
+    former ``checkpoint_partial``, or when the old document left them out.
+    """
+
+    intervals: list[int | None] = [None]
+    latest_every = config.selector_kwargs.get("latest_every", 1)
+    if isinstance(latest_every, int) and not isinstance(latest_every, bool) and latest_every >= 1:
+        intervals.append(latest_every)
+    partials: list[bool | None] = [None]
+    partial = config.selector_kwargs.get("partial", False)
+    if isinstance(partial, bool):
+        partials.append(partial)
+    generations: list[tuple[dict[str, str] | None, str]] = []
+    seen: set[str] = set()
+    for interval in intervals:
+        for partial in partials:
+            legacy: dict[str, Any] = {}
+            if interval is not None:
+                legacy["checkpoint_interval"] = interval
+            if partial is not None:
+                legacy["checkpoint_partial"] = partial
+            for mapping in (None, *LEGACY_CLASS_PATHS):
+                digest = config_sha256(config, class_paths=mapping, legacy_trainer_kwargs=legacy or None)
+                if digest in seen:
+                    continue
+                seen.add(digest)
+                generations.append((mapping, digest))
+    return generations
+
+
+def _component_identity(
+    spec: ComponentConfig,
+    class_paths: dict[str, str] | None = None,
+    legacy_kwargs: dict[str, Any] | None = None,
+) -> dict[str, Any]:
     if spec.ref is not None:
         return {"ref": spec.ref}
     kwargs = _jsonable(spec.kwargs)
     if isinstance(kwargs, dict):
         kwargs.pop("stop_after_logical_steps", None)
+        kwargs.update(legacy_kwargs or {})
     payload: dict[str, Any] = {
         "class": (class_paths or {}).get(spec.class_path, spec.class_path),
         "kwargs": kwargs,

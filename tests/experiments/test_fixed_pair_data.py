@@ -302,7 +302,7 @@ class FixedPairDataTests(unittest.TestCase):
         first = _cli(interrupted_config)
         self.assertEqual(first.returncode, 0, first.stderr)
         self.assertFalse((interrupted / "complete.json").is_file())
-        saved = interrupted / "step_00000002.pt"
+        saved = interrupted / "archive/step_00000002.pt"
         self.assertTrue(saved.is_file())
         resume_config = _experiment_config(
             interrupted,
@@ -343,7 +343,7 @@ class FixedPairDataTests(unittest.TestCase):
             fresh.close()
         payload = torch.load(saved, map_location="cpu", weights_only=False)
         payload["states"]["data"]["plan_hash"] = "f" * 64
-        tampered = interrupted / "step_00000002.pt"
+        tampered = interrupted / "archive/step_00000002.pt"
         torch.save(payload, tampered)
         again = build_experiment(load_experiment(resume_config))
         try:
@@ -360,18 +360,19 @@ class FixedPairDataTests(unittest.TestCase):
         data = experiment.get("data")
         data.epoch = 0
         data.update_index = 2
-        path = experiment._checkpoint.save(  # type: ignore[union-attr]
-            experiment._directory,  # type: ignore[arg-type]
-            logical_step=0,
-            label="init",
-            initialize_allow=["model"],
-        )
+        report = experiment._checkpoint.offer("step", logical_step=0)  # type: ignore[union-attr]
+        path = report.latest
+        self.assertIsNotNone(path)
         experiment.close()
         restored = build_experiment(load_experiment(config))
         try:
-            restored._checkpoint.restore(path, mode="initialize")  # type: ignore[union-attr]
+            restored._checkpoint.restore(path, mode="initialize", states=["model"])  # type: ignore[union-attr]
             self.assertEqual(restored.get("data").update_index, 0)
             self.assertEqual(restored.get("data").epoch, 0)
+            with self.assertRaises(CheckpointError) as caught:
+                restored._checkpoint.restore(path, mode="initialize", states=["model", "data"])  # type: ignore[union-attr]
+            self.assertIn("resume", str(caught.exception))
+            self.assertEqual(restored.get("data").update_index, 0)
         finally:
             restored.close()
 
@@ -572,6 +573,11 @@ def _experiment_config(
     stop = "" if stop_after is None else f"      stop_after_logical_steps: {stop_after}\n"
     profile = "" if require_profile is None else f"\n      require_profile: {require_profile}"
     text = f"""schema: audio-db-experiment/v1
+checkpoint:
+  selector:
+    class: tests.experiments.support.StepArchiveSelector
+    kwargs:
+      interval: {checkpoint_interval}
 seed: 17
 deterministic: false
 entry: trainer
@@ -641,7 +647,6 @@ components:
     kwargs:
       max_logical_steps: {steps}
       accumulation: {accumulation}
-      checkpoint_interval: {checkpoint_interval}
 {stop}    inject:
       model: {{ref: model}}
       loss: {{ref: loss}}

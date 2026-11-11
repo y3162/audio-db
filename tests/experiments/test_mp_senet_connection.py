@@ -234,7 +234,7 @@ class MPSENetConnectionTests(unittest.TestCase):
         interrupted_result = interrupted.run()
         self.assertEqual(interrupted_result.stop_reason, "interrupted")
         self.assertEqual(interrupted_result.logical_step, 1)
-        saved = interrupted_dir / "step_00000001.pt"
+        saved = interrupted_dir / "archive/step_00000001.pt"
         payload = torch.load(saved, map_location="cpu", weights_only=False)
         self.assertEqual(payload["format"], "audio-db-experiment-v1")
         self.assertTrue(any(key.startswith("generator.") for key in payload["states"]["model"]))
@@ -268,8 +268,8 @@ class MPSENetConnectionTests(unittest.TestCase):
         resumed_result = resumed.run(resume=saved)
         self.assertEqual(resumed_result.logical_step, 2)
         self.assertEqual(resumed_result.optimizer_updates, {"optimizer": 2})
-        left = torch.load(continuous_dir / "step_00000002.pt", map_location="cpu", weights_only=False)
-        right = torch.load(interrupted_dir / "step_00000002.pt", map_location="cpu", weights_only=False)
+        left = torch.load(continuous_dir / "archive/step_00000002.pt", map_location="cpu", weights_only=False)
+        right = torch.load(interrupted_dir / "archive/step_00000002.pt", map_location="cpu", weights_only=False)
         _assert_same_tensors(left["states"]["model"], right["states"]["model"])
         _assert_same_tensors(left["states"]["optimizer"], right["states"]["optimizer"])
         self.assertEqual(left["states"]["trainer"], right["states"]["trainer"])
@@ -327,6 +327,11 @@ def _write_yaml(
     directory.mkdir(parents=True, exist_ok=True)
     stop = "" if stop_after is None else f"      stop_after_logical_steps: {stop_after}\n"
     text = f"""schema: audio-db-experiment/v1
+checkpoint:
+  selector:
+    class: tests.experiments.support.StepArchiveSelector
+    kwargs:
+      interval: 1
 seed: 17
 deterministic: true
 entry: trainer

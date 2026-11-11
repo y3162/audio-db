@@ -381,7 +381,7 @@ class ChunkDataTests(unittest.TestCase):
         first = _cli(interrupted_config)
         self.assertEqual(first.returncode, 0, first.stderr)
         self.assertFalse((interrupted / "complete.json").is_file())
-        saved = interrupted / "step_00000002.pt"
+        saved = interrupted / "archive/step_00000002.pt"
         self.assertTrue(saved.is_file())
         resume_config = _experiment_config(interrupted, self.ms, steps=4, prefetch=True)
         whole = _cli(continuous_config)
@@ -554,6 +554,11 @@ def _experiment_config(
     directory.mkdir(parents=True, exist_ok=True)
     stop = "" if stop_after is None else f"      stop_after_logical_steps: {stop_after}\n"
     text = f"""schema: audio-db-experiment/v1
+checkpoint:
+  selector:
+    class: tests.experiments.support.StepArchiveSelector
+    kwargs:
+      interval: 1
 seed: 17
 deterministic: false
 entry: trainer
@@ -627,7 +632,6 @@ components:
     kwargs:
       max_logical_steps: {steps}
       accumulation: {group_size}
-      checkpoint_interval: 1
 {stop}    inject:
       model: {{ref: model}}
       loss: {{ref: loss}}

@@ -2,7 +2,7 @@
 # Official-faithful MP-SENet, world size 2, micro-batch 2, global batch 4.
 # 11,572 train utterances, 2,893 updates per epoch, 400 epochs, 1,157,200 updates.
 # Validation uses the official test split. That score is not an independent test.
-# checkpoint_interval is 210 logical steps, about 7.4 minutes at the Phase 5
+# latest_every is 210 logical steps, about 7.4 minutes at the Phase 5
 # 2.1 s/update estimate. validation_interval stays 5000.
 # Launch with 2 visible GPUs. World size 1 is a different condition.
 schema: audio-db-experiment/v1
@@ -16,6 +16,11 @@ runtime:
     precision: fp32
 output:
   directory: data/results/experiments/phase5-production/mp-senet-gan-official
+checkpoint:
+  selector:
+    class: src.experiments.selectors.StandardSelector
+    kwargs:
+      latest_every: 210
 components:
   generator:
     role: module
@@ -121,7 +126,6 @@ components:
       accumulation: 1
       experiment_claim: official_faithful
       validation_interval: 5000
-      checkpoint_interval: 210
       best_checkpoint_start_epoch: 40
     inject:
       generator: {ref: generator}

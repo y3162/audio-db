@@ -1,6 +1,6 @@
 # Short leakage-safe check. One logical step, then a separate process may resume.
 # Same snapshot, claim, and network as the production leakage-safe file.
-# Step 1 is saved by the stop boundary. Step 2 matches checkpoint_interval and is saved on completion.
+# Step 1 is saved by the stop boundary. Step 2 matches the selector interval and is saved on completion.
 # This file is not the 121-pass run. Do not point it at the production directory.
 schema: audio-db-experiment/v1
 seed: 777
@@ -13,6 +13,11 @@ runtime:
     precision: fp32
 output:
   directory: data/results/experiments/phase6-readiness/mossformergan-leakage-safe
+checkpoint:
+  selector:
+    class: tests.experiments.support.StepArchiveSelector
+    kwargs:
+      interval: 2
 components:
   generator:
     role: module
@@ -110,7 +115,6 @@ components:
       accumulation: 2
       grad_clip: 10.0
       experiment_claim: leakage_safe
-      checkpoint_interval: 2
       stop_after_logical_steps: 1
       validate_on_epoch_end: true
     inject:

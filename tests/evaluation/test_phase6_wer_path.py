@@ -109,9 +109,18 @@ class CorpusWerPathTests(unittest.TestCase):
             record = result["records"][0]
             self.assertEqual(record["status"], "error")
             self.assertIn("enhancer failed", record["error"]["message"])
+            self.assertEqual(record["wer"]["status"], "error")
             self.assertEqual(result["summary"]["num_error"], 1)
             self.assertEqual(result["summary"]["num_ok"], 0)
-            self.assertFalse(result["summary"]["groups"])
+            self.assertEqual(result["status"], "incomplete")
+            self.assertFalse(result["summary"]["official_wer"])
+            groups = {group["condition"]: group for group in result["summary"]["groups"]}
+            self.assertEqual(set(groups), {"clean", "noisy", "enhanced"})
+            self.assertEqual(groups["noisy"]["target_utterance_ids"], groups["enhanced"]["target_utterance_ids"])
+            for group in groups.values():
+                self.assertFalse(group["wer_official"])
+                self.assertIsNone(group["wer_normalized"])
+                self.assertNotEqual(group["wer_normalized"], 0)
 
     def test_one_real_enhancer_reaches_mock_asr(self) -> None:
         apply_intra_threads()

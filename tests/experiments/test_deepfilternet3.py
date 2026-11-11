@@ -13,6 +13,7 @@ import os
 import socket
 import subprocess
 import sys
+import tempfile
 import unittest
 from pathlib import Path
 
@@ -242,7 +243,6 @@ class DeepFilterNet3AlgorithmTests(unittest.TestCase):
                 max_logical_steps=1,
                 steps_per_epoch=4,
                 stop_after_logical_steps=1,
-                checkpoint_interval=10**9,
             )
             trainer._stream = stream
             validated = trainer._validate(runtime, 0, "trainer")
@@ -386,12 +386,7 @@ class DeepFilterNet3AlgorithmTests(unittest.TestCase):
 
 class DeepFilterNet3ExperimentTests(unittest.TestCase):
     def test_parameter_identity_and_resume_on_the_smoke_snapshot(self) -> None:
-        directory = Path("/tmp/phase4g/resume")
-        if directory.exists():
-            for child in directory.iterdir():
-                child.unlink()
-        else:
-            directory.mkdir(parents=True)
+        directory = Path(self.enterContext(tempfile.TemporaryDirectory(prefix="audio-db-dfn3-resume-")))
         path = directory / "experiment.yaml"
         path.write_text(_tiny_yaml(directory, stop_after=1), encoding="utf-8")
         first = Experiment(load_experiment(path))
@@ -409,7 +404,7 @@ class DeepFilterNet3ExperimentTests(unittest.TestCase):
             {id(parameter) for parameter in module.parameters()},
         )
         built.close()
-        checkpoint = directory / "step_00000001.pt"
+        checkpoint = directory / "archive/step_00000001.pt"
         self.assertTrue(checkpoint.is_file())
         path.write_text(_tiny_yaml(directory, stop_after=2), encoding="utf-8")
         second = Experiment(load_experiment(path))
@@ -426,15 +421,12 @@ class DeepFilterNet3ExperimentTests(unittest.TestCase):
         self.assertEqual(len(metrics), 2)
 
     def test_epoch_boundary_rebinds_before_the_next_plan(self) -> None:
-        directory = Path("/tmp/phase4g/boundary")
-        directory.mkdir(parents=True, exist_ok=True)
-        for child in directory.iterdir():
-            child.unlink()
+        directory = Path(self.enterContext(tempfile.TemporaryDirectory(prefix="audio-db-dfn3-boundary-")))
         config = directory / "experiment.yaml"
         config.write_text(_boundary_yaml(directory), encoding="utf-8")
         result = Experiment(load_experiment(config)).run()
         self.assertEqual(result.logical_step, 9)
-        payload = torch.load(directory / "step_00000009.pt", map_location="cpu", weights_only=False)
+        payload = torch.load(directory / "archive/step_00000009.pt", map_location="cpu", weights_only=False)
         identity = payload["dataset_identity"]["data"]
         self.assertEqual(identity["micro_batch"], 2)
         self.assertEqual(payload["states"]["data"]["epoch"], 1)
@@ -445,10 +437,7 @@ class DeepFilterNet3ExperimentTests(unittest.TestCase):
         self.assertTrue((directory / "valid.loss.best.pt").is_file())
 
     def test_cpu_gloo_one_step_agrees(self) -> None:
-        directory = Path("/tmp/phase4g/gloo")
-        directory.mkdir(parents=True, exist_ok=True)
-        for child in directory.iterdir():
-            child.unlink()
+        directory = Path(self.enterContext(tempfile.TemporaryDirectory(prefix="audio-db-dfn3-gloo-")))
         config = directory / "experiment.yaml"
         config.write_text(_tiny_yaml(directory, stop_after=None, world_batch=2), encoding="utf-8")
         env = os.environ.copy()
@@ -464,7 +453,7 @@ class DeepFilterNet3ExperimentTests(unittest.TestCase):
             cwd=_ROOT, env=env, check=False, capture_output=True, text=True, timeout=300,
         )
         self.assertEqual(completed.returncode, 0, completed.stderr[-2000:])
-        payload = torch.load(directory / "step_00000001.pt", map_location="cpu", weights_only=False)
+        payload = torch.load(directory / "archive/step_00000001.pt", map_location="cpu", weights_only=False)
         self.assertTrue(payload["parameter_ranks_agree"])
         self.assertEqual(payload["world_size"], 2)
 
@@ -472,6 +461,11 @@ class DeepFilterNet3ExperimentTests(unittest.TestCase):
 def _tiny_yaml(directory: Path, stop_after: int | None, world_batch: int = 1) -> str:
     stop = "" if stop_after is None else f"      stop_after_logical_steps: {stop_after}\n"
     return f"""schema: audio-db-experiment/v1
+checkpoint:
+  selector:
+    class: tests.experiments.support.StepArchiveSelector
+    kwargs:
+      interval: 1
 seed: 7
 deterministic: true
 entry: trainer
@@ -567,7 +561,6 @@ components:
       warmup_epochs: 3
       weight_decay_end: 0.01
       batch_size_limit: 64
-      checkpoint_interval: 1
 {stop}    inject:
       model: {{ref: model}}
       data: {{ref: data}}

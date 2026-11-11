@@ -165,7 +165,6 @@ class DeepFilterNet3Trainer:
         batch_schedule: list[list[int]] | None = None,
         batch_size_limit: int = 64,
         stop_after_logical_steps: int | None = None,
-        checkpoint_interval: int = 1,
     ) -> None:
         if not isinstance(model, PreparedModel):
             raise BuildError("model must be a prepared module handle")
@@ -195,7 +194,6 @@ class DeepFilterNet3Trainer:
         self.stop_after_logical_steps = (
             None if stop_after_logical_steps is None else _positive_int("stop_after_logical_steps", stop_after_logical_steps)
         )
-        self.checkpoint_interval = _positive_int("checkpoint_interval", checkpoint_interval)
         self._table_steps = _positive_int("steps_per_epoch", steps_per_epoch)
         self._learning_rates, self._decays = self._tables(self._table_steps)
         self.logical_step = 0
@@ -260,7 +258,7 @@ class DeepFilterNet3Trainer:
         while self.logical_step < self.max_logical_steps:
             if self._stop_requested(runtime):
                 if self.logical_step > 0:
-                    checkpoint.save(checkpoint.directory, logical_step=self.logical_step, label="step")
+                    self._offer(runtime, checkpoint, "stop")
                 return self._result(checkpoint, "interrupted")
             if self._epoch_cap_reached():
                 return self._result(checkpoint, "completed")
@@ -337,13 +335,12 @@ class DeepFilterNet3Trainer:
                         },
                     )
                 if index != view.updates:
-                    if self.logical_step % self.checkpoint_interval == 0:
-                        self._save(runtime, checkpoint, "step")
+                    self._offer(runtime, checkpoint, "step")
                     continue
                 self.phase = _PENDING
                 self.finished_epoch = epoch
                 self.boundary = {"epoch": epoch, "schedule_steps": steps}
-                self._save(runtime, checkpoint, "validation_pending")
+                self._offer(runtime, checkpoint, "boundary_pending")
                 if self._stop_requested(runtime):
                     return self._result(checkpoint, "interrupted")
                 self._finish_boundary(runtime, checkpoint, component_id)
@@ -429,10 +426,30 @@ class DeepFilterNet3Trainer:
         self.data.update_index = 0
         if stop:
             self.early_stopped = True
-        self._save(runtime, checkpoint, "step")
+        self._offer(runtime, checkpoint, "boundary", metrics={"loss": float(loss)})
 
-    def _save(self, runtime: ProcessRuntime, checkpoint: CheckpointManager, label: str) -> None:
-        """Broadcast BatchNorm buffers, then write one checkpoint.
+    def _offer(
+        self,
+        runtime: ProcessRuntime,
+        checkpoint: CheckpointManager,
+        event: str,
+        metrics: dict[str, float] | None = None,
+    ) -> None:
+        """Offer this state to the selector.
+
+        A boundary and a stop broadcast the BatchNorm buffers whether or not
+        the selector saves, as they did before selectors. Inside an epoch the
+        broadcast runs only when a file is written.
+        """
+
+        if event == "step":
+            checkpoint.offer(event, logical_step=self.logical_step, prepare=self._sync_ranks)
+            return
+        self._sync_ranks(runtime)
+        checkpoint.offer(event, logical_step=self.logical_step, metrics=metrics)
+
+    def _sync_ranks(self, runtime: ProcessRuntime) -> None:
+        """Broadcast BatchNorm buffers so every rank holds the state that is saved.
 
         DDP's next forward would copy rank 0's buffers. Ranks see different
         utterances, so the local running stats differ until that copy. This is
@@ -440,7 +457,6 @@ class DeepFilterNet3Trainer:
         """
 
         runtime.broadcast_buffers(self.model.state_module)
-        checkpoint.save(checkpoint.directory, logical_step=self.logical_step, label=label)
 
     def _validate(self, runtime: ProcessRuntime, trainer_epoch: int, component_id: str) -> float:
         module = self.model.module
@@ -612,6 +628,8 @@ class DeepFilterNet3Trainer:
         return int(self.data.epoch) >= self.max_epochs
 
     def _result(self, checkpoint: CheckpointManager, reason: str) -> RunResult:
+        if reason == "completed":
+            checkpoint.offer("final", logical_step=self.logical_step, prepare=self._sync_ranks)
         self.stop_reason = reason
         return RunResult(
             stop_reason=reason,

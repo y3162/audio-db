@@ -444,7 +444,7 @@ def _assert_resume(test: OnlineDataTests, spec: dict[str, object]) -> None:
     continuous = test.base / f"continuous-{spec['name']}"
     first = _cli(_experiment_config(interrupted, spec, steps=2, stop_after=1, prefetch=True, seed=seed))
     test.assertEqual(first.returncode, 0, first.stderr)
-    saved = interrupted / "step_00000001.pt"
+    saved = interrupted / "archive/step_00000001.pt"
     test.assertTrue(saved.is_file())
     whole = _cli(_experiment_config(continuous, spec, steps=2, prefetch=False, seed=seed))
     test.assertEqual(whole.returncode, 0, whole.stderr)
@@ -697,6 +697,11 @@ def _experiment_config(
       protocol: {{ref: protocol}}"""
         protocol = "src.experiments.data.SemambaProtocol"
     text = f"""schema: audio-db-experiment/v1
+checkpoint:
+  selector:
+    class: tests.experiments.support.StepArchiveSelector
+    kwargs:
+      interval: 1
 seed: 17
 deterministic: false
 entry: trainer
@@ -761,7 +766,6 @@ components:
     kwargs:
       max_logical_steps: {steps}
       accumulation: 1
-      checkpoint_interval: 1
 {stop}    inject:
       model: {{ref: model}}
       loss: {{ref: loss}}

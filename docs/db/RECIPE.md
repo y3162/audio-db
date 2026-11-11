@@ -49,7 +49,7 @@
 
 同じ操作を複数回書ける。実行順は配列の順である。ハードクリップは操作にしない。
 
-`max_seconds` があるときは、処理の前に clean の先頭だけを使う。元の発話より短いときは WER を `na`（`partial_audio`）にする。
+`max_seconds` があるときは、処理の前に読む波形の先頭だけを使う。WER を要求する評価（`metrics.wer: true`）では、部分音声と長さ不明はその発話の `validation_failed` になり、その実行の公式 WER は確定しない。WER を要求しない評価では WER は計算されない。詳細は [評価パイプライン](../evaluation/PIPELINE.md) の「どの WER が必須か」。
 
 ## ケースの列
 

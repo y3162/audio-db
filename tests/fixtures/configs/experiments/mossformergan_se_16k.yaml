@@ -16,6 +16,11 @@ runtime:
     precision: fp32
 output:
   directory: runs/mossformergan-se-16k
+checkpoint:
+  selector:
+    class: tests.experiments.support.StepArchiveSelector
+    kwargs:
+      interval: 5786
 components:
   generator:
     role: module
@@ -113,7 +118,6 @@ components:
       accumulation: 2
       grad_clip: 10.0
       experiment_claim: official_faithful
-      checkpoint_interval: 5786
       validate_on_epoch_end: true
     inject:
       generator: {ref: generator}

@@ -61,10 +61,10 @@ def _assert_bound_provenance(directory: Path, payload: dict, name: str) -> None:
     digest = payload["provenance_sha256"]
     assert isinstance(digest, str) and len(digest) == 64, name
     raw = (directory / "data_provenance.json").read_bytes()
-    sidecar = (directory / "step_00000002.data_provenance.json").read_bytes()
+    sidecar = (directory / "archive/step_00000002.data_provenance.json").read_bytes()
     assert hashlib.sha256(raw).hexdigest() == digest, name
     assert sidecar == raw, name
-    judgment = judge_checkpoint(directory / "step_00000002.pt", [])
+    judgment = judge_checkpoint(directory / "archive/step_00000002.pt", [])
     assert judgment["independent"] is not True, name
     assert judgment["confirmed_independent"] is False, name
 
@@ -192,7 +192,7 @@ class Phase4FCheckpointAndExportTests(unittest.TestCase):
             "tf_locoformer": self._pair(self.base / "loco", self._loco),
         }
         for name, directory in runs.items():
-            payload = _load(directory / "step_00000002.pt")
+            payload = _load(directory / "archive/step_00000002.pt")
             self.assertEqual(payload["format"], FORMAT, name)
             self.assertEqual(payload["schema_version"], 1, name)
             _assert_bound_provenance(directory, payload, name)
@@ -223,7 +223,7 @@ class Phase4FCheckpointAndExportTests(unittest.TestCase):
         self.assertEqual(json.loads((directory / "status.json").read_text(encoding="utf-8"))["status"], "INTERRUPTED")
         self.assertFalse((directory / "complete.json").exists())
         second = write(directory, stop_after=None)
-        checkpoint = directory / "step_00000001.pt"
+        checkpoint = directory / "archive/step_00000001.pt"
         before = checkpoint.read_bytes()
         self._execute(second, resume=checkpoint, pesq=pesq)
         self.assertEqual(checkpoint.read_bytes(), before)
@@ -245,8 +245,8 @@ class Phase4FCheckpointAndExportTests(unittest.TestCase):
         text = path.read_text(encoding="utf-8")
         if stop_after is not None:
             text = text.replace(
-                "checkpoint_interval: 1\n",
-                "checkpoint_interval: 1\n      stop_after_logical_steps: 1\n",
+                "      experiment_claim: official_faithful\n",
+                "      experiment_claim: official_faithful\n      stop_after_logical_steps: 1\n",
                 1,
             )
         path.write_text(text, encoding="utf-8")
@@ -260,32 +260,33 @@ class Phase4FCheckpointAndExportTests(unittest.TestCase):
 
     def _refuse_completed_resume(self, directory: Path) -> None:
         metrics = (directory / "metrics.jsonl").read_bytes()
-        checkpoint = (directory / "step_00000002.pt").read_bytes()
+        checkpoint = (directory / "archive/step_00000002.pt").read_bytes()
         with self.assertRaises(CheckpointError) as caught:
-            Experiment(load_experiment(directory / "experiment.yaml")).run(resume=directory / "step_00000002.pt")
+            Experiment(load_experiment(directory / "experiment.yaml")).run(resume=directory / "archive/step_00000002.pt")
         self.assertIn("complete.json", str(caught.exception))
         self.assertEqual((directory / "metrics.jsonl").read_bytes(), metrics)
-        self.assertEqual((directory / "step_00000002.pt").read_bytes(), checkpoint)
+        self.assertEqual((directory / "archive/step_00000002.pt").read_bytes(), checkpoint)
 
     def _refuse_foreign_checkpoint(self, runs: dict[str, Path]) -> None:
         order = ("mp_senet", "tf_gridnet", "tf_locoformer", "mossformergan")
         for source_name, target_name in zip(order, order[1:] + order[:1], strict=True):
             source = runs[source_name]
-            source_bytes = (source / "step_00000001.pt").read_bytes()
+            source_bytes = (source / "archive/step_00000001.pt").read_bytes()
             target = self.base / f"foreign-{source_name}-into-{target_name}"
             config = self._rewrite(target_name, target)
-            payload = _load(source / "step_00000001.pt")
+            payload = _load(source / "archive/step_00000001.pt")
             payload["output_directory"] = str(target.resolve())
-            foreign = target / "step_00000001.pt"
+            foreign = target / "archive/step_00000001.pt"
+            foreign.parent.mkdir(parents=True, exist_ok=True)
             torch.save(payload, foreign)
             before = foreign.read_bytes()
             with self.assertRaises(ExperimentError):
                 Experiment(load_experiment(config)).run(resume=foreign)
             self.assertEqual(foreign.read_bytes(), before)
-            self.assertEqual((source / "step_00000001.pt").read_bytes(), source_bytes)
+            self.assertEqual((source / "archive/step_00000001.pt").read_bytes(), source_bytes)
 
     def _refuse_tampered_grid_checkpoint(self, directory: Path) -> None:
-        original = (directory / "step_00000001.pt").read_bytes()
+        original = (directory / "archive/step_00000001.pt").read_bytes()
         cases = {
             "plan": lambda payload: payload["states"]["data"].__setitem__("plan_hash", "f" * 64),
             "dataset": lambda payload: payload["dataset_identity"]["data"].__setitem__("seed", -1),
@@ -294,20 +295,22 @@ class Phase4FCheckpointAndExportTests(unittest.TestCase):
         for name, mutate in cases.items():
             target = self.base / f"grid-tamper-{name}"
             config = self._grid(target, stop_after=None)
-            payload = _load(directory / "step_00000001.pt")
+            payload = _load(directory / "archive/step_00000001.pt")
             payload["output_directory"] = str(target.resolve())
             mutate(payload)
-            foreign = target / "step_00000001.pt"
+            foreign = target / "archive/step_00000001.pt"
+            foreign.parent.mkdir(parents=True, exist_ok=True)
             torch.save(payload, foreign)
             with self.assertRaises(ExperimentError):
                 Experiment(load_experiment(config)).run(resume=foreign)
         corrupt = self.base / "grid-corrupt"
         config = self._grid(corrupt, stop_after=None)
-        broken = corrupt / "step_00000001.pt"
+        broken = corrupt / "archive/step_00000001.pt"
+        broken.parent.mkdir(parents=True, exist_ok=True)
         broken.write_bytes(b"not-a-checkpoint")
         with self.assertRaises(ExperimentError):
             Experiment(load_experiment(config)).run(resume=broken)
-        self.assertEqual((directory / "step_00000001.pt").read_bytes(), original)
+        self.assertEqual((directory / "archive/step_00000001.pt").read_bytes(), original)
 
     def _rewrite(self, name: str, directory: Path) -> Path:
         writers = {

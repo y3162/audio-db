@@ -9,7 +9,7 @@ make setup PLATFORM=tsubame
 make doctor
 ```
 
-SHINODA-LAB では最後の構築コマンドだけを変える。ホスト差は [TSUBAME](TSUBAME.md) と [SHINODA-LAB](SHINODA_LAB.md)、ASR 用の環境は [ASR](ASR.md)、壊れた環境の作り直しは [CLEAN_REBUILD](CLEAN_REBUILD.md)。
+SHINODA-LAB では最後の構築コマンドだけを変える。ホスト差は [TSUBAME](TSUBAME.md) と [SHINODA-LAB](SHINODA_LAB.md)、ASR 用の環境は [ASR](ASR.md)。作り直しは同じ `make setup` の再実行である。2026-11-04 の一回の記録は [CLEAN_REBUILD](CLEAN_REBUILD.md)。
 
 ```bash
 make setup PLATFORM=shinoda_lab
@@ -42,7 +42,17 @@ make db-link ONLY=LibriSpeech ALLOW_PARTIAL=1
 make test-setup
 ```
 
-`make setup` は `db-init`、`db-ingest`、`db-bootstrap` を呼ばない。役割の導入のあと `build_df_rfft` が `make df-rfft` と同じ Cargo ロックで `build/df-rfft/release/libdf_rfft.so` を作る。追跡中の `src/se/models/deepfilternet3/libdf_rfft.so` と内容が違うときは置き換えない。環境変数 `DF_RFFT_LIBRARY` が空で追跡ファイルがこのホストで読めないときは、そのローカル成果物が ABI 1 なら実行時にそれを使う。`make doctor` の `df_rfft` は、選ばれたファイルの source、ABI、SHA-256 を出す。
+`make setup` は `db-init`、`db-ingest`、`db-bootstrap` を呼ばない。役割の導入のあと `build_df_rfft` が `make df-rfft` と同じ Cargo ロックで `build/df-rfft/release/libdf_rfft.so` を作り、続けて `python -m src.data.link_corpora --allow-partial` と `scripts/setup/doctor.py` を実行する。`link_corpora` は `data/corpora` へのシンボリックリンクだけで、無いソースは記録して残りを結び、既存のリンクは上書きしない。DuckDB は作らない。最後の診断を、別の `make doctor` で再実行してよい。
+
+追跡中の `src/se/models/deepfilternet3/libdf_rfft.so` と内容が違うときは置き換えない。環境変数 `DF_RFFT_LIBRARY` が空で追跡ファイルがこのホストで読めないときは、そのローカル成果物が ABI 1 なら実行時にそれを使う。ファイル自体が無いときの戻り先は [DeepFilterNet3](../se/MODELS.md)。`make doctor` の `df_rfft` は、選ばれたファイルの source、ABI、SHA-256 を出す。
+
+`scripts/setup/platforms/tsubame.sh` は cargo が無いと準備を打ち切る。両プラットフォームのメッセージが求めるのは Rust 1.76 以上である。`make df-rfft` が通った記録は rustc 1.99.1 で、他の版での再コンパイルは記録が無い。`libdf` の wheel を Rust 1.76.0 で作った記録は [VALIDATION.md](../se/VALIDATION.md)。依存の版は `src/se/models/deepfilternet3/rfft_kernel/Cargo.lock` の `realfft` 3.3.0 と `rustfft` 6.4.1。
+
+## 融合カーネル
+
+`.venvs/semambapp` の `mamba-ssm` と `causal-conv1d` は、`requirements/official-assets.toml` のピンしたソースからビルドする。lock には入っていない。インストール後、`scripts/apply_mamba_init_patch.py` が `patches/mamba_ssm-2.3.2.post1-init.patch` を当てる。対象は `mamba_ssm/__init__.py` の Mamba2、Mamba3、言語モデルヘッドの import だけである。selective scan のソースと CUDA 拡張は変えない。再実行は何もしない。
+
+`AUDIO_DB_REBUILD_MAMBA=1` は、入っている拡張と `build/native-src` の中間ビルドを消してから作り直す。`TORCH_CUDA_ARCH_LIST` はプラットフォームスクリプトが設定する。あるホストでビルドした `.so` を、別のアーキテクチャのホストへコピーしない。
 
 ## 公式アセット
 
@@ -55,6 +65,7 @@ make test-setup
 | SEMamba++ | `src/se/official/semambapp` @ `cd369c89` | `data/checkpoints/semambapp/semambapp.pth` |
 | MossFormerGAN | `src/se/official/clearervoice-studio` @ `6b3774dc` | `data/checkpoints/mossformergan/last_best_checkpoint.pt` |
 | TF-GridNet | `src/se/official/espnet` @ `0d136c54`（新規 clone は `espnet2` のみ） | `data/checkpoints/tf-gridnet/urgent24/.../21epoch.pth` と `ms-snsd/valid.loss.best.pth` |
+| TF-Locoformer | `src/se/official/tf-locoformer` @ `7a615460` | `data/checkpoints/tf-locoformer/dns/valid.loss.ave_5best.pth` |
 
 既にピンした commit のツリーがあれば再取得しない。別 commit や手元の変更は上書きしない。チェックサムが違う既存ファイルも置き換えない。
 
@@ -62,7 +73,7 @@ TF-GridNet の重みカードは、コードの Apache-2.0 とは別に利用条
 
 ## 失敗したとき
 
-同じ `make setup PLATFORM=...` を再実行する。成功済みの仮想環境（lock のハッシュが一致し、import できるもの）と、検証済みのファイルはやり直さない。`FORCE_SETUP=1` は lock の同期からやり直すが、仮想環境ディレクトリは消さない。
+同じ `make setup PLATFORM=...` を再実行する。成功済みの仮想環境（lock のハッシュが一致し、import できるもの）と、チェックサムが一致するファイルはやり直さない。`FORCE_SETUP=1` は lock の同期からやり直すが、仮想環境ディレクトリは消さない。
 
 公式 `libdfdata` は HDF5 が必要である。TSUBAME では `hdf5-parallel/1.14.3/gcc11.4.1` を読む。モジュールが無い場合、`libdf` 本体の成否と `libdfdata` の未構築は分けて表示する。
 

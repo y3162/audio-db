@@ -1,6 +1,16 @@
 # データ・DB・再現性
 
-仕様の詳細は `docs/db/SETUP.md`、`docs/db/RECIPE.md`、`docs/db/CORPORA.md`、`docs/db/tables/AUDIO_FILES.md`、`docs/evaluation/PIPELINE.md`。ここには、コードを読まないと分からない制約だけを書く。学習の式と checkpoint は `.agents/ARCHITECTURE.md`。
+ここには、コードを読まないと分からない制約だけを書く。状態や履歴は書かない。
+
+| 知りたいこと | 文書 |
+|---|---|
+| 評価用 DB の操作、staging の形 | `docs/db/SETUP.md` |
+| レシピ JSON | `docs/db/RECIPE.md` |
+| 再現用 DB の表、ID、claim、スナップショット | `docs/db/REPRODUCTION_DB_DESIGN.md` |
+| どのファイルに何が入っているか、件数、ハッシュ、構築の記録 | `docs/db/INVENTORY.md` |
+| コーパスの索引と内訳 | `docs/db/CORPORA.md`、`docs/db/DATASETS.md`、`docs/db/tables/AUDIO_FILES.md` |
+| 評価の段階、WER の完全性、結果の形式 | `docs/evaluation/PIPELINE.md` |
+| 学習の式と checkpoint | `.agents/ARCHITECTURE.md` |
 
 ## DB の構成
 
@@ -8,7 +18,7 @@ DuckDB は `data/db/resource.duckdb`（`src/data/constants.py`）。
 
 - `corpora.audio_files`: `make db-ingest` が作る。`path` が主キーで、値は `data/corpora` からの相対パス（コーパス名を含む）。採番した ID は無い。
 - `eval.cases` / `eval.sets` / `eval.set_items` / `eval.runs` / `eval.results`: 新しいスキーマを `make db-init` が空の DB に作る。`eval.cases` の生成条件は `recipe_json` だけに置き、SNR や切り出し位置の列は持たない。`corpora.audio_files` への外部キーは無く、レシピ内の相対パスと metadata の `corpus_path` で対応する。`case_id` は正規化レシピの SHA-256 で、採番や rowid ではない。
-- `data/db/resource.duckdb` はこのレシピスキーマである。旧固定列のファイルは `data/db/backups/resource-legacy-20261031.duckdb`（SHA-256 `f3fdcd89b34cf44eda9853e71278806c1ecc4042f03173821805be054b61d156`）にある。DNS2020 と MS-SNSD をカタログに入れて索引を作り直す前のコピーは `data/db/backups/resource-before-dns-mssnsd-20261104.duckdb`（SHA-256 `3d43bd61135c5f4de73daa7bec7e488912bf46f64f4a2b1b6afa926f30c05c45`）である。`recipe_json` の無い `eval.cases` を見つけると、`make db-init` は何も変更せず拒否する。`data/db/rebuild-a.duckdb` と `data/db/rebuild-b.duckdb` は切り替え前の再構築コピーで、本番と同じ内容である。
+- `data/db/resource.duckdb` はこのレシピスキーマである。`recipe_json` の無い `eval.cases` を見つけると、`make db-init` は何も変更せず拒否する。バックアップの場所とハッシュは `docs/db/INVENTORY.md`。
 - DB ファイル名の stem を `eval` にしない。DuckDB のカタログ名と衝突して `eval.cases` が曖昧になる。
 
 ## `make db-init` と `make db-ingest`
@@ -43,14 +53,17 @@ DuckDB は `data/db/resource.duckdb`（`src/data/constants.py`）。
 
 - `data/staging/` が再構築元である。`metadata.json`、`corpora/audio_files.parquet`、`evaluation/cases.parquet`、`evaluation/sets.parquet`、`evaluation/set_items.parquet`、`results/runs.parquet`、`results/results.parquet`。Git 管理外。DB へ登録したあとも消さない。バックアップは DB ファイルと一緒に取る。
 - 登録は `src.data.staging.register_staging`。検証してから 1 トランザクションで書く。同じ内容の再登録は増えない。同じ ID で内容が違うとエラーになり、そのバッチは残らない。不完全なファイルは DB を作る前に拒否する。
-- 評価ランの一次記録は従来どおり `data/results/se-evaluation/<run_id>/` の `config.json` と `results.jsonl` である。DuckDB への登録は `register_run` で、そのあと行う。`run.json` が `completed` でない run は登録しない。実行中の `results.jsonl` は最大 60 秒ぶん `records/` より古く、kill された run では古いまま残る。既存ランは自動では登録しない。
+- 評価ランの一次記録は従来どおり `data/results/se-evaluation/<run_id>/` の `config.json` と `results.jsonl` である。DuckDB への登録は `register_run` で、そのあと行う。`run.json` が `completed` でない run（`incomplete`、`validation_failed`、`failed`、`running`）は登録しない。実行中の `results.jsonl` は最大 60 秒ぶん `records/` より古く、kill された run では古いまま残る。既存ランは自動では登録しない。
 - `src.data.migrate_legacy` は、以前の `eval.cases` を一度だけレシピへ写す。実行時の互換読み取りではない。出力先が既にあるときは上書きしない。本番は切り替え済みなので、このコマンドを再実行する必要はない。旧 `case_id` は metadata の `legacy_case_id` に残り、新しい `case_id` はレシピハッシュである。
 
 ## 学習に使うセット
 
 - `SnapshotDataModule` は、重みを渡さない epoch では snapshot の `rank_order` を使う。重み付きは研究用 `weighted_categorical_v1` で、公式 sampler ではない。`state_dict` の `weights` は、その `epoch` の計画に使った実効重みで、未設定は null である。再開は実行側の表と一致するときだけ許し、checkpoint の表で上書きしない。chunk と DeepFilterNet3 には掛けない。開いている epoch view の途中では変えない。DeepFilterNet3 の batch schedule は、world size 1 の epoch 先頭で `Dfn3IndexSampler` の `micro_batch` だけを付け替える。再開は、保存された `micro_batch` 以外の identity が一致するときその幅へ戻してから identity と `plan_hash` を比べる。他の供給は付け替えない。SEMamba++ は `online.semambapp_gsr` をそのまま使い、micro-batch は付け替えない。`group_size` は accumulation と一致させる。新規の実験 checkpoint は rank 0 が `data_provenance.json` と checkpoint 別 sidecar を書き、`provenance_sha256` にその SHA-256 を入れる。snapshot の素材 hash が無いデータは limitations に残し、評価は UNKNOWN で、独立の証明にしない。`provenance_sha256` が None の checkpoint は、後から同じディレクトリに来歴ファイルができても証明済みにしない。`dfn3.online.official@1` と `semambapp.gsr.official@1` は blocked のままである。
 - ESPnet chunk の複数 rank では、checkpoint の `data_state.pipeline` が `espnet_chunk_v1` である。計画は `(seed, epoch, world_size)` から再計算し、`plan_hash` が違えば再開しない。world size または `virtual_world_size` が違う再開は拒否する。先読みした未使用バッチは位置に数えない。来歴 JSON は run に 1 つで、rank 0 だけが書く。rank ごとの消費位置は `data_state` に置き、来歴と混ぜない。
-- 学習 checkpoint は、その step の JSONL 書き込みの後に公開する。`status.json` に書く値は `RUNNING` / `INTERRUPTED` / `COMPLETED` / `FAILED` である。checkpoint を保存しても `RUNNING` のままで、プロセスが kill されたときも `RUNNING` が残る。公式の終了だけが `complete.json` を書き、再開を拒む。`stop_after_logical_steps` への到達と SIGTERM は `INTERRUPTED` で止まり、`complete.json` は書かない。途中で停止した場合は、完成済み checkpoint より後の記録を再開時に巻き戻す。`config_sha256` は `output` と `stop_after_logical_steps` を除いた設定のハッシュで、CLI の `--resume` はそれ以外の設定差を拒否する。上限を付けて止めた実行は、上限だけを外した設定で再開できる。`--resume` を付けない起動は、`complete.json` か `step_*.pt` のあるディレクトリを拒否する。電源断やストレージ障害に対する複数ファイルの原子性は保証しない。再現学習の rank 0 は、同じディレクトリに `data_provenance.json` を一度だけ排他作成する。`data_state` は再開位置で、来歴 JSON は Dataset・snapshot・使用集合の内容ハッシュと派生元である。`provenance_sha256` を持つ checkpoint は、横の JSON が欠けるかハッシュが違うと再開しない。来歴の無い古い checkpoint は再開できるが、評価の `independent` は `UNKNOWN` である。`UNKNOWN` は独立評価ではない。checkpoint は world size 1 でも `rng_by_rank` を持つ。各要素はその rank の Python、NumPy、Torch CPU と、学習に使う現在の CUDA device だけである。これが無い checkpoint は再開しない。
+- 再現学習の rank 0 は、出力ディレクトリに `data_provenance.json` を一度だけ排他作成する。`data_state` は再開位置で、来歴 JSON は Dataset・snapshot・使用集合の内容ハッシュと派生元である。両者を混ぜない。`provenance_sha256` を持つ checkpoint は、横の JSON が欠けるかハッシュが違うと再開しない。来歴の無い古い checkpoint は再開できるが、評価の `independent` は `UNKNOWN` である。`UNKNOWN` は独立評価ではない。
+- checkpoint は world size 1 でも `rng_by_rank` を持つ。各要素はその rank の Python、NumPy、Torch CPU と、学習に使う現在の CUDA device だけである。これが無い checkpoint は再開しない。
+- 既存の checkpoint から新しい実験を初期化したとき（`initialize`）、元の来歴 sidecar を `initialization.data_provenance.json` に写し、新しい実験の来歴に引き継ぐ。初期化で選択集合の履歴は消えない。
+- Latest と Archive、再開と初期化の条件、`status.json` の値は `docs/experiments/CHECKPOINT.md` と `docs/experiments/LAUNCHER.md`。
 - 評価結果の `independent` は true / false / `UNKNOWN` である。`checkpoint_selection_overlap` は、選択に使った素材と内容または既知の派生元が重なった評価セット名である。情報が足りないときは null で、空リストは重なりが無いと確認できたときだけ使う。`selection_uses_test` は独立性とは別に残す。判定は checkpoint 横の JSON と評価レシピの SHA-256 だけで、`reproduction.duckdb` は開かない。
 
 実験の学習はスナップショットを読む。評価用の名前付きセットを学習の入力にしない。
@@ -60,18 +73,21 @@ DuckDB は `data/db/resource.duckdb`（`src/data/constants.py`）。
 - 教師はレシピの `output.reference` だけである。`dry_clean` と `reverberant_clean` を取り違えない。`none` のケースは学習に入れず、エラーにする。
 - サンプルの識別子は `case_id`（レシピの SHA-256）である。rowid や登録順の採番は学習の並びに使わない。
 - `configs/db/init.yaml` の評価セット（LibriSpeech test-clean、CHiME3 et05 を含む）は学習にも検証にも使わない。
-- 学習セットの読み込みは `data/db/resource.duckdb` を使わない。このファイルは評価用の名前付きセットを持つ本番 DB だからである。学習セットは `data/db/training.duckdb` にあり、再構築元は `data/staging/training/` である。`libri_demand_smoke_train` は LibriSpeech train-clean-100、`libri_demand_smoke_valid` は dev-clean で、DEMAND のシーンは重ならない。VoiceBank-DEMAND の公式セットではない。接続確認に `rebuild-a.duckdb` を読み取り専用で開いてもよい。
+- 学習セットの読み込みは `data/db/resource.duckdb` を使わない。このファイルは評価用の名前付きセットを持つ本番 DB だからである。`load_recipe_dataset` はこのファイル名を拒否する。スモーク用セットの登録先は `data/db/training.duckdb`（再構築元 `data/staging/training/`）で、VoiceBank-DEMAND の公式セットではない。内容は `docs/db/TRAINING_SETS.md`。
 - チャンク計画の発話長だけは、`data/db/resource.duckdb` の `corpora.audio_files`（`path`、`frames`、`sample_rate`）を読み取り専用で一括取得する。`eval` は読まない。音声のデコードとリサンプリングはせず、torchaudio のリサンプリング後サンプル数と同じ整数を使う。学習セットの並び、クロップ、乱数は変えない。
 
 ## 指標の欠損と有効性
 
-- 値を出せないときは `na`（`reason` 付き）、ライブラリが無ければ `unavailable`。理由は `no_reference_transcript`、`partial_audio`、`unknown_audio_span`、`no_clean_reference` など。値は null で、集計に 0 として入れない。
-- WER は編集回数を足してから割る micro 集計で、`N = 0` の発話は分母に入れない。PESQ / STOI / SI-SDR は有限なスコアの平均だけ。
-- 部分音声: `max_seconds` などで発話の先頭だけを処理したとき、全文テキストと比べた WER は無効で、`na`（`partial_audio`）にする。元の長さが `max_seconds` 以下なら全文として計算する。長さが取れなければ `unknown_audio_span`。部分に対応するテキストを作る処理は無い。
-- clean 参照が無い評価セットでは、PESQ / STOI / SI-SDR は `na`（`no_clean_reference`）。
+- 主指標の WER は、対象発話の全件が揃ったときだけ公式値として確定する。micro 集計（編集回数を足してから割る）で、対象は評価セットの全発話である。`status == "ok"` の発話だけを黙って集計しない。欠けた発話を 0 や 100% として補わない。
+- WER を要求するのは `metrics.wer: true` の実行で、条件は `asr.conditions`（既定は noisy と enhanced）。noisy と enhanced は同じ対象集合で、片方が欠ければ両方とも公式値を出さない。
+- 必須の WER が 1 件でも欠けた実行は `completed` にしない。`incomplete`（再計算できる失敗。ASR の例外など）か `validation_failed`（入力や参照の不備）で、CLI は終了コード 1 を返す。揃っている分の値は `wer_provisional` に置き、公式値 `wer_normalized` は null にする。
+- SE が成功して ASR が失敗した発話は成功ではない。空文字の認識結果は正常な結果で、削除として数える。
+- 参照テキストが空、部分音声（`partial_audio`）、長さ不明（`unknown_audio_span`）、入力音声の不備は `validation_failed` である。部分音声に全文テキストを対応させた WER は計算しない。部分に対応するテキストを作る処理は無い。
+- 再開は、全条件が揃った発話だけを再利用し、失敗した発話を計算し直す。`evaluation` の無い以前の結果（スキーマ 1）は完全だったと示せないので、公式値にしない。
+- 補助指標は別扱いである。値を出せないときは `na`（`reason` 付き）、ライブラリが無ければ `unavailable`。値は null で、集計に 0 として入れない。PESQ / STOI / SI-SDR は有限なスコアの平均だけで、欠損は公式 WER を止めない。clean 参照が無い評価セットでは `na`（`no_clean_reference`）。
 - PESQ / STOI はゼロ波形を `na`、非有限入力をエラーとする。STOI のライブラリが発話不足の警告と返す固定値 `1e-5` はスコアにせず `na` とする。SI-SDR の無音推定と、参照に直交する推定は有限値にしない。
-- PESQ（`pesq==0.0.4`、ITU-T P.862.2）は、16 kHz では長さが 64 サンプルの倍数をまたぐと内部の VAD 長が 1 増える。全文と直前の bin の末尾を比べる既存の保守的検出で差が 0.1 超なら `na`（互換の理由名 `pesq_utterance_split_discontinuity`）にし、生の値を `raw_value` に残す。この2長は最大64サンプル離れ、理由名だけでは発話分割の変化を証明しない。全文スコアが妥当と確認できない長さ依存も検出される。補正値や欠損を平均に入れない。
-- `summary.json` の `groups` は各条件の有効値を別々に集計する。group の WER は `wer_count` 件の発話の micro 集計で、`utterances` より小さいときは全発話の WER ではない。noisy と enhanced の差は `paired_signal_metrics` の同一 case で両方有効な集合を使い、件数・case ID・除外理由を残す。異なる集合の単独平均を差として扱わない。
+- PESQ（`pesq==0.0.4`、ITU-T P.862.2）は、16 kHz では長さが 64 サンプルの倍数をまたぐと内部の VAD 長が 1 増える。全文と直前の bin の末尾を比べて差が 0.1 超なら `na`（`pesq_utterance_split_discontinuity`）にし、生の値を `raw_value` に残す。補正値や欠損を平均に入れない。経緯は `docs/evaluation/PESQ_LENGTH_INVESTIGATION.md`。
+- noisy と enhanced の補助指標の差は、`paired_signal_metrics` の同一 case で両方有効な集合を使う。異なる集合の単独平均を差として扱わない。
 - WER の正規化（`wer-norm-v1`）などを変えると設定ハッシュが変わり、以前の結果は再利用されない。`--resume` が使えるのは、同じ `run_id` で設定ハッシュが同じときだけ。
 
 ## コーパスごとの注意
@@ -84,12 +100,10 @@ DuckDB は `data/db/resource.duckdb`（`src/data/constants.py`）。
 - `make db-bootstrap` は空の別ファイルを作る。出力先が既にあるときは `--rebuild` と明示的な `--backup` が無いと拒否し、別ファイルで再構築する。本番 `resource.duckdb` への切り替えは `--replace` だけで、検証とバックアップのあと `os.replace` で行う。
 - 初期リンクと bootstrap は `--dataset-root` または `AUDIO_DB_DATASET_ROOT` を必須とし、引数が優先される。個別パスは `AUDIO_DB_CORPUS_<SOURCE>`（`src/data/corpora_catalog.py` の `corpus_env_var`）で、データセットルートより優先される。全リンクの事前検査後に作成し、競合する既存リンクは変更しない。`make db-link` の `--dry-run` は何も作らない。`--allow-partial` は欠けたコーパスを記録して残りをリンクする。既定は欠けたら一つも作らない。bootstrap の候補 DB は最終 DB と同じディレクトリで生成し、レシピの DB 相対パスを維持する。
 - 現在の bootstrap は staging を先に生成せず DB に直接登録するため、上記の staging 必須制約を満たす本番再構築手順としては未完成である。
-- 現行の本番再構築元は `data/staging/resource-current`。`data/staging/` 直下、`data/staging/resource-full`、`data/staging/voicebank`、`data/staging/training` は過去の再構築元であり、現行の本番には使わない。VoiceBank 学習セットの現行再構築元は `data/staging/voicebank-current`。
-- TSUBAME の初回 `resource.duckdb` は 2026-11-02 にコーパスから新規作成した。今回だけの staging 先行省略を含む条件と検証範囲は `docs/db/TSUBAME_INITIAL.md`。研究室側 DB のコピーや同一性の確認ではない。
-- 学習セット `voicebank_28_train` / `voicebank_28_valid` は `data/db/voicebank.duckdb`（現行の再構築元 `data/staging/voicebank-current/`）。`data/db/training.duckdb` の LibriSpeech+DEMAND スモークとは別ファイルである。
-- VoiceBank オンデマンド 4 Dataset の再構築元は `data/staging/reproduction-vb-ondemand/` と `data/db/reproduction-vb-ondemand.duckdb` である。`reproduction.duckdb` には入れていない。official の snapshot hash は既存ディレクトリと一致したので置き換えていない。safe の snapshot はこの再構築で `data/db/snapshots/` に追加した。現行 `resource.duckdb` を渡すと safe の `leak_check` は `eval.cases` と test 素材の重複で FAIL する。resource DB を開かない再構築の `leak_check` は UNKNOWN であり、PASS ではない。
-- DeepFilterNet3 のオンライン混合は `data/db/reproduction-p8.duckdb`（staging は `data/staging/reproduction-p8/`）に置く。`reproduction.duckdb` と `resource.duckdb` には入れない。ready な代替 Dataset は `dfn3.online.substitute@1` と `dfn3.online.smoke@1`。公式素材の `dfn3.online.official@1` は `blocked` で、バインドもスナップショットも無い。分布の正本は `DFN3_ONLINE_V1`。混合 WAV は作らない。`official_reproduction` は ready なら全素材 SHA-256 が要る。blocked または unknown でバインドが空なら、欠けているものを `blocking_json` に書いて登録できる。
-- SEMamba++ のオンライン劣化は `data/db/reproduction-p9.duckdb`（staging は `data/staging/reproduction-p9/`）に置く。`reproduction.duckdb` と `resource.duckdb` には入れない。ready な代替 Dataset は `semambapp.gsr.substitute@1` と `semambapp.gsr.smoke@1`。公式素材の `semambapp.gsr.official@1` は `blocked` で、バインドもスナップショットも無い。分布の正本は `SEMAMBA_GSR_V1`（HEAD `config.yaml`、16 kHz、窓 48,000）。劣化 WAV は作らない。代替素材を公式データセットの再現と呼ばない。`kaiser_best` と `kaiser_fast` は `resampy==0.4.3` を使う。この pin は `requirements/se.in` にあり、`.venvs/se` に入っている。`.venvs/asr` のパスは足さない。
+- 再現用 DB はモデルごとにファイルが分かれている（`reproduction.duckdb`、`reproduction-vb-ondemand.duckdb`、`reproduction-p8.duckdb`、`reproduction-p9.duckdb`）。互いに混ぜず、`resource.duckdb` にも入れない。どのファイルに何があるか、どの staging が再構築元かは `docs/db/INVENTORY.md`。文書のパスが在ると仮定せず、そこで確かめる。
+- resource DB を渡さない leakage 監査は `UNKNOWN` であり、`PASS` ではない。
+- `dfn3.online.official@1` と `semambapp.gsr.official@1` は blocked で、バインドもスナップショットも無い。代替素材を公式データセットの再現と呼ばない。混合 WAV、劣化 WAV は作らない。
+- SEMamba++ の `kaiser_best` と `kaiser_fast` は `resampy==0.4.3`（`requirements/se.in`）を使う。`.venvs/asr` のパスは足さない。
 
 ## `data/` の扱い
 
@@ -101,14 +115,16 @@ DuckDB は `data/db/resource.duckdb`（`src/data/constants.py`）。
 | `data/checkpoints/` | 配布チェックポイント。取得が重い。削除・上書きをしない。ライブラリのコードにはパスを固定せず、呼び出し側が渡す。設定やテストにある `data/checkpoints/...` は例で、無ければテストは skip する |
 | `data/results/` | `se-evaluation/<run_id>/` は評価結果の一次記録（`config.json` と `results.jsonl`）。`se-repro/` は公式再現の記録とビルドキャッシュ。新しい実行は新しい `run_id`。既存の run ディレクトリは `--resume` なしでは使えない。DuckDB へ載せるときは、このディレクトリを `register_run` で登録する |
 | `data/staging/` | DB の再構築元。登録後も残す。Git 管理外 |
-| `data/db/` | `resource.duckdb` はレシピスキーマの本番ファイル。`reproduction.duckdb` は公式再現用の `repro` スキーマで、VoiceBank の履歴 4 Dataset（16 kHz 派生素材）とオンデマンド 4 Dataset（48 kHz から学習時に 16 kHz）、MS-SNSD の `tf_gridnet.ms_snsd.smoke@1`（保存済み WAV の履歴）、`tf_gridnet.ms_snsd.ondemand@1`（小規模、条件から再構築）、`tf_gridnet.ms_snsd.espnet_recipe@1`（公式規模の条件。train 7,345 / valid 1,835 / test 305）、`tf_locoformer.dns.recipe@1`（DNS の固定条件 360,000 件。train 324,000 / valid 36,000 / test 150。混合 WAV は無い）、`tf_locoformer.dns.smoke@1`（同じ素材プールの 8 件。train 7 / valid 1。同じ test 150）、`tf_locoformer.dns.accept_recipe@1`（P7.1 の受理規則で確定した 360,000 件。train 324,000 / valid 36,000 / test 150。非 16 kHz 雑音 188 件を含む全雑音。混合 WAV は無い。`cv_synthetic_small` ではない）が入っている。P7 の recipe と smoke は長さ計画のままである。P7.1 の `tf_locoformer.dns.accept_smoke@1`（train 230 / valid 26 / test 150）は本番 DB には無く、スナップショット `f75b3e7a4dbab8a68a6594487b3d605e949d96ef85fb8667b34417ea12101a39` と `data/staging/reproduction-p71` だけである。`snapshots/` はその DB から書き出した学習用スナップショット。`training.duckdb` は学習スモークセット。`backups/resource-legacy-20261031.duckdb` は切り替え前の固定列スキーマ。`rebuild-a.duckdb` と `rebuild-b.duckdb` は切り替え前に作った同じ内容の再構築コピー |
-| `data/generated/` | 保存済みの事前生成 WAV。学習の必須データではない。`tf_gridnet.ms_snsd.smoke@1` が参照する `ms_snsd_synth/<build_id 先頭16桁>/` の PCM_16 だけを残す。オンデマンド Dataset はここへ混合 WAV を書かない。公式規模の途中 WAV は登録前に削除した |
-| `data/derived/` | 派生素材。VoiceBank-DEMAND の 16 kHz PCM_16 は `data/derived/VoiceBank-DEMAND/soxr_hq_16000/`。同じ変換条件の正常なファイルは再利用し、内容が違うファイルは上書きしない |
+| `data/db/` | `resource.duckdb` は評価の本番。`reproduction*.duckdb` は再現用の `repro` スキーマ。`snapshots/` は学習が読む不変のスナップショット。`backups/` は退避。中身は `docs/db/INVENTORY.md` |
+| `data/generated/` | 保存済みの事前生成 WAV の置き場。学習の必須データではない。オンデマンド Dataset はここへ混合 WAV を書かない |
+| `data/derived/` | 派生素材の置き場。同じ変換条件の正常なファイルは再利用し、内容が違うファイルは上書きしない |
 
 ## DB の書き込みと保護
 
 - 書き込む操作は、`make db-init` と `EvaluationDB` の登録系（`import_manifest`、`create_set_from_corpus`、`register_samples`）が `eval` へ、`make db-ingest` が `corpora` へ。読み取りは `read_only=True` で開く。`src/evaluation/` から `corpora.audio_files` を変更しない。
 - DuckDB の書き込みは 1 プロセスだけ。ほかのプロセスが DB を開いている間は、書き込みを伴う操作をしない。
-- 実験とテストは一時 DB を使う。単体テストは `resource.duckdb` を開いて書き込まない。
-- `reproduction.duckdb` は `resource.duckdb` とは別ファイルである。登録は `data/staging/reproduction/` を再構築元にし、同じ ID で内容が違う行は拒否する。再構築は新しいファイルへ書き、全表のハッシュが一致したときだけ置き換える。`eval` スキーマが無い、または `--resource-db` を渡さない leakage 監査は `UNKNOWN` であり、`PASS` にしない。学習プロセスはこの DB を開かない。固定ペアの学習は `data/db/snapshots/<dataset_id>/` を `src/experiments/data/` から読む。学習後の `register_training_run` だけが `repro.runs` を書く。同じ run の checkpoint 位置の更新は許し、dataset・snapshot・profile・claim が違う再登録は拒否する。claim と checkpoint パスは列が無いので `data_state_json` に足す。P2 で登録済みの Dataset は `mp_senet.vb28.official@1`、`mp_senet.vb28.safe@1`、`mossformergan.vb28.official@1`、`mossformergan.vb28.safe@1` である。音声は 48 kHz の VoiceBank-DEMAND 28 話者 train と公式 test から、soxr HQ で作った 16 kHz PCM_16 を指す。公式の 16 kHz 変換器は不明なままである。同じ 16 kHz ペアの `case_id` はモデル間で共有し、`cases.protocol_id` は `mp_senet.fixed_pair` を指す。学習時の正規化・窓・順序は Dataset の protocol を読む。MS-SNSD の小規模 Dataset `tf_gridnet.ms_snsd.smoke@1` は `claim_label = official_recipe_scaled_down` で、検証は生成した train の末尾であり test ではない。公式規模の `tf_gridnet.ms_snsd.espnet_recipe@1` は ready である。オンデマンド描画は各ファイル全体を −25 dBFS にしてから区間を切る。既存の case 文書と snapshot は区間だけを持ち、この正規化では ID を変えていない。DNS の受理規則による 360,000 件は未登録である。`research_checkpoint_selection` は研究用検証集合の claim で、公式再現の claim ではない。新しいデータベースの CHECK はこれを許す。古い CHECK は datasets と、それを参照する表をコピーして作り直す。既存行の値は変えない。2026-11-08 のこの作業木の `reproduction.duckdb` は、元ファイルの復旧ではない。親 snapshot `3343a55efb4c57d9ffef9179fb2f39c3e0186d36f587a0f4ad9f0aa14e9926f5` から再構成したデータベースで、`schema_info.database_origin` は `reconstructed_from_verified_snapshot`、元ファイルとの同一性は未検証である。載っているのは `tf_locoformer.dns.accept_recipe@1` と `tf_locoformer.dns.accept_recipe.research_valid_fixed@1` だけである。VoiceBank、MS-SNSD、P7 の recipe / smoke、学習 run は入っていない。研究用 Dataset の id は `e4a53415122aba24055f4ba7eef6367a7e41d062485d74de3d7ce94c07d7bdd0`、snapshot は `e4495fa6ac0048c6346cc65bc66fd71114fd1523f95230537e799610c8092024`。train 324,000 と test 150 は親と同じ case set、valid は 1,024 件である。
+- 実験とテストは一時 DB を使う。テストは `data/` の下に書かない。本番の DB、staging、スナップショットを作る処理は Make ターゲットに置き、テストに入れない（`.agents/OPERATIONS.md`）。
+- 再現用 DB の登録は staging を再構築元にし、同じ ID で内容が違う行は拒否する。再構築は新しいファイルへ書き、全表のハッシュが一致したときだけ置き換える。学習プロセスはこの DB を開かず、`data/db/snapshots/<dataset_id>/` を読む。学習後の `register_training_run` だけが `repro.runs` を書く。
+- `research_checkpoint_selection` は研究用検証集合の claim で、公式再現の claim ではない。
+- 再構成した DB（`schema_info.database_origin = reconstructed_from_verified_snapshot`）は元ファイルの復旧ではない。元との同一性は未検証として扱う。
 - 破壊的な操作（`db-ingest`、DB の削除、スキーマの作り直し）の前に、`data/db/resource.duckdb` を退避する。

@@ -36,6 +36,7 @@ from src.experiments.official.mossformergan.models import (
 )
 from src.experiments.results import RunResult
 from src.experiments.runtime import PreparedModel, ProcessRuntime
+from src.experiments.selectors import scalar_metrics
 from src.experiments.trainers import (
     _append_jsonl,
     _batch_on_device,
@@ -89,9 +90,7 @@ class MossFormerGANTrainer:
         accumulation: int = 2,
         grad_clip: float = OFFICIAL_CLIP,
         experiment_claim: str = OFFICIAL_FAITHFUL,
-        checkpoint_interval: int = OFFICIAL_CHECKPOINT_INTERVAL,
         validate_on_epoch_end: bool = True,
-        checkpoint_partial: bool = False,
         max_epochs: int | None = None,
         stop_after_logical_steps: int | None = None,
     ) -> None:
@@ -116,8 +115,8 @@ class MossFormerGANTrainer:
         optim_d_id = getattr(optim_d, "_experiment_component_id", None)
         if not isinstance(optim_g_id, str) or not isinstance(optim_d_id, str):
             raise BuildError("optimizers have no component id")
-        if not isinstance(validate_on_epoch_end, bool) or not isinstance(checkpoint_partial, bool):
-            raise BuildError("validate_on_epoch_end and checkpoint_partial must be booleans")
+        if not isinstance(validate_on_epoch_end, bool):
+            raise BuildError("validate_on_epoch_end must be a boolean")
         self.generator = generator
         self.discriminator = discriminator
         self.data = data
@@ -129,9 +128,7 @@ class MossFormerGANTrainer:
         self.max_logical_steps = _positive_int("max_logical_steps", max_logical_steps)
         self.accumulation = _positive_int("accumulation", accumulation)
         self.grad_clip = _positive_float("grad_clip", grad_clip)
-        self.checkpoint_interval = _positive_int("checkpoint_interval", checkpoint_interval)
         self.validate_on_epoch_end = validate_on_epoch_end
-        self.checkpoint_partial = checkpoint_partial
         self.max_epochs = None if max_epochs is None else _positive_int("max_epochs", max_epochs)
         if stop_after_logical_steps is not None:
             stop_after_logical_steps = _positive_int("stop_after_logical_steps", stop_after_logical_steps)
@@ -277,10 +274,9 @@ class MossFormerGANTrainer:
                                 "sample_id": stepped["sample_id"],
                             },
                         )
-                    if self.logical_step % self.checkpoint_interval == 0 or self.checkpoint_partial:
-                        self._checkpoint(runtime, checkpoint, logical_step=self.logical_step, label="step")
-                elif self.checkpoint_partial:
-                    self._checkpoint(runtime, checkpoint, logical_step=self.logical_step, label="step")
+                    self._offer(runtime, checkpoint, "step")
+                else:
+                    self._offer(runtime, checkpoint, "partial")
                 if index == updates:
                     self._open_boundary(runtime, checkpoint, epoch)
             finally:
@@ -548,7 +544,7 @@ class MossFormerGANTrainer:
             "validation_summary": None,
         }
         self.phase = _PENDING
-        self._checkpoint(runtime, checkpoint, logical_step=self.logical_step, label="validation_pending")
+        self._offer(runtime, checkpoint, "boundary_pending")
 
     def _finish_boundary(self, runtime: ProcessRuntime, checkpoint: CheckpointManager, component_id: str) -> None:
         if self.phase != _PENDING or self.boundary is None:
@@ -558,7 +554,7 @@ class MossFormerGANTrainer:
             summary = self._validate(runtime, int(boundary["trainer_epoch"]))
             boundary["validation_summary"] = summary
             boundary["validation_done"] = True
-            self._checkpoint(runtime, checkpoint, logical_step=self.logical_step, label="validation_pending")
+            self._offer(runtime, checkpoint, "boundary_pending")
         if boundary["validate"] and not boundary["plateau_done"]:
             summary = boundary.get("validation_summary")
             if not isinstance(summary, dict):
@@ -576,6 +572,7 @@ class MossFormerGANTrainer:
         self.data.epoch = int(boundary["trainer_epoch"]) + 1
         self.data.update_index = 0
         boundary["closed"] = True
+        metrics = scalar_metrics(boundary.get("validation_summary"))
         self.completed_boundaries.append(dict(boundary))
         self.boundary = None
         self.phase = _IN_EPOCH
@@ -588,7 +585,7 @@ class MossFormerGANTrainer:
         elif self._epochs_without_step >= self.max_logical_steps:
             self.halt_reason = "accumulation_window_never_closed"
             self.stop_training = True
-        self._checkpoint(runtime, checkpoint, logical_step=self.logical_step, label="step")
+        self._offer(runtime, checkpoint, "boundary", metrics=metrics)
 
     def _validate(self, runtime: ProcessRuntime, trainer_epoch: int) -> dict[str, Any]:
         cursor = (int(self.data.epoch), int(self.data.update_index))
@@ -825,7 +822,7 @@ class MossFormerGANTrainer:
             raise RuntimeFailure("refusing to checkpoint between the generator step and the discriminator step")
         if self.logical_step <= 0 and self._accu_count <= 0:
             return
-        self._checkpoint(runtime, checkpoint, logical_step=self.logical_step, label="step")
+        self._offer(runtime, checkpoint, "stop")
 
     def _require_group_size(self, component_id: str) -> None:
         group_size = getattr(self.data, "group_size", None)
@@ -844,16 +841,29 @@ class MossFormerGANTrainer:
                 f"component {component_id}: ranks have different micro-batch counts {counts}"
             )
 
-    def _checkpoint(
+    def _offer(
         self,
         runtime: ProcessRuntime,
         checkpoint: CheckpointManager,
-        *,
-        logical_step: int,
-        label: str,
+        event: str,
+        metrics: dict[str, float] | None = None,
     ) -> None:
+        """Offer this state to the selector. A GAN optimizer pair is not a save point.
+
+        A boundary and a stop make the ranks equal whether or not the selector
+        saves, as they did before selectors, so validation reads the same
+        buffers. Inside an epoch that runs only when a file is written.
+        """
+
         if self._in_optimizer_pair:
             raise RuntimeFailure("refusing to checkpoint between the generator step and the discriminator step")
+        if event in ("step", "partial"):
+            checkpoint.offer(event, logical_step=self.logical_step, prepare=self._sync_ranks)
+            return
+        self._sync_ranks(runtime)
+        checkpoint.offer(event, logical_step=self.logical_step, metrics=metrics)
+
+    def _sync_ranks(self, runtime: ProcessRuntime) -> None:
         # BatchNorm stats diverge after a local forward. The next DDP forward
         # would copy rank 0's buffers. Doing it before the save keeps the
         # checkpoint identical across ranks. World size 1 does not change them.
@@ -874,7 +884,6 @@ class MossFormerGANTrainer:
             self._window_discriminator = [float(item) for item in chosen["discriminator"]]
             self._window_generator = [float(item) for item in chosen["generator"]]
             self._window_samples = [str(item) for item in chosen["samples"]]
-        checkpoint.save(checkpoint.directory, logical_step=logical_step, label=label)
 
     def _stop_requested(self, runtime: object | None = None) -> bool:
         from src.experiments.signals import ranks_should_stop
@@ -883,6 +892,8 @@ class MossFormerGANTrainer:
         return ranks_should_stop(runtime, extra=capped)
 
     def _result(self, checkpoint: CheckpointManager, reason: str) -> RunResult:
+        if reason == "completed":
+            checkpoint.offer("final", logical_step=self.logical_step, prepare=self._sync_ranks)
         if self.halt_reason in {"initialized", "running"}:
             self.halt_reason = reason
         return RunResult(

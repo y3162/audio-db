@@ -5,7 +5,7 @@
 # Snapshot is semambapp.gsr.smoke@1. semambapp.gsr.official@1 stays blocked.
 # max_logical_steps is a safety cap, not a counted epoch budget for this smoke set.
 # Launch with .venvs/semambapp and one visible GPU. resampy 0.4.3 is required.
-# checkpoint_interval is 45 logical steps. Phase 5 micro-4 profile was about
+# latest_every is 45 logical steps. Phase 5 micro-4 profile was about
 # 10.2 s/update, so this is about 8 minutes plus the 1.7 s write. validation_interval stays 0.
 schema: audio-db-experiment/v1
 seed: 1234
@@ -18,6 +18,11 @@ runtime:
     precision: fp32
 output:
   directory: data/results/experiments/phase5-production/semambapp-gsr-micro4
+checkpoint:
+  selector:
+    class: src.experiments.selectors.StandardSelector
+    kwargs:
+      latest_every: 45
 components:
   generator:
     role: module
@@ -159,7 +164,6 @@ components:
       accumulation: 1
       grad_clip: null
       validation_interval: 0
-      checkpoint_interval: 45
       best_checkpoint_start_epoch: 40
       claim_label: protocol_conformant_substitute_materials
     inject:

@@ -3,6 +3,12 @@
     python -m src.evaluation.cli --config tests/fixtures/configs/evaluation/smoke.yaml --dry-run
     python -m src.evaluation.cli --config tests/fixtures/configs/evaluation/smoke.yaml --limit 2
     python -m src.evaluation.cli --summarize data/results/se-evaluation/<run_id>
+
+Exit codes: 0 when the run completed (or a dry-run is ready, or ``--summarize``
+printed a report); 1 when the evaluation finished without a complete result
+(``incomplete`` or ``validation_failed``); 2 for a configuration or dataset
+error, or a dry-run that is not ready. ``--summarize`` stays 0: the printed
+report says whether the WER is official.
 """
 
 from __future__ import annotations
@@ -58,7 +64,8 @@ def main(argv: list[str] | None = None) -> int:
     print(format_summary(result["summary"]))
     print(f"run_dir: {result['run_dir']}")
     print(f"reused: {result['reused']} written: {result['written']}")
-    return 0
+    print(f"status: {result.get('status')}")
+    return 0 if result.get("status") == "completed" else 1
 
 
 if __name__ == "__main__":

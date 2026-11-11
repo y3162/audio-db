@@ -187,7 +187,7 @@ class CudaWorldTests(unittest.TestCase):
         )
         self._check(_cli(first, devices=_DEVICES_ONE), "c1 fp32 continuous")
         self._check(_cli(interrupted / "interrupted.yaml", devices=_DEVICES_ONE), "c1 fp32 interrupt")
-        saved = interrupted / "run" / "step_00000002.pt"
+        saved = interrupted / "run" / "archive/step_00000002.pt"
         payload = torch.load(saved, map_location="cpu", weights_only=False)
         self.assertEqual(payload["states"]["runtime"]["device"], "cuda")
         self.assertIsNone(payload["states"]["runtime"]["grad_scaler"])
@@ -197,20 +197,20 @@ class CudaWorldTests(unittest.TestCase):
         copied = dict(payload)
         copied["rng_by_rank"] = [dict(payload["rng_by_rank"][0])]
         copied["rng_by_rank"][0]["cuda_device_identity"] = dict(identity, uuid="not-this-gpu")
-        tampered = interrupted / "run" / "step_00000002_tampered.pt"
+        tampered = interrupted / "run" / "archive/step_00000002_tampered.pt"
         torch.save(copied, tampered)
         _copy_sidecar(saved, tampered)
         refused = _cli(resume, "--resume", str(tampered), devices=_DEVICES_ONE)
         self.assertNotEqual(refused.returncode, 0)
         self.assertIn("CUDA device", refused.stderr + refused.stdout)
         self._check(_cli(resume, "--resume", str(saved), devices=_DEVICES_ONE), "c1 fp32 resume")
-        left = torch.load(continuous / "run" / "step_00000004.pt", map_location="cpu", weights_only=False)
-        right = torch.load(interrupted / "run" / "step_00000004.pt", map_location="cpu", weights_only=False)
+        left = torch.load(continuous / "run" / "archive/step_00000004.pt", map_location="cpu", weights_only=False)
+        right = torch.load(interrupted / "run" / "archive/step_00000004.pt", map_location="cpu", weights_only=False)
         self.assertEqual(_max_abs(left["states"], right["states"]), 0.0)
         _assert_equal(left["rng_by_rank"], right["rng_by_rank"])
         self.assertEqual(_jsonl(continuous / "run" / "metrics.jsonl"), _jsonl(interrupted / "run" / "metrics.jsonl"))
         self.assertEqual(right["states"]["runtime"]["precision"], "fp32")
-        midway = torch.load(continuous / "run" / "step_00000002.pt", map_location="cpu", weights_only=False)
+        midway = torch.load(continuous / "run" / "archive/step_00000002.pt", map_location="cpu", weights_only=False)
         self.assertGreater(_max_abs(left["states"]["model"], midway["states"]["model"]), 0.0)
 
     def test_c1_amp_autocast_overflow_and_resume(self) -> None:
@@ -234,7 +234,7 @@ class CudaWorldTests(unittest.TestCase):
         resume = _write_yaml(interrupted, filename="resume.yaml", **common)
         self._check(_cli(first, devices=_DEVICES_ONE), "c1 amp continuous")
         self._check(_cli(interrupted / "interrupted.yaml", devices=_DEVICES_ONE), "c1 amp interrupt")
-        mid = torch.load(interrupted / "run" / "step_00000002.pt", map_location="cpu", weights_only=False)
+        mid = torch.load(interrupted / "run" / "archive/step_00000002.pt", map_location="cpu", weights_only=False)
         self.assertEqual(mid["optimizer_updates"], {"optimizer": 1})
         self.assertEqual(mid["states"]["runtime"]["grad_scaler"]["scale"], 65536.0)
         self.assertEqual([row["applied"] for row in _jsonl(interrupted / "run" / "metrics.jsonl")], [True, False])
@@ -243,15 +243,15 @@ class CudaWorldTests(unittest.TestCase):
         broken = dict(mid)
         broken["states"] = dict(mid["states"])
         broken["states"]["runtime"] = dict(mid["states"]["runtime"], grad_scaler=None)
-        bad = interrupted / "run" / "step_00000002_noscaler.pt"
+        bad = interrupted / "run" / "archive/step_00000002_noscaler.pt"
         torch.save(broken, bad)
-        _copy_sidecar(interrupted / "run" / "step_00000002.pt", bad)
+        _copy_sidecar(interrupted / "run" / "archive/step_00000002.pt", bad)
         refused = _cli(resume, "--resume", str(bad), devices=_DEVICES_ONE)
         self.assertNotEqual(refused.returncode, 0)
         self.assertIn("grad scaler", refused.stderr + refused.stdout)
-        self._check(_cli(resume, "--resume", str(interrupted / "run" / "step_00000002.pt"), devices=_DEVICES_ONE), "c1 amp resume")
-        left = torch.load(continuous / "run" / "step_00000004.pt", map_location="cpu", weights_only=False)
-        right = torch.load(interrupted / "run" / "step_00000004.pt", map_location="cpu", weights_only=False)
+        self._check(_cli(resume, "--resume", str(interrupted / "run" / "archive/step_00000002.pt"), devices=_DEVICES_ONE), "c1 amp resume")
+        left = torch.load(continuous / "run" / "archive/step_00000004.pt", map_location="cpu", weights_only=False)
+        right = torch.load(interrupted / "run" / "archive/step_00000004.pt", map_location="cpu", weights_only=False)
         self.assertEqual(_max_abs(left["states"], right["states"]), 0.0)
         _assert_equal(left["rng_by_rank"], right["rng_by_rank"])
         self.assertEqual(_jsonl(continuous / "run" / "metrics.jsonl"), _jsonl(interrupted / "run" / "metrics.jsonl"))
@@ -284,7 +284,7 @@ class CudaWorldTests(unittest.TestCase):
         self.assertEqual(len(rank0), 2)
         for left, right in zip(rank0, rank1):
             self.assertEqual(set(str(left["sample_id"]).split(",")) & set(str(right["sample_id"]).split(",")), set())
-        saved = output / "step_00000002.pt"
+        saved = output / "archive/step_00000002.pt"
         payload = torch.load(saved, map_location="cpu", weights_only=False)
         self.assertEqual([blob["rank"] for blob in payload["rng_by_rank"]], [0, 1])
         self.assertNotEqual(
@@ -293,15 +293,15 @@ class CudaWorldTests(unittest.TestCase):
         )
         swapped = dict(payload)
         swapped["rng_by_rank"] = [dict(payload["rng_by_rank"][0]), dict(payload["rng_by_rank"][0])]
-        swapped_path = output / "step_00000002_swapped.pt"
+        swapped_path = output / "archive/step_00000002_swapped.pt"
         torch.save(swapped, swapped_path)
         _copy_sidecar(saved, swapped_path)
         refused = _torchrun(resume, "--resume", str(swapped_path), devices=_DEVICES_TWO)
         self.assertNotEqual(refused.returncode, 0)
         self.assertIn("rank", (refused.stderr + refused.stdout).lower())
         self._check(_torchrun(resume, "--resume", str(saved), devices=_DEVICES_TWO), "c2 resume")
-        left = torch.load(continuous / "run" / "step_00000004.pt", map_location="cpu", weights_only=False)
-        right = torch.load(output / "step_00000004.pt", map_location="cpu", weights_only=False)
+        left = torch.load(continuous / "run" / "archive/step_00000004.pt", map_location="cpu", weights_only=False)
+        right = torch.load(output / "archive/step_00000004.pt", map_location="cpu", weights_only=False)
         self.assertEqual(_max_abs(left["states"], right["states"]), 0.0)
         _assert_equal(left["rng_by_rank"], right["rng_by_rank"])
         self.assertEqual(_jsonl(continuous / "run" / "metrics.jsonl"), _jsonl(output / "metrics.jsonl"))
@@ -324,8 +324,8 @@ class CudaWorldTests(unittest.TestCase):
         self.assertNotEqual(completed.returncode, 0, completed.stderr + completed.stdout)
         self.assertIn("ranks disagree", completed.stderr + completed.stdout)
         output = directory / "run"
-        self.assertFalse((output / "step_00000002.pt").is_file())
-        previous = output / "step_00000001.pt"
+        self.assertFalse((output / "archive/step_00000002.pt").is_file())
+        previous = output / "archive/step_00000001.pt"
         digest = (output / "previous.sha256").read_text(encoding="utf-8").strip()
         self.assertEqual(_sha256(previous), digest)
 
@@ -370,11 +370,11 @@ class CudaWorldTests(unittest.TestCase):
         for left, right in zip(_jsonl(output / "samples-rank0.jsonl"), _jsonl(output / "samples-rank1.jsonl")):
             self.assertEqual(set(str(left["sample_id"]).split(",")) & set(str(right["sample_id"]).split(",")), set())
         self._check(
-            _torchrun(resume, "--resume", str(output / "step_00000002.pt"), devices=_DEVICES_TWO),
+            _torchrun(resume, "--resume", str(output / "archive/step_00000002.pt"), devices=_DEVICES_TWO),
             "c4 resume",
         )
-        left = torch.load(continuous / "run" / "step_00000004.pt", map_location="cpu", weights_only=False)
-        right = torch.load(output / "step_00000004.pt", map_location="cpu", weights_only=False)
+        left = torch.load(continuous / "run" / "archive/step_00000004.pt", map_location="cpu", weights_only=False)
+        right = torch.load(output / "archive/step_00000004.pt", map_location="cpu", weights_only=False)
         self.assertEqual(_max_abs(left["states"], right["states"]), 0.0)
         _assert_equal(left["rng_by_rank"], right["rng_by_rank"])
         self.assertEqual(left["states"]["runtime"]["grad_scaler"], right["states"]["runtime"]["grad_scaler"])
@@ -397,7 +397,7 @@ class CudaWorldTests(unittest.TestCase):
         self._check(_torchrun(overflow, devices=_DEVICES_TWO), "c4 coordinated overflow")
         rows = _jsonl(overflow_dir / "run" / "metrics.jsonl")
         self.assertEqual([row["applied"] for row in rows], [True, False, True])
-        saved = torch.load(overflow_dir / "run" / "step_00000003.pt", map_location="cpu", weights_only=False)
+        saved = torch.load(overflow_dir / "run" / "archive/step_00000003.pt", map_location="cpu", weights_only=False)
         self.assertEqual(saved["optimizer_updates"], {"optimizer": 2})
         self.assertEqual(saved["states"]["runtime"]["grad_scaler"]["scale"], 512.0)
         self.assertEqual(saved["states"]["scheduler"]["last_epoch"], 2)
@@ -467,6 +467,11 @@ def _write_yaml(
 """
         scheduler_inject = "      scheduler: {ref: scheduler}\n"
     text = f"""schema: audio-db-experiment/v1
+checkpoint:
+  selector:
+    class: tests.experiments.support.StepArchiveSelector
+    kwargs:
+      interval: 1
 seed: 17
 deterministic: true
 entry: trainer
@@ -689,7 +694,7 @@ class SEMambaCudaTests(unittest.TestCase):
         self.assertLess(row["loss_max_abs"], 1e-4)
         self.assertLess(row["generator_grad_max_abs"], 1e-3)
         self.assertLess(row["generator_state_max_abs"], 1e-3)
-        Path("/tmp/phase4h-cuda-reference.json").write_text(json.dumps(row, indent=2, sort_keys=True), encoding="utf-8")
+        print("semamba cuda reference: " + json.dumps(row, sort_keys=True))
 
     def test_fused_cuda_matches_the_task_and_records_the_reference_gap(self) -> None:
         _require_devices(1)
@@ -708,7 +713,7 @@ class SEMambaCudaTests(unittest.TestCase):
         self.assertEqual(cross["reference_executed"], "reference")
         self.assertEqual(cross["fused_executed"], "fused")
         self.assertGreaterEqual(float(cross["generator_state_max_abs"]), 0.0)
-        Path("/tmp/phase4h-cuda-both.json").write_text(json.dumps(report, indent=2, sort_keys=True), encoding="utf-8")
+        print("semamba cuda reference and fused: " + json.dumps(report, sort_keys=True))
 
     def test_nccl_reference_and_fused_accumulation(self) -> None:
         _require_devices(2)
@@ -735,7 +740,7 @@ class SEMambaCudaTests(unittest.TestCase):
                     )
                     completed = _torchrun_python(config, python=python, devices=_DEVICES_TWO, timeout=300)
                     self.assertEqual(completed.returncode, 0, f"{backend} accum {accumulation}\n{completed.stderr[-2500:]}")
-                    payload = torch.load(target / "step_00000001.pt", map_location="cpu", weights_only=False)
+                    payload = torch.load(target / "archive/step_00000001.pt", map_location="cpu", weights_only=False)
                     self.assertTrue(payload["parameter_ranks_agree"])
                     self.assertEqual(payload["world_size"], 2)
                     row = payload["states"]["trainer"]["step_log"][0]
@@ -849,9 +854,9 @@ class Phase4JCudaTests(unittest.TestCase):
             )
             failed = _moss_nccl(partial, "run", timeout=240, fail_phase="after_generator_step")
             self.assertNotEqual(failed.returncode, 0)
-            self.assertTrue((partial / "step_00000000.pt").is_file())
-            self.assertFalse((partial / "step_00000001.pt").is_file())
-            resumed = _moss_nccl(partial, "run", timeout=240, resume=partial / "step_00000000.pt")
+            self.assertTrue((partial / "archive/step_00000000.pt").is_file())
+            self.assertFalse((partial / "archive/step_00000001.pt").is_file())
+            resumed = _moss_nccl(partial, "run", timeout=240, resume=partial / "archive/step_00000000.pt")
             self.assertEqual(resumed.returncode, 0, resumed.stderr[-2500:])
             resumed_ranks = _moss_ranks(partial)
             self.assertEqual([row["logical_step"] for row in resumed_ranks], [1, 1])
@@ -916,24 +921,21 @@ class Phase4JCudaTests(unittest.TestCase):
                 devices=_DEVICES_TWO,
                 timeout=240,
                 python=python,
-                resume=root / "stop" / "step_00000001.pt",
+                resume=root / "stop" / "archive/step_00000001.pt",
             )
             self.assertEqual(resumed.returncode, 0, resumed.stderr[-2500:])
             Phase4ICudaTests._assert_ranks(self, root / "a", logical_step=2)
             Phase4ICudaTests._assert_ranks(self, root / "stop", logical_step=2)
-            self_gap = _checkpoint_gap(root / "a" / "step_00000002.pt", root / "b" / "step_00000002.pt")
-            resume_gap = _checkpoint_gap(root / "a" / "step_00000002.pt", root / "stop" / "step_00000002.pt")
-            payload = torch.load(root / "stop" / "step_00000002.pt", map_location="cpu", weights_only=False)
+            self_gap = _checkpoint_gap(root / "a" / "archive/step_00000002.pt", root / "b" / "archive/step_00000002.pt")
+            resume_gap = _checkpoint_gap(root / "a" / "archive/step_00000002.pt", root / "stop" / "archive/step_00000002.pt")
+            payload = torch.load(root / "stop" / "archive/step_00000002.pt", map_location="cpu", weights_only=False)
             row = payload["states"]["trainer"]["step_log"][-1]
             self.assertEqual(row["scan_configured"], "fused")
             self.assertEqual(row["scan_executed"], "fused")
             for name in ("generator", "mrd", "cqt", "optim_g", "optim_d", "scheduler_g", "scheduler_d"):
                 self.assertIn(name, payload["states"])
             self.assertIn("rng_by_rank", payload)
-            Path("/tmp/phase4j-semamba-fused-gaps.txt").write_text(
-                f"self_rerun {self_gap}\nresume {resume_gap}\n",
-                encoding="utf-8",
-            )
+            print(f"semamba fused gaps: self_rerun {self_gap} resume {resume_gap}")
             self.assertLess(resume_gap, max(self_gap, 1e-6) * 5 + 1e-3)
 
 
@@ -1031,7 +1033,7 @@ class Phase4ICudaTests(unittest.TestCase):
             completed = _torchrun_worker(config, devices=_DEVICES_TWO, timeout=300)
             self.assertEqual(completed.returncode, 0, completed.stderr[-2500:] + completed.stdout[-800:])
             self._assert_ranks(target, logical_step=1)
-            payload = torch.load(target / "step_00000001.pt", map_location="cpu", weights_only=False)
+            payload = torch.load(target / "archive/step_00000001.pt", map_location="cpu", weights_only=False)
             self.assertTrue(any("df_fc_a" in key for key in payload["states"]["model"]))
             self.assertIsInstance(payload["provenance_sha256"], str)
             self.assertEqual(
@@ -1089,16 +1091,16 @@ class Phase4ICudaTests(unittest.TestCase):
                 resumed_config,
                 devices=_DEVICES_TWO,
                 timeout=300,
-                resume=root / "interrupted" / "step_00000001.pt",
+                resume=root / "interrupted" / "archive/step_00000001.pt",
             )
             self.assertEqual(resumed.returncode, 0, resumed.stderr[-2500:])
             self._assert_ranks(root / "continuous", logical_step=2)
             self._assert_ranks(root / "interrupted", logical_step=2)
             gap = _checkpoint_gap(
-                root / "continuous" / "step_00000002.pt",
-                root / "interrupted" / "step_00000002.pt",
+                root / "continuous" / "archive/step_00000002.pt",
+                root / "interrupted" / "archive/step_00000002.pt",
             )
-            row = torch.load(root / "interrupted" / "step_00000002.pt", map_location="cpu", weights_only=False)
+            row = torch.load(root / "interrupted" / "archive/step_00000002.pt", map_location="cpu", weights_only=False)
             trainer = row["states"]["trainer"]
             self.assertEqual(trainer["step_log"][-1]["scan_configured"], "reference")
             self.assertEqual(trainer["step_log"][-1]["scan_executed"], "reference")
@@ -1109,7 +1111,7 @@ class Phase4ICudaTests(unittest.TestCase):
             self.assertIn("optim_d", row["states"])
             self.assertIn("scheduler_g", row["states"])
             self.assertIn("scheduler_d", row["states"])
-            Path("/tmp/phase4i-semamba-nccl-resume-gap.txt").write_text(f"{gap}\n", encoding="utf-8")
+            print(f"semamba nccl resume gap: {gap}")
             # CUDA reflection_pad1d backward is nondeterministic. A gap near
             # the self-rerun of two continuous runs shows the resume loaded
             # the step-1 state. It is not a bit-exact match.

@@ -3,6 +3,10 @@
 Distribution windows below were fixed before the first counted run. Do not
 edit them to make a failing seed pass. Kaiser resampling uses resampy from
 the existing asr environment when the se environment does not install it.
+
+The datasets are registered into a directory of this test module. The
+production database, staging, and snapshots are read by other tests and are
+not written here. ``make reproduction-register-p9`` writes the production copy.
 """
 
 from __future__ import annotations
@@ -25,7 +29,7 @@ from src.experiments.data.ids import SEMAMBA_GSR_V1
 from src.experiments.data.mix.online_semamba import plan_semamba_epoch
 from src.experiments.data.sampling.order import rank_order
 from src.experiments.data.fixed_pair_stream import open_training_data
-from src.experiments.data.prepare.semamba_online import DATABASE, STAGING, register_p9
+from src.experiments.data.prepare.semamba_online import register_p9
 from src.experiments.data.protocols.online_semamba import (
     SAMPLE_RATE,
     SEGMENT_SIZE,
@@ -55,6 +59,25 @@ RENDER_N = 16
 RENDER_LENGTH = 24000
 
 _REGISTERED = None
+_WORK: tempfile.TemporaryDirectory | None = None
+STAGING = DATABASE = SNAPSHOTS = Path()
+
+
+def setUpModule() -> None:
+    global _WORK, STAGING, DATABASE, SNAPSHOTS
+    _WORK = tempfile.TemporaryDirectory(prefix="audio-db-p9-")
+    root = Path(_WORK.name)
+    STAGING = root / "staging"
+    DATABASE = root / "db" / "reproduction-p9.duckdb"
+    SNAPSHOTS = root / "snapshots"
+    DATABASE.parent.mkdir()
+
+
+def tearDownModule() -> None:
+    global _REGISTERED
+    _REGISTERED = None
+    if _WORK is not None:
+        _WORK.cleanup()
 
 
 def _enable_official_modules():
@@ -78,8 +101,12 @@ def _enable_official_modules():
 def _registered():
     global _REGISTERED
     if _REGISTERED is None:
-        _REGISTERED = register_p9()
+        _REGISTERED = _register()
     return _REGISTERED
+
+
+def _register():
+    return register_p9(staging=STAGING, database=DATABASE, snapshots=SNAPSHOTS)
 
 
 def _open(global_batch: int, world_size: int, *, workers: int = 1, accumulation: int = 1):
@@ -95,6 +122,7 @@ def _open(global_batch: int, world_size: int, *, workers: int = 1, accumulation:
         segment_size=SEGMENT_SIZE,
         model_sample_rate=SAMPLE_RATE,
         load_workers=workers,
+        snapshot_root=SNAPSHOTS,
     )
 
 
@@ -421,15 +449,15 @@ class DatasetTests(unittest.TestCase):
         self.assertEqual(found["semambapp.gsr.substitute"][1:], ("ready", "protocol_conformant_substitute_materials", False))
         self.assertTrue(all(status == "PASS" for _, status in leaks), leaks)
         official_id = next(row["dataset_id"] for row in self.registered["datasets"] if row["name"].endswith("official"))
-        self.assertFalse((Path("data/db/snapshots") / official_id).exists())
+        self.assertFalse((SNAPSHOTS / official_id).exists())
 
     def test_registration_is_idempotent_and_stores_no_wav(self):
-        again = register_p9()
+        again = _register()
         self.assertTrue(all(count == 0 for count in again["counts"].values()), again["counts"])
         wavs = list(STAGING.rglob("*.wav")) + list(STAGING.rglob("*.npy"))
         for name, digest_value in self.registered["snapshots"].items():
             self.assertEqual(len(digest_value), 64, name)
-            snapshot = Path("data/db/snapshots") / next(
+            snapshot = SNAPSHOTS / next(
                 row["dataset_id"] for row in self.registered["datasets"] if row["name"] == name
             )
             wavs.extend(snapshot.rglob("*.wav"))

@@ -29,6 +29,7 @@ from src.experiments.official.deepfilternet3.trainer import DeepFilterNet3Traine
 from src.experiments.official.mossformergan.trainer import MossFormerGANTrainer
 from src.experiments.official.mp_senet.trainer import MPSENetGANTrainer
 from src.experiments.provenance import judge_experiment_checkpoint
+from src.experiments.selectors import StandardSelector
 from src.experiments.official.semambapp.trainer import SEMambaPPTrainer
 from src.experiments.signals import clear_interrupt, ranks_should_stop, request_interrupt
 from src.experiments.official.tf_gridnet.trainer import TFGridNetTrainer
@@ -123,13 +124,13 @@ class ProvenanceContractTests(unittest.TestCase):
             result = first.run()
             self.assertEqual(result.stop_reason, "interrupted")
             output = directory / "run"
-            step1 = output / "step_00000001.pt"
+            step1 = output / "archive/step_00000001.pt"
             payload = torch.load(step1, map_location="cpu", weights_only=False)
             digest = payload["provenance_sha256"]
             self.assertIsInstance(digest, str)
             raw_bytes = (output / "data_provenance.json").read_bytes()
             self.assertEqual(hashlib.sha256(raw_bytes).hexdigest(), digest)
-            self.assertEqual((output / "step_00000001.data_provenance.json").read_bytes(), raw_bytes)
+            self.assertEqual((output / "archive/step_00000001.data_provenance.json").read_bytes(), raw_bytes)
             judgment = judge_checkpoint(step1, [])
             self.assertNotEqual(judgment["independent"], True)
             self.assertFalse(judgment["confirmed_independent"])
@@ -137,7 +138,7 @@ class ProvenanceContractTests(unittest.TestCase):
             legacy["provenance_sha256"] = None
             torch.save(legacy, step1)
             (output / "data_provenance.json").unlink()
-            (output / "step_00000001.data_provenance.json").unlink()
+            (output / "archive/step_00000001.data_provenance.json").unlink()
             resumed_config = _write_yaml(
                 directory,
                 steps=2,
@@ -157,7 +158,7 @@ class ProvenanceContractTests(unittest.TestCase):
             self.assertEqual(legacy_judgment["independent"], "UNKNOWN")
             self.assertTrue(legacy_judgment["legacy_checkpoint"])
             self.assertTrue((output / "data_provenance.json").is_file())
-            step2 = torch.load(output / "step_00000002.pt", map_location="cpu", weights_only=False)
+            step2 = torch.load(output / "archive/step_00000002.pt", map_location="cpu", weights_only=False)
             self.assertIsInstance(step2["provenance_sha256"], str)
             metrics = [
                 json.loads(line)
@@ -182,9 +183,9 @@ class ProvenanceContractTests(unittest.TestCase):
             Experiment(load_experiment(config)).run()
             output = directory / "run"
             (output / "complete.json").unlink()
-            step = output / "step_00000001.pt"
+            step = output / "archive/step_00000001.pt"
             original = step.read_bytes()
-            sidecar = output / "step_00000001.data_provenance.json"
+            sidecar = output / "archive/step_00000001.data_provenance.json"
             saved = sidecar.read_bytes()
             sidecar.write_bytes(saved + b" ")
             with self.assertRaises(CheckpointError):
@@ -196,9 +197,9 @@ class ProvenanceContractTests(unittest.TestCase):
             swapped = canonical_bytes(document)
             payload = torch.load(step, map_location="cpu", weights_only=False)
             payload["provenance_sha256"] = hashlib.sha256(swapped).hexdigest()
-            foreign = output / "step_00000009.pt"
+            foreign = output / "archive/step_00000009.pt"
             torch.save(payload, foreign)
-            (output / "step_00000009.data_provenance.json").write_bytes(swapped)
+            (output / "archive/step_00000009.data_provenance.json").write_bytes(swapped)
             (output / "data_provenance.json").write_bytes(swapped)
             try:
                 with self.assertRaises(CheckpointError) as caught:
@@ -224,7 +225,8 @@ class ProvenanceContractTests(unittest.TestCase):
             experiment = Experiment(load_experiment(config))
             experiment.run()
             output = directory / "run"
-            previous = (output / "step_00000001.pt").read_bytes()
+            previous = (output / "archive/step_00000001.pt").read_bytes()
+            latest = (output / "latest.pt").read_bytes()
             again = Experiment(load_experiment(config))
             again.build()
             with patch(
@@ -232,9 +234,11 @@ class ProvenanceContractTests(unittest.TestCase):
                 side_effect=CheckpointError("ranks disagree at state.model"),
             ):
                 with self.assertRaises(CheckpointError):
-                    again._checkpoint.save(output, logical_step=2, label="step")
-            self.assertFalse((output / "step_00000002.pt").is_file())
-            self.assertEqual((output / "step_00000001.pt").read_bytes(), previous)
+                    again._checkpoint.offer("step", logical_step=2)
+            self.assertFalse((output / "archive/step_00000002.pt").is_file())
+            self.assertEqual((output / "archive/step_00000001.pt").read_bytes(), previous)
+            self.assertEqual((output / "latest.pt").read_bytes(), latest)
+            self.assertFalse(list(output.rglob(".*.tmp")))
             again.close()
 
     def test_replicated_state_difference_is_reported(self) -> None:
@@ -270,16 +274,13 @@ class ProvenanceContractTests(unittest.TestCase):
         right = {"weight": torch.ones(4)}
         started = time.perf_counter()
         with self.assertRaises(CheckpointError) as caught:
-            _assert_replicated_states(_States(left), _Runtime([left, right]))
+            _assert_replicated_states(_States(left), StandardSelector(), _Runtime([left, right]))
         elapsed = time.perf_counter() - started
         self.assertIn("ranks disagree", str(caught.exception))
         matched = _Runtime([left, left])
-        _assert_replicated_states(_States(left), matched)
+        _assert_replicated_states(_States(left), StandardSelector(), matched)
         nbytes = sum(tensor.nbytes for tensor in left.values())
-        Path("/tmp/phase4j-rank-compare.txt").write_text(
-            f"tensors 1 bytes {nbytes} mismatch_seconds {elapsed:.6f}\n",
-            encoding="utf-8",
-        )
+        print(f"rank compare: tensors 1 bytes {nbytes} mismatch_seconds {elapsed:.6f}")
 
     def test_rank_state_tamper_refuses_the_save(self) -> None:
         for tamper, optimizer, scheduler in (
@@ -306,8 +307,8 @@ class ProvenanceContractTests(unittest.TestCase):
                 self.assertNotEqual(completed.returncode, 0, completed.stderr + completed.stdout)
                 self.assertIn("ranks disagree", completed.stderr + completed.stdout)
                 output = directory / "run"
-                self.assertFalse((output / "step_00000002.pt").is_file())
-                previous = output / "step_00000001.pt"
+                self.assertFalse((output / "archive/step_00000002.pt").is_file())
+                previous = output / "archive/step_00000001.pt"
                 digest = (output / "previous.sha256").read_text(encoding="utf-8").strip()
                 self.assertEqual(hashlib.sha256(previous.read_bytes()).hexdigest(), digest)
 
@@ -346,6 +347,11 @@ class StopBoundaryTests(unittest.TestCase):
                 textwrap.dedent(
                     f"""\
                     schema: audio-db-experiment/v1
+                    checkpoint:
+                      selector:
+                        class: tests.experiments.support.StepArchiveSelector
+                        kwargs:
+                          interval: 1
                     seed: 1
                     deterministic: true
                     entry: trainer
@@ -363,7 +369,6 @@ class StopBoundaryTests(unittest.TestCase):
                         class: tests.experiments.phase4j_support.InterruptProbe
                         kwargs:
                           max_logical_steps: 30
-                          checkpoint_interval: 1
                     """
                 ),
                 encoding="utf-8",
@@ -377,7 +382,7 @@ class StopBoundaryTests(unittest.TestCase):
                 start_new_session=True,
             )
             deadline = time.monotonic() + 20
-            step = output / "step_00000001.pt"
+            step = output / "archive/step_00000001.pt"
             while time.monotonic() < deadline and not step.is_file():
                 if process.poll() is not None:
                     break
@@ -400,7 +405,7 @@ class StopBoundaryTests(unittest.TestCase):
             self.assertEqual(show.returncode, 0, show.stderr)
             self.assertIn("INTERRUPTED", show.stdout)
             finished = subprocess.run(
-                [sys.executable, "-m", "src.experiments.cli", "--config", str(config), "--resume", str(step)],
+                [sys.executable, "-m", "src.experiments.cli", "--config", str(config), "--resume", str(output)],
                 cwd=ROOT,
                 env=env,
                 check=False,

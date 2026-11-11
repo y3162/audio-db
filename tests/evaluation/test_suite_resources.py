@@ -84,29 +84,6 @@ class SuiteResourceTests(unittest.TestCase):
         for target in run_suite.GPU_TARGETS:
             self.assertIsNotNone(run_suite.module_file(ROOT, target), target)
 
-    def test_production_db_modules_do_not_overlap(self) -> None:
-        from scripts.tests.run_suite import PRODUCTION_DB_MODULES, blocked_by_production_db
-
-        self.assertIn("tests.data.reproduction.test_p9_semamba", PRODUCTION_DB_MODULES)
-        running = {"tests.data.reproduction.test_p9_semamba"}
-        self.assertTrue(blocked_by_production_db("tests.data.reproduction.test_p1", running))
-        self.assertTrue(blocked_by_production_db("tests.experiments.test_phase4i_integration", running))
-        self.assertTrue(blocked_by_production_db("tests.experiments.test_semambapp", running))
-        self.assertTrue(
-            blocked_by_production_db(
-                "tests.data.reproduction.test_p9_semamba",
-                {"tests.experiments.test_semambapp"},
-            )
-        )
-        self.assertFalse(blocked_by_production_db("tests.experiments.test_semambapp", set()))
-        self.assertFalse(
-            blocked_by_production_db(
-                "tests.data.reproduction.test_p1",
-                {"tests.experiments.test_semambapp"},
-            )
-        )
-        self.assertFalse(blocked_by_production_db("tests.data.reproduction.test_p1", set()))
-
     def test_gpu_lane_keeps_child_processes_on_the_selected_devices(self) -> None:
         env = gpu_test_environment([1, 2])
         self.assertEqual(env["CUDA_VISIBLE_DEVICES"], "1,2")

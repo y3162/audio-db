@@ -1,6 +1,6 @@
 # 学習スモークセット
 
-`data/db/training.duckdb`。再構築元は `data/staging/training/`。本番の `resource.duckdb` と `data/staging/` 直下の評価用ステージングは変更していない。
+登録コード `src/data/training_sets.py` は、`resource.duckdb` を読み取り専用で開き、`data/staging/training/` に書いてから `data/db/training.duckdb` へ登録する。`resource.duckdb` へは書かない。この二つのパスがいま在るかは [配置と記録](INVENTORY.md)。
 
 | セット | 件数 | 音声 | 雑音 | SNR |
 |---|---|---|---|---|
@@ -9,7 +9,7 @@
 
 出力は 16 kHz、最長 2 秒、教師は `dry_clean`。`noise_start` と SNR はレシピに保存する。学習と検証で、発話パス、話者、雑音ファイルは重ならない。LibriSpeech test-clean と CHiME3 et05 は入っていない。
 
-このスモークセットは VoiceBank-DEMAND ではない。現在の VoiceBank の分割と再構築元は [コーパス](CORPORA.md) と [データ上の制約](../../.agents/DATA.md) を参照する。
+このスモークセットは VoiceBank-DEMAND ではない。VoiceBank の分割は [コーパス](CORPORA.md)、ファイルの場所は [配置と記録](INVENTORY.md)。
 
 登録のやり直し:
 

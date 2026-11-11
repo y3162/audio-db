@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import os
+import signal
 from pathlib import Path
 
 import torch
@@ -12,7 +13,24 @@ from torch import nn
 from src.experiments.data.fixed_pair import SnapshotDataModule
 from src.experiments.errors import DataError
 from src.experiments.runtime import PreparePolicy, PreparedModel, ProcessRuntime
+from src.experiments.selectors import Decision, SavePoint, StandardSelector
 from src.experiments.trainers import StandardTrainer
+
+
+class StepArchiveSelector(StandardSelector):
+    """Keep every state that replaces Latest as ``archive/step_XXXXXXXX.pt``.
+
+    Tests compare the state at individual steps, so each saved state also
+    stays as an Archive. ``interval`` is the Latest period inside an epoch.
+    """
+
+    def __init__(self, interval: int = 1, partial: bool = False) -> None:
+        super().__init__(latest_every=interval, partial=partial)
+
+    def decide(self, point: SavePoint) -> Decision:
+        if not self.wants_latest(point):
+            return Decision()
+        return Decision(latest=True, archive=(f"step_{point.logical_step:08d}.pt",))
 
 
 class Timeline:
@@ -247,7 +265,7 @@ class TamperTrainer:
             return
         directory = checkpoint.directory  # type: ignore[attr-defined]
         if int(getattr(runtime, "rank", 0)) == 0:
-            previous = directory / "step_00000001.pt"
+            previous = directory / "archive/step_00000001.pt"
             digest = hashlib.sha256(previous.read_bytes()).hexdigest()
             (directory / "previous.sha256").write_text(digest + "\n", encoding="utf-8")
             return
@@ -286,6 +304,153 @@ class TamperTrainer:
 
     def __getattr__(self, name: str) -> object:
         return getattr(self._trainer, name)
+
+
+class _KillOnPickle:
+    """Kills this process with ``SIGKILL`` while it is being pickled, once per marker file."""
+
+    def __init__(self, marker: str) -> None:
+        self.marker = marker
+
+    def __reduce__(self) -> tuple[object, tuple[object, ...]]:
+        marker = Path(self.marker)
+        if not marker.exists():
+            marker.write_text("killed\n", encoding="utf-8")
+            os.kill(os.getpid(), signal.SIGKILL)
+        return (str, ("save-probe",))
+
+
+class KillDuringSaveTrainer:
+    """Runs the standard loop and dies inside ``torch.save`` of ``kill_step``.
+
+    The process is killed after the temporary checkpoint file was opened and
+    before it is complete. The marker file makes that happen once, so the
+    same YAML resumes without being killed again.
+    """
+
+    def __init__(self, *args: object, kill_step: int, marker: str, **kwargs: object) -> None:
+        from src.experiments.trainers import StandardTrainer
+
+        self._trainer = StandardTrainer(*args, **kwargs)  # type: ignore[arg-type]
+        self.kill_step = int(kill_step)
+        self.marker = str(marker)
+
+    def run(self, runtime: object, checkpoint: object):  # type: ignore[no-untyped-def]
+        return self._trainer.run(runtime, checkpoint)  # type: ignore[arg-type]
+
+    def state_dict(self) -> dict[str, object]:
+        state = self._trainer.state_dict()
+        if self._trainer.logical_step == self.kill_step:
+            state["save_probe"] = _KillOnPickle(self.marker)
+        return state
+
+    def load_state_dict(self, state: dict[str, object]) -> None:
+        cleaned = dict(state)
+        cleaned.pop("save_probe", None)
+        self._trainer.load_state_dict(cleaned)
+
+    def __getattr__(self, name: str) -> object:
+        return getattr(self._trainer, name)
+
+
+class FaultTrainer:
+    """Runs the standard loop and fails once, on chosen ranks, before logical step ``step + 1``.
+
+    ``fault``:
+
+    - ``exception`` raises ``RuntimeError``.
+    - ``oom`` raises what PyTorch raises when a CUDA allocation fails. No GPU is needed.
+    - ``cuda_oom`` asks the runtime device for more memory than it has.
+    - ``sigkill`` kills the rank, as the kernel does when the host runs out of memory.
+    - ``hang`` stops making progress and ignores a stop request.
+    - ``exit_late`` trains to the end, then exits with code 7.
+    - ``none`` does nothing.
+
+    ``rank`` is the rank that fails, or -1 for every rank. ``delay`` slows
+    every step so a test can signal a run that is under way. The marker file
+    makes the fault happen once, so the same YAML resumes. Every rank writes
+    ``<marker>.pid<rank>`` when it starts.
+    """
+
+    FAULTS = ("none", "exception", "oom", "cuda_oom", "sigkill", "hang", "exit_late")
+
+    def __init__(
+        self,
+        *args: object,
+        fault: str = "none",
+        step: int = 0,
+        rank: int = 0,
+        marker: str,
+        delay: float = 0.0,
+        **kwargs: object,
+    ) -> None:
+        from src.experiments.trainers import StandardTrainer
+
+        if fault not in self.FAULTS:
+            raise ValueError(f"fault must be one of {self.FAULTS}")
+        self._trainer = StandardTrainer(*args, **kwargs)  # type: ignore[arg-type]
+        self.fault = fault
+        self.step = int(step)
+        self.rank = int(rank)
+        self.marker = Path(marker)
+        self.delay = float(delay)
+
+    def run(self, runtime: object, checkpoint: object):  # type: ignore[no-untyped-def]
+        import time
+
+        trainer = self._trainer
+        rank = int(getattr(runtime, "rank", 0))
+        self.marker.with_name(f"{self.marker.name}.pid{rank}").write_text(str(os.getpid()), encoding="utf-8")
+        # Decided before the first step, so every chosen rank fails in the same launch.
+        armed = self.rank in (-1, rank) and not self.marker.exists()
+
+        def before(runtime_arg: object) -> None:
+            if self.delay > 0:
+                time.sleep(self.delay)
+            if not armed or trainer.logical_step != self.step or self.fault in ("none", "exit_late"):
+                return
+            self.marker.write_text(self.fault, encoding="utf-8")
+            if self.fault == "exception":
+                raise RuntimeError(f"injected failure on rank {rank}")
+            if self.fault == "oom":
+                raise torch.cuda.OutOfMemoryError("CUDA out of memory. Tried to allocate 64.00 GiB. (injected)")
+            if self.fault == "cuda_oom":
+                device = getattr(runtime_arg, "device")
+                total = torch.cuda.get_device_properties(device).total_memory
+                torch.empty(2 * total, dtype=torch.uint8, device=device)
+                raise RuntimeError("CUDA granted more memory than the device has")
+            if self.fault == "sigkill":
+                os.kill(os.getpid(), signal.SIGKILL)
+            while True:
+                time.sleep(3600)
+
+        trainer._before_logical_step = before  # type: ignore[method-assign]
+        result = trainer.run(runtime, checkpoint)  # type: ignore[arg-type]
+        if self.fault == "exit_late" and armed:
+            import atexit
+
+            self.marker.write_text(self.fault, encoding="utf-8")
+            atexit.register(os._exit, 7)
+        return result
+
+    def state_dict(self) -> dict[str, object]:
+        return self._trainer.state_dict()
+
+    def load_state_dict(self, state: dict[str, object]) -> None:
+        self._trainer.load_state_dict(state)
+
+    def __getattr__(self, name: str) -> object:
+        return getattr(self._trainer, name)
+
+
+class RankSplitSelector(StandardSelector):
+    """Decides differently on rank 1. The manager must refuse to write."""
+
+    def decide(self, point: SavePoint) -> Decision:
+        rank = int(os.environ.get("RANK", os.environ.get("LOCAL_RANK", "0")))
+        if rank == 1 and point.logical_step == 2:
+            return Decision(latest=True, archive=("rank1.pt",))
+        return super().decide(point)
 
 
 class DisagreeTrainer:

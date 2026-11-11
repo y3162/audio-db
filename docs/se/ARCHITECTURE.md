@@ -1,9 +1,9 @@
 # 音声強調 API
 
-`src.se` は `available_enhancers()`, `build_model(name, config=None)`, `load_enhancer(name, checkpoint, device='cpu', config=None)` を公開する。登録済みは MP-SENet、TF-GridNet、TF-Locoformer、DeepFilterNet3、MossFormerGAN、SEMamba++。`build_model` は勾配を維持する `nn.Module` を返す。学習は `src/experiments/` だけが行い、この API は推論と未学習モジュールの構築だけを返す。チェックポイントのパスを渡す。キーの過不足は拒否する。
+`src.se` は推論と、学習前の `nn.Module` 構築だけを公開する。学習は `src/experiments/` だけが行う。`enhance` は推論専用で、損失も更新順も含まない。`src/se` は他の `src/` を import しない。
 
 ```python
-from src.se import available_enhancers, build_model, load_enhancer
+from src.se import available_enhancers, build_model, load_enhancer, model_metadata
 
 print(available_enhancers())
 model = build_model("mp_senet")
@@ -11,20 +11,42 @@ enc = load_enhancer("mp_senet", checkpoint="/path/to/g_best_vb", device="cpu")
 enhanced = enc.enhance(noisy, sample_rate=16000)
 model_urgent = build_model("tf_gridnet", variant="urgent24")
 model_ms = build_model("tf_gridnet", variant="ms-snsd")
+print(model_metadata("tf_gridnet"))
 ```
 
-可変長は `enhancer.enhance_batch(padded_waveforms, 16000, lengths)`。モデルごとの差は [MODELS.md](MODELS.md)、波形比較の範囲は [VALIDATION.md](VALIDATION.md)。
+| 関数 | 戻り |
+|---|---|
+| `available_enhancers()` | 登録名のタプル |
+| `model_metadata(name)` | `ModelSpec`（構築関数、ローダ、サンプルレート、別名、variant） |
+| `build_model(name, config=None, *, variant=None)` | 勾配を維持する `nn.Module` |
+| `load_enhancer(name, checkpoint, device="cpu", config=None, *, variant=None)` | `enhance` を持つオブジェクト |
 
-`enhance` は一次元浮動小数点 Tensor と整数サンプルレートを受け、元の長さ、dtype、デバイスの Tensor を返す。内部で 16 kHz にリサンプリング、RMS 正規化、複素 STFT、振幅圧縮、Generator、逆変換を行う。無音は無音として返す。非常に短い音声は reflect padding の制約により拒否する。公式の iSTFT は長さを hop の倍数に切り詰めるが、API は元の長さを明示する。リサンプリングは torchaudio を使う。複数チャンネルとストリーミングは未対応。MossFormerGAN は 10 秒超で公式と同じ窓分割をする。
+登録名は `mp_senet`、`tf_gridnet`、`tf_locoformer`、`deepfilternet3`、`mossformergan`、`semambapp`。別名は `mp-senet`、`tf-gridnet`、`tf-locoformer`、`deepfilternet`、`dfn3`、`mossformergan_se_16k`、`semamba++`、`se_mamba_pp`。
 
-新規モデルは独立した `nn.Module` と固有の前後処理を追加し、構築・ロード API へ登録する必要がある。構造の設定と重みキーの互換性を検証し、公式出力との比較および出典・ライセンスを記録すること。Registry とチェックポイント指定の仕組みは下記を参照。
+`variant` を省略すると、TF-GridNet は `urgent24` になる。それ以外は、省略が各モデルの既定構成になる。TF-GridNet の `urgent24` と `ms-snsd` は構造が違うので、ms-snsd では `variant` を渡す。`wsj0-2mix` は登録していない。`ModelSpec.sample_rate` は登録値で、TF-GridNet は 8000 である。`ms-snsd` の処理レートは 16 kHz である。
 
-## 追記: Registry と TF-GridNet
+## 入出力
 
-`src/se/core/registry.py` の `ModelSpec` にモデル構築・ローダー・別名・variant・基本メタデータを登録し、`model_metadata(name)` で参照できる。`build_model(..., variant=...)` と `load_enhancer(..., variant=...)` は指定 variant を検証する。任意の checkpoint パスに加え、必要な名前とパスの辞書を受け取り、キーの過不足と state dict の不一致を拒否する。
+`enhance(waveform, sample_rate)` は 1 次元の有限な浮動小数点 Tensor と正の整数サンプルレートを受け、元の長さ、dtype、デバイスの Tensor を返す。空、複数チャンネル、NaN、Inf は拒否する。ストリーミング用の API は無い。
 
-設定は辞書・JSON・YAML を受け付ける。モデル設定は flat mapping であり、公式の ESPnet YAML 全体を直接読み込む機能ではない。
+`enhance_batch(waveforms, sample_rate, lengths=None)` は `(batch, time)` を発話ごとに `enhance` し、`(zero-padded output, lengths)` を返す。バッチ内でサンプルレートは一つである。
 
-`enhancer.enhance_batch(waveforms, sample_rate, lengths=None)` は `(batch, time)` と発話長を受け、各発話を独立推論し `(zero-padded output, lengths)` を返す。バッチ内の異なるサンプルレートは未対応。TF-GridNet の `urgent24` と `ms-snsd` は構造が異なるため `variant` を明示する。`wsj0-2mix` は未対応。URGENT24 は入力サンプルレートに応じて STFT を変更し、MS-SNSD は内部で 16 kHz に変換する。公式の resampling 実装との数値比較は未実施。
+チェックポイントはパスか、必要な名前からパスへの辞書である。名前の過不足は拒否する。state dict は `strict=True`。設定は辞書、JSON、YAML。YAML には PyYAML が要る。flat mapping であり、公式の ESPnet YAML 全体を読む機能ではない。DeepFilterNet3 は `config.ini` も受ける。
 
-DeepFilterNet3 は 48 kHz。各 `enhance` の開始時に STFT の overlap と指数正規化状態を捨てる。MossFormerGAN の公開重みは 201 ビン（`n_fft=400`、窓 400、hop 100、periodic Hamming）。10 秒を超える入力は 10 秒窓で分割し、エネルギー正規化は分割前の発話全体で一度だけ計算する。SEMamba++ は 16 kHz、`n_fft=400`、hop 100、Hann。選択的スキャンは PyTorch の漸化式で、`mamba_ssm` は使わない。
+モデルごとのレート、窓、無音、最短長は [MODELS.md](MODELS.md)。公式との最大絶対誤差は [VALIDATION.md](VALIDATION.md)。
+
+## モデルごとの処理
+
+共通なのは、別レートの入出力を torchaudio で変換することと、出力を入力の長さに戻すことである。16 kHz への変換、RMS 正規化、複素 STFT は MP-SENet の処理であり、全モデルの処理ではない。
+
+| モデル | チェックポイントの名前 | 処理の要点 |
+|---|---|---|
+| MP-SENet | `generator` | 16 kHz。RMS 正規化、振幅圧縮、Hann。無音と極小振幅はそのまま返す |
+| TF-GridNet `urgent24` | `model`（`separator.` 接頭辞） | 入力レートに合わせて STFT を拡縮する。内部で 16 kHz にしない |
+| TF-GridNet `ms-snsd` | 同上 | 16 kHz、`n_fft=512`、stride 256 |
+| TF-Locoformer | `model` | 16 kHz、`n_fft=256`、hop 128。不偏標準偏差が `1e-6` 未満なら零波形 |
+| DeepFilterNet3 | `model` | 48 kHz。各 `enhance` の開始時に STFT の overlap と指数正規化を捨てる。解析 FFT は `libdf_rfft.so`。ファイルが無いときの戻り先は MODELS.md |
+| MossFormerGAN | `model` | 16 kHz、`n_fft=400`、periodic Hamming。10 秒超は 10 秒窓、ストライド 75%。エネルギー正規化は発話全体で一度 |
+| SEMamba++ | `generator` | 16 kHz、`n_fft=400`、hop 100、Hann。既定のスキャンは PyTorch。`scan_backend: fused` のときだけ CUDA 上で `mamba_ssm` を使う |
+
+新規のモデルは、独立した `nn.Module` と前後処理を足し、`src/se/core/registry.py` の `ModelSpec` へ登録する。

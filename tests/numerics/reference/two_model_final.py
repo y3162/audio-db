@@ -948,7 +948,7 @@ def _compare_saved_grads(model: str, left: dict, right: dict, left_module, right
 
 
 def _semamba_trainer(sem, device) -> None:
-    from src.experiments.checkpoint import CheckpointManager
+    from tests.numerics.reference.common import NoCheckpoints as CheckpointManager
     from src.experiments.official.semambapp.models import SEMambaPPCQTDiscriminator, SEMambaPPGenerator, SEMambaPPMRD
     from src.experiments.official.semambapp.trainer import SEMambaPPTrainer
     from src.experiments.runtime import PreparePolicy, ProcessRuntime
@@ -1019,7 +1019,7 @@ def _semamba_trainer_once(sem, device, trainer_cls, gen_cls, mrd_cls, cqt_cls, p
         directory.mkdir(parents=True, exist_ok=True)
         trainer = trainer_cls(
             prepared_g, prepared_m, prepared_c, data, opt_g, opt_d, sched_g, sched_d,
-            max_logical_steps=3, accumulation=1, grad_clip=None, validation_interval=0, checkpoint_interval=100,
+            max_logical_steps=3, accumulation=1, grad_clip=None, validation_interval=0,
         )
         off_opt_g = torch.optim.AdamW(official_g.parameters(), lr=sem.LR, betas=sem.BETAS, eps=1e-8, weight_decay=sem.WEIGHT_DECAY)
         off_opt_d = torch.optim.AdamW(list(official_mrd.parameters()) + list(official_cqt.parameters()), lr=sem.LR, betas=sem.BETAS, eps=1e-8, weight_decay=sem.WEIGHT_DECAY)
@@ -1144,7 +1144,7 @@ def _grad_max_from_dicts(left: dict, right: dict) -> float:
 
 
 def _mp_trainer(cmp, h, device) -> None:
-    from src.experiments.checkpoint import CheckpointManager
+    from tests.numerics.reference.common import NoCheckpoints as CheckpointManager
     from src.experiments.official.mp_senet.models import MPSENetGANGenerator, MPSENetMetricDiscriminator
     from src.experiments.official.mp_senet.trainer import MPSENetGANTrainer
     from src.experiments.runtime import PreparePolicy, ProcessRuntime
@@ -1214,7 +1214,7 @@ def _mp_trainer_once(cmp, h, device, trainer_cls, gen_cls, disc_cls, policy_cls,
         trainer = trainer_cls(
             prepared_g, prepared_d, data, opt_g, opt_d, sched_g, sched_d,
             max_logical_steps=3, experiment_claim="official_faithful", accumulation=1,
-            validation_interval=0, checkpoint_interval=100, best_checkpoint_start_epoch=40,
+            validation_interval=0, best_checkpoint_start_epoch=40,
         )
         def hook(phase: str, payload=None) -> None:
             if phase == "after_discriminator_step" and isinstance(payload, list) and payload:

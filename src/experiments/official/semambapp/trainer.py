@@ -33,6 +33,7 @@ from src.experiments.official.semambapp.models import (
 )
 from src.experiments.results import RunResult
 from src.experiments.runtime import PreparedModel, ProcessRuntime
+from src.experiments.selectors import scalar_metrics
 from src.experiments.trainers import (
     _append_jsonl,
     _batch_on_device,
@@ -87,7 +88,6 @@ class SEMambaPPTrainer:
         accumulation: int = 1,
         grad_clip: float | None = None,
         validation_interval: int = 0,
-        checkpoint_interval: int = 1,
         best_checkpoint_start_epoch: int = 40,
         max_epochs: int | None = None,
         stop_after_logical_steps: int | None = None,
@@ -135,7 +135,6 @@ class SEMambaPPTrainer:
         self.accumulation = _positive_int("accumulation", accumulation)
         self.grad_clip = None if grad_clip is None else _positive_float("grad_clip", grad_clip)
         self.validation_interval = _non_negative_int("validation_interval", validation_interval)
-        self.checkpoint_interval = _positive_int("checkpoint_interval", checkpoint_interval)
         self.best_checkpoint_start_epoch = _non_negative_int(
             "best_checkpoint_start_epoch", best_checkpoint_start_epoch
         )
@@ -212,7 +211,7 @@ class SEMambaPPTrainer:
         while self.logical_step < self.max_logical_steps:
             if self._stop_requested(runtime):
                 if self.logical_step > 0 and not self._in_official_step:
-                    self._checkpoint(runtime, checkpoint, logical_step=self.logical_step, label="step")
+                    self._offer(runtime, checkpoint, "stop")
                 return self._result(checkpoint, "interrupted")
             if self._epoch_cap_reached():
                 return self._result(checkpoint, "completed")
@@ -288,13 +287,12 @@ class SEMambaPPTrainer:
                 epoch_done = index == view.updates
                 will_validate = self.validation_interval > 0 and self.logical_step % self.validation_interval == 0
                 if not will_validate and not epoch_done:
-                    if self.logical_step % self.checkpoint_interval == 0:
-                        self._checkpoint(runtime, checkpoint, logical_step=self.logical_step, label="step")
+                    self._offer(runtime, checkpoint, "step")
                     continue
                 self.phase = _PENDING
                 self.boundary = _open_boundary(epoch, validate=will_validate, epoch_done=epoch_done)
                 self._on_boundary_phase(self.phase)
-                self._checkpoint(runtime, checkpoint, logical_step=self.logical_step, label="validation_pending")
+                self._offer(runtime, checkpoint, "boundary_pending")
                 if self._stop_requested(runtime):
                     return self._result(checkpoint, "interrupted")
                 self._finish_boundary(runtime, checkpoint, component_id)
@@ -506,8 +504,10 @@ class SEMambaPPTrainer:
             raise RuntimeFailure(f"component {component_id}: there is no pending GAN boundary")
         boundary = self.boundary
         trainer_epoch = int(boundary["trainer_epoch"])
+        metrics: dict[str, float] = {}
         if boundary["validate"] and not boundary["validation_done"]:
             summary = self._validate(runtime, trainer_epoch, component_id)
+            metrics = scalar_metrics(summary)
             self.history.append(
                 {
                     "epoch": trainer_epoch,
@@ -537,7 +537,7 @@ class SEMambaPPTrainer:
         self.boundary = None
         self.phase = _IN_EPOCH
         self._on_boundary_phase(self.phase)
-        self._checkpoint(runtime, checkpoint, logical_step=self.logical_step, label="step")
+        self._offer(runtime, checkpoint, "boundary", metrics=metrics)
 
     def _validate(self, runtime: ProcessRuntime, trainer_epoch: int, component_id: str) -> dict[str, Any]:
         cursor = (int(self.data.epoch), int(self.data.update_index))
@@ -791,20 +791,32 @@ class SEMambaPPTrainer:
                 f"does not match accumulation {self.accumulation}"
             )
 
-    def _checkpoint(
+    def _offer(
         self,
         runtime: ProcessRuntime,
         checkpoint: CheckpointManager,
-        *,
-        logical_step: int,
-        label: str,
+        event: str,
+        metrics: dict[str, float] | None = None,
     ) -> None:
+        """Offer this state to the selector. A GAN optimizer pair is not a save point.
+
+        A boundary and a stop broadcast the buffers whether or not the
+        selector saves, as they did before selectors. Inside an epoch the
+        broadcast runs only when a file is written.
+        """
+
         if self._in_official_step:
             raise RuntimeFailure("refusing to checkpoint between the discriminator step and the generator step")
+        if event == "step":
+            checkpoint.offer(event, logical_step=self.logical_step, prepare=self._sync_ranks)
+            return
+        self._sync_ranks(runtime)
+        checkpoint.offer(event, logical_step=self.logical_step, metrics=metrics)
+
+    def _sync_ranks(self, runtime: ProcessRuntime) -> None:
         runtime.broadcast_buffers(self.generator.state_module)
         runtime.broadcast_buffers(self.mrd.state_module)
         runtime.broadcast_buffers(self.cqt.state_module)
-        checkpoint.save(checkpoint.directory, logical_step=logical_step, label=label)
 
     def _stop_requested(self, runtime: object | None = None) -> bool:
         from src.experiments.signals import ranks_should_stop
@@ -816,6 +828,8 @@ class SEMambaPPTrainer:
         return self.max_epochs is not None and int(self.data.epoch) >= self.max_epochs
 
     def _result(self, checkpoint: CheckpointManager, reason: str) -> RunResult:
+        if reason == "completed":
+            checkpoint.offer("final", logical_step=self.logical_step, prepare=self._sync_ranks)
         self.stop_reason = reason
         return RunResult(
             stop_reason=reason,

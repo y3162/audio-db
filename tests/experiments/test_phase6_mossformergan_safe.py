@@ -49,8 +49,12 @@ class MossFormerLeakageSafeTests(unittest.TestCase):
         self.assertEqual(safe_trainer["experiment_claim"], "leakage_safe")
         self.assertEqual(official_trainer["accumulation"], safe_trainer["accumulation"])
         self.assertEqual(official_trainer["grad_clip"], safe_trainer["grad_clip"])
-        self.assertEqual(official_trainer["checkpoint_interval"], 90)
-        self.assertEqual(safe_trainer["checkpoint_interval"], 90)
+        self.assertNotIn("checkpoint_interval", official_trainer)
+        self.assertNotIn("checkpoint_interval", safe_trainer)
+        for document in (official, safe):
+            selector = document["checkpoint"]["selector"]
+            self.assertEqual(selector["class"], "src.experiments.selectors.StandardSelector")
+            self.assertEqual(selector["kwargs"], {"latest_every": 90})
         self.assertEqual(safe_trainer["max_logical_steps"], 323675)
         self.assertNotEqual(official["output"]["directory"], safe["output"]["directory"])
         self.assertEqual(
@@ -96,7 +100,7 @@ class MossFormerLeakageSafeTests(unittest.TestCase):
             status = json.loads((output / "status.json").read_text(encoding="utf-8"))
             self.assertEqual(status["status"], "INTERRUPTED")
             self.assertFalse((output / "complete.json").is_file())
-            saved = output / "step_00000001.pt"
+            saved = output / "archive/step_00000001.pt"
             self.assertTrue(saved.is_file())
             provenance = json.loads((output / "data_provenance.json").read_text(encoding="utf-8"))
             self.assertEqual(provenance["profile"], "leakage_safe")
@@ -120,7 +124,7 @@ class MossFormerLeakageSafeTests(unittest.TestCase):
                 if line
             ]
             self.assertEqual([row["logical_step"] for row in rows], [1, 2])
-            resumed_payload = torch_load(output / "step_00000002.pt")
+            resumed_payload = torch_load(output / "archive/step_00000002.pt")
             self.assertEqual(resumed_payload["logical_step"], 2)
             self.assertEqual(resumed_payload["states"]["trainer"]["optimizer_updates"]["optim_g"], 2)
             self.assertEqual(resumed_payload["states"]["trainer"]["optimizer_updates"]["optim_d"], 2)

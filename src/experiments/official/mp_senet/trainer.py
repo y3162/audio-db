@@ -35,6 +35,7 @@ from src.experiments.official.mp_senet.models import (
 )
 from src.experiments.results import RunResult
 from src.experiments.runtime import PreparedModel, ProcessRuntime
+from src.experiments.selectors import scalar_metrics
 from src.experiments.trainers import (
     _append_jsonl,
     _batch_on_device,
@@ -81,7 +82,6 @@ class MPSENetGANTrainer:
         experiment_claim: str,
         accumulation: int = 1,
         validation_interval: int = OFFICIAL_VALIDATION_INTERVAL,
-        checkpoint_interval: int = OFFICIAL_CHECKPOINT_INTERVAL,
         best_checkpoint_start_epoch: int = BEST_CHECKPOINT_START_EPOCH,
         max_epochs: int | None = None,
         stop_after_logical_steps: int | None = None,
@@ -124,7 +124,6 @@ class MPSENetGANTrainer:
         self.max_logical_steps = _positive_int("max_logical_steps", max_logical_steps)
         self.accumulation = _positive_int("accumulation", accumulation)
         self.validation_interval = _non_negative_int("validation_interval", validation_interval)
-        self.checkpoint_interval = _positive_int("checkpoint_interval", checkpoint_interval)
         self.best_checkpoint_start_epoch = _non_negative_int(
             "best_checkpoint_start_epoch", best_checkpoint_start_epoch
         )
@@ -197,7 +196,7 @@ class MPSENetGANTrainer:
         while self.logical_step < self.max_logical_steps:
             if self._stop_requested(runtime):
                 if self.logical_step > 0 and not self._in_official_step:
-                    self._checkpoint(checkpoint, logical_step=self.logical_step, label="step")
+                    self._offer(checkpoint, "stop")
                 return self._result(checkpoint, "interrupted")
             if self._epoch_cap_reached():
                 return self._result(checkpoint, "completed")
@@ -259,13 +258,12 @@ class MPSENetGANTrainer:
                 epoch_done = index == view.updates
                 will_validate = self.validation_interval > 0 and self.logical_step % self.validation_interval == 0
                 if not will_validate and not epoch_done:
-                    if self.logical_step % self.checkpoint_interval == 0:
-                        self._checkpoint(checkpoint, logical_step=self.logical_step, label="step")
+                    self._offer(checkpoint, "step")
                     continue
                 self.phase = _PENDING
                 self.boundary = _open_boundary(epoch, validate=will_validate, epoch_done=epoch_done)
                 self._on_boundary_phase(self.phase)
-                self._checkpoint(checkpoint, logical_step=self.logical_step, label="validation_pending")
+                self._offer(checkpoint, "boundary_pending")
                 if self._stop_requested(runtime):
                     return self._result(checkpoint, "interrupted")
                 self._finish_boundary(runtime, checkpoint, component_id)
@@ -487,8 +485,10 @@ class MPSENetGANTrainer:
             raise RuntimeFailure(f"component {component_id}: there is no pending GAN boundary")
         boundary = self.boundary
         trainer_epoch = int(boundary["trainer_epoch"])
+        metrics: dict[str, float] = {}
         if boundary["validate"] and not boundary["validation_done"]:
             summary = self._validate(runtime, trainer_epoch, component_id)
+            metrics = scalar_metrics(summary)
             decision = self._consider_best(trainer_epoch, summary)
             self.history.append(decision)
             self._write_best(runtime, checkpoint.directory, decision)
@@ -515,7 +515,7 @@ class MPSENetGANTrainer:
         self.boundary = None
         self.phase = _IN_EPOCH
         self._on_boundary_phase(self.phase)
-        self._checkpoint(checkpoint, logical_step=self.logical_step, label="step")
+        self._offer(checkpoint, "boundary", metrics=metrics)
 
     def _validate(self, runtime: ProcessRuntime, trainer_epoch: int, component_id: str) -> dict[str, Any]:
         cursor = (int(self.data.epoch), int(self.data.update_index))
@@ -688,10 +688,17 @@ class MPSENetGANTrainer:
                 f"does not match accumulation {self.accumulation}"
             )
 
-    def _checkpoint(self, checkpoint: CheckpointManager, *, logical_step: int, label: str) -> None:
+    def _offer(
+        self,
+        checkpoint: CheckpointManager,
+        event: str,
+        metrics: dict[str, float] | None = None,
+    ) -> None:
+        """Offer this state to the selector. A GAN optimizer pair is not a save point."""
+
         if self._in_official_step:
             raise RuntimeFailure("refusing to checkpoint between the discriminator step and the generator step")
-        checkpoint.save(checkpoint.directory, logical_step=logical_step, label=label)
+        checkpoint.offer(event, logical_step=self.logical_step, metrics=metrics)
 
     def _stop_requested(self, runtime: object | None = None) -> bool:
         from src.experiments.signals import ranks_should_stop
@@ -703,6 +710,8 @@ class MPSENetGANTrainer:
         return self.max_epochs is not None and int(self.data.epoch) >= self.max_epochs
 
     def _result(self, checkpoint: CheckpointManager, reason: str) -> RunResult:
+        if reason == "completed":
+            checkpoint.offer("final", logical_step=self.logical_step)
         self.stop_reason = reason
         return RunResult(
             stop_reason=reason,
