@@ -24,6 +24,7 @@ class ScriptedChunkData:
         length: int = 32,
         seed: int = 17,
         valid_sizes: Sequence[Sequence[int]] | None = None,
+        group_size: int = 1,
     ) -> None:
         if isinstance(updates_per_epoch, bool) or not isinstance(updates_per_epoch, int) or updates_per_epoch < 1:
             raise ValueError("updates_per_epoch must be a positive integer")
@@ -33,6 +34,8 @@ class ScriptedChunkData:
             raise ValueError("length must be an integer >= 2")
         if isinstance(seed, bool) or not isinstance(seed, int) or seed < 0:
             raise ValueError("seed must be an integer >= 0")
+        if isinstance(group_size, bool) or not isinstance(group_size, int) or group_size < 1:
+            raise ValueError("group_size must be a positive integer")
         sizes = ((2, 1),) if valid_sizes is None else tuple(tuple(int(item) for item in row) for row in valid_sizes)
         if not sizes or any(not row or any(item < 1 for item in row) for row in sizes):
             raise ValueError("valid_sizes must list positive batch sizes for each rank")
@@ -41,8 +44,10 @@ class ScriptedChunkData:
         self.length = length
         self.seed = seed
         self.valid_sizes = sizes
-        self.group_size = 1
-        self.plan_hash = f"scripted-{updates_per_epoch}-{micro_batch}-{length}-{seed}-{len(sizes)}"
+        self.group_size = group_size
+        self.plan_hash = (
+            f"scripted-{updates_per_epoch}-{micro_batch}-{length}-{seed}-{len(sizes)}-{group_size}"
+        )
         self.epoch = 0
         self.update_index = 0
         self.world_size = 1
@@ -61,6 +66,7 @@ class ScriptedChunkData:
             "length": self.length,
             "micro_batch": self.micro_batch,
             "name": "scripted-chunk",
+            "group_size": self.group_size,
             "seed": self.seed,
             "updates_per_epoch": self.updates_per_epoch,
             "valid_sizes": [list(row) for row in self.valid_sizes],
