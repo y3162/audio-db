@@ -16,6 +16,7 @@ from src.evaluation.datasets.evaldb import EvaluationDB
 from src.evaluation.errors import DatasetError
 from src.evaluation.pipeline import execute
 from tests.evaluation.support import experiment_config
+from tests.suite_resources import apply_intra_threads
 
 
 class RecipeIdentityTests(unittest.TestCase):
@@ -301,6 +302,7 @@ class RecipePipelineTests(unittest.TestCase):
             self.assertEqual(missing["reference_name"], "none")
 
     def test_generated_audio_reaches_a_real_enhancer_when_the_checkpoint_exists(self):
+        apply_intra_threads()
         checkpoint = Path(__file__).resolve().parents[2] / "data/checkpoints/mp-senet/g_best_vb"
         if not checkpoint.is_file():
             self.skipTest("MP-SENet checkpoint is not available")

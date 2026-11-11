@@ -1,4 +1,9 @@
-"""Sequential four-process training comparison. Results are trusted local torch files."""
+"""Four-process training comparison. Results are trusted local torch files.
+
+The four workers start together. Each writes only its own directory. The
+report runs after every worker has exited, so a fault is judged from the
+finished files rather than from start order.
+"""
 import argparse
 import hashlib
 import json
@@ -562,29 +567,58 @@ def _optional_abs(left, right):
         return None
     return abs(left - right)
 
+def _write_status(job, code, timed_out):
+    result_path = job["run"] / "result.pt"
+    (job["run"] / "status.json").write_text(json.dumps({
+        "returncode": code,
+        "timeout": timed_out,
+        "seconds": time.monotonic() - job["start"],
+        "result_sha256": file_digest(result_path) if result_path.exists() else None,
+    }, indent=2) + "\n")
+
 def _statuses(root, cfg):
-    for name in cfg["order"]:
-        run = root / name
-        run.mkdir(exist_ok=True)
-        start = time.monotonic()
-        env = os.environ.copy()
-        env.update(OMP_NUM_THREADS="1", MKL_NUM_THREADS="1", OPENBLAS_NUM_THREADS="1")
-        with (run / "stdout.log").open("w") as out, (run / "stderr.log").open("w") as err:
-            try:
-                completed = subprocess.run(
-                    [os.environ.get("FOUR_PROCESS_PYTHON", sys.executable), __file__, "worker", str(root), name],
-                    cwd=ROOT, env=env, stdout=out, stderr=err, timeout=cfg["timeout"],
-                )
-                code, timed_out = completed.returncode, False
-            except subprocess.TimeoutExpired:
-                code, timed_out = -1, True
-        result_path = run / "result.pt"
-        (run / "status.json").write_text(json.dumps({
-            "returncode": code,
-            "timeout": timed_out,
-            "seconds": time.monotonic() - start,
-            "result_sha256": file_digest(result_path) if result_path.exists() else None,
-        }, indent=2) + "\n")
+    jobs = []
+    try:
+        for name in cfg["order"]:
+            run = root / name
+            run.mkdir(exist_ok=True)
+            env = os.environ.copy()
+            env.update(OMP_NUM_THREADS="1", MKL_NUM_THREADS="1", OPENBLAS_NUM_THREADS="1")
+            out = (run / "stdout.log").open("w")
+            err = (run / "stderr.log").open("w")
+            process = subprocess.Popen(
+                [os.environ.get("FOUR_PROCESS_PYTHON", sys.executable), __file__, "worker", str(root), name],
+                cwd=ROOT, env=env, stdout=out, stderr=err,
+            )
+            jobs.append({
+                "run": run, "process": process, "out": out, "err": err,
+                "start": time.monotonic(), "reaped": False,
+            })
+        while any(not job["reaped"] for job in jobs):
+            waiting = False
+            for job in jobs:
+                if job["reaped"]:
+                    continue
+                code = job["process"].poll()
+                if code is None and time.monotonic() - job["start"] <= cfg["timeout"]:
+                    waiting = True
+                    continue
+                timed_out = code is None
+                if timed_out:
+                    job["process"].kill()
+                    job["process"].wait()
+                    code = -1
+                _write_status(job, code, timed_out)
+                job["reaped"] = True
+            if waiting:
+                time.sleep(0.02)
+    finally:
+        for job in jobs:
+            if job["process"].poll() is None:
+                job["process"].kill()
+                job["process"].wait()
+            job["out"].close()
+            job["err"].close()
 
 def launch(root, cfg):
     root.mkdir(parents=True, exist_ok=False)

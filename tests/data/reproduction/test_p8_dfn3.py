@@ -30,6 +30,8 @@ from src.experiments.data.protocols.online_dfn3 import (
     synthesize_noise,
 )
 from src.experiments.calc.batch_schedule import scheduled_batch_size
+from tests.data.reproduction.dfn3_distribution import render_distribution, slices
+from tests.suite_resources import distribution_workers
 
 DISTRIBUTION_SEED = 20261106
 DISTRIBUTION_N = 4000
@@ -313,54 +315,31 @@ class TrainerSmokeTests(unittest.TestCase):
 
 
 class DistributionTests(unittest.TestCase):
+    def test_distribution_slices_cover_each_index_once(self):
+        covered = [index for start, stop in slices(DISTRIBUTION_N, 32) for index in range(start, stop)]
+        self.assertEqual(covered, list(range(DISTRIBUTION_N)))
+        self.assertEqual(slices(0, 4), [])
+
     def test_shipped_draw_windows(self):
-        spec = DFN3OnlineSpec.shipped()
-        source = np.random.default_rng(DISTRIBUTION_SEED)
-        speech = [_Clip(source.normal(0.0, 0.1, NUM_SAMPLES + 8000)) for _ in range(4)]
-        noise = [_Clip(source.normal(0.0, 0.1, NUM_SAMPLES + 8000)) for _ in range(4)]
-        rir = [_Clip(source.normal(0.0, 0.01, 512))]
-        snr_counts = {value: 0 for value in spec.snrs}
-        gain_counts = {value: 0 for value in spec.gains}
-        noise_counts = {value: 0 for value in range(2, 6)}
-        reverb = 0
-        synthetic = 0
-        noises = 0
-        snr_errors = []
-        for index in range(DISTRIBUTION_N):
-            mixture = render_mixture(
-                spec,
-                speech,
-                noise,
-                rir,
-                speech_index=index % 4,
-                split="train",
-                rng=np.random.Generator(np.random.PCG64(DISTRIBUTION_SEED + index)),
-            )
-            snr_counts[mixture.snr_db] += 1
-            gain_counts[mixture.gain_db] += 1
-            noise_counts[mixture.n_noises] += 1
-            reverb += int(mixture.reverb_speech)
-            synthetic += mixture.synthetic_noises
-            noises += mixture.n_noises
-            self.assertEqual(mixture.noisy.shape, (NUM_SAMPLES,))
-            self.assertTrue(np.isfinite(mixture.noisy).all())
-            self.assertLessEqual(float(np.max(np.abs(mixture.noisy))), 1.0 + 1e-4)
-            if mixture.noise_only:
-                self.assertIsNone(mixture.measured_snr_db)
-                self.assertTrue(np.all(mixture.clean == 0))
-            else:
-                snr_errors.append(abs(mixture.measured_snr_db - mixture.snr_db))
-        for count in noise_counts.values():
-            self.assertTrue(NOISE_COUNT_WINDOW[0] <= count <= NOISE_COUNT_WINDOW[1], noise_counts)
-        for count in snr_counts.values():
-            self.assertTrue(SNR_WINDOW[0] <= count <= SNR_WINDOW[1], snr_counts)
-        for count in gain_counts.values():
-            self.assertTrue(GAIN_WINDOW[0] <= count <= GAIN_WINDOW[1], gain_counts)
-        self.assertTrue(REVERB_WINDOW[0] <= reverb <= REVERB_WINDOW[1], reverb)
-        rate = synthetic / noises
+        # Seeds, windows, and per-draw checks match the previous in-process loop.
+        # Workers only split the index range.
+        summary = render_distribution(
+            DISTRIBUTION_N,
+            DISTRIBUTION_SEED,
+            workers=distribution_workers(),
+        )
+        self.assertEqual(summary["failures"], [])
+        for count in summary["noises"].values():
+            self.assertTrue(NOISE_COUNT_WINDOW[0] <= count <= NOISE_COUNT_WINDOW[1], summary["noises"])
+        for count in summary["snr"].values():
+            self.assertTrue(SNR_WINDOW[0] <= count <= SNR_WINDOW[1], summary["snr"])
+        for count in summary["gain"].values():
+            self.assertTrue(GAIN_WINDOW[0] <= count <= GAIN_WINDOW[1], summary["gain"])
+        self.assertTrue(REVERB_WINDOW[0] <= summary["reverb"] <= REVERB_WINDOW[1], summary["reverb"])
+        rate = summary["synthetic"] / summary["noise_total"]
         self.assertTrue(SYNTHETIC_RATE_WINDOW[0] <= rate <= SYNTHETIC_RATE_WINDOW[1], rate)
-        self.assertTrue(snr_errors)
-        self.assertLess(max(snr_errors), 0.05)
+        self.assertGreater(summary["snr_error_count"], 0)
+        self.assertLess(summary["snr_error_max"], 0.05)
 
 
 def _independent_reverb(dry, impulse, *, drr: float, rt60: float, offset_samples: int):

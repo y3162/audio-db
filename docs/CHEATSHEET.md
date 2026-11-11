@@ -15,9 +15,10 @@ make reproduction-init-db
 make experiment-preflight CONFIG=tests/fixtures/configs/experiments/mp_senet_gan.yaml
 make experiment CONFIG=configs/reproduction/experiments/official/mp_senet_gan.yaml
 make test-cpu
+make test
 ```
 
-`make db-ingest` は `corpora.audio_files` を作り直す。明示されたときだけ、DB を退避してから実行する。`make setup` は DB を初期化しない。
+`make db-ingest` は `corpora.audio_files` を作り直す。明示されたときだけ、DB を退避してから実行する。`make setup` は DB を初期化しない。`make test-cpu` は CPU テストである。`make test` は空いている GPU のテストも実行する。CPU の成功は GPU の成功ではない。
 
 ## CLI
 

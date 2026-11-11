@@ -6,27 +6,19 @@ checked on the CUDA-visible instance; full GPUs use their physical index.
 
 from __future__ import annotations
 
-import os
 import subprocess
 import torch
 
-from src.evaluation.gpu import BUSY_MEMORY_MIB, _utilization_text, parse_nvidia_smi
+from src.evaluation.errors import ConfigError
+from src.evaluation.gpu import BUSY_MEMORY_MIB, _utilization_text, parse_nvidia_smi, physical_device_index
 from src.experiments.calc.errors import TrainingError
 
 
 def physical_index(local_rank: int) -> int:
-    visible = os.environ.get("CUDA_VISIBLE_DEVICES", "").strip()
-    if not visible:
-        return local_rank
     try:
-        indexes = [int(part) for part in visible.split(",") if part.strip()]
-    except ValueError as exc:
-        raise TrainingError(f"CUDA_VISIBLE_DEVICES is invalid: {visible!r}") from exc
-    if local_rank >= len(indexes):
-        raise TrainingError(
-            f"local_rank {local_rank} is outside CUDA_VISIBLE_DEVICES={visible}"
-        )
-    return indexes[local_rank]
+        return physical_device_index(local_rank)
+    except ConfigError as exc:
+        raise TrainingError(str(exc)) from exc
 
 
 def assert_gpu_idle(local_rank: int, *, allow_busy: bool) -> None:

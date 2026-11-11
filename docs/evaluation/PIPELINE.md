@@ -311,6 +311,8 @@ cd /path/to/audio-db
 CUDA_VISIBLE_DEVICES="" .venvs/se/bin/python -m unittest discover -s tests/evaluation -v
 ```
 
+`make test-cpu` は、この評価テストを含む 7 ディレクトリを CPU 上でプロセス並列かつスレッド上限つきで実行する。上の discover はディレクトリ単体の実行である。
+
 合成音声、Mock SE、Mock ASR で、混合、SNR、WER の micro 集計、指標の skip、保存、再開、設定変更によるキャッシュ無効化、dry-run を確認します。GPU も巨大チェックポイントも要りません。
 
 `tests/evaluation/test_real_smoke.py` は、MP-SENet の `g_best_vb` と DuckDB と音声ファイルがあるときだけ、LibriSpeech test-clean の 1 発話を先頭 2 秒、DEMAND の先頭 2 秒、SNR 0 dB、CPU で実行します。これは接続の確認であり、論文用のスコアではありません。Mock の成功とも別です。チェックポイントが無い環境では skip します。

@@ -22,6 +22,7 @@ from src.evaluation.provenance import is_confirmed_independent, judge_independen
 from src.evaluation.results.reader import read_jsonl
 from src.se.api import build_model, registry
 from tests.evaluation.support import experiment_config
+from tests.suite_resources import apply_intra_threads
 
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -113,6 +114,7 @@ class CorpusWerPathTests(unittest.TestCase):
             self.assertFalse(result["summary"]["groups"])
 
     def test_one_real_enhancer_reaches_mock_asr(self) -> None:
+        apply_intra_threads()
         with tempfile.TemporaryDirectory() as raw:
             root = Path(raw)
             weights = root / "generator.pt"

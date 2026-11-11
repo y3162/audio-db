@@ -6,7 +6,7 @@
 	reproduction-plan-dns reproduction-register-dns \
 	reproduction-benchmark-dns-accept reproduction-plan-dns-accept reproduction-register-dns-accept \
 	reproduction-register-p8 \
-	experiment experiment-preflight test-cpu
+	experiment experiment-preflight test-cpu test
 
 ROOT := $(abspath $(dir $(lastword $(MAKEFILE_LIST))))
 WITH_ENV := $(ROOT)/scripts/setup/with_env.sh
@@ -61,7 +61,7 @@ help:
 	  'Experiments:' \
 	  '  make experiment CONFIG=configs/reproduction/experiments/....yaml' \
 	  '  make experiment-preflight CONFIG=configs/reproduction/experiments/....yaml' \
-	  '  make test-cpu'
+	  '  make test-cpu | make test'
 
 setup:
 	$(WITH_ENV) $(ROOT)/scripts/setup/setup.sh $(PLATFORM)
@@ -177,10 +177,7 @@ experiment-preflight:
 	CUDA_VISIBLE_DEVICES="" $(WITH_ENV) $(PYTHON) -m src.experiments.cli --config "$(CONFIG)" --preflight
 
 test-cpu:
-	CUDA_VISIBLE_DEVICES="" $(WITH_ENV) $(PYTHON) -m unittest discover -s tests/asr -v
-	CUDA_VISIBLE_DEVICES="" $(WITH_ENV) $(PYTHON) -m unittest discover -s tests/data -v
-	CUDA_VISIBLE_DEVICES="" $(WITH_ENV) $(PYTHON) -m unittest discover -s tests/evaluation -v
-	CUDA_VISIBLE_DEVICES="" $(WITH_ENV) $(PYTHON) -m unittest discover -s tests/experiments -v
-	CUDA_VISIBLE_DEVICES="" $(WITH_ENV) $(PYTHON) -m unittest discover -s tests/se -v
-	CUDA_VISIBLE_DEVICES="" $(WITH_ENV) $(PYTHON) -m unittest discover -s tests/setup -v
-	CUDA_VISIBLE_DEVICES="" $(WITH_ENV) $(PYTHON) -m unittest discover -s tests/numerics -v
+	CUDA_VISIBLE_DEVICES="" $(WITH_ENV) $(PYTHON) $(ROOT)/scripts/tests/run_suite.py --cpu-only
+
+test:
+	$(WITH_ENV) $(PYTHON) $(ROOT)/scripts/tests/run_suite.py

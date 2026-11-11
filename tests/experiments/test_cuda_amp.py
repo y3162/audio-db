@@ -519,6 +519,20 @@ components:
     return path
 
 
+def _release_parent_cuda() -> None:
+    """Drop cached blocks before a child checks nvidia-smi.
+
+    In-process tests in this module leave the caching allocator on the same
+    GPU the child is about to claim. That leftover is this process, not
+    another job. The idle check still rejects a device at or above 1024 MiB.
+    """
+    import gc
+
+    gc.collect()
+    if torch.cuda.is_initialized():
+        torch.cuda.empty_cache()
+
+
 def _base_env(devices: str) -> dict[str, str]:
     env = os.environ.copy()
     env["CUDA_VISIBLE_DEVICES"] = devices
@@ -542,6 +556,7 @@ def _base_env(devices: str) -> dict[str, str]:
 
 
 def _cli(config: Path, *extra: str, devices: str) -> subprocess.CompletedProcess[str]:
+    _release_parent_cuda()
     return subprocess.run(
         [sys.executable, "-m", "src.experiments.cli", "--config", str(config), *extra],
         cwd=ROOT,
@@ -569,6 +584,7 @@ def _torchrun(config: Path, *extra: str, devices: str, timeout: int = 180) -> su
         str(config),
         *extra,
     ]
+    _release_parent_cuda()
     try:
         return subprocess.run(
             command,

@@ -5,6 +5,7 @@ from pathlib import Path
 
 from src.evaluation.pipeline import execute
 from tests.evaluation.support import experiment_config
+from tests.suite_resources import apply_intra_threads
 
 ROOT = Path(__file__).resolve().parents[2]
 CHECKPOINT = ROOT / "data/checkpoints/mp-senet/g_best_vb"
@@ -16,6 +17,7 @@ class RealMpSenetSmoke(unittest.TestCase):
     @unittest.skipUnless(CHECKPOINT.is_file(), "MP-SENet checkpoint is not available")
     @unittest.skipUnless(DATABASE.is_file(), "resource.duckdb is not available")
     def test_one_librispeech_utterance_on_cpu(self):
+        apply_intra_threads()
         with self._temporary_dir() as directory:
             config = experiment_config(directory, run_id="mp-smoke")
             config.experiment.limit = 1

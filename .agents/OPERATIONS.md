@@ -29,6 +29,12 @@ make test-cpu
 
 ## テスト
 
+`make test-cpu` は下の 7 ディレクトリを CPU だけで実行する。`make test` は同じ CPU 実行に加え、空いている GPU があるときだけ GPU のテストも実行する。CPU 側は `CUDA_VISIBLE_DEVICES=""` なので、CPU の成功は GPU の成功ではない。GPU が無い、または 1024 MiB 未満かつ計算プロセスの無い GPU が無いときは、その GPU テストは NOT_RUN であり PASS ではない。
+
+モジュールはプロセスプールで並列になる。同時数は `AUDIO_DB_TEST_WORKERS`、プロセス内スレッドは `AUDIO_DB_TEST_THREADS`。未指定なら CPU 数から決める。スレッドの既定上限は 8 で、全コアを 1 プロセスに渡すと実チェックポイントの評価が遅くなるためである。`deterministic: true` は従来どおり `torch.set_num_threads(1)` にする。使う GPU の物理番号は `AUDIO_DB_TEST_GPUS`。同一 GPU 群で同時に走らせる GPU モジュール数は `AUDIO_DB_TEST_GPU_SLOTS` で、既定は 1。DeepFilterNet3 の分布確認のプロセス数は `AUDIO_DB_DFN3_WORKERS`。1 モジュールの上限秒は `AUDIO_DB_TEST_TIMEOUT`（既定 1800）。`tests/data/reproduction/test_p1.py`、`test_p9_semamba.py`、`tests/experiments/test_phase4i_integration.py` は `data/db` の本番ファイルを書くか、そのディレクトリ名を見る。この 3 つは同時に走らない。GPU レーンは選んだ物理番号を `CUDA_VISIBLE_DEVICES` と `AUDIO_DB_CUDA_GPU0` / `AUDIO_DB_CUDA_GPU1` の両方に入れる。CUDA の子プロセスは後者を自分の `CUDA_VISIBLE_DEVICES` に書き戻す。
+
+ディレクトリ単体は今までどおり次のコマンドでよい。この経路はプールしない。スレッドは起動前の `OMP_NUM_THREADS` に従い、実モデルの評価スモークは自分でも上限を掛ける。
+
 ```bash
 CUDA_VISIBLE_DEVICES="" .venvs/se/bin/python -m unittest discover -s tests/se -v
 CUDA_VISIBLE_DEVICES="" .venvs/se/bin/python -m unittest discover -s tests/asr -v
@@ -41,7 +47,7 @@ CUDA_VISIBLE_DEVICES="" .venvs/se/bin/python -m unittest discover -s tests/setup
 
 `tests/numerics/` は損失、STFT、scheduler、参照ステップの数値比較。`tests/experiments/` は組み立て、checkpoint、6 モデルの学習ループ。再現 DB とスナップショットのテストは `tests/data/reproduction/` にあり、`tests/data` の discover がまとめて実行する。チェックポイントや公式ツリーが無いテストは skip する。SKIP は PASS ではない。
 
-CUDA / NCCL の `tests/experiments/test_cuda_amp.py` は、見える GPU が無いとき NOT_RUN になる。CPU スイートの成功には数えない。
+CUDA / NCCL の `tests/experiments/test_cuda_amp.py` は、見える GPU が無いとき NOT_RUN になる。CPU スイートの成功には数えない。`make test` は空いている GPU を `CUDA_VISIBLE_DEVICES` に並べ、このファイルと、GPU がないと実行できない実モデルの少数のテストを別レーンで実行する。評価の GPU 使用前検査は、見える番号を `nvidia-smi` の物理番号へ戻してからメモリを見る。
 
 ## 検証の区別
 
