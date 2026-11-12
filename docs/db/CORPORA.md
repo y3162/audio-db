@@ -2,7 +2,7 @@
 
 再現実験の Dataset と Protocol は `configs/data/datasets/` と `configs/data/protocols/` にある。学習が読むのはスナップショットで、選び方は [学習](../experiments/RUN.md)。
 
-標準リンクと索引対象は `src/data/corpora_catalog.py` の 14 コーパス。索引は学習に使うかどうかを理由に音声を除外せず、元の sample rate・フレーム数・チャンネル数を保存する。列の意味と各コーパスの対応は [audio_files](tables/AUDIO_FILES.md)、既存コーパスの収録条件と内訳は [データセット](DATASETS.md)。TSUBAME 初回構築の件数と、その後の再索引は [配置と記録](INVENTORY.md) にある。初回の件数は、そのとき取得した 12 コーパスの記録であり、現在の 14 コーパス DB の全件ではない。
+標準リンクと索引対象は `src/data/corpora_catalog.py` の 17 コーパス。索引は学習に使うかどうかを理由に音声を除外せず、元の sample rate・フレーム数・チャンネル数を保存する。列の意味と各コーパスの対応は [audio_files](tables/AUDIO_FILES.md)、既存コーパスの収録条件と内訳は [データセット](DATASETS.md)。TSUBAME 初回構築の件数と、その後の再索引は [配置と記録](INVENTORY.md) にある。初回の件数は、そのとき取得した 12 コーパスの記録であり、現在の DB の全件ではない。
 
 ## リンクと索引
 
@@ -17,7 +17,10 @@
 | ソース | リンク | 内容・索引上の注意 |
 |---|---|---|
 | CHiME3 | `CHiME3` | 実録・模擬の雑音下音声。`data/audio/16kHz/` の track・条件・マイク等を索引し、評価時の transcript は公式 JSON 注釈の `prompt` から登録する。CH0 は clean ではなく、real・simu と元 WSJ は時間整合ペアとみなさない。`tr05_org` は clean の元素材である。 |
-| DEMAND | `DEMAND` | 環境雑音。シーン名、シーン分類、チャンネルを索引する。混合条件は登録するレシピに残す。 |
+| DEMAND | `DEMAND` | 環境雑音。シーン名、シーン分類、チャンネルを索引する。混合条件は登録するレシピに残す。48 kHz 版はここへ混ぜない。 |
+| DEMAND48 | `DEMAND48` | DEMAND とは別の 48 kHz 雑音。シーン索引は DEMAND と同じパーサーで、リンク先のディレクトリだけが違う。既存 DEMAND のファイルやリンク先は変えない。 |
+| Babble | `Babble` | 単一ファイルの babble。汎用索引を使う。音声がリンク直下だけなら `subset` は null。 |
+| SSN | `SSN` | 単一ファイルの speech-shaped noise。汎用索引を使う。音声がリンク直下だけなら `subset` は null。 |
 | DNS5 | `DNS5` | DNS Challenge 5 の fullband 音声・雑音素材。汎用索引を使う。このリポジトリでは単一の公式混合評価セットを定義していない。 |
 | DNS2020 | `DNS2020` | DNS Challenge Interspeech 2020 の clean・noise・synthetic test・blind test。汎用索引を使う。`subset` はリンク直下の `datasets` であり、clean / noise / test の区別は下位ディレクトリに残る。blind test に clean 参照は無い。 |
 | MS-SNSD | `MS-SNSD` | 16 kHz の clean と noise。汎用索引を使う。`clean_train`、`clean_test`、`noise_train`、`noise_test` が `subset` になる。混合済み noisy は同梱されていない。 |
@@ -33,7 +36,7 @@
 
 2026-11-04 の再索引の件数、退避ファイル、指紋については [配置と記録](INVENTORY.md) の「2026-11-04 再索引」。
 
-専用パーサーを持たない DNS5、DNS2020、MS-SNSD、OpenSLR26、OpenSLR28、URGENT2024、VoiceBank-DEMAND、WHAM48、musan は `.wav` / `.flac` を再帰走査する。`_archives`、`__MACOSX`、`.git` は除外する。`subset` はリンク直下の最初のディレクトリ名であり、ファイルが直下なら null。公式 train / validation / test を自動判定する列ではない。読み取れない音声は除外し、`data/staging/ingest/unreadable.jsonl` に理由を記録する。2026-11-12 にはこのファイルは無かった（[配置と記録](INVENTORY.md)）。VoiceBank 以外の汎用索引では話者や transcript を推定しない。
+専用パーサーを持たない Babble、DNS5、DNS2020、MS-SNSD、OpenSLR26、OpenSLR28、SSN、URGENT2024、VoiceBank-DEMAND、WHAM48、musan は `.wav` / `.flac` を再帰走査する。`_archives`、`__MACOSX`、`.git` は除外する。`subset` はリンク直下の最初のディレクトリ名であり、ファイルが直下なら null。公式 train / validation / test を自動判定する列ではない。読み取れない音声は除外し、`data/staging/ingest/unreadable.jsonl` に理由を記録する。2026-11-12 にはこのファイルは無かった（[配置と記録](INVENTORY.md)）。VoiceBank 以外の汎用索引では話者や transcript を推定しない。
 
 公式 transcript の原文と WER 正規化は別である。LibriSpeech、LibriTTS、VCTK、VoiceBank-DEMAND は対応テキストを読み取れる場合に原文を索引する。CHiME3 の transcript は `corpora.audio_files` ではなく上記の公式注釈から評価セットに登録する。
 

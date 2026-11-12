@@ -55,6 +55,26 @@
 |transport|TBUS, TCAR, TMETRO|各 16|
 |合計|18 シーン|288|
 
+既存の DEMAND と、下の DEMAND48 は別データセットである。こちらへ 48 kHz のファイルを足さない。
+
+---
+
+## DEMAND48
+
+DEMAND とは別の 48 kHz 雑音である。配置は `<シーン>/ch01.wav` から `ch16.wav` で、索引は DEMAND と同じシーンパーサーを使う。取得済みの 13 シーンだけを置く。無いシーンは DWASHING、NFIELD、NPARK、NRIVER、OHALLWAY である。ファイル数、サンプリングレート、ハッシュは [配置と記録](INVENTORY.md)。
+
+---
+
+## Babble
+
+VoiceBank の babble を 1 ファイルの独立した雑音として置く。リンク直下の音声だけなので、汎用索引の `subset` は null になる。
+
+---
+
+## SSN
+
+VoiceBank の speech-shaped noise を 1 ファイルの独立した雑音として置く。リンク直下の音声だけなので、汎用索引の `subset` は null になる。
+
 ---
 
 ## LibriSpeech

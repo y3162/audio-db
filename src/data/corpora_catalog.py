@@ -22,6 +22,9 @@ class CorpusSpec:
 CATALOG: tuple[CorpusSpec, ...] = (
     CorpusSpec("CHiME3", "CHiME3", True, "noisy-speech-eval", "CHiME-3 challenge audio plus official JSON annotations."),
     CorpusSpec("DEMAND", "DEMAND", True, "noise", "DEMAND environmental noise scenes."),
+    CorpusSpec("DEMAND48", "DEMAND48", True, "noise", "48 kHz DEMAND scenes kept separate from the existing DEMAND tree."),
+    CorpusSpec("Babble", "Babble", True, "noise", "Single-file babble noise. A file directly under the corpus has no subset."),
+    CorpusSpec("SSN", "SSN", True, "noise", "Single-file speech-shaped noise. A file directly under the corpus has no subset."),
     CorpusSpec("DNS5", "DNS5", True, "se-source", "DNS Challenge 5 fullband speech and noise. No single official eval mix is defined here."),
     CorpusSpec("DNS2020", "DNS2020", True, "se-source", "DNS Challenge Interspeech 2020 clean speech, noise, synthetic test, and blind test."),
     CorpusSpec("MS-SNSD", "MS-SNSD", True, "se-source", "Microsoft scalable noisy-speech clean and noise clips at 16 kHz. Mixtures are not pre-rendered."),

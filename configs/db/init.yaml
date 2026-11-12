@@ -4,7 +4,7 @@
 database: data/db/resource.duckdb
 corpora_root: data/corpora
 
-corpus_sets:
+corpus_sets: []
 annotation_sets:
   - importer: chime3
     set: chime3_et05_real_ch5

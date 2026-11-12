@@ -4,6 +4,85 @@
 
 2026-11-12 の確認は、ファイルの一覧と `stat`、および `tests.suite_guard` の読み取り専用マウントの中で `duckdb.connect(..., read_only=True)` したクエリである。時間（時）の再計算と、コーパス音声の全件ハッシュはしていない。
 
+## 2026-11-12 夜: DEMAND48・Babble・SSN を加えた再構築
+
+同日の再構築後、評価用の本番は `data/db/resource.duckdb`（191,901,696 バイト、更新時刻 2026-11-12 18:27:03 +0900）。候補 `data/db/resource-next.duckdb` は同じバイト数・同じ更新時刻のまま残している。往復先 `data/db/resource-roundtrip-20261112.duckdb` は 187,183,104 バイト。再構築元の staging は `data/staging/resource-20261112/`。置換前のファイルは `data/db/backups/resource-before-demand48-20261112.duckdb`（203,698,176 バイト、SHA-256 `3998f5ae86b3d1b7a3809bdff20f2564a8e90859b0e237f2191150db9afacb6a`）。退避用 staging `data/staging/resource-before-demand48-20261112/` は新 DB の入力ではない。
+
+索引は 17 コーパス、1,375,691 行。読めないファイルの記録 `data/staging/ingest/unreadable.jsonl` は無い。置換前の 14 コーパスの件数は下の節と同じで、追加は DEMAND48 208、Babble 1、SSN 1。DEMAND は 288 のまま。48 kHz は SCAFE の 16 ファイルだけで、ほかの 17 シーンは 16 kHz の 16 ファイル。DEMAND48 は 13 シーン、すべて 48,000 Hz、1 チャンネル、14,400,192 frames。無いシーンは DWASHING、NFIELD、NPARK、NRIVER、OHALLWAY。Babble と SSN の `subset` は null。
+
+| コーパス | 件数 |
+|---|---:|
+| Babble | 1 |
+| CHiME3 | 122,277 |
+| DEMAND | 288 |
+| DEMAND48 | 208 |
+| DNS2020 | 132,150 |
+| DNS5 | 124,058 |
+| LibriSpeech | 292,367 |
+| LibriTTS | 375,086 |
+| MS-SNSD | 24,374 |
+| OpenSLR26 | 120,000 |
+| OpenSLR28 | 61,260 |
+| SSN | 1 |
+| URGENT2024 | 5,000 |
+| VCTK | 44,085 |
+| VoiceBank-DEMAND | 70,942 |
+| WHAM48 | 1,578 |
+| musan | 2,016 |
+| 合計 | 1,375,691 |
+
+評価セットは次の 5 つ。`eval.set_items` は 11,922。`eval.cases` も 11,922。`eval.runs` と `eval.results` は 0。
+
+| 名前 | 件数 |
+|---|---:|
+| `chime3_et05_real_ch5` | 1,320 |
+| `chime3_et05_real_ch0` | 1,320 |
+| `chime3_et05_simu_ch5` | 1,320 |
+| `chime3_tr05_org` | 7,138 |
+| `voicebank_demand_test` | 824 |
+| 合計 | 11,922 |
+
+置換前は `eval.cases` 11,932、`eval.sets` 7、`eval.set_items` 11,932、`eval.runs` 0、`eval.results` 0。新 DB に入れていないセットは `libri_demand_snr0` 2 件と `libri_testclean_full_smoke` 8 件。この 2 セットと、置換前の runs / results は backup と `data/staging/resource-before-demand48-20261112/` に残る。
+
+候補、往復先、置換後の本番を、`src.data.recipe.json_hash` で 6 テーブルの全列について比較した。NULL は None、JSON 列は `json.loads` した値、浮動小数は `_normalize`、行の順は `path`、`case_id`、`name`、`(set_name, position)`、`run_id`、`record_id`。3 ファイルとも次のハッシュで一致した。`eval.runs` と `eval.results` はどちらも 0 行なので、空リストのハッシュになっている。
+
+| テーブル | 論理ハッシュ |
+|---|---|
+| `corpora.audio_files` | `40a31d298d7c31b27b032c09c10306d884451cfcd17935a713b807f266847708` |
+| `eval.cases` | `0956712fedd9794efdee1316e145e779cdac5999abb976ce7dcc92d232fc50fa` |
+| `eval.sets` | `2ef81dd1d6f6bdc8e2fb1ba016622255546bfd35927d1ebd3be68641562468f7` |
+| `eval.set_items` | `91d70102a50d65d45b0446aa631d01d20a7ce07e493ae7d829dd6e34f63d4584` |
+| `eval.runs` | `4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945` |
+| `eval.results` | `4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945` |
+
+実体は `/net/spring/work/seki/database/`。リンクは `data/corpora/DEMAND` → `DEMAND`、`DEMAND48` → `DEMAND48`、`Babble` → `Babble`、`SSN` → `SSN`。ファイルごとの SHA-256 は `data/results/demand48-handoff-20261112/demand48-raw.json`（DEMAND48 の WAV 208、`ch01_mismatches` は空）。代表値は次のとおり。
+
+| パス | SHA-256 |
+|---|---|
+| `Babble/babble.wav` | `8c0115bb4cbbc604994b951c11142b6f203b0ed132736a4279652d619f6ad68e` |
+| `SSN/ssn.wav` | `edda17d2ce54dfe73b6f8dfc864d0994050d9071ac04181cfc95f87ddabe0b53` |
+| `_provenance/babble_ssn.zip` | `d4a07ca68605bdc172d9d5c05327d3a21f23cdd8e52f64891bd0e83dea72d64e` |
+
+Babble は 48,000 Hz、2,880,000 frames、1 ch、5,760,044 バイト。SSN は 48,000 Hz、1,440,000 frames、1 ch、2,880,044 バイト。DEMAND48 の ZIP は `_provenance/demand48/` にあり、コーパスの外なので索引されない。
+
+| ZIP | SHA-256 |
+|---|---|
+| `DKITCHEN_48k.zip` | `4197f1a02dbb36c4c655a11d14cc4c5dca50eae52a4abaa2c61bfca9de6be17f` |
+| `DLIVING_48k.zip` | `7e2817fffa8e4b3a10e4772e25d103e7242a8b5309f81def1bc21b3ebc1f0262` |
+| `OMEETING_48k.zip` | `74eb791ec87bd43d31818f334a6831d599907e86c0df1154901dd8cf1079d9f9` |
+| `OOFFICE_48k.zip` | `5e0e50f3ab7750c795b71eaf3b001a9fe1d6e5e15a95c6b036d3eefaa5ec6eaf` |
+| `PCAFETER_48k.zip` | `ea1defbc29d564d4cdbf8b34191783ebf8debba47cdd3a82c6026608b9788942` |
+| `PRESTO_48k.zip` | `5f4acec91143a6cfa6a10cfdfb0908a7748f6511f99128d6224e9f787a06218f` |
+| `PSTATION_48k.zip` | `86d7412f779aac85c5eaa92b0664c93217ed6cbed17882b59318e59c831888c5` |
+| `SCAFE_48k.zip` | `600f3b5b93af2b949f96e4d3fa488d678d4b14c381030a84bfcbb05d7b2d236d` |
+| `SPSQUARE_48k.zip` | `b82897ae23355d28c352527da431a353c880716999c98c6a7a4244cfcf9246c7` |
+| `STRAFFIC_48k.zip` | `6e4d400d76f151b1387b143d10854ce526e3f107465244f8791c811286066e98` |
+| `TBUS_48k.zip` | `b46499812baf8d7e2735c0dc1c33f5e54e53ff3159ff9607032aa6fd490f9f96` |
+| `TCAR_48k.zip` | `8ff68f65c8af88764a6bae44ce35747f592929753b03319e68211f9ef58c55d6` |
+| `TMETRO_48k.zip` | `2d9be4da51098491be1ed67474dabfa7f5ed254cae921cca1dd06585bddfe883` |
+
+SNR シフトレシピの正本は `/net/spring/work/seki/database/recipes/voicebank-snr-shift-v1/`。実行時の場所と SHA-256 は `configs/data/voicebank_snr_shift.yaml`。`recipes.jsonl` は `836ca5f1566404b016087332a764467d36ed0c237f6bcee2736e6003b6f0bd23`、`common.json` は `9a290d8b149293fc59663822425efe20414ff7d39d7cb08b773b873a806493b0`。発話は 12,396。このレシピは `eval.cases` に入れていない。
+
 ## 2026-11-12 に在ったファイル
 
 `data/db/` の DuckDB と、そのバイト数、更新時刻（+0900）:
@@ -18,6 +97,8 @@
 | `data/db/voicebank.duckdb` | 10,760,192 | 2026-11-04 21:08:12 | `eval` のみ。28 話者の train / valid |
 | `data/db/semamba-voicebank-test-20261101-v2.duckdb` | 2,895,872 | 2026-11-07 22:13 | 公式 test 824 件の別ファイル |
 | `data/db/backups/resource-before-dns-mssnsd-20261104.duckdb` | 180,105,216 | 2026-11-04 16:24:14 | 再索引前。12 コーパス |
+
+上の表の `resource.duckdb` は、同日夜の再構築より前のファイルである。再構築後のバイト数、件数、ハッシュは「DEMAND48・Babble・SSN を加えた再構築」にある。
 
 `data/db/.reproduction.lock` は 0 バイトのファイルとして在った。ロックを掴んでいるプロセスまでは見ていない。`data/db/.gitkeep` も在る。
 
@@ -46,6 +127,8 @@
 `e4495fa6ac0048c6346cc65bc66fd71114fd1523f95230537e799610c8092024` はディレクトリ名ではない。研究用 Dataset のスナップショットハッシュで、ディレクトリは dataset id `e4a53415122aba24055f4ba7eef6367a7e41d062485d74de3d7ce94c07d7bdd0` である。
 
 ## 評価用 `resource.duckdb`
+
+この節の件数は、2026-11-12 夜の再構築より前のファイルである。
 
 スキーマは `corpora` と `eval`。`eval.cases` の列は `case_id`、`kind`、`dataset`、`split`、`sample_rate`、`transcript`、`speaker_id`、`recipe_json`、`content_hash`、`metadata`。`eval.runs` と `eval.results` は 0 行。`eval.cases` は 11,932 行。
 

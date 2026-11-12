@@ -9,17 +9,21 @@ from src.data.corpora.paths import common_path_fields, is_audio_file
 from src.data.models.audio_file import AudioFileRow
 
 
-def iter_rows() -> Iterator[AudioFileRow]:
-    root = CORPORA_ROOT / "DEMAND"
+def iter_rows(corpus: str = "DEMAND") -> Iterator[AudioFileRow]:
+    root = CORPORA_ROOT / corpus
     scene_dirs: list[Path] = []
     with os.scandir(root) as entries:
         for entry in entries:
             if entry.is_dir():
                 scene_dirs.append(Path(entry.path))
-    return iter_in_threads(scene_dirs, _rows_for_scene_dir)
+
+    def rows_for_scene(scene_dir: Path) -> list[AudioFileRow]:
+        return _rows_for_scene_dir(scene_dir, corpus)
+
+    return iter_in_threads(scene_dirs, rows_for_scene)
 
 
-def _rows_for_scene_dir(scene_dir: Path) -> list[AudioFileRow]:
+def _rows_for_scene_dir(scene_dir: Path, corpus: str = "DEMAND") -> list[AudioFileRow]:
     scene_code = scene_dir.name
     scene_class = SCENE_CLASS_BY_PREFIX.get(scene_code[0])
     rows: list[AudioFileRow] = []
@@ -29,14 +33,14 @@ def _rows_for_scene_dir(scene_dir: Path) -> list[AudioFileRow]:
                 continue
             audio_path = Path(entry.path)
             channel_label = audio_path.stem
-            path, corpus, subset, rel_dir, file_name, extension = common_path_fields(
-                audio_path, "DEMAND", scene_code
+            path, corpus_name, subset, rel_dir, file_name, extension = common_path_fields(
+                audio_path, corpus, scene_code
             )
             sample_rate, frames, channels = read_audio_stream_info(audio_path)
             rows.append(
                 AudioFileRow(
                     path=path,
-                    corpus=corpus,
+                    corpus=corpus_name,
                     subset=subset,
                     relative_dir=rel_dir,
                     file_name=file_name,

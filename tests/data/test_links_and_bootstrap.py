@@ -44,7 +44,8 @@ class LinkAndBootstrapTests(unittest.TestCase):
         names = {spec.source_name for spec in CATALOG}
         self.assertTrue(EXCLUDED.isdisjoint(names))
         self.assertEqual(names, {
-            "CHiME3", "DEMAND", "DNS5", "DNS2020", "LibriSpeech", "LibriTTS",
+            "Babble", "CHiME3", "DEMAND", "DEMAND48", "DNS5", "DNS2020", "LibriSpeech", "LibriTTS",
+            "SSN",
             "MS-SNSD", "OpenSLR26", "OpenSLR28", "URGENT2024", "VCTK",
             "VoiceBank+DEMAND", "WHAM48", "musan",
         })
