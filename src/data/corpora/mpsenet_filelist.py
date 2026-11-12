@@ -10,7 +10,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from src.data.audio import read_wav_stream_info
+from src.evaluation.audio.header import attach_verified_header, probe_header
 from src.evaluation.sample import AudioSample
 
 
@@ -35,33 +35,34 @@ def load_mpsenet_filelist(
         if not clean.is_file() or not noisy.is_file():
             missing.append(utterance_id)
             continue
-        clean_rate, _clean_frames, clean_channels = read_wav_stream_info(clean)
-        noisy_rate, _noisy_frames, noisy_channels = read_wav_stream_info(noisy)
-        if clean_channels != 1 or noisy_channels != 1:
+        clean_header = probe_header(clean)
+        noisy_header = probe_header(noisy)
+        if clean_header.channels != 1 or noisy_header.channels != 1:
             raise ValueError(f"{utterance_id} is not mono")
-        if clean_rate != noisy_rate:
+        if clean_header.sample_rate != noisy_header.sample_rate:
             raise ValueError(f"{utterance_id} clean and noisy sample rates differ")
         speaker = utterance_id.split("_", 1)[0]
         transcript, transcript_note = _paired_transcript(clean_root, utterance_id)
-        samples.append(
-            AudioSample(
-                utterance_id=f"voicebank:{split}:{utterance_id}",
-                dataset="VoiceBank-DEMAND",
-                split=split,
-                sample_rate=clean_rate,
-                speaker_id=speaker,
-                transcript=transcript,
-                clean_path=clean.as_posix(),
-                noisy_path=noisy.as_posix(),
-                metadata={
-                    "source": "mp_senet_filelist",
-                    "file_list": file_path.as_posix(),
-                    "listed_path": listed,
-                    "utterance": utterance_id,
-                    "transcript_note": transcript_note,
-                },
-            )
+        sample = AudioSample(
+            utterance_id=f"voicebank:{split}:{utterance_id}",
+            dataset="VoiceBank-DEMAND",
+            split=split,
+            sample_rate=clean_header.sample_rate,
+            speaker_id=speaker,
+            transcript=transcript,
+            clean_path=clean.as_posix(),
+            noisy_path=noisy.as_posix(),
+            metadata={
+                "source": "mp_senet_filelist",
+                "file_list": file_path.as_posix(),
+                "listed_path": listed,
+                "utterance": utterance_id,
+                "transcript_note": transcript_note,
+            },
         )
+        attach_verified_header(sample, clean_header)
+        attach_verified_header(sample, noisy_header)
+        samples.append(sample)
     if missing:
         raise ValueError(
             f"VoiceBank-DEMAND list is incomplete: {len(missing)} of {len(rows)} pairs are missing, "

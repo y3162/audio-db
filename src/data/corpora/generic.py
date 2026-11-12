@@ -16,11 +16,11 @@ from pathlib import Path
 from src.data.audio import read_audio_stream_info
 from src.data.constants import CORPORA_ROOT
 from src.data.corpora.parallel_scan import iter_in_threads
-from src.data.corpora.paths import common_path_fields, is_audio_file
+from src.data.corpora.paths import common_path_fields, is_audio_file, subset_under
 from src.data.models.audio_file import AudioFileRow
 
 SKIP_DIRS = {"_archives", "__MACOSX", ".git"}
-FAILURE_LOG = Path("data/staging/ingest/unreadable.jsonl")
+FAILURE_LOG = Path(os.environ.get("AUDIO_DB_UNREADABLE_LOG", "data/staging/ingest/unreadable.jsonl"))
 _failures: list[dict[str, str]] = []
 _failure_lock = threading.Lock()
 
@@ -67,8 +67,7 @@ def _rows(corpus: str, root: Path, paths: list[Path]) -> list[AudioFileRow]:
             with _failure_lock:
                 _failures.append({"path": audio_path.as_posix(), "error": str(exc)})
             continue
-        relative = audio_path.relative_to(root)
-        subset = relative.parts[0] if len(relative.parts) > 1 else None
+        subset = subset_under(audio_path, root)
         path, corpus_name, subset_name, rel_dir, file_name, extension = common_path_fields(
             audio_path, corpus, subset
         )

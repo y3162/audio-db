@@ -11,7 +11,7 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
-from src.data.audio import read_wav_stream_info
+from src.evaluation.audio.header import attach_verified_header, probe_header
 from src.evaluation.sample import AudioSample
 
 SPLITS = ("tr05", "dt05", "et05")
@@ -58,10 +58,11 @@ def load_chime3_samples(
         if not audio.is_file():
             missing.append(audio.as_posix())
             continue
-        rate, _frames, channels = read_wav_stream_info(audio)
-        if channels != 1:
+        header = probe_header(audio)
+        if header.channels != 1:
             raise ValueError(f"CHiME3 isolated file is not mono: {audio}")
-        sample.sample_rate = rate
+        sample.sample_rate = header.sample_rate
+        attach_verified_header(sample, header)
         samples.append(sample)
     if missing:
         example = missing[0]

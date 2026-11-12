@@ -99,6 +99,156 @@ class EvaluationDBTests(unittest.TestCase):
             self.assertEqual(kept["legacy_case_id"], "corpus:old-id")
             self.assertEqual(kept["source_id"], "corpus:old-id")
 
+    def test_specified_sample_rate_must_match_the_file(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            _write_wav(root / "clean.wav", 1600, 220)
+            database = root / "sets.duckdb"
+            db = EvaluationDB(database, project_root=root, corpora_root=root / "corpora")
+            sample = self._clean_sample(root, "rate-mismatch", sample_rate=8000)
+            with self.assertRaises(DatasetError) as caught:
+                db.register_samples([sample], "rates")
+            self.assertIn("does not match the file", str(caught.exception))
+            db.ensure_schema()
+            self.assertEqual(db.stats(), {"cases": 0, "sets": 0, "items": 0})
+
+    def test_verified_header_is_reused_and_still_checked(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            audio = root / "clean.wav"
+            _write_wav(audio, 1600, 220)
+            database = root / "sets.duckdb"
+            db = EvaluationDB(database, project_root=root, corpora_root=root / "corpora")
+            sample = self._clean_sample(root, "verified", sample_rate=16000)
+            from src.evaluation.audio.header import attach_verified_header, probe_header
+
+            header = probe_header(audio)
+            attach_verified_header(sample, header)
+            import torchaudio
+
+            calls = {"n": 0}
+            original = torchaudio.info
+
+            def counting(path, *args, **kwargs):
+                calls["n"] += 1
+                return original(path, *args, **kwargs)
+
+            torchaudio.info = counting
+            try:
+                report = db.register_samples([sample], "verified")
+                self.assertEqual(calls["n"], 0)
+                self.assertEqual(report.inserted, 1)
+                sample.sample_rate = 8000
+                with self.assertRaises(DatasetError) as caught:
+                    db.register_samples([sample], "verified-bad")
+                self.assertIn("does not match the file", str(caught.exception))
+                self.assertEqual(calls["n"], 0)
+            finally:
+                torchaudio.info = original
+            loaded = db.load_dataset("verified")
+            self.assertEqual(loaded[0].sample_rate, 16000)
+
+    def test_batch_registration_is_idempotent_ordered_and_atomic(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            database = root / "sets.duckdb"
+            db = EvaluationDB(database, project_root=root, corpora_root=root / "corpora")
+            self._insert_corpus_row(database, root, name="a.wav", transcript="first")
+            self._insert_corpus_row(database, root, name="b.wav", transcript="second")
+            from src.evaluation.sample import AudioSample
+
+            samples = [
+                AudioSample(
+                    utterance_id=name,
+                    dataset="toy",
+                    split="test",
+                    sample_rate=16000,
+                    clean_path=(root / "corpora" / "Toy" / f"{name}.wav").as_posix(),
+                    transcript=f"text {name}",
+                    speaker_id="spk",
+                )
+                for name in ("b", "a")
+            ]
+            import duckdb
+
+            original = duckdb.connect
+            read_only_calls = {"n": 0}
+
+            def counting(path, read_only=False, **kwargs):
+                if read_only:
+                    read_only_calls["n"] += 1
+                return original(path, read_only=read_only, **kwargs)
+
+            duckdb.connect = counting
+            try:
+                first = db.register_samples(samples, "ordered", description="keep order")
+            finally:
+                duckdb.connect = original
+            self.assertEqual(first.inserted, 2)
+            self.assertEqual(read_only_calls["n"], 1)
+            connection = _connect(database)
+            try:
+                ordered = connection.execute(
+                    """
+                    SELECT json_extract_string(c.metadata, '$.source_id')
+                    FROM eval.set_items AS i
+                    JOIN eval.cases AS c USING (case_id)
+                    WHERE i.set_name = 'ordered'
+                    ORDER BY i.position
+                    """
+                ).fetchall()
+            finally:
+                connection.close()
+            self.assertEqual([row[0] for row in ordered], ["b", "a"])
+            second = db.register_samples(samples, "ordered", description="keep order")
+            self.assertEqual(second.inserted, 0)
+            self.assertEqual(second.unchanged, 2)
+            self.assertEqual(second.set_status, "unchanged")
+            with self.assertRaises(DatasetError):
+                db.register_samples(list(reversed(samples)), "ordered", description="keep order")
+            connection = _connect(database)
+            try:
+                ordered_again = connection.execute(
+                    """
+                    SELECT position FROM eval.set_items
+                    WHERE set_name = 'ordered' ORDER BY position
+                    """
+                ).fetchall()
+            finally:
+                connection.close()
+            self.assertEqual([row[0] for row in ordered_again], [0, 1])
+            changed = samples[0]
+            changed.transcript = "changed transcript"
+            extra = self._clean_sample(root, "extra", sample_rate=16000)
+            with self.assertRaises(DatasetError):
+                db.register_samples([extra, changed], "mixed")
+            connection = _connect(database)
+            try:
+                count = connection.execute("SELECT count(*) FROM eval.cases").fetchone()[0]
+                mixed = connection.execute("SELECT count(*) FROM eval.sets WHERE name = 'mixed'").fetchone()[0]
+            finally:
+                connection.close()
+            self.assertEqual(count, 2)
+            self.assertEqual(mixed, 0)
+
+    def _clean_sample(self, root: Path, utterance_id: str, sample_rate: int):
+        from src.evaluation.sample import AudioSample
+
+        path = root / f"{utterance_id}.wav"
+        if utterance_id == "verified" or utterance_id == "rate-mismatch":
+            path = root / "clean.wav"
+        if not path.is_file():
+            _write_wav(path, 1600, 220)
+        return AudioSample(
+            utterance_id=utterance_id,
+            dataset="toy",
+            split="test",
+            sample_rate=sample_rate,
+            clean_path=path.as_posix(),
+            transcript=f"text {utterance_id}",
+            speaker_id="spk",
+        )
+
     def test_manifest_round_trip_survives_deleting_the_file(self):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)

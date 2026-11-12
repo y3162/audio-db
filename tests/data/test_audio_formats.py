@@ -83,3 +83,108 @@ class AudioFormatTests(unittest.TestCase):
             if rate < 1 or frames < 1 or channels < 1:
                 failures.append((path.name, "empty stream"))
         self.assertEqual(failures, [])
+
+
+def _pcm_blob(
+    *,
+    frames: int = 8,
+    data_size: int | None = None,
+    audio_format: int = 1,
+    extra: bytes = b"",
+) -> bytes:
+    channels = 1
+    bits = 16
+    block = 2
+    data = b"\x01\x00" * frames
+    if data_size is None:
+        data_size = len(data)
+    fmt = (
+        audio_format.to_bytes(2, "little")
+        + channels.to_bytes(2, "little")
+        + (16000).to_bytes(4, "little")
+        + (16000 * block).to_bytes(4, "little")
+        + block.to_bytes(2, "little")
+        + bits.to_bytes(2, "little")
+    )
+    body = b"fmt " + len(fmt).to_bytes(4, "little") + fmt + b"data" + data_size.to_bytes(4, "little") + data + extra
+    payload = b"WAVE" + body
+    return b"RIFF" + len(payload).to_bytes(4, "little") + payload
+
+
+class ConsistentWavTests(unittest.TestCase):
+    def test_exact_pcm_matches_and_rejects_bad_chunks(self) -> None:
+        with TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            good = root / "good.wav"
+            good.write_bytes(_pcm_blob())
+            self.assertEqual(read_wav_stream_info(good), (16000, 8, 1))
+            self.assertEqual(read_wav_stream_info(good, consistent=True), (16000, 8, 1))
+            junk = b"JUNK" + (4).to_bytes(4, "little") + b"pad!"
+            with_chunk = root / "chunk.wav"
+            with_chunk.write_bytes(_pcm_blob(extra=junk))
+            self.assertEqual(read_wav_stream_info(with_chunk, consistent=True), (16000, 8, 1))
+
+            truncated = root / "truncated.wav"
+            truncated.write_bytes(_pcm_blob(frames=20)[:70])
+            with self.assertRaises(ValueError) as truncated_error:
+                read_wav_stream_info(truncated, consistent=True)
+            self.assertIn("truncated", str(truncated_error.exception))
+
+            declared_long = root / "declared_long.wav"
+            declared_long.write_bytes(_pcm_blob(frames=4, data_size=1000))
+            with self.assertRaises(ValueError) as long_error:
+                read_wav_stream_info(declared_long, consistent=True)
+            self.assertIn("truncated", str(long_error.exception))
+            self.assertEqual(read_wav_stream_info(declared_long), (16000, 500, 1))
+
+            misaligned = root / "misaligned.wav"
+            misaligned.write_bytes(_pcm_blob(frames=4, data_size=7))
+            with self.assertRaises(ValueError) as misaligned_error:
+                read_wav_stream_info(misaligned, consistent=True)
+            self.assertIn("block align", str(misaligned_error.exception))
+
+            short_declared = root / "short_declared.wav"
+            short_declared.write_bytes(_pcm_blob(frames=8, data_size=4))
+            with self.assertRaises(ValueError) as short_error:
+                read_wav_stream_info(short_declared, consistent=True)
+            self.assertIn("does not match the file", str(short_error.exception))
+
+            empty = root / "empty.wav"
+            empty.write_bytes(_pcm_blob(frames=0, data_size=0))
+            with self.assertRaises(ValueError) as empty_error:
+                read_wav_stream_info(empty, consistent=True)
+            self.assertIn("no frames", str(empty_error.exception))
+
+            alaw = root / "alaw.wav"
+            alaw.write_bytes(_pcm_blob(audio_format=6))
+            with self.assertRaises(ValueError) as format_error:
+                read_wav_stream_info(alaw, consistent=True)
+            self.assertIn("Unsupported WAV format", str(format_error.exception))
+
+    def test_probe_header_matches_torchaudio_and_rejects_bad_wav(self) -> None:
+        import torchaudio
+
+        from src.evaluation.audio.header import probe_header
+
+        with TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            good = root / "good.wav"
+            _pcm_wav(good, frames=20)
+            info = torchaudio.info(str(good))
+            header = probe_header(good)
+            self.assertEqual(
+                (header.sample_rate, header.frames, header.channels),
+                (int(info.sample_rate), int(info.num_frames), int(info.num_channels)),
+            )
+            bad = root / "truncated.wav"
+            bad.write_bytes(good.read_bytes()[:50])
+            with self.assertRaises(ValueError):
+                probe_header(bad)
+            zero = root / "zero.wav"
+            zero.write_bytes(_pcm_blob(frames=0, data_size=0))
+            with self.assertRaises(ValueError):
+                probe_header(zero)
+            foreign = root / "adpcm.wav"
+            foreign.write_bytes(_pcm_blob(audio_format=2))
+            with self.assertRaises(ValueError):
+                probe_header(foreign)

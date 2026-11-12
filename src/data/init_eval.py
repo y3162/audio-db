@@ -94,6 +94,8 @@ def main(argv: list[str] | None = None) -> int:
 
 
 def _import_manifest(db, item: dict[str, Any]) -> str:
+    from src.evaluation.audio.header import header_seconds, reset_header_seconds
+
     path = Path(item["path"])
     set_name = item["set"]
     required = bool(item.get("required", False))
@@ -102,6 +104,7 @@ def _import_manifest(db, item: dict[str, Any]) -> str:
         if required:
             raise DatasetError(message.replace("skipped", "required"))
         return message
+    reset_header_seconds()
     try:
         report = db.import_manifest(
             path,
@@ -113,10 +116,12 @@ def _import_manifest(db, item: dict[str, Any]) -> str:
         if required:
             raise DatasetError(f"manifest {path}: {exc}") from exc
         return f"manifest {path}: skipped ({exc})"
-    return f"manifest {path} -> {set_name}: {report}"
+    return _with_phases(f"manifest {path} -> {set_name}: {report}", report, header_seconds())
 
 
 def _import_corpus_set(db, item: dict[str, Any]) -> str:
+    from src.evaluation.audio.header import header_seconds, reset_header_seconds
+
     name = item["name"]
     required = bool(item.get("required", False))
     kwargs = {
@@ -141,19 +146,23 @@ def _import_corpus_set(db, item: dict[str, Any]) -> str:
         )
         if key in item
     }
+    reset_header_seconds()
     try:
         report = db.create_set_from_corpus(name, **kwargs)
     except DatasetError as exc:
         if required:
             raise DatasetError(f"set {name}: {exc}") from exc
         return f"set {name}: skipped ({exc})"
-    return f"set {name}: {report}"
+    return _with_phases(f"set {name}: {report}", report, header_seconds())
 
 
 def _import_annotation(db, item: dict[str, Any], corpora_root: str) -> str:
+    from src.evaluation.audio.header import header_seconds, reset_header_seconds
+
     set_name = item["set"]
     required = bool(item.get("required", False))
     importer = item["importer"]
+    reset_header_seconds()
     try:
         if importer == "chime3":
             from src.data.corpora.chime3_annotations import load_chime3_samples
@@ -184,7 +193,18 @@ def _import_annotation(db, item: dict[str, Any], corpora_root: str) -> str:
         if required:
             raise DatasetError(f"set {set_name}: {exc}") from exc
         return f"set {set_name}: skipped ({exc})"
-    return f"set {set_name}: {report}"
+    return _with_phases(f"set {set_name}: {report}", report, header_seconds())
+
+
+def _with_phases(line: str, report, header_s: float) -> str:
+    phases = getattr(report, "phases", {}) or {}
+    return (
+        f"{line}\n"
+        f"  sha256 {phases.get('sha256', 0.0):.3f}s"
+        f" header {header_s:.3f}s"
+        f" index {phases.get('index', 0.0):.3f}s"
+        f" sql {phases.get('sql', 0.0):.3f}s"
+    )
 
 
 def _load(path: Path) -> dict[str, Any]:

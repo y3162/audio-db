@@ -16,7 +16,14 @@ def read_audio_stream_info(audio_path: Path) -> tuple[int, int, int]:
     raise ValueError(f"Unsupported audio format: {audio_path}")
 
 
-def read_wav_stream_info(audio_path: Path) -> tuple[int, int, int]:
+def read_wav_stream_info(audio_path: Path, *, consistent: bool = False) -> tuple[int, int, int]:
+    """Return sample rate, frames, and channels.
+
+    ``consistent=False`` is the corpus index. It keeps the declared data size
+    and does not reject a short file. ``consistent=True`` is evaluation
+    registration: the data chunk must be a whole number of frames, contain at
+    least one frame, fit in the file, and leave only whole chunks after it.
+    """
     with open(audio_path, "rb", buffering=0) as f:
         _advise_random(f)
         header = f.read(44)
@@ -34,15 +41,26 @@ def read_wav_stream_info(audio_path: Path) -> tuple[int, int, int]:
             block_align = int.from_bytes(header[32:34], "little")
             data_size = int.from_bytes(header[40:44], "little")
             fmt_data = None
+            data_offset = 44
         else:
             f.seek(12)
-            audio_format, channels, sample_rate, block_align, data_size, fmt_data = _read_wav_chunks(f, audio_path)
+            audio_format, channels, sample_rate, block_align, data_size, fmt_data, data_offset = _read_wav_chunks(
+                f, audio_path
+            )
         _accept_wav_format(audio_format, fmt_data, audio_path)
-
-    if block_align == 0:
-        raise ValueError(f"Invalid WAV block align: {audio_path}")
-    if channels < 1 or sample_rate < 1:
-        raise ValueError(f"Invalid WAV stream info: {audio_path}")
+        if block_align == 0:
+            raise ValueError(f"Invalid WAV block align: {audio_path}")
+        if channels < 1 or sample_rate < 1:
+            raise ValueError(f"Invalid WAV stream info: {audio_path}")
+        if consistent:
+            _require_consistent_wav(
+                f,
+                audio_path,
+                os.fstat(f.fileno()).st_size,
+                data_offset,
+                data_size,
+                block_align,
+            )
     return sample_rate, data_size // block_align, channels
 
 
@@ -117,10 +135,48 @@ def decode_wav_prefix(audio_path: Path, frames: int = 16) -> tuple[int, int, int
     return sample_rate, channels, min(count, total)
 
 
-def _read_wav_chunks(f: BinaryIO, audio_path: Path) -> tuple[int, int, int, int, int, bytes]:
+def _require_consistent_wav(
+    f: BinaryIO,
+    audio_path: Path,
+    file_size: int,
+    data_offset: int,
+    data_size: int,
+    block_align: int,
+) -> None:
+    """Reject a data chunk that is empty, mis-sized, truncated, or followed by junk."""
+    if data_size % block_align != 0:
+        raise ValueError(f"WAV data chunk size does not match the block align: {audio_path}")
+    if data_size // block_align < 1:
+        raise ValueError(f"WAV has no frames: {audio_path}")
+    payload_end = data_offset + data_size
+    if file_size < payload_end:
+        raise ValueError(f"WAV data chunk is truncated: {audio_path}")
+    pos = payload_end + (data_size & 1)
+    if pos > file_size:
+        if file_size == payload_end:
+            return
+        raise ValueError(f"WAV data chunk is truncated: {audio_path}")
+    if pos == file_size:
+        return
+    f.seek(pos)
+    while pos < file_size:
+        chunk_header = f.read(8)
+        if len(chunk_header) < 8:
+            raise ValueError(f"WAV data chunk size does not match the file: {audio_path}")
+        chunk_size = int.from_bytes(chunk_header[4:8], "little")
+        padded = chunk_size + (chunk_size & 1)
+        if padded > file_size - (pos + 8):
+            raise ValueError(f"WAV data chunk size does not match the file: {audio_path}")
+        if padded:
+            f.seek(padded, 1)
+        pos += 8 + padded
+
+
+def _read_wav_chunks(f: BinaryIO, audio_path: Path) -> tuple[int, int, int, int, int, bytes, int]:
     fmt = None
     fmt_data_kept = b""
     data_size = None
+    data_offset = None
     while True:
         chunk_header = f.read(8)
         if len(chunk_header) < 8:
@@ -141,6 +197,7 @@ def _read_wav_chunks(f: BinaryIO, audio_path: Path) -> tuple[int, int, int, int,
                 f.seek(1, 1)
         elif chunk_id == b"data":
             data_size = chunk_size
+            data_offset = f.tell()
         else:
             f.seek(chunk_size, 1)
             if chunk_size % 2:
@@ -148,7 +205,7 @@ def _read_wav_chunks(f: BinaryIO, audio_path: Path) -> tuple[int, int, int, int,
         if fmt is not None and data_size is not None:
             break
 
-    if fmt is None or data_size is None:
+    if fmt is None or data_size is None or data_offset is None:
         raise ValueError(f"Missing WAV fmt or data chunk: {audio_path}")
     audio_format, channels, sample_rate, block_align = fmt
-    return audio_format, channels, sample_rate, block_align, data_size, fmt_data_kept
+    return audio_format, channels, sample_rate, block_align, data_size, fmt_data_kept, data_offset

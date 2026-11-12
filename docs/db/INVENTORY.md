@@ -4,6 +4,118 @@
 
 2026-11-12 の確認は、ファイルの一覧と `stat`、および `tests.suite_guard` の読み取り専用マウントの中で `duckdb.connect(..., read_only=True)` したクエリである。時間（時）の再計算と、コーパス音声の全件ハッシュはしていない。
 
+## 2026-11-13 00:21: ヘッダ確認とパス計算を短くした再構築
+
+本番 `data/db/resource.duckdb` は置換していない。同じ時刻のまま（191,901,696 バイト、2026-11-12 18:27:03 +0900）。`data/db/resource-next.duckdb`、`data/db/resource-roundtrip-20261112.duckdb`、`data/db/resource-speed-20261112.duckdb`、既存 staging も変えていない。読めないファイルの記録は無い。新しいファイルは `data/db/resource-speed3-20261112.duckdb`（191,639,552 バイト、2026-11-13 00:21:50 +0900）。DuckDB のバイト数は本番と違う。論理内容は下の 6 ハッシュで前節の目録と一致した。
+
+構築は 1 回。コマンドは `AUDIO_DB_DATASET_ROOT=/net/spring/work/seki/database`、`CUDA_VISIBLE_DEVICES=""`、`python -m src.data.bootstrap --database data/db/resource-speed3-20261112.duckdb`。音声と DB は NFS4（`spring:/work`）。ページキャッシュは落としていない。ログは `data/results/eval-db-bootstrap-speed3-20261112/bootstrap.log`。
+
+壁時計は **334.6 秒**。読めないファイルは 0。コーパス 17、合計 1,375,691。評価セットは 1,320 / 1,320 / 1,320 / 7,138 / 824。`eval.cases` と `eval.set_items` は 11,922。`eval.runs` と `eval.results` は 0。
+
+索引のコーパス行を足すと **265.8 秒**（前の全件は 627.0 秒）。括弧内は 23:39 の実行。
+
+| コーパス | この実行 | 23:39 |
+|---|---:|---:|
+| Babble | 0.0 | 0.0 |
+| CHiME3 | 24.0 | 52.3 |
+| DEMAND | 0.1 | 0.2 |
+| DEMAND48 | 0.1 | 0.1 |
+| DNS2020 | 22.1 | 62.0 |
+| DNS5 | 21.2 | 61.6 |
+| LibriSpeech | 52.5 | 116.6 |
+| LibriTTS | 74.5 | 157.7 |
+| MS-SNSD | 3.1 | 9.9 |
+| OpenSLR26 | 19.1 | 60.6 |
+| OpenSLR28 | 9.4 | 31.4 |
+| SSN | 0.0 | 0.0 |
+| URGENT2024 | 0.8 | 2.2 |
+| VCTK | 14.3 | 28.3 |
+| VoiceBank-DEMAND | 23.7 | 42.6 |
+| WHAM48 | 0.5 | 0.7 |
+| musan | 0.4 | 0.8 |
+| 合計 | 265.8 | 627.0 |
+
+評価登録の区間は 5 セットの合計で、SHA-256 **16.054 秒**、ヘッダ確認 **12.640 秒**、索引参照 **0.618 秒**、SQL 登録 **14.976 秒**（合計 44.288 秒）。23:39 のヘッダ確認は 144.432 秒だった。セット別は次のとおり。
+
+| セット | SHA-256 | ヘッダ | 索引 | SQL |
+|---|---:|---:|---:|
+| `chime3_et05_real_ch5` | 1.032 | 1.275 | 0.107 | 1.755 |
+| `chime3_et05_real_ch0` | 2.218 | 0.559 | 0.121 | 1.747 |
+| `chime3_et05_simu_ch5` | 2.132 | 1.310 | 0.104 | 1.705 |
+| `chime3_tr05_org` | 8.084 | 7.582 | 0.184 | 8.676 |
+| `voicebank_demand_test` | 2.588 | 1.914 | 0.102 | 1.093 |
+
+評価セットの WAV は、CHiME3 の et05 real CH5 / CH0、et05 simu CH5、tr05 org、VoiceBank test の clean / noisy、合計 12,746 ファイルがすべて canonical な 44 バイト PCM で、data チャンクの宣言サイズとファイル長が一致した。サンプルでは `torchaudio.info` とストリーム読取の sample rate・frames・channels が一致した。登録の WAV は `read_wav_stream_info(..., consistent=True)` で、空、ブロック境界に合わない data サイズ、ファイルより長い data、data の後ろにチャンクでないバイトがあるもの、未対応フォーマットを拒否する。索引側の読取条件は変えていない。
+
+索引で採用した変更は、`pathlib` の `relative_to` を同じ結果になる文字列処理に置き換えたことだけである。LibriSpeech train-clean-100、LibriTTS train-clean-100、VoiceBank の 56 話者 clean、DNS2020 noise で、行の組み立てが 11.57 / 14.56 / 13.03 / 29.31 秒から 4.41 / 6.61 / 7.04 / 8.94 秒になった。ワーカー 16 / 32 / 64 はほぼ同じで、128 は Libri のヘッダ読取で遅かったので既定は 64 のままである。`POSIX_FADV_RANDOM` を外すと温かいキャッシュのヘッダ読取が数パーセント短くなったが、行全体では支配的ではなかったので残した。DuckDB Appender は 8,000 行で CSV `COPY` の 0.125 秒に対し 0.094 秒で、照合した列は一致したが、全件では数秒の差なので CSV のままである。
+
+論理ハッシュは `src.data.recipe.json_hash`。NULL は None、JSON 列は `json.loads`、行はリストのリスト、順は `path`、`case_id`、`name`、`(set_name, position)`、`run_id`、`record_id`。`data/db/resource-speed3-20261112.duckdb` を `read_only` で開き、前節の 6 表と一致した。
+
+| テーブル | 論理ハッシュ |
+|---|---|
+| `corpora.audio_files` | `40a31d298d7c31b27b032c09c10306d884451cfcd17935a713b807f266847708` |
+| `eval.cases` | `0956712fedd9794efdee1316e145e779cdac5999abb976ce7dcc92d232fc50fa` |
+| `eval.sets` | `2ef81dd1d6f6bdc8e2fb1ba016622255546bfd35927d1ebd3be68641562468f7` |
+| `eval.set_items` | `91d70102a50d65d45b0446aa631d01d20a7ce07e493ae7d829dd6e34f63d4584` |
+| `eval.runs` | `4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945` |
+| `eval.results` | `4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945` |
+
+## 2026-11-12 23:39: 評価登録を短くした再構築
+
+本番 `data/db/resource.duckdb` は置換していない。同じ時刻のまま（191,901,696 バイト、2026-11-12 18:27:03 +0900）。`data/db/resource-next.duckdb` と `data/db/resource-roundtrip-20261112.duckdb`、既存の `data/staging/resource-20261112/` も変えていない。新しいファイルは `data/db/resource-speed-20261112.duckdb`（192,163,840 バイト、2026-11-12 23:39:41 +0900）。DuckDB のバイト数は本番と違う。論理内容は下の 6 ハッシュで本番の目録と一致した。
+
+構築は 1 回。コマンドは `AUDIO_DB_DATASET_ROOT=/net/spring/work/seki/database`、`CUDA_VISIBLE_DEVICES=""`、`python -m src.data.bootstrap --database data/db/resource-speed-20261112.duckdb`。音声と DB は NFS4（`spring:/work`）。ページキャッシュは落としていない。他ジョブの負荷は制御していない。最適化前の全件はやり直していない。比較の参考は `data/results/demand48-handoff-20261112/bootstrap-20261112.log` の `bootstrap finished in 1687.0s` で、この 1 回の成否はその差だけでは見ていない。ログは `data/results/eval-db-bootstrap-speed-20261112/bootstrap.log`。
+
+壁時計は **827.6 秒**。読めないファイルは 0。`data/staging/ingest/unreadable.jsonl` は無い。コーパス 17、合計 1,375,691。評価セットは 1,320 / 1,320 / 1,320 / 7,138 / 824。`eval.cases` と `eval.set_items` は 11,922。`eval.runs` と `eval.results` は 0。
+
+索引のアルゴリズムは変えていない。このログのコーパス行を足すと **627.0 秒**。参考ログの索引は 622.1 秒。コーパス別の秒は次のとおり（左がこの実行、括弧内が参考ログ）。
+
+| コーパス | この実行 | 参考ログ |
+|---|---:|---:|
+| Babble | 0.0 | 0.0 |
+| CHiME3 | 52.3 | 53.2 |
+| DEMAND | 0.2 | 0.1 |
+| DEMAND48 | 0.1 | 0.1 |
+| DNS2020 | 62.0 | 61.7 |
+| DNS5 | 61.6 | 62.4 |
+| LibriSpeech | 116.6 | 115.2 |
+| LibriTTS | 157.7 | 157.2 |
+| MS-SNSD | 9.9 | 9.9 |
+| OpenSLR26 | 60.6 | 58.9 |
+| OpenSLR28 | 31.4 | 30.3 |
+| SSN | 0.0 | 0.0 |
+| URGENT2024 | 2.2 | 2.2 |
+| VCTK | 28.3 | 27.7 |
+| VoiceBank-DEMAND | 42.6 | 41.4 |
+| WHAM48 | 0.7 | 0.8 |
+| musan | 0.8 | 1.0 |
+| 合計 | 627.0 | 622.1 |
+
+評価登録の区間は 5 セットの合計で、SHA-256 **12.678 秒**、ヘッダ確認 **144.432 秒**、索引参照 **0.730 秒**、SQL 登録 **14.719 秒**（合計 172.559 秒）。セット別は次のとおり。
+
+| セット | SHA-256 | ヘッダ | 索引 | SQL |
+|---|---:|---:|---:|---:|
+| `chime3_et05_real_ch5` | 1.192 | 11.649 | 0.143 | 1.635 |
+| `chime3_et05_real_ch0` | 2.211 | 12.259 | 0.166 | 1.643 |
+| `chime3_et05_simu_ch5` | 1.465 | 14.618 | 0.106 | 1.895 |
+| `chime3_tr05_org` | 7.413 | 86.625 | 0.204 | 8.528 |
+| `voicebank_demand_test` | 0.397 | 19.281 | 0.111 | 1.018 |
+
+参考ログでは索引 622.1 秒のあと `bootstrap finished` まで 1,064.9 秒あり、その本体は評価登録だった。今回の評価登録 172.6 秒は、その残りに対応する区間である。壁時計の残り約 28 秒は、リンク確認、検証、区間計器の外の処理である。検証だけをこのファイルで分けては計っていない。SHA-256 は 12.7 秒で支配的ではないので、並列化のための 2 回目の全件はしていない。索引の Appender、`POSIX_FADV_RANDOM`、ワーカー数も変えていない。ヘッダ確認は `torchaudio.info` のままである。
+
+変更前の小規模計測（本番 DB は `read_only`、NFS は温かい）では、接続を開いて 1 行読んで閉じる操作が 30 回で 0.0730 秒、同じ接続では 0.0035 秒。変更後、VoiceBank の 200 パスを 1 本の読み取り接続で引くと 0.245 秒、200 件とも見つかった。40 件の短い WAV では、変更前の登録 0.291 秒に対し、変更後はヘッダ 0.063 秒と登録 0.333 秒（うち SQL 0.0726 秒）。短いファイルでは接続の差は壁時計に出ない。
+
+論理ハッシュは `src.data.recipe.json_hash`。NULL は None、JSON 列は `json.loads`、行はリストのリスト、順は `path`、`case_id`、`name`、`(set_name, position)`、`run_id`、`record_id`。`data/db/resource-speed-20261112.duckdb` を `read_only` で開き、上の夜の 6 表と一致した。
+
+| テーブル | 論理ハッシュ |
+|---|---|
+| `corpora.audio_files` | `40a31d298d7c31b27b032c09c10306d884451cfcd17935a713b807f266847708` |
+| `eval.cases` | `0956712fedd9794efdee1316e145e779cdac5999abb976ce7dcc92d232fc50fa` |
+| `eval.sets` | `2ef81dd1d6f6bdc8e2fb1ba016622255546bfd35927d1ebd3be68641562468f7` |
+| `eval.set_items` | `91d70102a50d65d45b0446aa631d01d20a7ce07e493ae7d829dd6e34f63d4584` |
+| `eval.runs` | `4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945` |
+| `eval.results` | `4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945` |
+
 ## 2026-11-12 夜: DEMAND48・Babble・SSN を加えた再構築
 
 同日の再構築後、評価用の本番は `data/db/resource.duckdb`（191,901,696 バイト、更新時刻 2026-11-12 18:27:03 +0900）。候補 `data/db/resource-next.duckdb` は同じバイト数・同じ更新時刻のまま残している。往復先 `data/db/resource-roundtrip-20261112.duckdb` は 187,183,104 バイト。再構築元の staging は `data/staging/resource-20261112/`。置換前のファイルは `data/db/backups/resource-before-demand48-20261112.duckdb`（203,698,176 バイト、SHA-256 `3998f5ae86b3d1b7a3809bdff20f2564a8e90859b0e237f2191150db9afacb6a`）。退避用 staging `data/staging/resource-before-demand48-20261112/` は新 DB の入力ではない。

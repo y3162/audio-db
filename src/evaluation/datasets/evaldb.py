@@ -11,6 +11,7 @@ from __future__ import annotations
 import json
 import os
 import re
+import time
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
@@ -24,6 +25,7 @@ from src.data.recipe import (
     sha256_file,
 )
 from src.data.recipe import json_hash as recipe_json_hash
+from src.evaluation.audio.header import probe_header, verified_header
 from src.evaluation.audio.mixing import PEAK_LIMIT
 from src.evaluation.audio.render import prepare_noise_start
 from src.evaluation.datasets.duckdb import fetch_audio_files
@@ -62,6 +64,7 @@ class RegistrationReport:
     inserted: int
     unchanged: int
     set_status: str
+    phases: dict[str, float] = field(default_factory=dict)
 
     def __str__(self) -> str:
         return f"inserted {self.inserted}, unchanged {self.unchanged}, {self.set_status}"
@@ -123,6 +126,8 @@ class EvaluationDB:
         self.project_root = Path(project_root) if project_root is not None else Path.cwd()
         root = Path(corpora_root)
         self.corpora_root = root if root.is_absolute() else self.project_root / root
+        self._corpus_cache: dict[str, dict[str, Any]] | None = None
+        self._phases = _empty_phases()
 
     def ensure_schema(self) -> None:
         """Create the eval schema. Existing corpora tables are left as they are."""
@@ -189,8 +194,7 @@ class EvaluationDB:
     ) -> RegistrationReport:
         """Validate a manifest and register its rows as one named set."""
         samples = load_manifest(path, root)
-        cases = [self._case_from_manifest(sample) for sample in samples]
-        return self._register(cases, set_name, description)
+        return self._register_samples(samples, set_name, description)
 
     def register_samples(
         self,
@@ -202,8 +206,7 @@ class EvaluationDB:
         """Register samples that were already resolved to audio files."""
         if not samples:
             raise DatasetError(f"evaluation set {set_name} has no cases")
-        cases = [self._case_from_manifest(sample) for sample in samples]
-        return self._register(cases, set_name, description)
+        return self._register_samples(samples, set_name, description)
 
     def register_recipe(
         self,
@@ -220,6 +223,7 @@ class EvaluationDB:
         description: str | None = None,
     ) -> RegistrationReport:
         """Register one case from a recipe document."""
+        self._phases = _empty_phases()
         try:
             document = canonical_recipe(recipe)
         except ValueError as exc:
@@ -272,13 +276,14 @@ class EvaluationDB:
         if hard_clip:
             raise DatasetError("hard clipping is not a recipe operation")
         clean_limit = _optional_seconds(max_seconds, "max_seconds")
+        self._phases = _empty_phases()
         self.ensure_schema()
         connection = self._connect(read_only=True)
+        started = time.perf_counter()
         try:
             rows = self._select_corpus(connection, filters=filters, query=query, params=params, limit=limit)
-            if role != "synthetic":
-                cases = [self._case_from_corpus_row(row, role) for row in rows]
-            else:
+            noises = None
+            if role == "synthetic":
                 if snr_db is None:
                     raise DatasetError("synthetic corpus sets require snr_db")
                 if isinstance(snr_db, bool) or not isinstance(snr_db, (int, float)):
@@ -292,19 +297,23 @@ class EvaluationDB:
                 )
                 if not noises:
                     raise DatasetError("synthetic corpus sets require at least one noise file")
-                cases = [
-                    self._synthetic_corpus_case(
-                        row,
-                        noises,
-                        snr_db=float(snr_db),
-                        seed=seed,
-                        max_seconds=clean_limit,
-                        prevent_clip=bool(prevent_clip),
-                    )
-                    for row in rows
-                ]
         finally:
+            self._add_phase("index", time.perf_counter() - started)
             connection.close()
+        if role != "synthetic":
+            cases = [self._case_from_corpus_row(row, role) for row in rows]
+        else:
+            cases = [
+                self._synthetic_corpus_case(
+                    row,
+                    noises,
+                    snr_db=float(snr_db),
+                    seed=seed,
+                    max_seconds=clean_limit,
+                    prevent_clip=bool(prevent_clip),
+                )
+                for row in rows
+            ]
         return self._register(cases, name, description)
 
     def load_dataset(self, name: str) -> EvaluationDataset:
@@ -354,53 +363,85 @@ class EvaluationDB:
             seen.add(case.case_id)
         self.ensure_schema()
         connection = self._connect()
+        started = time.perf_counter()
         try:
             connection.execute("BEGIN TRANSACTION")
-            inserted = 0
-            unchanged = 0
-            for case in cases:
-                state = self._put_case(connection, case)
-                inserted += int(state == "inserted")
-                unchanged += int(state == "unchanged")
-            set_status = self._put_set(connection, set_name, description, [case.case_id for case in cases])
-            connection.execute("COMMIT")
-        except Exception:
-            connection.execute("ROLLBACK")
-            raise
+            try:
+                inserted, unchanged = self._put_cases(connection, cases)
+                set_status = self._put_set(connection, set_name, description, [case.case_id for case in cases])
+                connection.execute("COMMIT")
+            except Exception:
+                connection.execute("ROLLBACK")
+                raise
         finally:
+            self._add_phase("sql", time.perf_counter() - started)
             connection.close()
-        return RegistrationReport(set_name, inserted, unchanged, set_status)
+        return RegistrationReport(set_name, inserted, unchanged, set_status, dict(self._phases))
 
-    def _put_case(self, connection, case: _Case) -> str:
-        digest = case.content_hash()
-        row = connection.execute(
-            "SELECT content_hash FROM eval.cases WHERE case_id = ?",
-            [case.case_id],
-        ).fetchone()
-        if row is None:
-            connection.execute(
+    def _register_samples(
+        self,
+        samples: list[AudioSample],
+        set_name: str,
+        description: str | None,
+    ) -> RegistrationReport:
+        """Index lookup uses one read-only connection, closed before the write."""
+        self._phases = _empty_phases()
+        keys = []
+        for sample in samples:
+            key = self._corpus_lookup_path(sample)
+            if key is not None:
+                keys.append(key)
+        started = time.perf_counter()
+        cache = self._load_corpus_rows(keys)
+        self._add_phase("index", time.perf_counter() - started)
+        self._corpus_cache = cache
+        try:
+            cases = [self._case_from_manifest(sample) for sample in samples]
+        finally:
+            self._corpus_cache = None
+        return self._register(cases, set_name, description)
+
+    def _put_cases(self, connection, cases: list[_Case]) -> tuple[int, int]:
+        existing = self._existing_case_hashes(connection, [case.case_id for case in cases])
+        inserted = 0
+        unchanged = 0
+        pending: list[tuple] = []
+        for case in cases:
+            digest = case.content_hash()
+            current = existing.get(case.case_id)
+            if current is None:
+                pending.append(_case_parameters(case, digest))
+                inserted += 1
+                continue
+            if current != digest and not _same_registered_case(connection, case):
+                source = case.metadata.get("source_id", case.case_id)
+                raise DatasetError(f"case {case.case_id} ({source}) is already registered with different content")
+            unchanged += 1
+        if pending:
+            connection.executemany(
                 f"""
                 INSERT INTO eval.cases ({", ".join(CASE_COLUMNS)})
                 VALUES (?, ?, ?, ?, ?, ?, ?, ?::JSON, ?, ?::JSON)
                 """,
-                [
-                    case.case_id,
-                    case.kind,
-                    case.dataset,
-                    case.split,
-                    case.sample_rate,
-                    case.transcript,
-                    case.speaker_id,
-                    json.dumps(case.recipe, ensure_ascii=False, sort_keys=True),
-                    digest,
-                    json.dumps(case.metadata, ensure_ascii=False, sort_keys=True),
-                ],
+                pending,
             )
-            return "inserted"
-        if row[0] != digest and not _same_registered_case(connection, case):
-            source = case.metadata.get("source_id", case.case_id)
-            raise DatasetError(f"case {case.case_id} ({source}) is already registered with different content")
-        return "unchanged"
+        return inserted, unchanged
+
+    def _existing_case_hashes(self, connection, case_ids: list[str]) -> dict[str, str]:
+        found: dict[str, str] = {}
+        step = 5000
+        for start in range(0, len(case_ids), step):
+            chunk = case_ids[start : start + step]
+            rows = connection.execute(
+                """
+                SELECT case_id, content_hash
+                FROM eval.cases
+                WHERE case_id IN (SELECT UNNEST(?::VARCHAR[]))
+                """,
+                [chunk],
+            ).fetchall()
+            found.update({row[0]: row[1] for row in rows})
+        return found
 
     def _put_set(self, connection, name: str, description: str | None, case_ids: list[str]) -> str:
         digest = recipe_json_hash({"case_ids": case_ids, "description": description})
@@ -413,10 +454,10 @@ class EvaluationDB:
                 "INSERT INTO eval.sets (name, description, content_hash) VALUES (?, ?, ?)",
                 [name, description, digest],
             )
-            for position, case_id in enumerate(case_ids):
-                connection.execute(
+            if case_ids:
+                connection.executemany(
                     "INSERT INTO eval.set_items (set_name, position, case_id) VALUES (?, ?, ?)",
-                    [name, position, case_id],
+                    [(name, position, case_id) for position, case_id in enumerate(case_ids)],
                 )
             return "created"
         if existing[0] != digest:
@@ -450,14 +491,9 @@ class EvaluationDB:
                 sample_rate = int(corpus_row["sample_rate"])
         primary = clean or noisy or audio
         if sample_rate is None:
-            sample_rate = _rate_of(self._absolute(primary))
+            sample_rate = self._confirmed_rate(sample, primary, None)
         else:
-            file_rate = _rate_of(self._absolute(primary))
-            if int(sample_rate) != file_rate:
-                raise DatasetError(
-                    f"{sample.utterance_id} sample_rate {sample_rate} does not match the file ({file_rate})"
-                )
-            sample_rate = int(sample_rate)
+            sample_rate = self._confirmed_rate(sample, primary, sample_rate)
         if kind == "synthetic":
             recipe = self._synthetic_recipe(
                 clean,
@@ -671,7 +707,12 @@ class EvaluationDB:
         path = self._absolute(stored)
         if not path.is_file():
             raise DatasetError(f"audio file not found: {path}")
-        return {"path": stored, "sha256": sha256_file(path)}
+        started = time.perf_counter()
+        try:
+            digest = sha256_file(path)
+        finally:
+            self._add_phase("sha256", time.perf_counter() - started)
+        return {"path": stored, "sha256": digest}
 
     def _check_source_files(self, recipe: dict[str, Any]) -> None:
         for name, source in recipe["sources"].items():
@@ -777,9 +818,74 @@ class EvaluationDB:
             return None
         return text
 
+    def _corpus_lookup_path(self, sample: AudioSample) -> str | None:
+        clean = self._store_audio(sample.clean_path)
+        noisy = self._store_audio(sample.noisy_path)
+        noise = self._store_audio(sample.noise_path)
+        audio = self._store_audio(sample.audio_path)
+        return self._corpus_key(clean or noisy or audio or noise)
+
+    def _load_corpus_rows(self, paths: list[str]) -> dict[str, dict[str, Any]]:
+        unique = list(dict.fromkeys(paths))
+        if not unique or not self.path.is_file():
+            return {}
+        connection = self._connect(read_only=True)
+        try:
+            exists = connection.execute(
+                """
+                SELECT count(*) FROM information_schema.tables
+                WHERE table_schema = 'corpora' AND table_name = 'audio_files'
+                """
+            ).fetchone()[0]
+            if not exists:
+                return {}
+            columns = ", ".join(AUDIO_FILE_COLUMNS)
+            found: dict[str, dict[str, Any]] = {}
+            step = 5000
+            for start in range(0, len(unique), step):
+                chunk = unique[start : start + step]
+                try:
+                    cursor = connection.execute(
+                        f"""
+                        SELECT {columns} FROM corpora.audio_files
+                        WHERE path IN (SELECT UNNEST(?::VARCHAR[]))
+                        """,
+                        [chunk],
+                    )
+                except Exception:
+                    return {}
+                names = [item[0] for item in cursor.description]
+                for row in cursor.fetchall():
+                    item = dict(zip(names, row, strict=True))
+                    found[item["path"]] = item
+            return found
+        finally:
+            connection.close()
+
+    def _confirmed_rate(self, sample: AudioSample, stored: str, sample_rate: int | None) -> int:
+        """Compare a declared rate with torchaudio. Reuse a probe from this registration."""
+        path = self._absolute(stored)
+        verified = verified_header(sample, path)
+        if verified is None:
+            file_rate = _rate_of(path)
+        else:
+            file_rate = verified.sample_rate
+        if sample_rate is None:
+            return file_rate
+        if int(sample_rate) != file_rate:
+            raise DatasetError(
+                f"{sample.utterance_id} sample_rate {sample_rate} does not match the file ({file_rate})"
+            )
+        return int(sample_rate)
+
+    def _add_phase(self, name: str, seconds: float) -> None:
+        self._phases[name] = self._phases.get(name, 0.0) + seconds
+
     def _corpus_row(self, corpus_path: str | None) -> dict[str, Any] | None:
         if not corpus_path or not self.path.is_file():
             return None
+        if self._corpus_cache is not None:
+            return self._corpus_cache.get(corpus_path)
         connection = self._connect(read_only=True)
         try:
             columns = ", ".join(AUDIO_FILE_COLUMNS)
@@ -1000,5 +1106,26 @@ def _frame_count(path: Path, max_seconds: float | None) -> tuple[int, int]:
 
 
 def _rate_of(path: Path) -> int:
-    _, rate = _frame_count(path, None)
-    return rate
+    header = probe_header(path)
+    if header.frames < 1 or header.sample_rate < 1:
+        raise DatasetError(f"audio has no frames: {path}")
+    return header.sample_rate
+
+
+def _empty_phases() -> dict[str, float]:
+    return {"sha256": 0.0, "header": 0.0, "index": 0.0, "sql": 0.0}
+
+
+def _case_parameters(case: _Case, digest: str) -> tuple:
+    return (
+        case.case_id,
+        case.kind,
+        case.dataset,
+        case.split,
+        case.sample_rate,
+        case.transcript,
+        case.speaker_id,
+        json.dumps(case.recipe, ensure_ascii=False, sort_keys=True),
+        digest,
+        json.dumps(case.metadata, ensure_ascii=False, sort_keys=True),
+    )
