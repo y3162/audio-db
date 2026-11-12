@@ -25,7 +25,7 @@ import torch
 import yaml
 
 from src.experiments.execution.checkpoint import DirectoryLock
-from src.experiments.execution.status import process_identity, process_start
+from src.experiments.execution.status import process_identity, process_match, process_start
 from src.experiments.launcher import liveness
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -291,12 +291,41 @@ class LauncherTests(_Base):
                 _wait_for(lambda: (output / "latest.pt").is_file(), 120, "the first checkpoint", running)
                 self.assertEqual(liveness(output)["state"], "alive")
                 running.signal(signal.SIGKILL)
-                running.wait(30)
-                # The ranks lose their supervisor, stop at a safe point, and nobody writes a verdict.
-                _wait_for(lambda: _nothing_runs(directory), 120, "the ranks to exit", None)
+                # Exit is asynchronous. Sample twice and accept only a stable answer:
+                # a descendant that is still the recorded process must be ``alive``,
+                # and ``stale`` is required only once every descendant is gone.
+                seen_live = False
+                deadline = time.monotonic() + 60
+                detail = ""
+                while time.monotonic() < deadline:
+                    before = _descendant_states(output)
+                    info = liveness(output)
+                    after = _descendant_states(output)
+                    again = liveness(output)
+                    detail = f"{info} / {again} states={before} -> {after}"
+                    if not before or not after:
+                        time.sleep(0.02)
+                        continue
+                    live = "alive" in before and "alive" in after
+                    gone = "alive" not in before and "alive" not in after
+                    gone = gone and "unknown" not in before and "unknown" not in after
+                    if "alive" in before and info["state"] == "alive":
+                        seen_live = True
+                    if live:
+                        self.assertEqual(info["state"], "alive", detail)
+                        self.assertEqual(again["state"], "alive", detail)
+                    elif gone and info["state"] == again["state"] == "stale":
+                        break
+                    elif gone and info["state"] == again["state"] == "alive":
+                        self.fail(f"liveness stayed alive after the supervised processes exited\n{detail}")
+                    time.sleep(0.02)
+                else:
+                    self.fail(f"liveness did not become stale\n{detail}")
+                self.assertTrue(seen_live, f"no supervised process was observed alive\n{detail}")
+                self.assertLess(running.wait(30), 0, running.output())
+                self.assertEqual(liveness(output)["state"], "stale")
                 self.assertEqual(_record(output / "status.json")["status"], "RUNNING")
                 self.assertEqual(_record(output / "launch.json")["state"], "RUNNING")
-                self.assertEqual(liveness(output)["state"], "stale")
                 self.assertFalse((output / "complete.json").exists())
                 self.assertIn(_latest(output)["logical_step"], range(1, STEPS + 1))
                 self.resume_and_compare(config, directory, nproc=nproc)
@@ -442,6 +471,63 @@ class LivenessTests(unittest.TestCase):
         self.assertEqual(self.state(), "stale")
         self.write("launch.json", {"state": "RUNNING", **elsewhere, "heartbeat_at": "yesterday"})
         self.assertEqual(self.state(), "stale")
+
+    def test_a_live_child_keeps_the_launch_alive_after_its_launcher_exits(self) -> None:
+        # Rank 0 and the launcher are the records a reader used to check. A later rank
+        # or torchrun is still this launch.
+        self.write("status.json", {"status": "RUNNING", **self.dead})
+        self.write(
+            "launch.json",
+            {
+                "state": "RUNNING",
+                "host": self.me["host"],
+                "pid": self.dead["pid"],
+                "process_start": self.dead["process_start"],
+                "processes": [
+                    {"role": "launcher", "pid": self.dead["pid"], "process_start": self.dead["process_start"]},
+                    {"role": "child", "pid": self.me["pid"], "process_start": self.me["process_start"]},
+                ],
+            },
+        )
+        self.assertEqual(self.state(), "alive")
+        self.write(
+            "launch.json",
+            {
+                "state": "RUNNING",
+                "host": self.me["host"],
+                "pid": self.dead["pid"],
+                "process_start": "1",
+                "processes": [
+                    {"role": "launcher", "pid": self.dead["pid"], "process_start": "1"},
+                    {"role": "child", "pid": self.me["pid"], "process_start": "1"},
+                ],
+            },
+        )
+        self.assertEqual(self.state(), "stale")
+
+    def test_a_live_pid_without_a_start_time_is_unknown(self) -> None:
+        self.write("status.json", {"status": "RUNNING", "host": self.me["host"], "pid": self.me["pid"]})
+        self.assertEqual(self.state(), "unknown")
+
+    def test_a_zombie_is_not_a_running_launcher(self) -> None:
+        proc = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(30)"])
+        self.addCleanup(proc.wait)
+        self.addCleanup(proc.kill)
+        start = process_start(proc.pid)
+        self.assertIsNotNone(start)
+        os.kill(proc.pid, signal.SIGKILL)
+        deadline = time.monotonic() + 5
+        while time.monotonic() < deadline:
+            zombie = _proc_state(proc.pid) in (None, "Z")
+            if zombie:
+                self.write(
+                    "status.json",
+                    {"status": "RUNNING", "host": self.me["host"], "pid": proc.pid, "process_start": start},
+                )
+                self.assertEqual(self.state(), "stale")
+                return
+            time.sleep(0.01)
+        self.fail("the killed process did not become a zombie")
 
 
 class LauncherCudaTests(_Base):
@@ -692,11 +778,29 @@ def _wait_for(predicate, timeout: float, what: str, running: _Running | None) ->
     raise AssertionError(f"timed out after {timeout} s waiting for {what}" + ("" if running is None else "\n" + running.output()))
 
 
-def _nothing_runs(directory: Path) -> bool:
-    for path in directory.glob("fault.pid*"):
-        if process_start(int(path.read_text(encoding="utf-8"))) is not None:
-            return False
-    return True
+def _proc_state(pid: int) -> str | None:
+    """Process state from ``/proc``, or ``None`` when the pid is gone."""
+
+    path = Path(f"/proc/{pid}/stat")
+    if not path.exists():
+        return None
+    try:
+        stat = path.read_text(encoding="utf-8", errors="replace")
+    except OSError:
+        return "?"
+    fields = stat.rpartition(")")[2].split()
+    return fields[0] if fields else "?"
+
+
+def _descendant_states(output: Path) -> list[str]:
+    """Liveness of every supervised process except the launcher itself."""
+
+    rows = _record(output / "launch.json").get("processes") or []
+    return [
+        process_match(row.get("pid"), row.get("process_start"))
+        for row in rows
+        if isinstance(row, dict) and row.get("role") != "launcher"
+    ]
 
 
 def _record(path: Path) -> dict:

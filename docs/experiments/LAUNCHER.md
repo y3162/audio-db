@@ -56,7 +56,7 @@ SIGTERM、SIGINT、SIGHUP、`--stop-after` は、Trainer に次の安全な点�
 
 | ファイル | 内容 |
 |---|---|
-| `launch.json` | `audio-db-launch-v1`。起動 ID、ホスト、pid、プロセス開始時刻、コマンド、world size、開始と終了の時刻、15 秒ごとの heartbeat、終了コード、理由 |
+| `launch.json` | `audio-db-launch-v1`。起動 ID、ホスト、pid、プロセス開始時刻、コマンド、world size、開始と終了の時刻、15 秒ごとの heartbeat、終了コード、理由。`processes` は Launcher、その直接の子（学習プロセスまたは torchrun）、rank の pid と開始時刻 |
 | `status.json` | 判定。`FAILED` には `reason`、`exit_code`、各 rank の `failures` が入る |
 | `failure.rank<N>.json` | rank N が投げた例外。`kind` は `cuda_oom`、`nccl`、`interrupt`、`exception` |
 | `.launch.lock` | Launcher の排他。同じディレクトリを 2 つの Launcher が監視しない |
@@ -84,7 +84,7 @@ Launcher は、この起動の `status.json` が `RUNNING` になってから、
 
 ## `RUNNING` が生きているか
 
-プロセスが kill されると `status.json` に `RUNNING` が残る。これを実行中と見なさないために、記録にはホスト、pid、プロセス開始時刻を入れている。
+プロセスが kill されると `status.json` に `RUNNING` が残る。これを実行中と見なさないために、記録にはホスト、pid、プロセス開始時刻を入れている。DDP では rank 0 だけではなく、`processes` に書いたプロセスをすべて見る。
 
 ```bash
 .venvs/se/bin/python scripts/experiments/show_status.py OUTPUT_DIRECTORY
@@ -92,11 +92,11 @@ Launcher は、この起動の `status.json` が `RUNNING` になってから、
 
 | `liveness` | 意味 |
 |---|---|
-| `alive` | 記録の pid と開始時刻のプロセスがこのホストにある。別ホストの起動は、heartbeat が 120 秒以内 |
-| `stale` | `RUNNING` だが、そのプロセスは無い、または heartbeat が古い。実行は記録を残さずに終わっている |
+| `alive` | このホストに記録されたプロセスのうち、pid と開始時刻が一致するものが 1 つでもいる。別ホストの起動は、heartbeat が 120 秒以内 |
+| `stale` | `RUNNING` だが、記録されたプロセスはすべて無い、ゾンビである、または pid が別のプロセスに再利用されている。別ホストは heartbeat が古い。実行は記録を残さずに終わっている |
 | `finished` | `RUNNING` 以外 |
 | `absent` | `status.json` が無い、または読めない |
-| `unknown` | Launcher なしで別ホストから起動されていて、ここからは確認できない |
+| `unknown` | Launcher なしで別ホストから起動されている、または pid はあるが開始時刻を確認できない。`alive` にも `stale` にもしない |
 
 `stale` のディレクトリは、Launcher で `--resume` すれば続けられる。排他は `flock` なので、プロセスが死ねば解放される。
 

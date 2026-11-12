@@ -103,39 +103,85 @@ def process_identity() -> dict[str, Any]:
 
 
 def process_start(pid: int) -> str | None:
-    """Kernel start time of ``pid`` in clock ticks since boot, or ``None`` without ``/proc``.
+    """Kernel start time of ``pid`` in clock ticks since boot, or ``None`` when it is not running.
 
     A pid is reused after its process exits. The pair of pid and start time
-    is not.
+    is not. A zombie has exited, so it has no start time here.
     """
 
-    try:
-        stat = Path(f"/proc/{int(pid)}/stat").read_text(encoding="utf-8", errors="replace")
-    except (OSError, ValueError):
-        return None
-    # ``pid (comm) state ppid ...``; comm may itself contain spaces and parentheses.
-    fields = stat.rpartition(")")[2].split()
-    if len(fields) < 20 or fields[0] == "Z":
-        return None
-    return fields[19]
+    kind, start = _proc_stat(pid)
+    return start if kind == "running" else None
 
 
 def process_alive(pid: object, started: object) -> bool:
-    """True when ``pid`` exists on this host and is the process that was recorded."""
+    """True when ``pid`` is the recorded process and has not exited.
+
+    A missing start time still matches. Callers that must not confuse a reused
+    pid with the original process use :func:`process_match`.
+    """
+
+    return process_match(pid, started, missing_start="alive") == "alive"
+
+
+def process_match(pid: object, started: object, *, missing_start: str = "unknown") -> str:
+    """``alive``, ``dead``, or ``unknown`` for one recorded pid.
+
+    ``unknown`` means the pid exists but its start time cannot be checked, or
+    no start time was recorded on a host that has ``/proc``. A zombie is
+    ``dead``: the process has exited and only the entry remains.
+    """
 
     if isinstance(pid, bool) or not isinstance(pid, int) or pid <= 0:
-        return False
+        return "dead"
     try:
         os.kill(pid, 0)
     except ProcessLookupError:
-        return False
+        return "dead"
     except PermissionError:
-        pass
-    current = process_start(pid)
-    if current is None:
-        # No /proc entry: a zombie, or a system without /proc where the pid is all there is.
-        return not Path("/proc/self/stat").is_file()
-    return started is None or str(started) == current
+        return "unknown"
+    kind, current = _proc_stat_retry(pid)
+    if kind == "missing" and not Path("/proc/self/stat").is_file():
+        # No procfs: a live pid cannot be told apart from any other occupant.
+        return "alive"
+    if kind in ("missing", "zombie"):
+        return "dead"
+    if kind != "running":
+        return "unknown"
+    if not Path("/proc/self/stat").is_file():
+        return "alive"
+    if started is None:
+        return missing_start
+    return "alive" if str(started) == current else "dead"
+
+
+def _proc_stat(pid: int) -> tuple[str, str | None]:
+    """``running``, ``zombie``, ``missing``, or ``unreadable``, and the start field when present."""
+
+    try:
+        stat = Path(f"/proc/{int(pid)}/stat").read_text(encoding="utf-8", errors="replace")
+    except FileNotFoundError:
+        return "missing", None
+    except (OSError, ValueError):
+        return "unreadable", None
+    # ``pid (comm) state ppid ...``; comm may itself contain spaces and parentheses.
+    fields = stat.rpartition(")")[2].split()
+    if len(fields) < 20:
+        return "unreadable", None
+    if fields[0] == "Z":
+        return "zombie", fields[19]
+    return "running", fields[19]
+
+
+def _proc_stat_retry(pid: int) -> tuple[str, str | None]:
+    """Read ``/proc`` a few times. One torn read is not evidence that the process exited."""
+
+    last = ("unreadable", None)
+    for _ in range(3):
+        kind, start = _proc_stat(pid)
+        if kind != "unreadable":
+            return kind, start
+        last = (kind, start)
+    return last
 
 
 def now() -> str:

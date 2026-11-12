@@ -51,6 +51,7 @@ from src.experiments.execution.status import (
     now,
     process_alive,
     process_identity,
+    process_match,
     process_start,
     read_failures,
     read_status,
@@ -258,9 +259,17 @@ def _supervise(
     child = subprocess.Popen(command, env=env, start_new_session=True, preexec_fn=_die_with_parent)
     record["child_pid"] = child.pid
     # pid -> kernel start time. A pid alone could be another program after the rank has exited.
-    workers: dict[int, str | None] = {}
+    # The direct child is recorded before the loop so a killed launcher still names torchrun or the rank.
+    workers: dict[int, str | None] = {child.pid: process_start(child.pid)}
+    _remember_processes(record, workers, child.pid)
+    try:
+        _write_launch(directory, record)
+    except OSError:
+        pass
     signalled: set[int] = set()
-    heartbeat = scanned = started
+    heartbeat = started
+    # The first pass records ranks immediately. Later passes are once a second.
+    scanned = started - _SCAN_SECONDS
     listening = False
     killed = False
     while child.poll() is None:
@@ -268,10 +277,25 @@ def _supervise(
         if stop.requested_at is None and args.stop_after is not None and current - started >= args.stop_after:
             stop.request("stop_after")
         announce = stop.requested_at is not None and "stop_requested_at" not in record
-        if not workers or announce or current - scanned >= _SCAN_SECONDS:
+        changed = False
+        # Keep scanning until torchrun's ranks have been named. After that, once a second.
+        expected = args.nproc if args.nproc == 1 else args.nproc + 1
+        if announce or len(workers) < expected or current - scanned >= _SCAN_SECONDS:
             scanned = current
-            for pid in [child.pid] if args.nproc == 1 else _children(child.pid):
-                workers.setdefault(pid, process_start(pid))
+            # Ranks are children of torchrun. The direct child stays even when it is not its own child.
+            found = [child.pid] if args.nproc == 1 else [child.pid, *_children(child.pid)]
+            for pid in found:
+                if pid not in workers or workers[pid] is None:
+                    started_at = process_start(pid)
+                    if workers.get(pid) != started_at:
+                        workers[pid] = started_at
+                        changed = True
+        if changed:
+            _remember_processes(record, workers, child.pid)
+            try:
+                _write_launch(directory, record)
+            except OSError:
+                pass
         if stop.requested_at is not None:
             if announce:
                 record["stop_requested_at"] = now()
@@ -283,7 +307,9 @@ def _supervise(
                 listening = reported.get("status") == "RUNNING" and reported.get("launch_id") == record["launch_id"]
             if listening:
                 # torchrun would kill its ranks on SIGTERM, so only the ranks are signalled.
-                for pid in sorted(set(workers) - signalled):
+                # ``workers`` also holds torchrun itself; that pid is not a rank when nproc > 1.
+                ranks = [pid for pid in workers if args.nproc == 1 or pid != child.pid]
+                for pid in sorted(set(ranks) - signalled):
                     _signal(pid, signal.SIGTERM)
                     signalled.add(pid)
             if stop.force or current - stop.requested_at >= args.grace:
@@ -295,6 +321,7 @@ def _supervise(
         if announce or current - heartbeat >= HEARTBEAT_SECONDS:
             heartbeat = current
             record["heartbeat_at"] = now()
+            _remember_processes(record, workers, child.pid)
             try:
                 _write_launch(directory, record)
             except OSError:
@@ -403,9 +430,13 @@ def liveness(directory: Path) -> dict[str, str]:
     """Tell a live ``RUNNING`` from one left behind by a dead process.
 
     ``state`` is ``alive``, ``stale``, ``finished``, ``absent``, or
-    ``unknown``. A run on this host is alive while the recorded process
-    exists. A launch on another host is alive while its heartbeat is recent.
-    A run on another host without the launcher cannot be checked from here.
+    ``unknown``. On this host a run is alive while any recorded process
+    (the launcher, its child, a rank, or the process that wrote
+    ``status.json``) is still that same process. One rank exiting does not
+    make the launch stale while torchrun or another rank is running. A pid
+    reused by a different process is not that launch. A launch on another
+    host is alive while its heartbeat is recent. A run on another host
+    without the launcher cannot be checked from here.
     """
 
     status = read_status(directory)
@@ -414,18 +445,22 @@ def liveness(directory: Path) -> dict[str, str]:
     if status.get("status") != "RUNNING":
         return {"state": "finished", "reason": f"status is {status.get('status')}"}
     launch = read_launch(directory)
-    owners = [status]
-    if launch is not None and launch.get("state") == "RUNNING":
-        owners.insert(0, launch)
     host = socket.gethostname()
-    local = [owner for owner in owners if owner.get("host") == host]
+    local = _local_identities(launch, status, host)
     if local:
-        for owner in local:
-            if process_alive(owner.get("pid"), owner.get("process_start")):
-                return {"state": "alive", "reason": f"pid {owner.get('pid')} is running on {host}"}
-        pids = ", ".join(str(owner.get("pid")) for owner in local)
+        seen = [(row.get("pid"), process_match(row.get("pid"), row.get("process_start"))) for row in local]
+        alive = [pid for pid, state in seen if state == "alive"]
+        if alive:
+            return {"state": "alive", "reason": f"pid {alive[0]} is running on {host}"}
+        unknown = [pid for pid, state in seen if state == "unknown"]
+        if unknown:
+            return {
+                "state": "unknown",
+                "reason": f"pid {unknown[0]} on {host} exists but its start time could not be confirmed",
+            }
+        pids = ", ".join(str(pid) for pid, _state in seen)
         return {"state": "stale", "reason": f"pid {pids} is not running on {host}; the run ended without a record"}
-    if owners[0] is launch:
+    if launch is not None and launch.get("state") == "RUNNING":
         age = _age_seconds(launch.get("heartbeat_at"))
         if age is not None and age < STALE_SECONDS:
             return {"state": "alive", "reason": f"launcher heartbeat {age:.0f} s ago on {launch.get('host')}"}
@@ -435,6 +470,36 @@ def liveness(directory: Path) -> dict[str, str]:
         "state": "unknown",
         "reason": f"started on {status.get('host')} without the launcher; check pid {status.get('pid')} there",
     }
+
+
+def _local_identities(launch: dict[str, Any] | None, status: dict[str, Any], host: str) -> list[dict[str, Any]]:
+    """Process records on ``host``. A launch's ``processes`` list includes every supervised pid."""
+
+    found: list[dict[str, Any]] = []
+    if launch is not None and launch.get("state") == "RUNNING" and launch.get("host") == host:
+        rows = launch.get("processes")
+        listed = [row for row in rows if isinstance(row, dict)] if isinstance(rows, list) else []
+        found.extend(listed or [launch])
+    if status.get("host") == host:
+        found.append(status)
+    return found
+
+
+def _remember_processes(record: dict[str, Any], workers: dict[int, str | None], child_pid: int) -> None:
+    """Store the launcher, its direct child, and ranks. Rank 0's pid alone is not the whole launch."""
+
+    rows: list[dict[str, Any]] = [
+        {"role": "launcher", "pid": record.get("pid"), "process_start": record.get("process_start")}
+    ]
+    for pid, started in sorted(workers.items()):
+        rows.append(
+            {
+                "role": "child" if pid == child_pid else "worker",
+                "pid": pid,
+                "process_start": started,
+            }
+        )
+    record["processes"] = rows
 
 
 def read_launch(directory: Path) -> dict[str, Any] | None:

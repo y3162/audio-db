@@ -62,8 +62,9 @@ Launcher の終了コードは、0 が完了、3 が安全な停止、1 が失�
 | `COMPLETED` | 終わり。`complete.json` がある。再開はできない |
 | `INTERRUPTED` | `--resume OUTPUT_DIRECTORY` で続ける |
 | `FAILED` | `status.json` の `reason` と `failures`、ジョブのログで原因を確かめてから、`--resume OUTPUT_DIRECTORY` で続ける |
-| `RUNNING` で `liveness` が `stale` | プロセスは記録を残さずに終わっている。`--resume OUTPUT_DIRECTORY` で続ける |
+| `RUNNING` で `liveness` が `stale` | 記録されたプロセスは残っていない。`--resume OUTPUT_DIRECTORY` で続ける |
 | `RUNNING` で `liveness` が `alive` | 実行中。触らない |
+| `RUNNING` で `liveness` が `unknown` | この環境では生存を確定できない。起動したホストで pid を確認する |
 
 ```bash
 .venvs/se/bin/python -m src.experiments.launcher --config CONFIG --resume OUTPUT_DIRECTORY
