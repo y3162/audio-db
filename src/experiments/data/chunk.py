@@ -66,7 +66,7 @@ class ChunkSampler:
         """Plan inputs that ``order_params`` does not already name."""
 
         base = _call(order_params, "espnet_chunk_v1", self.seed)
-        return {
+        parameters = {
             "cache_rule": "max(num_cache_chunks // world_size, per_rank_batch)",
             "chunk_length": self.chunk_length,
             "iterator_stop": base["iterator_stop"],
@@ -80,22 +80,25 @@ class ChunkSampler:
             "shuffle": self.shuffle,
             "training_seed": self.seed,
         }
+        if self.source.dataset().get("algorithm") == "fixed_pair.voicebank_snr_shift":
+            parameters["short_utterances"] = "tail_zero_pad_v1"
+        return parameters
 
     def bind_batch(self, batcher: object, world_size: int) -> None:
-        """Require ``group_size == 1`` and ``global_batch == micro_batch * world_size``."""
+        """Bind a logical batch to its micro-batches and world size."""
 
         group_size = getattr(batcher, "group_size", None)
         micro_batch = getattr(batcher, "micro_batch", None)
-        if group_size != 1:
-            raise DataError("chunk group_size must be 1")
+        if isinstance(group_size, bool) or not isinstance(group_size, int) or group_size < 1:
+            raise DataError("chunk group_size must be a positive integer")
         if isinstance(world_size, bool) or not isinstance(world_size, int) or world_size < 1:
             raise DataError("world_size must be a positive integer")
         if isinstance(micro_batch, bool) or not isinstance(micro_batch, int) or micro_batch < 1:
             raise DataError("micro_batch must be a positive integer")
-        expected = micro_batch * world_size
+        expected = micro_batch * world_size * group_size
         if self.global_batch is not None and self.global_batch != expected:
             raise DataError(
-                f"global_batch {self.global_batch} does not equal micro_batch * world_size ({expected})"
+                f"global_batch {self.global_batch} does not equal micro_batch * world_size * group_size ({expected})"
             )
         if self._resolved_global_batch != expected or self._bound_world != world_size:
             self._plans.clear()
@@ -121,6 +124,14 @@ class ChunkSampler:
 
     def _train_slot(self) -> str:
         return f"{self.source.split}.cases"
+
+    def _pad_short(self, slot: str) -> bool:
+        """Zero-pad short training utterances. Validation keeps the ESPnet drop."""
+
+        return (
+            slot == self._train_slot()
+            and self.source.dataset().get("algorithm") == "fixed_pair.voicebank_snr_shift"
+        )
 
     def _ranks(
         self,
@@ -157,6 +168,7 @@ class ChunkSampler:
                 num_cache_chunks=self.num_cache_chunks,
                 shuffle=shuffle,
                 shift_ratio=self.shift_ratio,
+                pad_short=self._pad_short(slot),
             )
         except (ReproductionError, ValueError) as exc:
             raise DataError(str(exc)) from exc
@@ -189,6 +201,10 @@ class ChunkProtocol:
         if rule.get("normalize") is not None:
             raise DataError("chunk audio is not RMS-normalized at load time")
         algorithm = str(dataset.get("algorithm"))
+        if algorithm == "fixed_pair.voicebank_snr_shift":
+            self._kind = "voicebank_shift"
+            self._speech, self._noise = {}, {}
+            return
         if algorithm == _MS:
             slot = "test.cases" if self.source.split == "test" else "train.cases"
             speech, noise = _call(ms_snsd_rendering, self.source.store, slot)
@@ -207,9 +223,15 @@ class ChunkProtocol:
     def render(self, sample: SampleRef) -> tuple[np.ndarray, np.ndarray, int]:
         if self._kind is None or self._speech is None or self._noise is None:
             raise DataError("chunk protocol is not prepared")
-        if not sample.case_id or sample.chunk is None:
-            raise DataError("chunk rendering requires a case id and a span")
-        if self._kind == "ms_snsd":
+        if not sample.case_id:
+            raise DataError("chunk rendering requires a case id")
+        if self._kind == "voicebank_shift":
+            from src.experiments.data.render.voicebank_shift_snapshot import render_shift_case
+
+            noisy, clean = _call(render_shift_case, self.source.store, sample.case_id, verify_on_read=self.verify_on_read)
+            if sample.chunk is None:
+                return noisy, clean, len(clean)
+        elif self._kind == "ms_snsd":
             clean, noisy = _call(
                 render_ms_snsd_pair,
                 self.source.store,
@@ -229,8 +251,14 @@ class ChunkProtocol:
                 renderer=str(self._renderer),
                 verify_on_read=self.verify_on_read,
             )
+        if sample.chunk is None:
+            raise DataError("chunk rendering requires a span")
         start = int(sample.chunk.start)
         stop = int(sample.chunk.stop)
+        if self._kind == "voicebank_shift" and start == 0 and stop > int(clean.shape[0]):
+            valid = int(clean.shape[0])
+            return (np.pad(noisy, (0, stop - valid)).astype(np.float32),
+                    np.pad(clean, (0, stop - valid)).astype(np.float32), valid)
         if start < 0 or stop > int(clean.shape[0]) or stop <= start:
             raise DataError(f"chunk {start}:{stop} is outside {sample.case_id} ({int(clean.shape[0])} samples)")
         if self._kind == "ms_snsd":

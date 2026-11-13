@@ -34,9 +34,17 @@ def render_sample(
         raise ReproductionError(f"case {sample.case_id} has no teacher")
     clean_id = case.get("clean_asset_id")
     noisy_id = case.get("noisy_asset_id")
-    if not clean_id or not noisy_id:
+    is_shift = store.dataset.get("algorithm") == "fixed_pair.voicebank_snr_shift"
+    if is_shift:
+        from src.experiments.data.render.voicebank_shift_snapshot import render_shift_case
+
+        noisy, clean = render_shift_case(store, sample.case_id, verify_on_read=verify_on_read)
+    elif not clean_id or not noisy_id:
         raise ReproductionError(f"case {sample.case_id} is not a recorded pair")
-    if resample:
+    elif resample:
+        from src.experiments.data.ids import _check_resample
+
+        _check_resample(resample)
         clean = _resample_asset(store, clean_id, verify_on_read)
         noisy = _resample_asset(store, noisy_id, verify_on_read)
         expected = int(case["frames"])
@@ -66,6 +74,11 @@ def render_sample(
             )
         noisy = independent_audio_norm(noisy)
         clean = independent_audio_norm(clean)
+    elif normalize == "independent_peak_v1" and is_shift:
+        from src.experiments.data.protocols.online_semamba import independent_peak
+
+        noisy = independent_peak(noisy)[0]
+        clean = independent_peak(clean)[0]
     else:
         raise ReproductionError(f"normalization {normalize} is not implemented")
     noisy, clean, valid = apply_window(noisy, clean, sample.crop)
@@ -121,18 +134,22 @@ def _read_mono(path: Path, *, verify_sha: str | None) -> tuple[np.ndarray, int]:
 
 
 def _resample_asset(store: AssetStore, asset_id: str, verify: bool) -> np.ndarray:
-    from src.experiments.data.prepare.resample import SOURCE_RATE, resample_pcm16
+    import soundfile as sf
+
+    from src.experiments.data.prepare.resample import SOURCE_RATE, resample_float32
 
     path = store.path(asset_id)
-    audio, rate = _read_mono(path, verify_sha=_sha(store, asset_id, verify))
     asset = store.asset(asset_id)
+    if int(asset["channels"]) != 1 or sf.info(path).channels != 1:
+        raise ReproductionError(f"{path} is not mono")
+    audio, rate = _read_mono(path, verify_sha=_sha(store, asset_id, verify))
     if int(asset["sample_rate"]) != int(rate) or int(rate) != SOURCE_RATE:
         raise ReproductionError(f"{path} is {rate} Hz; on-demand resampling expects {SOURCE_RATE}")
     if int(audio.shape[0]) != int(asset["frames"]):
         raise ReproductionError(
             f"{path} has {audio.shape[0]} samples; the snapshot says {asset['frames']}"
         )
-    return resample_pcm16(audio, int(rate))
+    return resample_float32(audio, int(rate))
 
 
 def _file_sha256(path: Path) -> str:

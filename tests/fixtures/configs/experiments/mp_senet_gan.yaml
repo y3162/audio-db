@@ -56,7 +56,7 @@ components:
     class: src.experiments.data.SnapshotSource
     kwargs:
       snapshot: mp_senet.vb28.ondemand.official@1
-      snapshot_root: data/db/snapshots
+      snapshot_root: data/db/snapshots-voicebank-float-v1
       split: train
   protocol:
     role: other

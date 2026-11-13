@@ -300,8 +300,8 @@ class LauncherTests(_Base):
                 while time.monotonic() < deadline:
                     before = _descendant_states(output)
                     info = liveness(output)
-                    after = _descendant_states(output)
                     again = liveness(output)
+                    after = _descendant_states(output)
                     detail = f"{info} / {again} states={before} -> {after}"
                     if not before or not after:
                         time.sleep(0.02)

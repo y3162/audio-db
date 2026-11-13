@@ -32,12 +32,12 @@ GPU の計算と CUDA 拡張のビルドは、スケジューラで確保した�
 # GPU 2 枚の 1 ノード（node_h）、DDP 2 rank、20 分
 qsub -g GROUP -p -5 -l node_h=1 -l h_rt=0:20:00 \
   -v AUDIO_DB_STOP_AFTER=600,AUDIO_DB_GRACE=300 \
-  scripts/experiments/job.sh configs/reproduction/experiments/variants/CONFIG.yaml 2
+  scripts/experiments/job.sh CONFIG 2
 
 # 続き
 qsub -g GROUP -p -5 -l node_h=1 -l h_rt=0:20:00 \
   -v AUDIO_DB_RESUME=data/results/experiments/RUN,AUDIO_DB_STOP_AFTER=600 \
-  scripts/experiments/job.sh configs/reproduction/experiments/variants/CONFIG.yaml 2
+  scripts/experiments/job.sh CONFIG 2
 ```
 
 - Launcher は 1 ノードの中で rank を起動する。資源タイプの個数は 1 にし、必要な GPU 数を持つタイプを選ぶ（`gpu_1` は 1 枚、`node_h` は 2 枚、`node_f` は 4 枚）。`gpu_1=2` は 1 枚ずつの 2 ノードになり、この Launcher では使えない。

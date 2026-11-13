@@ -315,11 +315,24 @@ def load_snapshot(directory: str | Path) -> LoadedSnapshot:
     if manifest.get("schema_version") != SCHEMA_VERSION:
         raise ReproductionError("snapshot schema_version is not 1")
     dataset = json.loads((directory / "dataset.json").read_text(encoding="utf-8"))
+    rule = dataset.get("rule_json")
+    algorithm = dataset.get("algorithm")
+    if isinstance(algorithm, str) and algorithm.startswith("fixed_pair.") and isinstance(rule, dict) and "resample" in rule:
+        from src.experiments.data.ids import validate_rule
+
+        try:
+            validate_rule(algorithm, rule)
+        except ReproductionError as exc:
+            raise ReproductionError(f"incompatible fixed-pair snapshot rule: {exc}") from exc
     docs = _read_jsonl(directory / "docs.jsonl")
     generated = json.loads((directory / "generated.json").read_text(encoding="utf-8"))
     if not isinstance(generated, list):
         raise ReproductionError("generated.json must be a list")
     assets = assets_from_arrays(_load_npz(directory / "assets.npz"))
+    if (isinstance(algorithm, str) and algorithm.startswith("fixed_pair.")
+            and isinstance(rule, dict) and rule.get("delivery") == "on_demand"
+            and "resample" not in rule and any(asset["sample_rate"] == 48000 for asset in assets)):
+        raise ReproductionError("incompatible fixed-pair snapshot: 48 kHz source requires resample rule")
     cases = cases_from_arrays(_load_npz(directory / "cases.npz"))
     items = items_from_arrays(_load_npz(directory / "case_set_items.npz"))
     members = members_from_arrays(_load_npz(directory / "material_set_members.npz"))

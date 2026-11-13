@@ -1,27 +1,26 @@
 """Short leakage-safe MossFormerGAN run on the safe VoiceBank snapshot.
 
-World size is 1 and the device is CPU. That is not the 2-GPU production batch.
-The production YAML is parsed here and is not launched.
+World size is 1 and the device is CPU.
 """
 
 from __future__ import annotations
 
 import json
 import os
+import shutil
 import subprocess
 import sys
 import tempfile
 import unittest
 from pathlib import Path
 
-import yaml
 
 from src.experiments.api import build_experiment, load_experiment
+from src.experiments.data.prepare.run import execute
+from tests.data.reproduction.test_p2 import _tiny_paths, _write_tiny_config, _write_tiny_corpus
 
 ROOT = Path(__file__).resolve().parents[2]
 READINESS = ROOT / "tests/fixtures/configs/experiments/mossformergan_se_16k_leakage_safe.yaml"
-PRODUCTION = ROOT / "configs/reproduction/experiments/variants/mossformergan_se_16k.yaml"
-OFFICIAL = ROOT / "configs/reproduction/experiments/official/mossformergan_se_16k.yaml"
 
 
 def _run(config: Path, *extra: str) -> subprocess.CompletedProcess[str]:
@@ -40,35 +39,20 @@ def _run(config: Path, *extra: str) -> subprocess.CompletedProcess[str]:
 
 
 class MossFormerLeakageSafeTests(unittest.TestCase):
-    def test_production_yaml_keeps_the_official_file_and_a_separate_directory(self) -> None:
-        official = yaml.safe_load(OFFICIAL.read_text(encoding="utf-8"))
-        safe = yaml.safe_load(PRODUCTION.read_text(encoding="utf-8"))
-        official_trainer = official["components"]["trainer"]["kwargs"]
-        safe_trainer = safe["components"]["trainer"]["kwargs"]
-        self.assertEqual(official_trainer["experiment_claim"], "official_faithful")
-        self.assertEqual(safe_trainer["experiment_claim"], "leakage_safe")
-        self.assertEqual(official_trainer["accumulation"], safe_trainer["accumulation"])
-        self.assertEqual(official_trainer["grad_clip"], safe_trainer["grad_clip"])
-        self.assertNotIn("checkpoint_interval", official_trainer)
-        self.assertNotIn("checkpoint_interval", safe_trainer)
-        for document in (official, safe):
-            selector = document["checkpoint"]["selector"]
-            self.assertEqual(selector["class"], "src.experiments.selectors.StandardSelector")
-            self.assertEqual(selector["kwargs"], {"latest_every": 90})
-        self.assertEqual(safe_trainer["max_logical_steps"], 323675)
-        self.assertNotEqual(official["output"]["directory"], safe["output"]["directory"])
-        self.assertEqual(
-            safe["components"]["source"]["kwargs"]["snapshot"],
-            "mossformergan.vb28.ondemand.safe@1",
-        )
-        self.assertEqual(safe["components"]["data"]["kwargs"]["require_profile"], "leakage_safe")
-        self.assertEqual(official["components"]["data"]["kwargs"]["require_profile"], "official_faithful")
-
     def test_safe_snapshot_validates_without_the_test_split_and_resumes(self) -> None:
         with tempfile.TemporaryDirectory() as raw:
             root = Path(raw)
             output = root / "run"
+            paths = _tiny_paths(root)
+            extra_train = ("p226_002", "p226_003", "p226_004", "p226_005", "p226_006")
+            _write_tiny_corpus(paths.corpora, extra_train)
+            for target in (paths.corpora / "VoiceBank-DEMAND").glob("*/*.wav"):
+                source = ROOT / "data/corpora/VoiceBank-DEMAND" / target.relative_to(paths.corpora / "VoiceBank-DEMAND")
+                shutil.copyfile(source, target)
+            _write_tiny_config(root, extra_train)
+            execute("all", paths)
             text = READINESS.read_text(encoding="utf-8")
+            text = text.replace("snapshot_root: data/db/snapshots-voicebank-float-v1", f"snapshot_root: {paths.snapshots}\n      corpora: {paths.corpora}")
             text = text.replace(
                 "data/results/experiments/phase6-readiness/mossformergan-leakage-safe",
                 str(output),

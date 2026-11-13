@@ -985,7 +985,7 @@ def _semamba_trainer_once(sem, device, trainer_cls, gen_cls, mrd_cls, cqt_cls, p
     clean, noisy = _waves(1, 8000, SEEDS[0], 0.6, constant_noise=False)
     pairs = _cpu_pairs(clean.cpu(), noisy.cpu(), 4)
     # This process already owns the CUDA context, so the idle check would see itself.
-    runtime = runtime_cls(device="cuda", precision="fp32", allow_busy_gpu=True)
+    runtime = runtime_cls(device="cuda", precision="fp32")
     try:
         architecture = dict(hid_feature=48, num_tfmamba=4, d_state=16, d_conv=4, expand=2, norm_epsilon=1e-5, input_channel=2, output_channel=1, n_fft=400, scan_backend="fused", hop=100, win=400, sampling_rate=16000)
         generator = gen_cls(seed=SEEDS[0], **architecture)
@@ -1181,7 +1181,7 @@ def _mp_trainer_once(cmp, h, device, trainer_cls, gen_cls, disc_cls, policy_cls,
     clean, noisy = _waves(2, 8000, SEEDS[0], 0.5, constant_noise=True)
     pairs = _cpu_pairs(clean.cpu(), noisy.cpu(), 4)
     # This process already owns the CUDA context, so the idle check would see itself.
-    runtime = runtime_cls(device="cuda", precision="fp32", allow_busy_gpu=True)
+    runtime = runtime_cls(device="cuda", precision="fp32")
     alive = {"value": False}
     try:
         architecture = dict(dense_channel=64, num_tsconformers=4, n_fft=400, hop_size=100, win_size=400, compress_factor=0.3, beta=2.0, sampling_rate=16000)

@@ -490,3 +490,43 @@ SEMamba++ のオンライン劣化は `reproduction-p9` に置く。ready な代
 - 無くなっていたパスが、削除されたのか別ホストに残っているのか
 - `tf_gridnet.ms_snsd.espnet_recipe` の train / valid / test の内訳（行数の合計だけ一致）
 - `reproduction-vb-ondemand.duckdb` を、どの引数で既定パス以外へ書いたか
+
+## 2026-11-13 VoiceBank float32 snapshot
+
+48 kHz の配布音声から soxr HQ で追加量子化なしに読む v1 の 4 Dataset を `data/db/reproduction-voicebank-float-v1.duckdb` に登録し、`data/staging/reproduction-voicebank-float-v1/` と `data/db/snapshots-voicebank-float-v1/` に保存した。公式条件は train / valid / test が 11572 / 824 / 824、safe は 10700 / 872 / 824。旧 snapshot は保持した。
+
+| Dataset | Dataset ID | Snapshot hash |
+|---|---|---|
+| mp_senet.vb28.ondemand.official | `2e1ebda5109626e04198b8dd16c1948cd2bde159087a16001fa9239c2860c67f` | `9f342b0fccf5a021971d918a14821b8c18a05ea7de05d97086f9785dbaa413dc` |
+| mp_senet.vb28.ondemand.safe | `17e706d05640cf5e6438c203395923edb448cdd9445922dd0bf3ed2691b5e78f` | `45f0993ea7a36db0b8a160bc4bcf01630ff5a4bc6796c9cfab78d4a4a16bfa89` |
+| mossformergan.vb28.ondemand.official | `18c0d64a78edc2914cc1ea71ea6558a0fa54d52f03252af843d49fc417c3c69c` | `8d9107b91fe36e11a76c5b6e686d29dcad16064a6c3de7598c82dd195e5056f5` |
+| mossformergan.vb28.ondemand.safe | `369292a9c2349c13156aa2c68787f869bf11e930318fc872f9fb34e215ab4dfc` | `c27916a4c6b635b1a991d75710d4dddaad78b6aaadd07b8b2c2680a3fd529c25` |
+
+## 2026-11-13 SNR shift の分割と雑音区間
+
+正本 `recipes/voicebank-snr-shift-v1/recipes.jsonl` の 12,396 レシピを `src.experiments.data.prepare.voicebank_shift_audit.audit_recipes` で調べた。48 kHz の半開区間を雑音素材 SHA-256 ごとに照合し、Train 区間の和集合と各 Validation / Test 発話の交差を数える。対象発話間の重複はそれぞれの発話として数え、1 発話内で複数の Train 区間が重なる部分は二重に数えない。
+
+| 分割 | 発話 | 話者 |
+|---|---:|---:|
+| Train | 10,700 | 26 |
+| Validation（p286・p287） | 872 | 2 |
+| Test | 824 | 2 |
+
+3 分割間に共通の発話 ID・話者はいずれもない。Train / Validation は雑音 10 素材を共有し、Validation の 872 発話すべてで雑音区間が重なる。Validation の雑音区間合計 118,136,696 samples のうち、118,129,608 samples（2,461.0335 秒、99.99400017%）が Train の雑音区間と重複する。話者・発話は独立しているが、雑音区間は独立していない。Train / Test と Validation / Test の雑音素材・区間の重複はともに 0。
+
+Test をモデル選択や early stopping に使わない。4 モデルの Dataset は `selection_uses_test=false` で、validation は `valid.cases`（872 発話）だけを読む。
+
+同日、この監査どおりの graph を `data/db/reproduction-snr-shift-v1.duckdb` と `data/db/reproduction-snr-shift-v1-perrank.duckdb` に登録した。staging は `data/staging/reproduction-snr-shift-v1/` と `data/staging/reproduction-snr-shift-v1-perrank/`。snapshot は `data/db/snapshots-snr-shift-v1/` と `data/db/snapshots-snr-shift-v1-perrank/`。4 Dataset とも leak 監査は PASS で、Train と Validation の雑音重複は FAIL にせず記録だけ残る。Train / Validation / Test は 10700 / 872 / 824。`resource.duckdb` は読み取り専用で開いた。
+
+per-rank 側（学習設定が指す方）の snapshot hash:
+
+| Dataset | Dataset ID | Snapshot hash |
+|---|---|---|
+| voicebank.snr_shift.mp_senet | `ebe061cfd68b76ebaaa276d1d873ab68f31037ad6229dc827f94ad2df73067a9` | `daa0e2f94d4c66be25139e41ea31066d1560732b411b7faf94543dc507ce80b6` |
+| voicebank.snr_shift.semambapp | `47f952e7867ebc95213374a765ee528ea4bbc10d201ef6c75e80c0b82574c104` | `13753093aa0aa7885e1bc36fc7582cfc3270631fbd23df8b14a5dd65ada5f684` |
+| voicebank.snr_shift.tf_gridnet | `22080b7de6496c578056954ba0fb2a665f1b6fd30b2f649bf9f40d88e479807f` | `bf9f5c11ae997a597821a7c7e951ded97039fc41780d5fd0770d5a6c10aeab45` |
+| voicebank.snr_shift.tf_locoformer | `fdf482bba092044850cf1b0fa965182950e1bc9cc4de5d2829eac0968f8f66dc` | `92478e043af24acf3910d3177917c3e3ecbb8d29b3c735c22310e5bf646b50a7` |
+
+共有順の snapshot は SEMamba++ だけ protocol が違い、hash は `1d4c705ae48f53979728cb8829db30881996589dedddb49b9a62a46b3c1cea5b`、dataset ID は `b04c3d50efa96b93e648a9ce38c257ce817f4ee98b1173160928af4013d0c6ae`。他の 3 モデルの hash は per-rank と同じである。
+
+同日、正本レシピの SHA-256 を検証し、4 モデル共通の case・分割・上記監査結果を `data/staging/voicebank-snr-shift-v1/` に保存した。`cases.jsonl` の SHA-256 は `fa6071af0b533a061c112639659af328d173d2bcfc05f4f5912e32c3cb511d09`。`metadata.json` の選択先は計画上の `valid` であり、学習用 snapshot や checkpoint の provenance ではない。素材ファイル全件のハッシュ再計算はこの staging の作成では行っていない。

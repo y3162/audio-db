@@ -14,14 +14,38 @@
 | 場所 | 用途 |
 |---|---|
 | `configs/reproduction/experiments/official/` | 公式忠実条件。`experiment_claim: official_faithful`。検証に公式 test を使う設定は独立な最終評価ではない |
-| `configs/reproduction/experiments/variants/` | 公式との差分を明示した比較条件。`leakage_safe`、研究用の固定検証、smoke 素材、micro-batch 幅の違いを含む |
 | `tests/fixtures/configs/experiments/` | CPU で 1 logical step などを確認する宣言。本格学習の設定ではない |
 | `configs/data/` | Dataset、Protocol、Build、公式リスト。ID はファイルの置き場所ではなく内容から決まる |
 | `configs/db/init.yaml` | 評価用 DB の名前付きセット。学習の入力には使わない |
 
+VoiceBank+DEMAND の SNR shift 学習設定は `configs/reproduction/experiments/snr_shift/` にある。対象は MP-SENet、SEMamba++、TF-GridNet、TF-Locoformer で、いずれも Single GPU である。snapshot は `data/db/snapshots-snr-shift-v1-perrank/` を読む。`data/db/snapshots-snr-shift-v1/` は同じ case の履歴であり、学習 YAML はこちらを指さない。SEMamba++ だけデータ順序の protocol が per-rank 側と共有順側で違うため snapshot hash が異なる。他の 3 モデルは case・順序・protocol が同じなので hash も同じである。件数と hash は [INVENTORY](../db/INVENTORY.md) の 2026-11-13 の記録である。
+
+Train 10,700、Validation 872（p286・p287）、Test 824。Test はモデル選択と early stopping に使わない。Train と Validation は話者と発話が分かれ、雑音区間は重なる。この重複は承認済みで、分割や雑音区間は変えない。Test との雑音素材の分離は維持する。
+
+TF-GridNet と TF-Locoformer の Validation は、`valid.cases` だけを `shuffle=False`、`num_samples=None` の ChunkSampler で切る。短い発話は元の ESPnet と同じく chunk 未満を捨て、端数 batch も捨てる。学習側の短い発話のゼロパディングは Validation には使わない。勾配蓄積は `group_size` と Trainer の `accumulation` を一致させる。TF-GridNet は micro-batch 2、蓄積 2、実効 batch 4。TF-Locoformer は micro-batch 1、蓄積 4、実効 batch 4。MP-SENet は micro-batch 2、蓄積 2、実効 batch 4。SEMamba++ は micro-batch 4、蓄積 2、実効 batch 8 で、オンライン追加劣化は付けない。
+
+```bash
+CUDA_VISIBLE_DEVICES=0 .venvs/se/bin/python -m src.experiments.launcher \
+  --config configs/reproduction/experiments/snr_shift/tf_gridnet.yaml
+```
+
+計画上の更新回数と、実行後の `metrics.jsonl` にある logical step・optimizer 更新は別である。未実行の本学習の実績は推定で埋めない。実行ディレクトリの集計は `src.experiments.budget.observed_budget` が読む。Early Stopping で止まっても、書かれた metrics と status がその実績である。
+
 YAML の `class` には公開 import パスを書く。公開境界と checkpoint のクラス識別は [Checkpoint](CHECKPOINT.md#公開パスとクラス識別) を参照する。
 
 `official/` に無い設定を、パスを変えただけでは公式再現と呼ばない。`dfn3.online.official@1` と `semambapp.gsr.official@1` は blocked である。
+
+VoiceBank の公式設定は `data/db/snapshots-voicebank-float-v1/` の snapshot を使う。旧 PCM16 変換の snapshot は新しい仕様では読み込めない。実素材から新たに準備する際は、既存の DB・staging・snapshot を上書きせず、次のように空いている別のパスを指定する。
+
+```bash
+.venvs/se/bin/python -m src.experiments.data.cli prepare --step all \
+  --database data/db/reproduction-voicebank-float-v1.duckdb \
+  --staging data/staging/reproduction-voicebank-float-v1 \
+  --snapshots data/db/snapshots-voicebank-float-v1 \
+  --resource-db data/db/resource.duckdb
+```
+
+旧 checkpoint の再開互換性は保証しない。
 
 ## 実行
 
@@ -41,7 +65,9 @@ make experiment CONFIG=configs/reproduction/experiments/official/mp_senet_gan.ya
 CUDA_VISIBLE_DEVICES=0,1 .venvs/se/bin/python -m src.experiments.launcher --config CONFIG --nproc 2
 ```
 
-DDP は `--nproc` を world size にする。学習する module の `prepare` に `distribute: ddp` が要る。`runtime.kwargs.world_size` を書いた設定は、その値と `--nproc` が違うと拒否する。CUDA では rank ごとに GPU を 1 枚使い、2 つの rank が同じ GPU を使う起動は拒否する。`CUDA_VISIBLE_DEVICES` で隠すと、見える番号は 0 から振り直される。CUDA を要求する設定は、使用メモリが空いていない GPU を拒否する。`runtime.kwargs.allow_busy_gpu: true` は、その GPU が自分のジョブだと分かっているときだけ使う。
+DDP は `--nproc` を world size にする。学習する module の `prepare` に `distribute: ddp` が要る。`runtime.kwargs.world_size` を書いた設定は、その値と `--nproc` が違うと拒否する。CUDA では rank ごとに GPU を 1 枚使い、2 つの rank が同じ GPU を使う起動は拒否する。`CUDA_VISIBLE_DEVICES` で隠すと、見える番号は 0 から振り直される。実験 runtime は、指定された CUDA デバイスを他プロセスの使用率や使用メモリでは拒否しない。CUDA が使えない、見えるデバイスが無い、`LOCAL_RANK` が範囲外、world size がデバイス数を超える起動は拒否する。実際の CUDA OOM はエラーとして記録する。Launcher はデバイス全体の使用メモリを `gpu_memory.jsonl` に追記する。これは起動の可否には使わない。
+
+ChunkSampler の `global_batch` は `micro_batch × world_size × group_size` と一致させ、`group_size` は Trainer の勾配蓄積回数と一致させる。チャンクの計画は実効 batch 単位で作り、各 rank の計画を micro-batch に分けて蓄積する。world size が変わるとデータの順序も変わるため、実効 batch が同じでも別の実験である。
 
 `python -m src.experiments.cli` を直接呼んでも学習できる。その場合は、プロセスが kill されたときの判定と後始末をする者がいない。学習は Launcher から起動する。
 

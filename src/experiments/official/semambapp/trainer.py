@@ -806,8 +806,8 @@ class SEMambaPPTrainer:
         if not isinstance(identity, dict):
             raise RuntimeFailure("data identity is not a mapping")
         algorithm = identity.get("algorithm")
-        if algorithm is not None and algorithm != "online.semambapp_gsr":
-            raise RuntimeFailure(f"SEMamba++ requires online.semambapp_gsr data, got {algorithm}")
+        if algorithm is not None and algorithm not in ("online.semambapp_gsr", "fixed_pair.voicebank_snr_shift"):
+            raise RuntimeFailure(f"SEMamba++ cannot use data algorithm {algorithm}")
         claim = identity.get("claim_label")
         if claim == "official_reproduction":
             raise RuntimeFailure("semambapp.gsr.official is blocked; refusing official_reproduction")

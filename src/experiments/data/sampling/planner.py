@@ -265,6 +265,8 @@ def _pad_name(normalize: str) -> str:
         return "tail_zero"
     if normalize == "independent_audio_norm_v1":
         return "head_place"
+    if normalize == "independent_peak_v1":
+        return "tail_zero"
     raise ReproductionError(f"normalization {normalize} is not implemented")
 
 

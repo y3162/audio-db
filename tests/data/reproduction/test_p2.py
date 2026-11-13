@@ -26,7 +26,7 @@ from src.experiments.data.prepare.assemble import (
     load_protocols,
 )
 from src.experiments.data.prepare.derive import derive_all
-from src.experiments.data.prepare.resample import derivation_row, resample_pcm16
+from src.experiments.data.prepare.resample import derivation_row, resample_float32
 from src.experiments.data.prepare.lists import (
     holdout_split,
     load_manifest,
@@ -58,6 +58,19 @@ def _pcm(path: Path, *, frames: int, rate: int, seed: int) -> None:
 
 
 class ListTests(unittest.TestCase):
+    def test_eval_overlap_ignores_test_but_not_training_or_validation(self) -> None:
+        from unittest.mock import patch
+        from src.experiments.data.db.validate import _eval_overlap
+
+        assets = {name: {"sha256": name} for name in ("train", "valid", "test")}
+        groups = {name: {name} for name in assets}
+        with patch("src.experiments.data.db.validate._read_eval_hashes", return_value={"test"}):
+            self.assertEqual(_eval_overlap(groups, assets, "unused")["status"], "PASS")
+        for name in ("train", "valid"):
+            with patch("src.experiments.data.db.validate._read_eval_hashes", return_value={name}):
+                self.assertEqual(_eval_overlap(groups, assets, "unused")["status"], "FAIL")
+        self.assertEqual(_eval_overlap(groups, assets, None)["status"], "UNKNOWN")
+
     def test_pinned_lists_match_and_keep_order(self) -> None:
         loaded = load_manifest(CONFIG / "lists" / "manifest.yaml", ROOT)
         self.assertEqual(len(loaded["mp_senet"]["train"]["ids"]), 11572)
@@ -113,7 +126,7 @@ class ListTests(unittest.TestCase):
 
 
 class StoredDerivativeTests(unittest.TestCase):
-    def test_ondemand_pcm_matches_stored_16k_for_each_remainder(self) -> None:
+    def test_stored_pcm_derivatives_and_float_resampling_for_each_remainder(self) -> None:
         database = ROOT / "data" / "db" / "reproduction.duckdb"
         if not database.is_file():
             self.skipTest("reproduction database is absent")
@@ -162,7 +175,7 @@ class StoredDerivativeTests(unittest.TestCase):
             derived = ROOT / "data" / "derived" / derived_rel
             if not source.is_file() or not derived.is_file():
                 self.skipTest(f"audio missing for {source_rel}")
-            fresh = resample_pcm16(*_read_mono(source))
+            fresh = resample_float32(*_read_mono(source))
             stored, stored_rate = sf.read(derived, dtype="float32", always_2d=False)
             info = sf.info(derived)
             self.assertEqual(info.subtype, "PCM_16")
@@ -171,7 +184,12 @@ class StoredDerivativeTests(unittest.TestCase):
             self.assertEqual(int(derived_frames), (int(source_frames) + 1) // 3)
             self.assertEqual(fresh.shape[0], int(derived_frames))
             self.assertEqual(int(remainder), int(source_frames) % 3)
-            self.assertTrue(np.array_equal(fresh, np.asarray(stored, dtype=np.float32)))
+            import soxr
+
+            expected = soxr.resample(_read_mono(source)[0], 48000, 16000, quality="HQ")
+            np.testing.assert_array_equal(fresh, expected)
+            self.assertEqual(stored.shape, fresh.shape)
+            self.assertTrue(np.isfinite(stored).all())
 
 
 def _read_mono(path: Path):
@@ -250,14 +268,44 @@ class PrepareTests(unittest.TestCase):
         source = self.root / "source.wav"
         _pcm(source, frames=4803, rate=48000, seed=3)
         audio, rate = sf.read(source, dtype="float32", always_2d=False)
-        first = resample_pcm16(audio, rate)
-        second = resample_pcm16(audio, rate)
+        first = resample_float32(audio, rate)
+        second = resample_float32(audio, rate)
         self.assertEqual(first.shape, second.shape)
         self.assertTrue((first == second).all())
         self.assertEqual(first.shape[0], (4803 + 1) // 3)
         with self.assertRaises(ReproductionError):
             derive_all([{"source": source, "dest": self.root / "derived" / "out.wav"}], workers=1)
         self.assertEqual(list(self.root.rglob("*.wav")), [source])
+
+    def test_resample_preserves_float_values_and_rejects_nonfinite(self) -> None:
+        import numpy as np
+        import soxr
+
+        audio = np.full(4803, 1.234567, dtype=np.float32)
+        audio[1000:2000] += np.float32(0.1234567)
+        first = resample_float32(audio, 48000)
+        expected = soxr.resample(audio, 48000, 16000, quality="HQ")
+        np.testing.assert_array_equal(first, expected)
+        np.testing.assert_array_equal(first, resample_float32(audio, 48000))
+        self.assertEqual(first.dtype, np.float32)
+        self.assertEqual(len(first), (len(audio) + 1) // 3)
+        self.assertGreater(float(first.max()), 1.0)
+        self.assertTrue(np.any(first * 32768 != np.rint(first * 32768)))
+        for invalid in (np.nan, np.inf, -np.inf):
+            broken = audio.copy()
+            broken[0] = invalid
+            with self.assertRaises(ReproductionError):
+                resample_float32(broken, 48000)
+
+    def test_old_quantized_snapshot_rule_is_rejected(self) -> None:
+        from src.experiments.data.snapshot import FORMAT
+
+        rule = dict(next(p for p in load_protocols(CONFIG) if p["name"] == "mp_senet.fixed_pair.ondemand")["rule_json"])
+        rule["resample"] = dict(rule["resample"], quantization="pcm16")
+        (self.root / "manifest.json").write_text(json.dumps({"provenance": {"format": FORMAT}, "schema_version": "1"}))
+        (self.root / "dataset.json").write_text(json.dumps({"algorithm": "fixed_pair.mp_senet", "rule_json": rule}))
+        with self.assertRaisesRegex(ReproductionError, "incompatible fixed-pair snapshot"):
+            load_snapshot(self.root)
 
     def test_tiny_corpus_round_trip(self) -> None:
         paths = _tiny_paths(self.root)
@@ -455,13 +503,15 @@ def _tiny_paths(root: Path) -> PreparePaths:
     )
 
 
-def _write_tiny_corpus(corpora: Path) -> None:
+def _write_tiny_corpus(corpora: Path, extra_train: tuple[str, ...] = ()) -> None:
     pairs = {
         "clean_trainset_28spk_wav": ["p226_001", "p286_001", "p287_001"],
         "noisy_trainset_28spk_wav": ["p226_001", "p286_001", "p287_001"],
         "clean_testset_wav": ["p232_001"],
         "noisy_testset_wav": ["p232_001"],
     }
+    for subset in ("clean_trainset_28spk_wav", "noisy_trainset_28spk_wav"):
+        pairs[subset].extend(extra_train)
     seed = 1
     for subset, names in pairs.items():
         for name in names:
@@ -473,7 +523,7 @@ def _write_tiny_corpus(corpora: Path) -> None:
     (corpora / "VoiceBank-DEMAND" / "testset_txt").mkdir(parents=True, exist_ok=True)
 
 
-def _write_tiny_config(repo: Path) -> None:
+def _write_tiny_config(repo: Path, extra_train: tuple[str, ...] = ()) -> None:
     config = repo / "configs" / "data"
     config.mkdir(parents=True)
     shutil.copy(CONFIG / "voicebank_vb28.yaml", config / "voicebank_vb28.yaml")
@@ -485,7 +535,7 @@ def _write_tiny_config(repo: Path) -> None:
         "mossformergan_se_16k.fixed_pair.ondemand.yaml",
     ):
         shutil.copy(CONFIG / "protocols" / name, config / "protocols" / name)
-    train = ["p226_001", "p286_001", "p287_001"]
+    train = ["p226_001", *extra_train, "p286_001", "p287_001"]
     test = ["p232_001"]
     mp_train = "".join(f"{item}|unused/{item}.wav\n" for item in train)
     mp_test = "".join(f"{item}|unused/{item}.wav\n" for item in test)
@@ -552,7 +602,7 @@ def _write_tiny_config(repo: Path) -> None:
             "holds out speakers",
         ),
     ):
-        expect = {"train": 3, "valid": 1, "test": 1} if profile == "official_faithful" else {"train": 1, "valid": 2, "test": 1}
+        expect = {"train": len(train), "valid": 1, "test": 1} if profile == "official_faithful" else {"train": len(train) - 2, "valid": 2, "test": 1}
         model = "mp_senet" if name.startswith("mp_senet") else "mossformergan"
         protocol = (
             "mp_senet.fixed_pair.ondemand" if model == "mp_senet" else "mossformergan_se_16k.fixed_pair.ondemand"

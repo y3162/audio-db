@@ -77,7 +77,7 @@ def main() -> None:
         batches.append(Batch(inputs=noisy.cpu(), targets=clean.cpu(), sample_id=f"d{index}", realization_id=f"d{index}"))
         task_losses.append(task.train_update([{"clean": clean, "noisy": noisy}], 1)["deepfilter"])
     policy = PreparePolicy(trainable=True, distribute="none", find_unused_parameters=True)
-    runtime = ProcessRuntime(device="cuda" if device.type == "cuda" else "cpu", precision="fp32", allow_busy_gpu=True)
+    runtime = ProcessRuntime(device="cuda" if device.type == "cuda" else "cpu", precision="fp32")
     model = runtime.prepare_model(DeepFilterNet3Model(seed=7), policy)
     model.state_module.generator.load_state_dict(held, strict=True)
     optimizer = torch.optim.AdamW(model.parameters, lr=1e-3, betas=(0.9, 0.999), weight_decay=1e-12, amsgrad=True)

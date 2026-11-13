@@ -189,7 +189,7 @@ def tiny_config(checkpoint_dir: Path, **overrides) -> dict:
             "train_set": "toy_train",
             "validation_set": None,
         },
-        "runtime": {"device": "cpu", "allow_busy_gpu": False},
+        "runtime": {"device": "cpu"},
     }
     config.update(overrides)
     return config

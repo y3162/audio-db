@@ -18,7 +18,7 @@ from src.experiments.data.db.lock import reproduction_lock
 from src.experiments.data.db.registry import read_graph
 from src.experiments.data.db.staging import git_commit
 from src.experiments.data.errors import ReproductionError
-from src.experiments.data.ids import SCHEMA_VERSION, canonical_text, generated_rel_path
+from src.experiments.data.ids import SCHEMA_VERSION, asset_ids_in, canonical_text, generated_rel_path
 from src.experiments.data.paths import DEFAULT_CORPORA, DEFAULT_DERIVED, DEFAULT_GENERATED, DEFAULT_SNAPSHOTS
 from src.experiments.data.snapshot import (
     FORMAT,
@@ -231,6 +231,8 @@ def _parts(graph: Graph, dataset: dict[str, Any]) -> tuple[dict[str, Any], list[
         for key in ("clean_asset_id", "noisy_asset_id", "noise_asset_id"):
             if case.get(key):
                 asset_ids.add(case[key])
+        if case["doc_json"].get("algorithm") == "fixed_pair.voicebank_snr_shift":
+            asset_ids.update(asset_ids_in(case["doc_json"]))
         delivery = (protocol.get("rule_json") or {}).get("delivery")
         if case["case_role"] != "generated" or delivery == "on_demand":
             docs.append({"case_id": case["case_id"], "doc_json": case["doc_json"]})

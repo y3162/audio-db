@@ -32,7 +32,7 @@
 - 学習は Launcher（`python -m src.experiments.launcher`）から起動する。`COMPLETED` は全プロセスの正常終了後だけ。一部の rank が学習を続ける経路、自動の再試行や再投入を足さない。
 - テストは `data/` の下に書かない。テストランナーは本番データを読み取り専用にしてから起動する。`AUDIO_DB_TEST_UNGUARDED=1` はユーザーが明示したときだけ。
 - `selection_uses_test` が true の checkpoint は、評価素材が離れていても independent にしない。不完全な provenance は UNKNOWN のままにする。
-- GPU は共有資源。使う前に `nvidia-smi` で空きを確認する。CUDA の実験 runtime は、使用メモリが空いていない GPU を拒否する。`allow_busy_gpu: true` はその GPU が自分のジョブだと分かっているときだけ。
+- GPU は共有資源。使う前に `nvidia-smi` で空きを確認する。`CUDA_VISIBLE_DEVICES` で見える CUDA デバイスが指定されているとき、実験 runtime は他プロセスの使用率や使用メモリを理由に起動を拒否しない。CUDA が使えない、見えるデバイスが無い、`LOCAL_RANK` が範囲外、world size がデバイス数を超える、複数 rank が同じ GPU になる起動は拒否する。
 - TSUBAME で 30 分程度以上のジョブは、投入前に明示的な指示が必要。`h_rt` を 30 分未満にして回避しない。優先度は指示がなければ最低（`qsub` / `qrsh` は `-p -5`）。
 - Mock、実モデルのスモーク、公式出力との一致を混ぜて「検証済み」と書かない。
 

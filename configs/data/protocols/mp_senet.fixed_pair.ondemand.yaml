@@ -21,20 +21,17 @@ rule:
     quality: HQ
     source_rate: 48000
     target_rate: 16000
-    quantization: pcm16
     length: source_frames_plus_one_div_3
     order:
       - read_float32
       - soxr_hq
-      - clip_to_unit
-      - pcm16_roundtrip
       - protocol_normalize
       - protocol_window
   validation:
     crop: full_length
     batch: 1
     interval: 5000
-    note: "1 GPU uses fixed_single_shuffle_v1. DDP uses torch_distributed_sampler_v1. Validation is the full utterance. 16 kHz PCM_16 is resampled from the 48 kHz source when the batch is rendered."
+    note: "1 GPU uses fixed_single_shuffle_v1. DDP uses torch_distributed_sampler_v1. Validation is the full utterance. 16 kHz float32 is resampled from the 48 kHz source when the batch is rendered."
 official_ref:
   repo: https://github.com/yxlu-0102/MP-SENet
   commit: 89932cfe90d1dacb8e170e4a331d762462c21792
@@ -43,5 +40,5 @@ official_ref:
 deviations:
   - id: vb28-ondemand-resample
     class: official_effective
-    text: "16 kHz PCM_16 is produced at training time from the 48 kHz source with soxr HQ and a PCM_16 round trip. Pre-written 16 kHz wavs are not required. The official converter remains unknown."
+    text: "16 kHz float32 is produced at training time from the 48 kHz source with soxr HQ without additional clipping or quantization. Pre-written 16 kHz wavs are not required. The official converter remains unknown."
     ref: "UN-3"

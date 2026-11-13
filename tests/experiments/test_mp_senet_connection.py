@@ -73,7 +73,7 @@ class MPSENetConnectionTests(unittest.TestCase):
         self.assertEqual(config.components["data"].class_path, "src.experiments.data.SnapshotDataModule")
         self.assertEqual(config.components["trainer"].class_path, "src.experiments.trainers.StandardTrainer")
         self.assertEqual(config.components["source"].kwargs["snapshot"], "mp_senet.vb28.ondemand.safe@1")
-        self.assertEqual(config.components["source"].kwargs["snapshot_root"], "data/db/snapshots")
+        self.assertEqual(config.components["source"].kwargs["snapshot_root"], "data/db/snapshots-voicebank-float-v1")
 
     def test_build_uses_mpnet_parameters_once(self) -> None:
         experiment = build_experiment(load_experiment(_write_yaml(self.base / "build", steps=1)))

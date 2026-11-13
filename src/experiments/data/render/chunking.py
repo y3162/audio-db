@@ -99,6 +99,7 @@ def iterate_chunks(
     cache_size: int,
     shuffle: bool = True,
     shift_ratio: float = 0.5,
+    pad_short: bool = False,
 ) -> tuple[list[tuple[PlannedChunk, ...]], int]:
     """Chunk one rank. The returned integer is the discarded cache tail."""
     if chunk_length < 2 or batch_size < 1 or cache_size < 1:
@@ -123,6 +124,12 @@ def iterate_chunks(
 
     for case_id, length in samples:
         if length <= chunk_length:
+            if pad_short:
+                if length < 1:
+                    raise ReproductionError("cannot pad an empty utterance")
+                cache.append(PlannedChunk(case_id, 0, chunk_length))
+                if len(cache) > limit:
+                    flush()
             continue
         # Match ESPnet's random choice even for a single candidate.
         width = int(rng.choice([chunk_length], size=1).item())
@@ -150,6 +157,7 @@ def plan_chunk_epoch(
     num_cache_chunks: int,
     shuffle: bool,
     shift_ratio: float = 0.5,
+    pad_short: bool = False,
 ) -> ChunkEpochPlan:
     """Plan every rank, then keep ``min(rank lengths)`` batches."""
     if espnet_epoch < 1 or seed < 0:
@@ -199,6 +207,7 @@ def plan_chunk_epoch(
             cache_size=per_rank_cache,
             shuffle=shuffle,
             shift_ratio=shift_ratio,
+            pad_short=pad_short,
         )
         rank_kept.append(tuple(batches))
         raw_counts.append(len(batches))
@@ -207,8 +216,7 @@ def plan_chunk_epoch(
     updates = min(raw_counts) if raw_counts else 0
     kept = tuple(tuple(batches[:updates]) for batches in rank_kept)
     discarded = tuple(count - updates for count in raw_counts)
-    plan_hash = digest(
-        {
+    plan_data = {
             "algorithm": "espnet_chunk_v1",
             "espnet_epoch": espnet_epoch,
             "seed": seed,
@@ -226,7 +234,9 @@ def plan_chunk_epoch(
                 for batches in kept
             ],
         }
-    )
+    if pad_short:
+        plan_data["pad_short"] = True
+    plan_hash = digest(plan_data)
     return ChunkEpochPlan(
         espnet_epoch=espnet_epoch,
         world_size=world_size,

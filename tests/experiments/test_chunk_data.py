@@ -309,7 +309,7 @@ class ChunkDataTests(unittest.TestCase):
         finally:
             module.close()
 
-    def test_group_size_and_global_batch_are_rejected(self) -> None:
+    def test_accumulation_groups_preserve_global_batch_and_reject_mismatch(self) -> None:
         source = _source(self.ms)
         protocol = ChunkProtocol(source)
         sampler = ChunkSampler(
@@ -322,9 +322,24 @@ class ChunkDataTests(unittest.TestCase):
             shuffle=False,
         )
         module = SnapshotDataModule(source, sampler, protocol, MicroBatcher(2, 2))
-        with self.assertRaises(DataError):
+        try:
             module.setup(_Runtime())
-        module.close()
+            plan = plan_chunk_epoch(
+                _samples(module.source, "train.cases"), espnet_epoch=1, seed=7,
+                world_size=1, num_samples=3, chunk_length=32, global_batch=4,
+                num_cache_chunks=2, shuffle=False, shift_ratio=0.5,
+            )
+            view = module.train_epoch(0, start_update=0)
+            try:
+                self.assertEqual(view.updates, plan.updates * 2)
+                actual = module.sampler.sequence(0, 0, 1)
+                expected = [chunk for batch in plan.rank_batches[0] for chunk in batch]
+                self.assertEqual([(r.case_id, r.chunk.start, r.chunk.stop) for r in actual],
+                                 [(r.case_id, r.start, r.stop) for r in expected])
+            finally:
+                view.close()
+        finally:
+            module.close()
         wide = ChunkSampler(
             source,
             seed=7,
@@ -343,9 +358,11 @@ class ChunkDataTests(unittest.TestCase):
         from src.experiments.api import Experiment
 
         experiment = Experiment(load_experiment(config))
-        with self.assertRaises(BuildError) as caught:
+        try:
             experiment.build()
-        self.assertIsInstance(caught.exception.__cause__, DataError)
+            self.assertEqual(experiment.get("data").identity()["group_size"], 2)
+        finally:
+            experiment.close()
 
     def test_same_micro_batch_is_stable_on_cpu(self) -> None:
         module = _module(self.ms)
@@ -366,6 +383,23 @@ class ChunkDataTests(unittest.TestCase):
                 view.batch(view.updates)
         finally:
             module.close()
+
+    def test_accumulated_chunk_resume_matches_continuous_run(self) -> None:
+        interrupted = self.base / "accum_interrupted"
+        continuous = self.base / "accum_continuous"
+        first = _experiment_config(interrupted, self.ms, steps=3, stop_after=1, group_size=2)
+        whole = _experiment_config(continuous, self.ms, steps=3, group_size=2)
+        run = _cli(first)
+        self.assertEqual(run.returncode, 0, run.stderr)
+        saved = interrupted / "archive/step_00000001.pt"
+        self.assertTrue(saved.is_file())
+        run = _cli(whole)
+        self.assertEqual(run.returncode, 0, run.stderr)
+        resumed = _experiment_config(interrupted, self.ms, steps=3, group_size=2)
+        run = _cli(resumed, "--resume", str(saved))
+        self.assertEqual(run.returncode, 0, run.stderr)
+        self.assertEqual([row["sample_id"] for row in _metrics(interrupted)],
+                         [row["sample_id"] for row in _metrics(continuous)])
 
     def test_resume_matches_the_next_chunk_and_rejects_a_bad_plan_hash(self) -> None:
         interrupted = self.base / "interrupted"

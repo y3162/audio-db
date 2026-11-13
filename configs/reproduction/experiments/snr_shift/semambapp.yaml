@@ -1,9 +1,4 @@
-# Official one-forward batch 8 shape. Do not launch this file on a 40GB GPU.
-# Phase 4-H recorded an OOM after about 45.56 GiB at 3 seconds. Accumulation is
-# not a substitute. semambapp.gsr.official@1 stays blocked. This file is not a
-# measured runnable condition.
-# latest_every is 45 logical steps, copied from the measured micro-4 estimate.
-# The wall-clock gap for batch 8 is not measured.
+# SNR-shift inputs only; official GSR degradations are not applied.
 schema: audio-db-experiment/v1
 seed: 1234
 deterministic: false
@@ -14,7 +9,7 @@ runtime:
     device: cuda
     precision: fp32
 output:
-  directory: data/results/experiments/phase5-production/semambapp-gsr-batch8
+  directory: data/results/experiments/snr-shift-v1/semambapp
 checkpoint:
   selector:
     class: src.experiments.selectors.StandardSelector
@@ -31,7 +26,7 @@ components:
       d_state: 16
       d_conv: 4
       expand: 2
-      norm_epsilon: 1.0e-5
+      norm_epsilon: 1.0e-05
       input_channel: 2
       output_channel: 1
       n_fft: 400
@@ -52,7 +47,7 @@ components:
       d_state: 16
       d_conv: 4
       expand: 2
-      norm_epsilon: 1.0e-5
+      norm_epsilon: 1.0e-05
       input_channel: 2
       output_channel: 1
       n_fft: 400
@@ -73,7 +68,7 @@ components:
       d_state: 16
       d_conv: 4
       expand: 2
-      norm_epsilon: 1.0e-5
+      norm_epsilon: 1.0e-05
       input_channel: 2
       output_channel: 1
       n_fft: 400
@@ -88,57 +83,69 @@ components:
     role: other
     class: src.experiments.data.SnapshotSource
     kwargs:
-      snapshot: semambapp.gsr.smoke@1
-      snapshot_root: data/db/snapshots
+      snapshot: voicebank.snr_shift.semambapp@1
+      snapshot_root: data/db/snapshots-snr-shift-v1-perrank
       split: train
   protocol:
     role: other
-    class: src.experiments.data.SemambaProtocol
+    class: src.experiments.data.FixedPairProtocol
     kwargs: {}
     inject:
-      source: {ref: source}
+      source:
+        ref: source
   sampler:
     role: other
     class: src.experiments.data.OrderSampler
     kwargs:
       seed: 1234
     inject:
-      source: {ref: source}
-      protocol: {ref: protocol}
+      source:
+        ref: source
+      protocol:
+        ref: protocol
   batcher:
     role: other
     class: src.experiments.data.MicroBatcher
     kwargs:
-      micro_batch: 8
-      group_size: 1
+      micro_batch: 4
+      group_size: 2
   data:
     role: data
     class: src.experiments.data.SnapshotDataModule
     kwargs:
       prefetch: true
       load_workers: 1
+      require_profile: leakage_safe
     inject:
-      source: {ref: source}
-      sampler: {ref: sampler}
-      protocol: {ref: protocol}
-      batcher: {ref: batcher}
+      source:
+        ref: source
+      sampler:
+        ref: sampler
+      protocol:
+        ref: protocol
+      batcher:
+        ref: batcher
   optim_g:
     role: optimizer
     class: torch.optim.AdamW
     parameters_of: generator
     kwargs:
       lr: 0.0002
-      betas: [0.8, 0.99]
+      betas:
+      - 0.8
+      - 0.99
       weight_decay: 0.01
   optim_d:
     role: optimizer
     class: torch.optim.AdamW
     parameters_of:
-      - mrd
-      - cqt
+    - mrd
+    - cqt
     kwargs:
       lr: 0.0002
-      betas: [0.8, 0.99]
+      betas:
+      - 0.8
+      - 0.99
       weight_decay: 0.01
   scheduler_g:
     role: scheduler
@@ -146,30 +153,48 @@ components:
     kwargs:
       gamma: 0.99
     inject:
-      optimizer: {ref: optim_g}
+      optimizer:
+        ref: optim_g
   scheduler_d:
     role: scheduler
     class: torch.optim.lr_scheduler.ExponentialLR
     kwargs:
       gamma: 0.99
     inject:
-      optimizer: {ref: optim_d}
+      optimizer:
+        ref: optim_d
   trainer:
     role: trainer
     class: src.experiments.official.semambapp.trainer.SEMambaPPTrainer
     kwargs:
-      max_logical_steps: 1000000
-      accumulation: 1
+      max_logical_steps: 133700
+      accumulation: 2
       grad_clip: null
-      validation_interval: 0
+      validation_interval: 1337
       best_checkpoint_start_epoch: 40
-      claim_label: protocol_conformant_substitute_materials
+      claim_label: leakage_safe_comparison
+      max_epochs: 100
     inject:
-      generator: {ref: generator}
-      mrd: {ref: mrd}
-      cqt: {ref: cqt}
-      data: {ref: data}
-      optim_g: {ref: optim_g}
-      optim_d: {ref: optim_d}
-      scheduler_g: {ref: scheduler_g}
-      scheduler_d: {ref: scheduler_d}
+      generator:
+        ref: generator
+      mrd:
+        ref: mrd
+      cqt:
+        ref: cqt
+      data:
+        ref: data
+      optim_g:
+        ref: optim_g
+      optim_d:
+        ref: optim_d
+      scheduler_g:
+        ref: scheduler_g
+      scheduler_d:
+        ref: scheduler_d
+  early_stop:
+    role: stopping
+    class: src.experiments.stopping.PatienceStopPolicy
+    kwargs:
+      metric: validation.pesq
+      mode: max
+      patience: 10

@@ -105,7 +105,7 @@ def _task_steps(device, initial, clean, noisy):
 def _trainer_steps(device, initial, clean, noisy) -> dict:
     policy = PreparePolicy(trainable=True, distribute="none")
     # Official and task models in this process already occupy the GPU.
-    runtime = ProcessRuntime(device="cuda" if device.type == "cuda" else "cpu", precision="fp32", allow_busy_gpu=True)
+    runtime = ProcessRuntime(device="cuda" if device.type == "cuda" else "cpu", precision="fp32")
     model = runtime.prepare_model(TFGridNetModel(seed=7, architecture=ARCHITECTURE), policy)
     model.state_module.generator.load_state_dict(initial, strict=True)
     optimizer = torch.optim.Adam(model.parameters, lr=LR, betas=BETAS, eps=1e-8, weight_decay=0.0)

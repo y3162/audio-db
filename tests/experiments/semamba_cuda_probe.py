@@ -37,14 +37,12 @@ def main() -> None:
     torch.cuda.set_device(0)
     reports = []
     saved = []
-    own_context = False
     if args.mode in {"reference", "both"}:
-        report, state = _match("reference", args, allow_busy=own_context)
-        own_context = True
+        report, state = _match("reference", args)
         reports.append(report)
         saved.append(state)
     if args.mode in {"fused", "both"}:
-        report, state = _match("fused", args, allow_busy=own_context)
+        report, state = _match("fused", args)
         reports.append(report)
         saved.append(state)
     if args.mode == "both" and len(saved) == 2:
@@ -53,7 +51,7 @@ def main() -> None:
     print(args.out.read_text(encoding="utf-8"))
 
 
-def _match(backend: str, args: argparse.Namespace, *, allow_busy: bool) -> dict[str, object]:
+def _match(backend: str, args: argparse.Namespace) -> dict[str, object]:
     directory = args.directory / backend
     config = _yaml(
         directory,
@@ -71,12 +69,6 @@ def _match(backend: str, args: argparse.Namespace, *, allow_busy: bool) -> dict[
     text = text.replace("num_tfmamba: 1", f"num_tfmamba: {args.layers}")
     text = text.replace("d_state: 4", f"d_state: {args.state}")
     text = text.replace("d_conv: 2", f"d_conv: {args.conv}")
-    if allow_busy:
-        text = text.replace(
-            "    precision: fp32\n",
-            "    precision: fp32\n    allow_busy_gpu: true\n",
-            1,
-        )
     config.write_text(text, encoding="utf-8")
     torch.cuda.reset_peak_memory_stats()
     started = time.perf_counter()

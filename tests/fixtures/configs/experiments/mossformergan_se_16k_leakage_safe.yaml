@@ -58,7 +58,7 @@ components:
     class: src.experiments.data.SnapshotSource
     kwargs:
       snapshot: mossformergan.vb28.ondemand.safe@1
-      snapshot_root: data/db/snapshots
+      snapshot_root: data/db/snapshots-voicebank-float-v1
       split: train
   protocol:
     role: other

@@ -772,10 +772,15 @@ class SnapshotDataModule:
             return iter(self._collate(group) for group in grouped)
         if callable(validation_ranks) and supply == "chunk":
             self._bind_sampler()
-            grouped = self.batcher.groups(validation_ranks(epoch, self.world_size)[self.rank])
+            samples = validation_ranks(epoch, self.world_size)[self.rank]
+            if not samples:
+                return iter(())
+            grouped = self.batcher.groups(samples)
             return iter(self._collate(group) for group in grouped)
         algorithm = str(self.source.dataset().get("algorithm"))
-        if algorithm == "fixed_pair.mp_senet":
+        if algorithm == "fixed_pair.mp_senet" or (
+                algorithm == "fixed_pair.voicebank_snr_shift"
+                and self.source.dataset()["rule_json"].get("normalize") in ("noisy_rms_unit_v1", "independent_peak_v1")):
             if self.rank != 0:
                 return iter(())
             raw = _call(
@@ -801,7 +806,7 @@ class SnapshotDataModule:
             raise DataError(f"validation for {algorithm} is not implemented in Phase 3-B")
         refs = tuple(_validation_sample(sample, epoch) for sample in raw)
         batches: list[Batch] = []
-        width = self.batcher.micro_batch
+        width = 1 if algorithm == "fixed_pair.voicebank_snr_shift" else self.batcher.micro_batch
         for start in range(0, len(refs), width):
             batches.append(self._collate(refs[start : start + width]))
         return iter(batches)
@@ -1057,7 +1062,7 @@ class SnapshotDataModule:
         algorithm = str(dataset.get("algorithm"))
         supply = getattr(self.protocol, "supply", "fixed_pair")
         if supply == "chunk":
-            if algorithm not in {"pregenerated.ms_snsd_tfgridnet", "pregenerated.dns_tflocoformer"}:
+            if algorithm not in {"pregenerated.ms_snsd_tfgridnet", "pregenerated.dns_tflocoformer", "fixed_pair.voicebank_snr_shift"}:
                 raise DataError(f"chunk protocol cannot read algorithm {algorithm}")
             self._bind_sampler()
             prepare = getattr(self.protocol, "prepare", None)

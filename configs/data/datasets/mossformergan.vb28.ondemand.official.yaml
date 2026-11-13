@@ -5,7 +5,7 @@ profile: official_faithful
 material_origin: derived_from_official
 claim_label: official_reproduction
 list_model: mossformergan
-selection_note: "公式の validation は test 824 件である。独立した汎化性能の Dataset ではない。音声は 48 kHz から学習時に 16 kHz PCM_16 へ変換する。"
+selection_note: "公式の validation は test 824 件である。独立した汎化性能の Dataset ではない。音声は 48 kHz から学習時に 16 kHz float32 へ変換する。"
 bindings:
   train: official_train
   valid: official_test
@@ -17,7 +17,7 @@ expect:
 deviations:
   - id: vb28-16k-converter-unknown
     class: official_effective
-    text: "公式の 16 kHz 事前変換の変換器は不明である。この Dataset は 48 kHz を学習時に soxr HQ と PCM_16 で 16 kHz にする。事前に書いた 16 kHz WAV は要らない。公式波形との一致は主張しない。"
+    text: "公式の 16 kHz 事前変換の変換器は不明である。この Dataset は 48 kHz を学習時に soxr HQ で追加クリッピングや量子化をせず 16 kHz float32 にする。事前に書いた 16 kHz WAV は要らない。公式波形との一致は主張しない。"
     ref: "UN-3"
   - id: vb28-shared-recorded-pair
     class: official_effective

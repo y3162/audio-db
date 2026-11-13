@@ -238,7 +238,7 @@ class RealSnapshotSmokeTests(unittest.TestCase):
                     micro_batch=1,
                     accumulation=1,
                     world_size=1,
-                    snapshot_root=DEFAULT_SNAPSHOTS,
+                    snapshot_root=ROOT / "data/db/snapshots-voicebank-float-v1",
                     load_workers=1,
                 )
                 try:

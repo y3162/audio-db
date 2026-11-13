@@ -203,7 +203,7 @@ def main() -> None:
     task_losses = [fresh.train_update(batches[index : index + 2], 2) for index in (0, 2, 4)]
     policy = PreparePolicy(trainable=True, distribute="none")
     runtime_device = "cuda" if device.type == "cuda" else "cpu"
-    runtime = ProcessRuntime(device=runtime_device, precision="fp32", allow_busy_gpu=True)
+    runtime = ProcessRuntime(device=runtime_device, precision="fp32")
     generator = runtime.prepare_model(MossFormerGANGenerator(seed=7), policy)
     discriminator = runtime.prepare_model(MossFormerGANDiscriminator(seed=7), policy)
     generator.state_module.generator.load_state_dict(held_g, strict=True)

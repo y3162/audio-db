@@ -27,7 +27,7 @@ make test
 
 ```bash
 .venvs/se/bin/python -m src.experiments.cli \
-  --config configs/reproduction/experiments/variants/mossformergan_se_16k.yaml \
+  --config tests/fixtures/configs/experiments/mp_senet_gan.yaml \
   --preflight
 .venvs/se/bin/python -m src.experiments.launcher --config CONFIG --nproc 2 --resume OUTPUT_DIRECTORY
 .venvs/se/bin/python scripts/experiments/show_status.py OUTPUT_DIRECTORY
@@ -67,7 +67,7 @@ make reproduction-doctor
 
 ## 詰まったとき
 
-- preflight が GPU を拒否する: 空いている番号だけを `CUDA_VISIBLE_DEVICES` に入れる。自分のジョブでなければ `allow_busy_gpu` を付けない。
+- preflight が CUDA を拒否する: `CUDA_VISIBLE_DEVICES` の番号、見えるデバイス数、`LOCAL_RANK`、world size を確認する。他プロセスが同じ GPU を使っていても、実験 runtime はそれだけでは拒否しない。
 - 評価が Manifest を読めない: 評価の入力は名前付きセットだけである。登録は `make db-init`。
 - `make db-init` が拒否する: `recipe_json` の無い `eval.cases` がある。DB は変更されていない。
 - 再開が設定差で失敗する: `output` と `stop_after_logical_steps` 以外の実験設定、および Selector のクラスと設定を確認する。旧 YAML や旧 checkpoint との再開互換性は保証しない（[Checkpoint](experiments/CHECKPOINT.md)）。

@@ -12,6 +12,7 @@
 
 - 再生の正本は `recipes/voicebank-snr-shift-v1/`。`depends.json` が同じディレクトリのレシピ、パス一覧、共通定義、件数のパスと SHA-256 を指定する。
 - アルゴリズムは `vctk-aligned-p56-peak-shift-v1`。式は v1 の `common.json` にあり、`shifted = g * clean + shifted_noise_gain * noise[start:end]`、参照は `g * clean`、`snr_shift_db` は -15 である。
+- 16 kHz の学習入力に変換するときは、通常の VoiceBank と同じ soxr HQ の float32 変換を使い、追加のクリッピングや PCM16 量子化をしない。
 - これは全区間 RMS の `additive_noise` バージョン 1 ではない。推定した区間とゲインであり、公式生成器の出力と同一だと扱わない。`eval.cases` に入れない。シフト後の WAV をこのレシピの登録のために作らない。
 - パスはリポジトリルートからの相対パスである。clean と noisy は `data/corpora/VoiceBank-DEMAND`、VCTK は `data/corpora/VCTK`、雑音は `data/corpora/DEMAND48`、`data/corpora/Babble`、`data/corpora/SSN` である。`source_vctk` は名前に `path` が無いが、VCTK のファイルパスである。
 - DEMAND の行は、切り出し位置とゲインの一部を JSON の数値ではなく十進文字列で持つ。整数または有限な数として読めるものだけを使い、null や空を 0 にしない。

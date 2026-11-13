@@ -14,9 +14,8 @@
 
 ## GPU
 
-- 使う前に `nvidia-smi` を見る。実験 runtime は CUDA を要求したとき、空いていない GPU を `PrepareError` にする。
-- `runtime.kwargs.allow_busy_gpu: true` はその装置が自分のジョブだと分かっているときだけ。
-- `CUDA_VISIBLE_DEVICES` で隠すと、見える番号は 0 から振り直される。評価と学習の空き確認は、未設定と空文字をどちらも「見える番号を物理番号のまま見る」として扱う。UUID と MIG の文字列は、別の物理 GPU の番号に読み替えない。
+- 使う前に `nvidia-smi` を見る。実験 runtime は、`CUDA_VISIBLE_DEVICES` で指定された CUDA デバイスを他プロセスの使用率や使用メモリでは拒否しない。CUDA が無い、デバイスが無い、rank が範囲外、world size がデバイス数を超える起動は `PrepareError` にする。
+- `CUDA_VISIBLE_DEVICES` で隠すと、見える番号は 0 から振り直される。未設定と空文字は、見える番号を物理番号のまま見る。UUID と MIG の文字列は、別の物理 GPU の番号に読み替えない。
 - CPU テストは `CUDA_VISIBLE_DEVICES=""` で実行する。CPU の成功を GPU テストの PASS にしない。
 
 ```bash

@@ -816,7 +816,7 @@ class MPSENetGANTrainer:
         if not isinstance(identity, dict):
             raise RuntimeFailure("data identity is not a mapping")
         algorithm = identity.get("algorithm")
-        if algorithm is not None and algorithm != "fixed_pair.mp_senet":
+        if algorithm is not None and algorithm not in ("fixed_pair.mp_senet", "fixed_pair.voicebank_snr_shift"):
             raise RuntimeFailure(f"MP-SENet GAN requires fixed_pair.mp_senet data, got {algorithm}")
         profile = identity.get("profile")
         uses_test = identity.get("selection_uses_test")

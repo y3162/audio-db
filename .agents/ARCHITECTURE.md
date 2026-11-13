@@ -25,7 +25,7 @@
 
 - `official_faithful` は、公式が test を選択に使うなら使う。`selection_uses_test` は true。独立な最終評価とは呼ばない。
 - `leakage_safe` は test を選択に使わない。profile または `selection_uses_test` が claim と矛盾する設定は拒否する。
-- 本格候補は `configs/reproduction/experiments/official/`（`official_faithful`）と `configs/reproduction/experiments/variants/`（`leakage_safe` と比較用の代替条件）。1 step の宣言は `tests/fixtures/configs/experiments/`。Dataset と Protocol の定義は `configs/data/`。評価 DB の登録は `configs/db/init.yaml`。
+- 公式再現設定は `configs/reproduction/experiments/official/`（`official_faithful`）。1 step の宣言は `tests/fixtures/configs/experiments/`。Dataset と Protocol の定義は `configs/data/`。評価 DB の登録は `configs/db/init.yaml`。
 - `dfn3.online.official@1` と `semambapp.gsr.official@1` は blocked。代替素材を公式データの再現と呼ばない。
 - 追跡中の `libdf_rfft.so` は置き換えない。ファイルが在るのに読めないときは、ABI が合うローカル再ビルドだけを使い、無ければエラーにする。PyTorch に戻るのは、ファイル自体が無く `DF_RFFT_REQUIRED=1` でもないときだけで、そのとき libdf とのビット一致は成り立たない（`src/se/models/deepfilternet3/dsp.py`）。
 
