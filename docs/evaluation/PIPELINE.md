@@ -315,7 +315,7 @@ Run ID を省略すると、実験名、UTC 時刻、設定ハッシュから作
 
 `results.jsonl` が再集計の入力です。WER は対象発話全体の micro 集計です。欠けた発話を分母から外して公式値にはしません。PESQ / STOI / SI-SDR は有限な発話スコアの平均です。欠けたスコアは平均に 0 として入れません。
 
-`summary.json` と `run.json` と発話レコードの `schema_version` は 2 です。公式かどうかは `official_wer` と、group の `wer_official` で分かります。
+`summary.json` と `run.json` と発話レコードの `schema_version` は 1 です。公式かどうかは `official_wer` と、group の `wer_official` で分かります。
 
 | 場所 | フィールド | 意味 |
 |---|---|---|
@@ -333,7 +333,7 @@ Run ID を省略すると、実験名、UTC 時刻、設定ハッシュから作
 
 `summary.json` の `paired_signal_metrics` は、noisy と enhanced の補助指標を同じ case で比べます。両条件とも有限な case だけを採用し、両平均、enhanced − noisy の平均、case ID、除外 case と理由を記録します。共通 case が無ければ件数 0、平均と差は null です。異なる集合の単独平均を差として扱いません。
 
-スキーマ 1 の結果ディレクトリ、または `evaluation` の無いレコードは、完全だったと示せません。`--summarize` は落ちませんが、`official_wer` は false で、`wer_normalized` は null です。以前の集計値が計算できるときは `wer_provisional` に置き、表示は `wer=provisional:` です。公式値が必要なら、新しい `run_id` で実行し直します。スキーマ 1 でも、要求した条件の WER と仮説文字列が既に揃っている成功レコードは、`--resume` がモデルを再実行せず `evaluation` を書き足します。仮説が無いレコードは失敗として計算し直します。
+現在のスキーマ 1 は `evaluation` を持つ形式である。旧形式とスキーマ 2 の結果は再集計できない。再開では必須フィールドのないレコードを再計算する。
 
 ### 再開
 
@@ -360,7 +360,7 @@ CUDA_VISIBLE_DEVICES="" .venvs/se/bin/python -m unittest discover -s tests/evalu
 
 `make test-cpu` は、この評価テストを含む 7 ディレクトリを CPU 上でプロセス並列かつスレッド上限つきで実行する。上の discover はディレクトリ単体の実行である。
 
-合成音声、Mock SE、Mock ASR で、混合、SNR、WER の micro 集計、指標の skip、保存、再開、設定変更によるキャッシュ無効化、dry-run を確認します。`tests/evaluation/test_wer_completeness.py` は、認識の例外、空の仮説、強調の失敗、参照の欠陥、未完了ディレクトリとスキーマ 1 の再集計を、Mock だけで見ます。実モデルは載せていません。GPU も巨大チェックポイントも要りません。
+合成音声、Mock SE、Mock ASR で、混合、SNR、WER の micro 集計、指標の skip、保存、再開、設定変更によるキャッシュ無効化、dry-run を確認します。`tests/evaluation/test_wer_completeness.py` は、認識の例外、空の仮説、強調の失敗、参照の欠陥、未完了ディレクトリと現行形式の再集計を、Mock だけで見ます。実モデルは載せていません。GPU も巨大チェックポイントも要りません。
 
 `tests/evaluation/test_real_smoke.py` は、MP-SENet の `g_best_vb` と DuckDB と音声ファイルがあるときだけ、LibriSpeech test-clean の 1 発話を先頭 2 秒、DEMAND の先頭 2 秒、SNR 0 dB、CPU で実行します。これは接続の確認であり、論文用のスコアではありません。Mock の成功とも別です。チェックポイントが無い環境では skip します。
 

@@ -317,29 +317,10 @@ class WerCompletenessTests(unittest.TestCase):
 
             legacy = root / "legacy" / "old"
             self._write_legacy(legacy)
-            loaded = summarize_directory(legacy)
-            self.assertFalse(loaded["official_wer"])
-            self.assertEqual(loaded["completeness"]["status"], "unknown")
-            self.assertTrue(loaded["groups"])
-            for group in loaded["groups"]:
-                self.assertIsNone(group["wer_normalized"])
-                self.assertFalse(group["wer_official"])
-            self.assertEqual(loaded["groups"][0]["wer_provisional"], 0.5)
-            legacy_text = format_summary(loaded)
-            self.assertIn("official_wer: false", legacy_text)
-            self.assertIn("wer=provisional:", legacy_text)
-            self.assertNotIn("wer=official:", legacy_text)
+            with self.assertRaises(ValueError):
+                summarize_directory(legacy)
 
-            bare = root / "legacy" / "bare"
-            (bare / "records").mkdir(parents=True)
-            (bare / "records" / "only.json").write_text('{"status": "ok", "record_id": "only"}\n', encoding="utf-8")
-            (bare / "run.json").write_text('{"schema_version": 1, "status": "completed"}\n', encoding="utf-8")
-            (bare / "results.jsonl").write_text('{"status": "ok", "record_id": "only"}\n', encoding="utf-8")
-            bare_summary = summarize_directory(bare)
-            self.assertFalse(bare_summary["official_wer"])
-            self.assertEqual(bare_summary["num_records"], 1)
-
-    def test_resume_upgrades_a_legacy_success_without_rerunning_models(self):
+    def test_resume_recomputes_a_legacy_success(self):
         with self._temporary_dir() as directory:
             root = Path(directory)
             samples = self._samples()
@@ -359,14 +340,14 @@ class WerCompletenessTests(unittest.TestCase):
                 path.write_text(text, encoding="utf-8")
                 stripped.append(text)
             (run_dir / "results.jsonl").write_text("\n".join(stripped) + "\n", encoding="utf-8")
-            legacy = summarize_directory(run_dir)
-            self.assertFalse(legacy["official_wer"])
+            with self.assertRaises(ValueError):
+                summarize_directory(run_dir)
             enhancer.calls = 0
             recognizer.calls.clear()
             config.output.resume = True
             resumed = self._run(config, samples, enhancer, recognizer)
-            self.assertEqual(enhancer.calls, 0)
-            self.assertEqual(recognizer.calls, [])
+            self.assertGreater(enhancer.calls, 0)
+            self.assertTrue(recognizer.calls)
             self.assertEqual(resumed["status"], "completed")
             self.assertTrue(resumed["summary"]["official_wer"])
             resumed_groups = {group["condition"]: group for group in resumed["summary"]["groups"]}
@@ -380,8 +361,24 @@ class WerCompletenessTests(unittest.TestCase):
                     first_groups[condition]["wer_normalized"],
                 )
             stored = json.loads(next((run_dir / "records").glob("*.json")).read_text(encoding="utf-8"))
-            self.assertEqual(stored["schema_version"], 2)
+            self.assertEqual(stored["schema_version"], 1)
             self.assertTrue(stored["evaluation"]["required_wer"])
+
+    def test_schema_two_results_cannot_be_resumed_or_summarized(self):
+        with self._temporary_dir() as directory:
+            root = Path(directory)
+            config = self._config(root / "runs", "schema-two")
+            result = self._run(config, self._samples(), _Enhancer(), _Recognizer(self._texts()))
+            run_dir = Path(result["run_dir"])
+            meta_path = run_dir / "run.json"
+            meta = json.loads(meta_path.read_text(encoding="utf-8"))
+            meta["schema_version"] = 2
+            meta_path.write_text(json.dumps(meta), encoding="utf-8")
+            with self.assertRaises(ValueError):
+                summarize_directory(run_dir)
+            config.output.resume = True
+            with self.assertRaisesRegex(ConfigError, "unsupported evaluation result schema"):
+                self._run(config, self._samples(), _Enhancer(), _Recognizer(self._texts()))
 
     def test_cli_returns_nonzero_when_asr_fails(self):
         with self._temporary_dir() as directory:

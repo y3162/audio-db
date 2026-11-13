@@ -45,7 +45,7 @@ class EvaluationDBTests(unittest.TestCase):
                 connection.close()
             self.assertEqual(count, 1)
 
-    def test_reregistration_keeps_migrated_legacy_case_id(self):
+    def test_reregistration_rejects_changed_metadata(self):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
             database = root / "sets.duckdb"
@@ -85,19 +85,8 @@ class EvaluationDBTests(unittest.TestCase):
                 )
             finally:
                 connection.close()
-            again = db.import_manifest(manifest, "once", description="clean")
-            self.assertEqual(again.inserted, 0)
-            self.assertEqual(again.unchanged, 1)
-            self.assertEqual(again.set_status, "unchanged")
-            connection = _connect(database)
-            try:
-                kept = json.loads(
-                    connection.execute("SELECT metadata::VARCHAR FROM eval.cases").fetchone()[0]
-                )
-            finally:
-                connection.close()
-            self.assertEqual(kept["legacy_case_id"], "corpus:old-id")
-            self.assertEqual(kept["source_id"], "corpus:old-id")
+            with self.assertRaises(DatasetError):
+                db.import_manifest(manifest, "once", description="clean")
 
     def test_specified_sample_rate_must_match_the_file(self):
         with tempfile.TemporaryDirectory() as directory:

@@ -492,3 +492,7 @@ SEMamba++ のオンライン劣化は `reproduction-p9` に置く。ready な代
 - 無くなっていたパスが、削除されたのか別ホストに残っているのか
 - `tf_gridnet.ms_snsd.espnet_recipe` の train / valid / test の内訳（行数の合計だけ一致）
 - `reproduction-vb-ondemand.duckdb` を、どの引数で既定パス以外へ書いたか
+
+### 2026-11-13: VoiceBank SNR シフトの v1 統一
+
+再生用の v2 の内容を `recipes/voicebank-snr-shift-v1/` に反映した。`recipes.jsonl` は旧 v2 と同じ SHA-256 で、`common.json` と `counts.json` はそのまま使う。`path_map.json` と `depends.json` は v1 のパスと現在の素材だけを示す形に更新した。現在のハッシュは `configs/data/voicebank_snr_shift.yaml`。上の v1 / v2 の記述は変更前の記録であり、現在の配置を表さない。

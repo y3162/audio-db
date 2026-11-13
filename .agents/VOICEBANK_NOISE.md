@@ -10,9 +10,7 @@
 
 ## レシピ
 
-- 今後の再生に使う正本は v2 である。データセットルートの `recipes/voicebank-snr-shift-v2/recipes.jsonl` を、同じディレクトリの `depends.json` に書いたパスだけで開く。
-- `common.json` と `counts.json` は v2 に複製しない。`depends.json` がデータセットルートからの相対パスで `recipes/voicebank-snr-shift-v1/common.json` と `recipes/voicebank-snr-shift-v1/counts.json` を指す。隣のディレクトリを暗黙に探さない。
-- v1 の `recipes.jsonl` は原記録である。書き換えない。`noise_path` は、削除済みのリポジトリ直下の研究ディレクトリを指す。v1 単体では雑音を解決できず、再生できない。対応は v2 の `path_map.json` にある。`v1_replayable_without_research_dirs` は false である。
+- 再生の正本は `recipes/voicebank-snr-shift-v1/`。`depends.json` が同じディレクトリのレシピ、パス一覧、共通定義、件数のパスと SHA-256 を指定する。
 - アルゴリズムは `vctk-aligned-p56-peak-shift-v1`。式は v1 の `common.json` にあり、`shifted = g * clean + shifted_noise_gain * noise[start:end]`、参照は `g * clean`、`snr_shift_db` は -15 である。
 - これは全区間 RMS の `additive_noise` バージョン 1 ではない。推定した区間とゲインであり、公式生成器の出力と同一だと扱わない。`eval.cases` に入れない。シフト後の WAV をこのレシピの登録のために作らない。
 - パスはリポジトリルートからの相対パスである。clean と noisy は `data/corpora/VoiceBank-DEMAND`、VCTK は `data/corpora/VCTK`、雑音は `data/corpora/DEMAND48`、`data/corpora/Babble`、`data/corpora/SSN` である。`source_vctk` は名前に `path` が無いが、VCTK のファイルパスである。
@@ -37,4 +35,4 @@ P.56 は `scripts/data/voicebank/asl_P56_fast.py` の method B である。`asl_
 
 リポジトリルートで実行する。データセットルートは `--dataset-root` または `AUDIO_DB_DATASET_ROOT` で渡す。Git 管理するスクリプトは `scripts/data/voicebank/`。
 
-`verify.py` は v2 と、`depends.json` が指す `common.json` を読む。v1 へは書かない。`residual_check.py` は `--output` が既にあるとき拒否する。`search.py` と `assemble.py` は investigation の `INDEX.json` と `data/corpora` を読み、空でない出力先、v1、v2、investigation へは書かない。検証のための既定操作は `verify.py` である。`generate_one.py` は 1 発話の候補を、既存ファイルを上書きせずに書く。
+`verify.py` は v1 と `depends.json` に指定された共通定義を読み、正本には書かない。`residual_check.py` は既存の出力を拒否する。`search.py` と `assemble.py` は既存の正本と investigation を保護する。`generate_one.py` は既存の出力を上書きしない。

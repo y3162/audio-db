@@ -86,7 +86,6 @@ data/staging/
 
 `src.data.staging.register_staging` がファイルを検証してから、1 トランザクションで登録します。同じ内容は増えず、同じ ID で内容が違うとエラーになり、そのバッチは残りません。`rebuild_database` は新しいファイルを作り、既存ファイルは上書きしません。
 
-以前の `eval.cases` からの一度きりの変換は `python -m src.data.migrate_legacy` です。出力先が既にあるときは上書きしません。実行時に旧列を読む互換層ではありません。本番の切り替えは済んでいます。
 
 ## 再現用 DB とスナップショット
 

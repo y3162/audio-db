@@ -3,17 +3,14 @@ snr_shift_db: -15
 sample_rate_hz: 48000
 utterances: 12396
 role: reproducible_canonical
-recipes_rel: recipes/voicebank-snr-shift-v2/recipes.jsonl
-depends_rel: recipes/voicebank-snr-shift-v2/depends.json
-path_map_rel: recipes/voicebank-snr-shift-v2/path_map.json
+recipes_rel: recipes/voicebank-snr-shift-v1/recipes.jsonl
+depends_rel: recipes/voicebank-snr-shift-v1/depends.json
+path_map_rel: recipes/voicebank-snr-shift-v1/path_map.json
 common_rel: recipes/voicebank-snr-shift-v1/common.json
 counts_rel: recipes/voicebank-snr-shift-v1/counts.json
-original_recipes_rel: recipes/voicebank-snr-shift-v1/recipes.jsonl
-original_verification_rel: recipes/voicebank-snr-shift-v1/verification.json
-original_manifest_rel: recipes/voicebank-snr-shift-v1/manifest.json
 path_resolution: repository root
 dataset_root_resolution: AUDIO_DB_DATASET_ROOT or --dataset-root
-v1_replayable_without_research_dirs: false
+v1_replayable_without_research_dirs: true
 not_additive_noise_v1: true
 missing_is_not_zero: true
 depends_on:
@@ -25,13 +22,10 @@ depends_on:
 investigation_rel: investigations/voicebank-20261112
 sha256:
   recipes.jsonl: 9502da7b24b81bed04781c1e66726945dfcb3024045111df8bbb5839e0d01c14
-  path_map.json: 935a69450a517e6321ace60024318c33e35671b452df2087997d06a2faaf6338
-  depends.json: a61039bc139f0c83c55131e08ca07ffd4a3193fcd3b8cfa54d2d8e6bdeba0f9e
+  path_map.json: 664186990bf02b8d55fbb42914919c977d25924a5c05e3077cbc13dce914f855
+  depends.json: 341e33adaa20400a81048aacd15dcd8544b061efcfe8e9613dfe86fd82fa0c1a
   common.json: 9a290d8b149293fc59663822425efe20414ff7d39d7cb08b773b873a806493b0
   counts.json: 56d291be5151b143ba2cbb8ecbdb2478c993d07306aa2d0adfebc67c2625f376
-  original_recipes.jsonl: 836ca5f1566404b016087332a764467d36ed0c237f6bcee2736e6003b6f0bd23
-  original_verification.json: ecbbf9adf276b8eede23222685d5585ca297ef2fa3d7db22de4c53d29dc3a2df
-  original_manifest.json: 7a293108f6e36159d259e4849ea0f39df91c8c0d20ee2363e18935527090e806
 noise_corpus_paths:
   babble: Babble/babble.wav
   bus: DEMAND48/TBUS/ch01.wav

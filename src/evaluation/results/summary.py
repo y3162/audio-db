@@ -27,8 +27,8 @@ from src.evaluation.provenance import summarize_record_independence
 from src.evaluation.results.reader import read_json, read_jsonl, read_record_files
 from src.evaluation.results.writer import atomic_write_json, atomic_write_text
 
-SUMMARY_SCHEMA_VERSION = 2
-RECORD_SCHEMA_VERSION = 2
+SUMMARY_SCHEMA_VERSION = 1
+RECORD_SCHEMA_VERSION = 1
 CONDITIONS = ("clean", "noisy", "enhanced")
 SIGNAL_METRICS = ("pesq", "stoi", "estoi", "si_sdr")
 # JSONL for these run statuses was written after every utterance had been visited.
@@ -164,6 +164,10 @@ def summarize_directory(run_dir: Path) -> dict[str, Any]:
         records = read_jsonl(jsonl)
     else:
         records = read_record_files(run_dir)
+    if not isinstance(meta, dict) or meta.get("schema_version") != SUMMARY_SCHEMA_VERSION:
+        raise ValueError("unsupported evaluation result schema")
+    if any(not _declared(record) for record in records):
+        raise ValueError("unsupported evaluation record schema")
     summary = build_summary(records)
     demote_unfinished(summary, run_status)
     write_summary(run_dir, summary)
@@ -376,7 +380,7 @@ def _cohort_key(record: dict[str, Any]) -> tuple:
 
 def _declared(record: dict[str, Any]) -> bool:
     evaluation = record.get("evaluation")
-    return isinstance(evaluation, dict) and "required_wer" in evaluation
+    return record.get("schema_version") == RECORD_SCHEMA_VERSION and isinstance(evaluation, dict) and "required_wer" in evaluation
 
 
 def _agreed_required(items: list[dict[str, Any]]) -> tuple[str, ...] | None:

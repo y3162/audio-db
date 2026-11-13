@@ -89,7 +89,7 @@ class WordErrorTests(unittest.TestCase):
 def _record(utterance_id, substitutions, length):
     counts = {"S": substitutions, "D": 0, "I": 0, "N": length, "wer": None if length == 0 else substitutions / length}
     return {
-        "schema_version": 2,
+        "schema_version": 1,
         "status": "ok",
         "identity": {"config_hash": "abc"},
         "model": {"name": "mock", "variant": None},

@@ -55,7 +55,6 @@ DuckDB は `data/db/resource.duckdb`（`src/data/constants.py`）。
 - `data/staging/` が再構築元である。`metadata.json`、`corpora/audio_files.parquet`、`evaluation/cases.parquet`、`evaluation/sets.parquet`、`evaluation/set_items.parquet`、`results/runs.parquet`、`results/results.parquet`。Git 管理外。DB へ登録したあとも消さない。バックアップは DB ファイルと一緒に取る。
 - 登録は `src.data.staging.register_staging`。検証してから 1 トランザクションで書く。同じ内容の再登録は増えない。同じ ID で内容が違うとエラーになり、そのバッチは残らない。不完全なファイルは DB を作る前に拒否する。
 - 評価ランの一次記録は従来どおり `data/results/se-evaluation/<run_id>/` の `config.json` と `results.jsonl` である。DuckDB への登録は `register_run` で、そのあと行う。`run.json` が `completed` でない run（`incomplete`、`validation_failed`、`failed`、`running`）は登録しない。実行中の `results.jsonl` は最大 60 秒ぶん `records/` より古く、kill された run では古いまま残る。既存ランは自動では登録しない。
-- `src.data.migrate_legacy` は、以前の `eval.cases` を一度だけレシピへ写す。実行時の互換読み取りではない。出力先が既にあるときは上書きしない。本番は切り替え済みなので、このコマンドを再実行する必要はない。旧 `case_id` は metadata の `legacy_case_id` に残り、新しい `case_id` はレシピハッシュである。
 
 ## 学習に使うセット
 
@@ -84,7 +83,7 @@ DuckDB は `data/db/resource.duckdb`（`src/data/constants.py`）。
 - 必須の WER が 1 件でも欠けた実行は `completed` にしない。`incomplete`（再計算できる失敗。ASR の例外など）か `validation_failed`（入力や参照の不備）で、CLI は終了コード 1 を返す。揃っている分の値は `wer_provisional` に置き、公式値 `wer_normalized` は null にする。
 - SE が成功して ASR が失敗した発話は成功ではない。空文字の認識結果は正常な結果で、削除として数える。
 - 参照テキストが空、部分音声（`partial_audio`）、長さ不明（`unknown_audio_span`）、入力音声の不備は `validation_failed` である。部分音声に全文テキストを対応させた WER は計算しない。部分に対応するテキストを作る処理は無い。
-- 再開は、全条件が揃った発話だけを再利用し、失敗した発話を計算し直す。`evaluation` の無い以前の結果（スキーマ 1）は完全だったと示せないので、公式値にしない。
+- 再開は、全条件が揃った発話だけを再利用し、失敗した発話を計算し直す。現行スキーマ 1 の `evaluation` が無いレコードは再利用せず再計算する。
 - 補助指標は別扱いである。値を出せないときは `na`（`reason` 付き）、ライブラリが無ければ `unavailable`。値は null で、集計に 0 として入れない。PESQ / STOI / SI-SDR は有限なスコアの平均だけで、欠損は公式 WER を止めない。clean 参照が無い評価セットでは `na`（`no_clean_reference`）。
 - PESQ / STOI はゼロ波形を `na`、非有限入力をエラーとする。STOI のライブラリが発話不足の警告と返す固定値 `1e-5` はスコアにせず `na` とする。SI-SDR の無音推定と、参照に直交する推定は有限値にしない。
 - PESQ（`pesq==0.0.4`、ITU-T P.862.2）は、16 kHz では長さが 64 サンプルの倍数をまたぐと内部の VAD 長が 1 増える。全文と直前の bin の末尾を比べて差が 0.1 超なら `na`（`pesq_utterance_split_discontinuity`）にし、生の値を `raw_value` に残す。補正値や欠損を平均に入れない。経緯は `docs/evaluation/PESQ_LENGTH_INVESTIGATION.md`。

@@ -1,4 +1,4 @@
-"""Check the VoiceBank SNR-shift v2 recipes. Does not write audio."""
+"""Check the VoiceBank SNR-shift v1 recipes. Does not write audio."""
 import argparse
 import hashlib
 import json
@@ -147,7 +147,7 @@ def main():
     peaks = [evaluate(row, repo) for row in by_noise]
     text = json.dumps(
         {
-            "method": "v2; seed 42 random 40 ready plus first 2 babble and ssn; first row of each of 15 noise types; no output audio written",
+            "method": "v1; seed 42 random 40 ready plus first 2 babble and ssn; first row of each of 15 noise types; no output audio written",
             "results": results,
             "noise_types": [{key: item[key] for key in ("id", "noise", "shifted_peak")} for item in peaks],
         },

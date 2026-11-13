@@ -108,7 +108,7 @@ def execute(
     environment = capture_environment()
     git = git_metadata()
     meta = {
-        "schema_version": 2,
+        "schema_version": RECORD_SCHEMA_VERSION,
         "status": "running",
         "run_id": run_id,
         "config_hash": digest,
@@ -842,7 +842,9 @@ def _prepare_run(config: ExperimentConfig, digest: str) -> tuple[str, Path]:
         if not meta_path.is_file():
             raise ConfigError(f"cannot resume because run metadata is missing: {run_dir}")
         stored = read_json(meta_path)
-        if not isinstance(stored, dict) or stored.get("config_hash") != digest:
+        if not isinstance(stored, dict) or stored.get("schema_version") != RECORD_SCHEMA_VERSION:
+            raise ConfigError("cannot resume an unsupported evaluation result schema")
+        if stored.get("config_hash") != digest:
             stored_hash = None if not isinstance(stored, dict) else stored.get("config_hash")
             raise ConfigError(
                 "this run_id was created with a different configuration "
@@ -1084,22 +1086,12 @@ def _published_status(completeness: dict[str, Any]) -> str:
 
 
 def _reuse_record(existing, identity_hash: str, config, judgment):
-    """Reuse a successful utterance. Legacy files gain an evaluation block.
-
-    Returns ``(record, write)`` or None. ``write`` is true only when a
-    schema-1 success is stamped with the fields that show completeness.
-    The model is not run again. Records that merely look finished, with an
-    ASR error stored as a missing hypothesis, are not reused.
-    """
+    """Reuse only a complete record written in the current format."""
     if not _reusable(existing, identity_hash, config):
         return None
     stamped = dict(existing)
     apply_independence(stamped, judgment)
-    if not _needs_evaluation_upgrade(stamped):
-        return stamped, False
-    stamped["schema_version"] = RECORD_SCHEMA_VERSION
-    stamped["evaluation"] = _verified_evaluation(config)
-    return stamped, True
+    return stamped, False
 
 
 def _reusable(existing, identity_hash: str, config) -> bool:
@@ -1108,7 +1100,9 @@ def _reusable(existing, identity_hash: str, config) -> bool:
     if existing.get("identity_hash") != identity_hash or existing.get("status") != "ok":
         return False
     evaluation = existing.get("evaluation")
-    if isinstance(evaluation, dict) and evaluation.get("status") not in (None, "ok"):
+    if existing.get("schema_version") != RECORD_SCHEMA_VERSION or not isinstance(evaluation, dict) or "required_wer" not in evaluation:
+        return False
+    if evaluation.get("status") != "ok":
         return False
     if not config.metrics.wer:
         return True
@@ -1123,30 +1117,6 @@ def _reusable(existing, identity_hash: str, config) -> bool:
         if not isinstance((hypotheses.get(condition) or {}).get("text"), str):
             return False
     return True
-
-
-def _needs_evaluation_upgrade(record: dict) -> bool:
-    if record.get("schema_version") != RECORD_SCHEMA_VERSION:
-        return True
-    evaluation = record.get("evaluation")
-    return not isinstance(evaluation, dict) or "required_wer" not in evaluation
-
-
-def _verified_evaluation(config) -> dict[str, Any]:
-    required = list(config.asr.conditions) if config.metrics.wer else []
-    return {
-        "required_wer": bool(config.metrics.wer),
-        "required_conditions": required,
-        "status": "ok",
-        "retryable": False,
-        "missing_conditions": [],
-        "reasons": [],
-        "message": None,
-        "conditions": {
-            condition: {"metric": "wer", "status": "ok", "reason": None}
-            for condition in required
-        },
-    }
 
 
 def _promote_prepare_failure(config, prepared: dict[str, Any]) -> None:
