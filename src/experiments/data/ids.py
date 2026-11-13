@@ -199,14 +199,8 @@ _HEX = set("0123456789abcdef")
 
 # Closed envelope for P1. Full per-model dataclasses belong to the protocol
 # package, which is a later phase. Unknown algorithms and unknown keys are rejected.
+FIXED_PAIR_NORMALIZES = ("noisy_rms_unit_v1", "independent_audio_norm_v1")
 ALGORITHMS: dict[str, dict[str, Any]] = {
-    "fixed_pair.voicebank_snr_shift": {
-        "kind": "fixed_pair",
-        "version": 1,
-        "sample_rate": 16000,
-        "teacher": "dry_clean",
-        "normalize": None,
-    },
     "fixed_pair.mp_senet": {
         "kind": "fixed_pair",
         "version": 1,
@@ -540,9 +534,9 @@ def validate_rule(algorithm: str, rule: Any) -> dict[str, Any]:
         raise ReproductionError(f"{algorithm} sample_rate must be {spec['sample_rate']}")
     if body["teacher"] != spec["teacher"]:
         raise ReproductionError(f"{algorithm} teacher must be {spec['teacher']}")
-    if algorithm == "fixed_pair.voicebank_snr_shift":
-        if body.get("normalize") not in (None, "noisy_rms_unit_v1", "independent_peak_v1"):
-            raise ReproductionError("unsupported VoiceBank SNR-shift normalization")
+    if spec["kind"] == "fixed_pair":
+        if body.get("normalize") not in FIXED_PAIR_NORMALIZES:
+            raise ReproductionError("fixed-pair normalize must be an explicit pipeline policy")
     elif spec["normalize"] is None:
         if "normalize" in body and body["normalize"] is not None:
             raise ReproductionError(f"{algorithm} does not take normalize")
@@ -602,12 +596,12 @@ def validate_rule(algorithm: str, rule: Any) -> dict[str, Any]:
     elif "online" in body:
         raise ReproductionError(f"{algorithm} does not take online")
     if "resample" in body:
-        if not algorithm.startswith("fixed_pair."):
+        if spec["kind"] != "fixed_pair":
             raise ReproductionError(f"{algorithm} does not take resample")
         if body.get("delivery") != "on_demand":
             raise ReproductionError("resample requires delivery on_demand")
         _check_resample(body["resample"])
-    elif body.get("delivery") == "on_demand" and algorithm.startswith("fixed_pair."):
+    elif body.get("delivery") == "on_demand" and spec["kind"] == "fixed_pair":
         raise ReproductionError("on-demand fixed-pair rule needs resample")
     return body
 
@@ -716,50 +710,6 @@ def validate_realization(document: Any) -> dict[str, Any]:
         raise ReproductionError("realization.output.teacher is unknown")
     if "length" in output:
         positive_int(output["length"], "realization.output.length")
-    if algorithm == "fixed_pair.voicebank_snr_shift":
-        import math
-
-        if body["sample_rate"] != 16000 or set(body["sources"]) != {"clean", "noise"}:
-            raise ReproductionError("invalid VoiceBank SNR-shift realization sources")
-        for source in body["sources"].values():
-            if not isinstance(source, dict) or set(source) != {"asset", "sha256"}:
-                raise ReproductionError("invalid VoiceBank SNR-shift source")
-            if not isinstance(source["asset"], str) or not source["asset"].startswith("corpora/"):
-                raise ReproductionError("invalid VoiceBank SNR-shift source asset")
-            check_rel_path(source["asset"], "realization source")
-            check_optional_sha256(source["sha256"], "realization source sha256")
-            if source["sha256"] is None:
-                raise ReproductionError("VoiceBank SNR-shift source needs sha256")
-        draws = body["draws"]
-        if set(draws) != {"source_recipe_case_id", "noise_start_48k", "noise_end_exclusive_48k", "clean_gain", "shifted_noise_gain"}:
-            raise ReproductionError("invalid VoiceBank SNR-shift draws")
-        check_optional_sha256(draws["source_recipe_case_id"], "source recipe case id")
-        if draws["source_recipe_case_id"] is None:
-            raise ReproductionError("source recipe case id is missing")
-        start, end = draws["noise_start_48k"], draws["noise_end_exclusive_48k"]
-        if any(isinstance(v, bool) or not isinstance(v, int) for v in (start, end)) or start < 0 or end <= start:
-            raise ReproductionError("invalid VoiceBank SNR-shift noise span")
-        for key in ("clean_gain", "shifted_noise_gain"):
-            try:
-                value = float(draws[key]) if isinstance(draws[key], str) else float("nan")
-            except ValueError as exc:
-                raise ReproductionError("invalid VoiceBank SNR-shift gain") from exc
-            if not math.isfinite(value):
-                raise ReproductionError("invalid VoiceBank SNR-shift gain")
-        if output != {"length": (end - start + 1) // 3, "teacher": "dry_clean"}:
-            raise ReproductionError("invalid VoiceBank SNR-shift output")
-        if body.get("steps") != ["vctk-aligned-p56-peak-shift-v1", "soxr_hq_float32_48000_to_16000"]:
-            raise ReproductionError("invalid VoiceBank SNR-shift processing steps")
-        source_recipe = {
-            "algorithm": "vctk-aligned-p56-peak-shift-v1", "sample_rate": 48000,
-            "sources": {name: {"path": "data/" + source["asset"], "sha256": source["sha256"]}
-                        for name, source in body["sources"].items()},
-            "noise_start": start, "noise_end_exclusive": end,
-            "clean_gain": draws["clean_gain"], "shifted_noise_gain": draws["shifted_noise_gain"],
-            "reference": "scaled_clean",
-        }
-        if digest(source_recipe) != draws["source_recipe_case_id"]:
-            raise ReproductionError("VoiceBank SNR-shift source recipe identity does not match")
     return body
 
 

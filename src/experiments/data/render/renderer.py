@@ -34,14 +34,9 @@ def render_sample(
         raise ReproductionError(f"case {sample.case_id} has no teacher")
     clean_id = case.get("clean_asset_id")
     noisy_id = case.get("noisy_asset_id")
-    is_shift = store.dataset.get("algorithm") == "fixed_pair.voicebank_snr_shift"
-    if is_shift:
-        from src.experiments.data.render.voicebank_shift_snapshot import render_shift_case
-
-        noisy, clean = render_shift_case(store, sample.case_id, verify_on_read=verify_on_read)
-    elif not clean_id or not noisy_id:
+    if not clean_id or not noisy_id:
         raise ReproductionError(f"case {sample.case_id} is not a recorded pair")
-    elif resample:
+    if resample:
         from src.experiments.data.ids import _check_resample
 
         _check_resample(resample)
@@ -74,11 +69,6 @@ def render_sample(
             )
         noisy = independent_audio_norm(noisy)
         clean = independent_audio_norm(clean)
-    elif normalize == "independent_peak_v1" and is_shift:
-        from src.experiments.data.protocols.online_semamba import independent_peak
-
-        noisy = independent_peak(noisy)[0]
-        clean = independent_peak(clean)[0]
     else:
         raise ReproductionError(f"normalization {normalize} is not implemented")
     noisy, clean, valid = apply_window(noisy, clean, sample.crop)

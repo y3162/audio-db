@@ -18,17 +18,6 @@
 | `configs/data/` | Dataset、Protocol、Build、公式リスト。ID はファイルの置き場所ではなく内容から決まる |
 | `configs/db/init.yaml` | 評価用 DB の名前付きセット。学習の入力には使わない |
 
-VoiceBank+DEMAND の SNR shift 学習設定は `configs/reproduction/experiments/snr_shift/` にある。対象は MP-SENet、SEMamba++、TF-GridNet、TF-Locoformer で、いずれも Single GPU である。snapshot は `data/db/snapshots-snr-shift-v1-perrank/` を読む。`data/db/snapshots-snr-shift-v1/` は同じ case の履歴であり、学習 YAML はこちらを指さない。SEMamba++ だけデータ順序の protocol が per-rank 側と共有順側で違うため snapshot hash が異なる。他の 3 モデルは case・順序・protocol が同じなので hash も同じである。件数と hash は [INVENTORY](../db/INVENTORY.md) の 2026-11-13 の記録である。
-
-Train 10,700、Validation 872（p286・p287）、Test 824。Test はモデル選択と early stopping に使わない。Train と Validation は話者と発話が分かれ、雑音区間は重なる。この重複は承認済みで、分割や雑音区間は変えない。Test との雑音素材の分離は維持する。
-
-TF-GridNet と TF-Locoformer の Validation は、`valid.cases` だけを `shuffle=False`、`num_samples=None` の ChunkSampler で切る。短い発話は元の ESPnet と同じく chunk 未満を捨て、端数 batch も捨てる。学習側の短い発話のゼロパディングは Validation には使わない。勾配蓄積は `group_size` と Trainer の `accumulation` を一致させる。TF-GridNet は micro-batch 2、蓄積 2、実効 batch 4。TF-Locoformer は micro-batch 1、蓄積 4、実効 batch 4。MP-SENet は micro-batch 2、蓄積 2、実効 batch 4。SEMamba++ は micro-batch 4、蓄積 2、実効 batch 8 で、オンライン追加劣化は付けない。
-
-```bash
-CUDA_VISIBLE_DEVICES=0 .venvs/se/bin/python -m src.experiments.launcher \
-  --config configs/reproduction/experiments/snr_shift/tf_gridnet.yaml
-```
-
 計画上の更新回数と、実行後の `metrics.jsonl` にある logical step・optimizer 更新は別である。未実行の本学習の実績は推定で埋めない。実行ディレクトリの集計は `src.experiments.budget.observed_budget` が読む。Early Stopping で止まっても、書かれた metrics と status がその実績である。
 
 YAML の `class` には公開 import パスを書く。公開境界と checkpoint のクラス識別は [Checkpoint](CHECKPOINT.md#公開パスとクラス識別) を参照する。

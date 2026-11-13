@@ -40,6 +40,7 @@ import torch
 
 from src.experiments.checkpoint import CheckpointManager
 from src.experiments.data import Batch
+from src.experiments.data.pair import require_audio_contract
 from src.experiments.errors import BuildError, RuntimeFailure
 from src.experiments.losses import MultiResolutionL1Loss
 from src.experiments.results import RunResult
@@ -569,6 +570,7 @@ class TFLocoformerTrainer:
         return total / count, monitor, count
 
     def _require_group_size(self, component_id: str) -> None:
+        require_audio_contract(self.data, sample_rate=16000, teachers=("dry_clean",))
         group_size = getattr(self.data, "group_size", None)
         if group_size is None:
             return

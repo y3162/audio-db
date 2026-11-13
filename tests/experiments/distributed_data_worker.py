@@ -218,29 +218,21 @@ def _assert_validation(
     found = [sample_id for batch in rows for sample_id in batch]
     found_realizations = [value for batch in realizations for value in batch]
     if item["kind"] == "fixed":
-        algorithm = str(module.source.dataset()["algorithm"])
-        if algorithm == "fixed_pair.mp_senet":
-            if module.rank != 0:
-                if found:
-                    raise RuntimeError("MP-SENet validation leaked onto a non-zero rank")
-                return
-            raw = validation_refs(
-                module.source.store,
-                seed=int(item["seed"]),
-                epoch=0,
-                world_size=module.world_size,
-                policy=module.sampler.policy(module.world_size),
-                rank=None,
-            )
-        else:
-            raw = validation_refs(
-                module.source.store,
-                seed=int(item["seed"]),
-                epoch=0,
-                world_size=module.world_size,
-                policy="rank_mod_fixed_v1",
-                rank=module.rank,
-            )
+        from src.experiments.data.fixed_pair import validation_scope
+
+        policy = module.sampler.policy(module.world_size)
+        if validation_scope(policy) == "rank0" and module.rank != 0:
+            if found:
+                raise RuntimeError("rank-0 validation leaked onto a non-zero rank")
+            return
+        raw = validation_refs(
+            module.source.store,
+            seed=int(item["seed"]),
+            epoch=0,
+            world_size=module.world_size,
+            policy=policy,
+            rank=None if validation_scope(policy) == "rank0" else module.rank,
+        )
         expected = [str(sample.case_id) for sample in raw]
         if found != expected:
             raise RuntimeError(f"{item['name']} validation ids do not match validation_refs")

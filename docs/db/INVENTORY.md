@@ -193,7 +193,7 @@ Babble は 48,000 Hz、2,880,000 frames、1 ch、5,760,044 バイト。SSN は 4
 | `TCAR_48k.zip` | `8ff68f65c8af88764a6bae44ce35747f592929753b03319e68211f9ef58c55d6` |
 | `TMETRO_48k.zip` | `2d9be4da51098491be1ed67474dabfa7f5ed254cae921cca1dd06585bddfe883` |
 
-SNR シフトレシピの正本は `/net/spring/work/seki/database/recipes/voicebank-snr-shift-v1/`。実行時の場所と SHA-256 は `configs/data/voicebank_snr_shift.yaml`。発話は 12,396。このレシピは `eval.cases` に入れていない。調査の原記録は `/net/spring/work/seki/database/investigations/voicebank-20261112/`。
+2026-11-12 時点で、VoiceBank の SNR をずらしたレシピ 12,396 件がデータセットルートの `recipes/voicebank-snr-shift-v1/` にあり、`eval.cases` には入れていなかった。調査の原記録はデータセットルートの `investigations/voicebank-20261112/` にある。この実験の学習コードとリポジトリ内の設定は後に削除した。ディスク上のレシピと調査記録は残している。
 
 ## 2026-11-12 に在ったファイル
 
@@ -504,7 +504,9 @@ SEMamba++ のオンライン劣化は `reproduction-p9` に置く。ready な代
 
 ## 2026-11-13 SNR shift の分割と雑音区間
 
-正本 `recipes/voicebank-snr-shift-v1/recipes.jsonl` の 12,396 レシピを `src.experiments.data.prepare.voicebank_shift_audit.audit_recipes` で調べた。48 kHz の半開区間を雑音素材 SHA-256 ごとに照合し、Train 区間の和集合と各 Validation / Test 発話の交差を数える。対象発話間の重複はそれぞれの発話として数え、1 発話内で複数の Train 区間が重なる部分は二重に数えない。
+この節は 2026-11-13 の測定記録である。学習コードとリポジトリ内の設定は後に削除した。ここに書いた DB と snapshot は削除していない。
+
+12,396 レシピについて、48 kHz の半開区間を雑音素材 SHA-256 ごとに照合し、Train 区間の和集合と各 Validation / Test 発話の交差を数えた。対象発話間の重複はそれぞれの発話として数え、1 発話内で複数の Train 区間が重なる部分は二重に数えていない。
 
 | 分割 | 発話 | 話者 |
 |---|---:|---:|

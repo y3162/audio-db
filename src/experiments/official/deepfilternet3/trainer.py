@@ -31,6 +31,7 @@ import torch.nn.functional as F
 
 from src.experiments.checkpoint import CheckpointManager
 from src.experiments.data import Batch
+from src.experiments.data.pair import require_audio_contract
 from src.experiments.errors import BuildError, RuntimeFailure
 from src.experiments.official.deepfilternet3.model import DeepFilterNet3Model
 from src.experiments.results import RunResult
@@ -601,6 +602,11 @@ class DeepFilterNet3Trainer:
             raise BuildError(str(exc)) from exc
 
     def _require_group_size(self, component_id: str) -> None:
+        require_audio_contract(
+            self.data,
+            sample_rate=int(self.model.state_module.generator.params.sr),
+            teachers=("official_mixed_target",),
+        )
         group_size = getattr(self.data, "group_size", None)
         if group_size is not None and group_size != self.accumulation:
             raise RuntimeFailure(

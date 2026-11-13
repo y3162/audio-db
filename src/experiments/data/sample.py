@@ -50,3 +50,4 @@ class Batch:
     sample_ids: tuple[str, ...] = ()
     realization_ids: tuple[str, ...] = ()
     teacher_kind: str | None = None
+    sample_rate: int | None = None

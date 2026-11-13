@@ -1,8 +1,8 @@
-"""Chunk supply for TF-GridNet and TF-Locoformer.
+"""Chunk supply for models that train on fixed-length spans.
 
-The epoch plan is ``plan_chunk_epoch``. Waveforms come from the MS-SNSD or
-DNS ``render_realization`` path that the on-demand readers already use.
-This module does not construct those reader classes.
+The epoch plan is ``plan_chunk_epoch``. The waveform adapter is chosen while
+the protocol is prepared. This module does not branch on a dataset name while
+planning or slicing.
 """
 
 from __future__ import annotations
@@ -11,18 +11,14 @@ from typing import Any
 
 import numpy as np
 
+from src.experiments.data.adapters import ChunkAdapter, open_chunk_adapter
 from src.experiments.data.fixed_pair import SnapshotSource, _call, _non_negative, _positive
 from src.experiments.data.sample import ChunkSpan, SampleRef
 from src.experiments.errors import DataError
 from src.experiments.data.errors import ReproductionError
 from src.experiments.data.render.chunking import ChunkEpochPlan, plan_chunk_epoch
-from src.experiments.data.mix.dns_ondemand import dns_rendering, render_dns_pair
-from src.experiments.data.mix.ondemand import ms_snsd_rendering, render_ms_snsd_pair
 from src.experiments.data.sampling.order import order_params
 from src.experiments.data.sampling.planner import chunk_case_length
-
-_MS = "pregenerated.ms_snsd_tfgridnet"
-_DNS = "pregenerated.dns_tflocoformer"
 
 
 class ChunkSampler:
@@ -80,8 +76,6 @@ class ChunkSampler:
             "shuffle": self.shuffle,
             "training_seed": self.seed,
         }
-        if self.source.dataset().get("algorithm") == "fixed_pair.voicebank_snr_shift":
-            parameters["short_utterances"] = "tail_zero_pad_v1"
         return parameters
 
     def bind_batch(self, batcher: object, world_size: int) -> None:
@@ -125,14 +119,6 @@ class ChunkSampler:
     def _train_slot(self) -> str:
         return f"{self.source.split}.cases"
 
-    def _pad_short(self, slot: str) -> bool:
-        """Zero-pad short training utterances. Validation keeps the ESPnet drop."""
-
-        return (
-            slot == self._train_slot()
-            and self.source.dataset().get("algorithm") == "fixed_pair.voicebank_snr_shift"
-        )
-
     def _ranks(
         self,
         epoch: int,
@@ -168,7 +154,6 @@ class ChunkSampler:
                 num_cache_chunks=self.num_cache_chunks,
                 shuffle=shuffle,
                 shift_ratio=self.shift_ratio,
-                pad_short=self._pad_short(slot),
             )
         except (ReproductionError, ValueError) as exc:
             raise DataError(str(exc)) from exc
@@ -178,7 +163,7 @@ class ChunkSampler:
 
 
 class ChunkProtocol:
-    """Render one planned span from the snapshot algorithm's realization function."""
+    """Render one planned span through the adapter bound at prepare time."""
 
     supply = "chunk"
 
@@ -187,11 +172,7 @@ class ChunkProtocol:
             raise ValueError("verify_on_read must be a boolean")
         self.source = source
         self.verify_on_read = verify_on_read
-        self._kind: str | None = None
-        self._speech: dict[str, Any] | None = None
-        self._noise: dict[str, Any] | None = None
-        self._retry: str | None = None
-        self._renderer: str | None = None
+        self._adapter: ChunkAdapter | None = None
 
     def prepare(self) -> None:
         dataset = self.source.dataset()
@@ -200,74 +181,22 @@ class ChunkProtocol:
             raise DataError("snapshot rule_json is missing")
         if rule.get("normalize") is not None:
             raise DataError("chunk audio is not RMS-normalized at load time")
-        algorithm = str(dataset.get("algorithm"))
-        if algorithm == "fixed_pair.voicebank_snr_shift":
-            self._kind = "voicebank_shift"
-            self._speech, self._noise = {}, {}
-            return
-        if algorithm == _MS:
-            slot = "test.cases" if self.source.split == "test" else "train.cases"
-            speech, noise = _call(ms_snsd_rendering, self.source.store, slot)
-            self._kind = "ms_snsd"
-            self._retry = None
-        elif algorithm == _DNS:
-            speech, noise, renderer, retry = _call(dns_rendering, self.source.store)
-            self._kind = "dns"
-            self._renderer = renderer
-            self._retry = retry
-        else:
-            raise DataError(f"chunk protocol cannot read algorithm {algorithm}")
-        self._speech = speech
-        self._noise = noise
+        self._adapter = open_chunk_adapter(self.source, verify_on_read=self.verify_on_read)
+        self._adapter.prepare()
 
     def render(self, sample: SampleRef) -> tuple[np.ndarray, np.ndarray, int]:
-        if self._kind is None or self._speech is None or self._noise is None:
+        if self._adapter is None:
             raise DataError("chunk protocol is not prepared")
         if not sample.case_id:
             raise DataError("chunk rendering requires a case id")
-        if self._kind == "voicebank_shift":
-            from src.experiments.data.render.voicebank_shift_snapshot import render_shift_case
-
-            noisy, clean = _call(render_shift_case, self.source.store, sample.case_id, verify_on_read=self.verify_on_read)
-            if sample.chunk is None:
-                return noisy, clean, len(clean)
-        elif self._kind == "ms_snsd":
-            clean, noisy = _call(
-                render_ms_snsd_pair,
-                self.source.store,
-                sample.case_id,
-                speech=self._speech,
-                noise=self._noise,
-                verify_on_read=self.verify_on_read,
-            )
-        else:
-            clean, noisy = _call(
-                render_dns_pair,
-                self.source.store,
-                sample.case_id,
-                speech=self._speech,
-                noise=self._noise,
-                retry_policy=str(self._retry),
-                renderer=str(self._renderer),
-                verify_on_read=self.verify_on_read,
-            )
         if sample.chunk is None:
             raise DataError("chunk rendering requires a span")
-        start = int(sample.chunk.start)
-        stop = int(sample.chunk.stop)
-        if self._kind == "voicebank_shift" and start == 0 and stop > int(clean.shape[0]):
-            valid = int(clean.shape[0])
-            return (np.pad(noisy, (0, stop - valid)).astype(np.float32),
-                    np.pad(clean, (0, stop - valid)).astype(np.float32), valid)
-        if start < 0 or stop > int(clean.shape[0]) or stop <= start:
-            raise DataError(f"chunk {start}:{stop} is outside {sample.case_id} ({int(clean.shape[0])} samples)")
-        if self._kind == "ms_snsd":
-            clean_row = clean[start:stop].copy()
-            noisy_row = noisy[start:stop].copy()
-        else:
-            clean_row = np.ascontiguousarray(clean[start:stop])
-            noisy_row = np.ascontiguousarray(noisy[start:stop])
-        return noisy_row, clean_row, stop - start
+        noisy, clean, valid = self._adapter.render_span(sample.case_id, int(sample.chunk.start), int(sample.chunk.stop))
+        if noisy.shape != clean.shape or int(noisy.shape[0]) != valid:
+            raise DataError(f"chunk {sample.case_id} lost noisy/target alignment")
+        if not np.isfinite(noisy).all() or not np.isfinite(clean).all():
+            raise DataError(f"chunk {sample.case_id} rendered a non-finite waveform")
+        return noisy, clean, valid
 
     def teacher_kind(self, sample: SampleRef) -> str:
         if not sample.case_id:

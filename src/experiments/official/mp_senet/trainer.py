@@ -30,6 +30,7 @@ import torch
 
 from src.experiments.checkpoint import CheckpointManager
 from src.experiments.data import Batch
+from src.experiments.data.pair import require_audio_contract
 from src.experiments.errors import BuildError, RuntimeFailure
 from src.experiments.official.mp_senet.models import (
     MPSENetGANGenerator,
@@ -815,9 +816,6 @@ class MPSENetGANTrainer:
         identity = identity_fn() if callable(identity_fn) else {}
         if not isinstance(identity, dict):
             raise RuntimeFailure("data identity is not a mapping")
-        algorithm = identity.get("algorithm")
-        if algorithm is not None and algorithm not in ("fixed_pair.mp_senet", "fixed_pair.voicebank_snr_shift"):
-            raise RuntimeFailure(f"MP-SENet GAN requires fixed_pair.mp_senet data, got {algorithm}")
         profile = identity.get("profile")
         uses_test = identity.get("selection_uses_test")
         if self.experiment_claim == OFFICIAL_FAITHFUL:
@@ -832,6 +830,7 @@ class MPSENetGANTrainer:
             raise RuntimeFailure("leakage_safe selection keeps the test split out of best-checkpoint decisions")
 
     def _require_group_size(self, component_id: str) -> None:
+        require_audio_contract(self.data, sample_rate=16000, teachers=("dry_clean",))
         group_size = getattr(self.data, "group_size", None)
         if group_size is None:
             return

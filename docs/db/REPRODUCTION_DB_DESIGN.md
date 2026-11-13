@@ -298,9 +298,7 @@ DNS のオンデマンド描画が学習へ返すのは clean と noisy であ�
 
 `cv_synthetic_small` の構成は未確定のままである。検証に使う valid は、sorted uttid の末尾であり、`cv_synthetic_small` ではない。
 
-VoiceBank のオンデマンドでは、共有ケースの `protocol_id` は `mp_senet.fixed_pair.ondemand` である（その protocol が読み込まれているとき。`_case_protocol_id`）。Dataset 行はモデル自身の protocol を指す。学習時の正規化、窓、順序は Dataset の protocol を読む。公式の 16 kHz 事前変換器は不明である。オンデマンドは 48 kHz のファイルを指し、読み出し時に soxr HQ で 16 kHz float32 にし、追加のクリッピングと量子化をしない。SNR shift の 16 kHz 変換にも同じ方式を使う。配布 PCM16 の読み込みとは別である。MS-SNSD と DNS2020 の公式生成に含まれる PCM16 処理は維持する。旧 VoiceBank PCM16 変換 snapshot と checkpoint の再開互換性は保証しない。履歴の 16 kHz 派生素材の置き場所は `data/derived/VoiceBank-DEMAND/soxr_hq_16000/` と記録されているが、2026-11-12 にはそのディレクトリは無かった。
-
-SNR shift は共通の正規化レシピ・話者分割・雑音区間監査を `data/staging/voicebank-snr-shift-v1/` に保存し、`src.experiments.data.prepare.voicebank_shift_graph` が 4 モデル（MP-SENet、SEMamba++、TF-Locoformer、TF-GridNet）の Dataset を同じ case・同じ分割で登録する。ゲインは丸めない十進文字列で保持し、case ID は正規化文書から計算する。Validation は p286・p287 の 872 発話、Test は 824 発話で、`selection_uses_test` は false である。学習の validation は `valid.cases` だけを読む。話者と発話は 3 分割間で重複しない。Train と Validation は雑音 10 素材を共有し、Validation 872 発話すべてで雑音区間が重なる。この重複は leak 監査の FAIL にはせず、`noise_overlap_audit` と `selection_note` に残す。Train / Test と Validation / Test の雑音素材・区間の重複は 0 で、ここが FAIL になる。`profile` は既存の `leakage_safe` のままである。これは話者・発話と Test を選択から外す意味であり、Validation の雑音区間が独立しているという意味ではない。登録先は `data/db/reproduction-snr-shift-v1.duckdb` と `data/db/reproduction-snr-shift-v1-perrank.duckdb`、snapshot は `data/db/snapshots-snr-shift-v1/` と `data/db/snapshots-snr-shift-v1-perrank/` である。学習設定は per-rank 側を指す。件数と hash は `docs/db/INVENTORY.md`。
+VoiceBank のオンデマンドでは、共有ケースの `protocol_id` は `mp_senet.fixed_pair.ondemand` である（その protocol が読み込まれているとき。`_case_protocol_id`）。Dataset 行はモデル自身の protocol を指す。学習時の正規化、窓、順序は Dataset の protocol を読む。公式の 16 kHz 事前変換器は不明である。オンデマンドは 48 kHz のファイルを指し、読み出し時に soxr HQ で 16 kHz float32 にし、追加のクリッピングと量子化をしない。配布 PCM16 の読み込みとは別である。MS-SNSD と DNS2020 の公式生成に含まれる PCM16 処理は維持する。旧 VoiceBank PCM16 変換 snapshot と checkpoint の再開互換性は保証しない。履歴の 16 kHz 派生素材の置き場所は `data/derived/VoiceBank-DEMAND/soxr_hq_16000/` と記録されているが、2026-11-12 にはそのディレクトリは無かった。
 
 ## 10. スナップショット
 

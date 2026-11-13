@@ -12,9 +12,8 @@ from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 from typing import Any
 
-from src.experiments.data.ids import asset_ids_in, digest
+from src.experiments.data.ids import digest
 from src.experiments.data.assets.store import AssetStore
-from src.experiments.data.errors import ReproductionError
 
 _SLOTS = (
     ("train.cases", "train"),
@@ -57,11 +56,6 @@ def snapshot_provenance_parts(
         for case_id in case_ids:
             case = store.case(case_id)
             ids = [case.get(key) for key in _ASSET_KEYS]
-            if dataset.get("algorithm") == "fixed_pair.voicebank_snr_shift":
-                document = store.docs.get(case_id)
-                if not isinstance(document, dict):
-                    raise ReproductionError(f"case {case_id} has no realization document")
-                ids.extend(sorted(asset_ids_in(document)))
             for asset_id in ids:
                 if not asset_id:
                     continue
@@ -113,15 +107,6 @@ def snapshot_provenance_parts(
         limitations.append(
             "leakage_safe describes this dataset's own split; it does not prove independence from another evaluation set"
         )
-    if dataset.get("algorithm") == "fixed_pair.voicebank_snr_shift":
-        note = dataset.get("selection_note")
-        if isinstance(note, str) and note:
-            limitations.append(note)
-        else:
-            limitations.append("SNR-shift validation noise overlap has not been documented")
-        limitations.append("SNR-shift gains and noise offsets were inferred from VoiceBank materials; they are not an official generator reconstruction")
-        if dataset.get("name") == "voicebank.snr_shift.semambapp":
-            limitations.append("SEMamba++ uses the SNR-shift input only; official online GSR degradations are not applied")
     if not dataset.get("claim_label"):
         limitations.append("snapshot dataset has no claim_label")
     return {

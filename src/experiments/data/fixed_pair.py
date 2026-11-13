@@ -48,6 +48,21 @@ from src.experiments.data.render.types import SampleRef as PlannedRef
 from src.experiments.data.snapshot import LoadedSnapshot, load_snapshot
 
 _IDENTITY_CLASS = "src.experiments.data.SnapshotDataModule"
+
+
+def validation_scope(policy: str) -> str:
+    """How a fixed-pair validation set is divided across ranks.
+
+    ``rank_mod_fixed_v1`` keeps each rank's official slice. Every other order
+    policy is read on rank 0 as one concatenated pass. The dataset name is not
+    an input.
+    """
+
+    if policy == "rank_mod_fixed_v1":
+        return "per_rank"
+    return "rank0"
+
+
 _MISSING = object()
 
 
@@ -454,6 +469,21 @@ class FixedPairProtocol:
         self.verify_on_read = verify_on_read
         self.seed: int | None = None
 
+    def prepare(self) -> None:
+        """Check the pipeline fields. The dataset algorithm is not consulted."""
+
+        rule = self._rule()
+        rate = rule.get("sample_rate")
+        if isinstance(rate, bool) or not isinstance(rate, int) or rate < 1:
+            raise DataError("fixed-pair sample_rate is missing")
+        if rule.get("teacher") not in {"dry_clean", "reverberant_clean", "official_mixed_target"}:
+            raise DataError(f"fixed-pair teacher {rule.get('teacher')!r} is not a training target")
+        if rule.get("normalize") not in {"noisy_rms_unit_v1", "independent_audio_norm_v1"}:
+            raise DataError("fixed-pair normalize is not a pipeline policy")
+        window = rule.get("window")
+        if isinstance(window, bool) or not isinstance(window, int) or window < 1:
+            raise DataError("fixed-pair window is missing")
+
     def locate(self, case_id: str, length: int, epoch: int) -> Crop:
         if self.seed is None:
             raise DataError("fixed-pair protocol has no seed")
@@ -707,7 +737,9 @@ class SnapshotDataModule:
             "seed": self.sampler.seed,
             "selection_uses_test": dataset.get("selection_uses_test"),
             "snapshot_hash": self.source.snapshot_hash,
+            "sample_rate": rule.get("sample_rate"),
             "split": self.source.split,
+            "teacher": rule.get("teacher"),
             "window": window,
         }
 
@@ -777,36 +809,22 @@ class SnapshotDataModule:
                 return iter(())
             grouped = self.batcher.groups(samples)
             return iter(self._collate(group) for group in grouped)
-        algorithm = str(self.source.dataset().get("algorithm"))
-        if algorithm == "fixed_pair.mp_senet" or (
-                algorithm == "fixed_pair.voicebank_snr_shift"
-                and self.source.dataset()["rule_json"].get("normalize") in ("noisy_rms_unit_v1", "independent_peak_v1")):
-            if self.rank != 0:
-                return iter(())
-            raw = _call(
-                validation_refs,
-                self.source.store,
-                seed=self.sampler.seed,
-                epoch=epoch,
-                world_size=self.world_size,
-                policy=self.sampler.policy(self.world_size),
-                rank=None,
-            )
-        elif algorithm == "fixed_pair.mossformergan_se_16k":
-            raw = _call(
-                validation_refs,
-                self.source.store,
-                seed=self.sampler.seed,
-                epoch=epoch,
-                world_size=self.world_size,
-                policy="rank_mod_fixed_v1",
-                rank=self.rank,
-            )
-        else:
-            raise DataError(f"validation for {algorithm} is not implemented in Phase 3-B")
+        policy = self.sampler.policy(self.world_size)
+        scope = validation_scope(policy)
+        if scope == "rank0" and self.rank != 0:
+            return iter(())
+        raw = _call(
+            validation_refs,
+            self.source.store,
+            seed=self.sampler.seed,
+            epoch=epoch,
+            world_size=self.world_size,
+            policy=policy,
+            rank=None if scope == "rank0" else self.rank,
+        )
         refs = tuple(_validation_sample(sample, epoch) for sample in raw)
         batches: list[Batch] = []
-        width = 1 if algorithm == "fixed_pair.voicebank_snr_shift" else self.batcher.micro_batch
+        width = self.batcher.micro_batch
         for start in range(0, len(refs), width):
             batches.append(self._collate(refs[start : start + width]))
         return iter(batches)
@@ -953,7 +971,13 @@ class SnapshotDataModule:
             kinds.append(self.protocol.teacher_kind(sample))
         if any(kind != kinds[0] for kind in kinds):
             raise DataError("micro-batch mixes teacher kinds")
-        return replace(self.batcher.collate(rendered), teacher_kind=kinds[0])
+        rule = self.source.dataset().get("rule_json")
+        if not isinstance(rule, dict):
+            raise DataError("snapshot rule_json is missing")
+        rate = rule.get("sample_rate")
+        if isinstance(rate, bool) or not isinstance(rate, int) or rate < 1:
+            raise DataError("snapshot sample_rate is missing")
+        return replace(self.batcher.collate(rendered), teacher_kind=kinds[0], sample_rate=rate)
 
     def _epoch_plan(self, epoch: int) -> _EpochPlan:
         cached = self._plans.get(epoch)
@@ -1059,36 +1083,16 @@ class SnapshotDataModule:
         rule = dataset.get("rule_json")
         if not isinstance(rule, dict) or rule.get("delivery") != "on_demand":
             raise DataError("snapshot delivery is not on_demand")
-        algorithm = str(dataset.get("algorithm"))
         supply = getattr(self.protocol, "supply", "fixed_pair")
-        if supply == "chunk":
-            if algorithm not in {"pregenerated.ms_snsd_tfgridnet", "pregenerated.dns_tflocoformer", "fixed_pair.voicebank_snr_shift"}:
-                raise DataError(f"chunk protocol cannot read algorithm {algorithm}")
-            self._bind_sampler()
-            prepare = getattr(self.protocol, "prepare", None)
-            if callable(prepare):
-                prepare()
-        elif supply == "online_dfn3":
-            if algorithm != "online.dfn3":
-                raise DataError(f"DeepFilterNet3 protocol cannot read algorithm {algorithm}")
-            self._bind_sampler()
-            self._warn_batch_once()
-            prepare = getattr(self.protocol, "prepare", None)
-            if callable(prepare):
-                prepare()
-        elif supply == "online_semamba":
-            if algorithm != "online.semambapp_gsr":
-                raise DataError(f"SEMamba protocol cannot read algorithm {algorithm}")
-            self._bind_sampler()
-            self._warn_batch_once()
-            prepare = getattr(self.protocol, "prepare", None)
-            if callable(prepare):
-                prepare()
-        elif supply == "fixed_pair":
-            if not algorithm.startswith("fixed_pair."):
-                raise DataError(f"fixed-pair protocol cannot read algorithm {algorithm}")
-        else:
+        if supply not in {"chunk", "online_dfn3", "online_semamba", "fixed_pair"}:
             raise DataError(f"unsupported data supply {supply}")
+        prepare = getattr(self.protocol, "prepare", None)
+        if not callable(prepare):
+            raise DataError(f"{supply} protocol has no prepare step")
+        self._bind_sampler()
+        prepare()
+        if supply in {"online_dfn3", "online_semamba"}:
+            self._warn_batch_once()
         if self.require_profile is not None and dataset.get("profile") != self.require_profile:
             raise DataError(f"snapshot profile {dataset.get('profile')} is not {self.require_profile}")
         if dataset.get("profile") == "leakage_safe":

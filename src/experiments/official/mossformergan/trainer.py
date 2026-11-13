@@ -31,6 +31,7 @@ import torch.nn.functional as F
 
 from src.experiments.checkpoint import CheckpointManager
 from src.experiments.data import Batch
+from src.experiments.data.pair import require_audio_contract
 from src.experiments.errors import BuildError, RuntimeFailure
 from src.experiments.official.mossformergan.models import (
     MossFormerGANDiscriminator,
@@ -809,9 +810,6 @@ class MossFormerGANTrainer:
         identity = identity_fn() if callable(identity_fn) else {}
         if not isinstance(identity, dict):
             raise RuntimeFailure("data identity is not a mapping")
-        algorithm = identity.get("algorithm")
-        if algorithm is not None and algorithm != "fixed_pair.mossformergan_se_16k":
-            raise RuntimeFailure(f"MossFormerGAN requires fixed_pair.mossformergan_se_16k data, got {algorithm}")
         profile = identity.get("profile")
         uses_test = identity.get("selection_uses_test")
         if self.experiment_claim == OFFICIAL_FAITHFUL:
@@ -835,6 +833,7 @@ class MossFormerGANTrainer:
         self._offer(runtime, checkpoint, "stop")
 
     def _require_group_size(self, component_id: str) -> None:
+        require_audio_contract(self.data, sample_rate=self.sample_rate, teachers=("dry_clean",))
         group_size = getattr(self.data, "group_size", None)
         if group_size is None:
             return

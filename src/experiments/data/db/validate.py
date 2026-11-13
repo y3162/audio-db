@@ -154,10 +154,6 @@ def leak_report(
     *,
     resource_db: str | None,
 ) -> dict[str, Any]:
-    bound_cases = _bound_case_ids(dataset, case_sets)
-    algorithms = {cases[case_id]["doc_json"].get("algorithm") for case_id in bound_cases}
-    if algorithms == {"fixed_pair.voicebank_snr_shift"}:
-        return _voicebank_shift_leak_report(dataset, case_sets, materials, cases, assets, resource_db=resource_db)
     groups = _split_assets(dataset, case_sets, materials, cases)
     components: list[dict[str, Any]] = []
     pairs = (("train", "valid"), ("train", "test"))
@@ -185,43 +181,6 @@ def leak_report(
         "failed": reasons,
         "components": components,
     }
-
-
-def _voicebank_shift_leak_report(dataset, case_sets, materials, cases, assets, *, resource_db):
-    """Audit speech and test isolation while explicitly recording shared noise."""
-    from src.experiments.data.prepare.voicebank_shift_audit import audit_recipes
-
-    if dataset.get("profile") != "leakage_safe" or dataset.get("selection_uses_test") is not False:
-        raise ReproductionError("SNR-shift dataset must keep test out of selection")
-    rows = []
-    speech = {"train": set(), "valid": set(), "test": set()}
-    for split in ("train", "valid", "test"):
-        for case_id in _case_ids(dataset, case_sets, split):
-            case = cases[case_id]
-            document = case["doc_json"]
-            draws = document["draws"]
-            speech[split].add(document["sources"]["clean"]["asset"])
-            rows.append({"utterance_id": case["utterance_key"], "split": "train" if split == "valid" else split,
-                         "status": "ready", "noise_sha256": document["sources"]["noise"]["sha256"],
-                         "noise_start_48k": draws["noise_start_48k"],
-                         "noise_end_exclusive_48k": draws["noise_end_exclusive_48k"]})
-    audit = audit_recipes(rows)
-    components = []
-    for left, right in (("train", "valid"), ("train", "test"), ("valid", "test")):
-        compare = audit["comparisons"][f"{left}_{right}"]
-        shared_speech = sorted(speech[left] & speech[right])
-        components.append({"check": f"{left}_{right}_speech_assets", "status": "FAIL" if shared_speech else "PASS", "overlap": shared_speech})
-        components.append(_speaker_overlap(left, right, speech[left], speech[right], assets))
-        components.append(_sha_overlap(left, right, speech[left], speech[right], assets))
-        if right == "test":
-            shared_noise = compare["shared_noise_sha256_count"]
-            components.append({"check": f"{left}_{right}_noise_materials", "status": "FAIL" if shared_noise else "PASS", "shared_count": shared_noise})
-    components.append(_eval_overlap(_split_assets(dataset, case_sets, materials, cases), assets, resource_db))
-    status = _worst(component["status"] for component in components)
-    return {"status": status, "profile": dataset["profile"], "scope": "speech and test isolation; training and validation noise overlap is recorded separately",
-            "reason": "overlap" if status == "FAIL" else status.lower(),
-            "failed": [component["check"] for component in components if component["status"] == "FAIL"],
-            "components": components, "noise_overlap_audit": audit}
 
 
 def _worst(statuses) -> str:
@@ -526,23 +485,6 @@ def _cases(cases, assets, protocols, builds) -> None:
         for asset_id in asset_ids_in(doc):
             if asset_id not in assets:
                 raise ReproductionError(f"case {case['case_id']} document references a missing asset {asset_id}")
-        if doc.get("algorithm") == "fixed_pair.voicebank_snr_shift":
-            for source in doc["sources"].values():
-                asset = assets[source["asset"]]
-                if asset.get("sha256") != source["sha256"]:
-                    raise ReproductionError(f"case {case['case_id']} source hash does not match its asset")
-            clean = assets[doc["sources"]["clean"]["asset"]]
-            noise = assets[doc["sources"]["noise"]["asset"]]
-            draws = doc["draws"]
-            if (case.get("speaker_id") != clean.get("speaker_id")
-                    or case.get("utterance_key") != clean.get("utterance_key")
-                    or not str(case.get("utterance_key", "")).startswith(str(case.get("speaker_id", "")) + "_")
-                    or clean["sample_rate"] != 48000 or noise["sample_rate"] != 48000
-                    or clean["channels"] != 1 or noise["channels"] != 1
-                    or draws["noise_end_exclusive_48k"] - draws["noise_start_48k"] != clean["frames"]
-                    or draws["noise_end_exclusive_48k"] > noise["frames"]
-                    or case["frames"] != doc["output"]["length"]):
-                raise ReproductionError(f"case {case['case_id']} SNR-shift source metadata does not match")
 
 
 def _recorded_sources(case, assets) -> None:
