@@ -27,11 +27,12 @@ _STAGE = {
     "data": 0,
     "metric": 0,
     "other": 0,
+    "stopping": 0,
     "optimizer": 1,
     "scheduler": 1,
     "trainer": 2,
 }
-_SAVE_ROLES = frozenset({"module", "optimizer", "scheduler", "trainer", "data"})
+_SAVE_ROLES = frozenset({"module", "optimizer", "scheduler", "trainer", "data", "stopping"})
 
 
 @dataclass
@@ -68,13 +69,45 @@ class ExperimentBuilder:
         self._build_stage(config, registry, 1, runtime)
         self._assert_unique_parameters(config, registry)
         self._build_stage(config, registry, 2, runtime)
-        states = self._register_states(config, registry, runtime)
         trainer = registry.get(config.entry)
         if not callable(getattr(trainer, "run", None)):
             raise BuildError(f"component {config.entry}: trainer has no run method")
+        stops = [i for i, spec in config.components.items() if spec.role == "stopping" and spec.ref is None]
+        if stops:
+            from src.experiments.stopping import TrainingControl
+            policy = registry.get(stops[0])
+            if getattr(trainer, "experiment_claim", None) == "official_faithful":
+                raise BuildError("a stopping policy is incompatible with official_faithful")
+            for component_id, spec in config.components.items():
+                if spec.role != "data" or spec.ref is not None:
+                    continue
+                lineage = getattr(registry.get(component_id), "lineage", None)
+                if callable(lineage):
+                    details = lineage()
+                    if isinstance(details, dict) and details.get("claim_label") == "official_reproduction":
+                        raise BuildError("a stopping policy is incompatible with official_reproduction")
+            if not getattr(trainer, "supports_training_control", False):
+                raise BuildError(f"component {config.entry}: trainer does not support stopping policies")
+            try:
+                sources = getattr(trainer, "training_metric_sources", ("validation",))
+                names = getattr(trainer, "training_metric_names", None)
+                metric = getattr(policy, "metric", None)
+                if names is not None and isinstance(metric, str) and metric not in names:
+                    raise ValueError(f"trainer does not emit metric {metric}")
+                trainer.training_control = TrainingControl(policy, runtime, supported_sources=sources)
+            except ValueError as exc:
+                raise BuildError(f"component {stops[0]}: {exc}") from exc
+        states = self._register_states(config, registry, runtime, getattr(trainer, "training_control", None))
         return BuiltGraph(components=registry, states=states, trainer=trainer, runtime=runtime)
 
     def _validate(self, config: ExperimentConfig) -> None:
+        stops = [spec for spec in config.components.values() if spec.role == "stopping" and spec.ref is None]
+        if len(stops) > 1:
+            raise BuildError("only one stopping policy is supported")
+        if stops and (stops[0].save_state is False or stops[0].inject):
+            raise BuildError("stopping policy must save its state and cannot inject components")
+        if stops and config.components[config.entry].kwargs.get("experiment_claim") == "official_faithful":
+            raise BuildError("a stopping policy is incompatible with official_faithful")
         self._require_defined(config)
         self._require_no_collision(config)
         cycle = _find_cycle(config)
@@ -287,6 +320,7 @@ class ExperimentBuilder:
         config: ExperimentConfig,
         registry: ComponentRegistry,
         runtime: ProcessRuntime,
+        control: object | None = None,
     ) -> StateRegistry:
         states = StateRegistry()
         for component_id in sorted(config.components):
@@ -295,7 +329,8 @@ class ExperimentBuilder:
                 continue
             if not _should_save(spec):
                 continue
-            states.register(ComponentState(component_id, spec.role, registry.get(component_id)))
+            target = control if spec.role == "stopping" else registry.get(component_id)
+            states.register(ComponentState(component_id, spec.role, target))
         states.register(RuntimeState(runtime))
         return states
 

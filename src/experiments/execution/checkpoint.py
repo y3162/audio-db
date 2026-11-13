@@ -99,7 +99,7 @@ _PAYLOAD_KEYS = frozenset(
 # Files written before selectors have no ``selector`` entry.
 _OPTIONAL_PAYLOAD_KEYS = frozenset({"selector"})
 _CODE_KEYS = frozenset({"dirty", "git_commit"})
-_LOAD_ORDER = ("module", "optimizer", "scheduler", "data", "trainer", "runtime")
+_LOAD_ORDER = ("module", "optimizer", "scheduler", "data", "trainer", "stopping", "runtime")
 # Data position, trainer history, RNG, and runtime state belong to the source
 # experiment. Loading them continues that experiment, which is resume.
 _INITIALIZE_KINDS = ("module", "optimizer", "scheduler")
@@ -234,6 +234,11 @@ class CheckpointManager:
     @property
     def latest_path(self) -> Path:
         return self.directory / LATEST_NAME
+
+    @property
+    def latest_is_current(self) -> bool:
+        """Whether Latest contains the state offered most recently."""
+        return self._latest_current
 
     @property
     def archive_directory(self) -> Path:

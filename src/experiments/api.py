@@ -123,6 +123,9 @@ class Experiment:
                     mode="initialize",
                     states=self.config.initialize.states,
                 )
+            control = getattr(self._graph.trainer, "training_control", None)
+            if control is not None:
+                control.synchronize()
             self._graph.states.seal()
             self._running = True
             from src.experiments.execution.signals import clear_interrupt, install_interrupt_handler
@@ -146,15 +149,21 @@ class Experiment:
             result = self._graph.trainer.run(self._graph.runtime, self._checkpoint)  # type: ignore[attr-defined]
             if not isinstance(result, RunResult):
                 raise BuildError(f"component {self.config.entry}: trainer did not return RunResult")
-            if result.stop_reason not in {"completed", "interrupted"}:
+            if result.stop_reason not in {"completed", "interrupted", "early_stopping"}:
                 raise BuildError(f"component {self.config.entry}: unknown stop reason {result.stop_reason}")
+            control = getattr(self._graph.trainer, "training_control", None)
+            details = {}
+            if result.stop_reason == "early_stopping":
+                if control is None or not control.stopped or not self._checkpoint.latest_is_current:
+                    raise BuildError("early stopping requires a saved current Latest")
+                details = {"reason": "early_stopping", "stopping": control.state_dict()}
             if self._is_primary():
                 if launch_id() is not None:
                     # The launcher finalizes after it has seen every rank exit.
-                    self._write_status("RUNNING", outcome=result.stop_reason, logical_step=result.logical_step)
-                elif result.stop_reason == "completed":
-                    write_complete(self._directory, result.logical_step)
-                    self._write_status("COMPLETED", logical_step=result.logical_step)
+                    self._write_status("RUNNING", outcome=result.stop_reason, logical_step=result.logical_step, **details)
+                elif result.stop_reason in {"completed", "early_stopping"}:
+                    write_complete(self._directory, result.logical_step, **details)
+                    self._write_status("COMPLETED", logical_step=result.logical_step, **details)
                 else:
                     self._write_status("INTERRUPTED", logical_step=result.logical_step)
             self._barrier()

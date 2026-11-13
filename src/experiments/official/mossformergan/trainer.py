@@ -20,6 +20,8 @@ are not one scaler decision.
 
 from __future__ import annotations
 
+from src.experiments.stopping import observe_validation, should_stop
+
 import copy
 from pathlib import Path
 from typing import Any
@@ -77,6 +79,8 @@ _COUNTER_KEYS = (
 
 class MossFormerGANTrainer:
     """Generator-then-discriminator step after both backwards of a full window."""
+
+    supports_training_control = True
 
     def __init__(
         self,
@@ -218,9 +222,13 @@ class MossFormerGANTrainer:
         self._check_claim()
         self._require_group_size(component_id)
         runtime.barrier()
+        if should_stop(self):
+            return self._result(checkpoint, "completed")
         while True:
             if self.phase == _PENDING:
                 self._finish_boundary(runtime, checkpoint, component_id)
+                if should_stop(self):
+                    return self._result(checkpoint, "completed")
                 if self.stop_training:
                     return self._result(checkpoint, "completed")
                 continue
@@ -585,6 +593,8 @@ class MossFormerGANTrainer:
         elif self._epochs_without_step >= self.max_logical_steps:
             self.halt_reason = "accumulation_window_never_closed"
             self.stop_training = True
+        if boundary["validate"]:
+            observe_validation(self, runtime, metrics)
         self._offer(runtime, checkpoint, "boundary", metrics=metrics)
 
     def _validate(self, runtime: ProcessRuntime, trainer_epoch: int) -> dict[str, Any]:
@@ -896,6 +906,8 @@ class MossFormerGANTrainer:
             checkpoint.offer("final", logical_step=self.logical_step, prepare=self._sync_ranks)
         if self.halt_reason in {"initialized", "running"}:
             self.halt_reason = reason
+        if reason == "completed" and should_stop(self):
+            reason = "early_stopping"
         return RunResult(
             stop_reason=reason,
             logical_step=self.logical_step,

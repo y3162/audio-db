@@ -27,6 +27,8 @@ validation profile is the research set
 
 from __future__ import annotations
 
+from src.experiments.stopping import observe_validation, should_stop
+
 import json
 import math
 import os
@@ -94,6 +96,8 @@ def rank_validation_si_snr(history: list[dict[str, Any]], keep: int) -> list[dic
 
 class TFLocoformerTrainer:
     """Single-optimizer DNS loop with warmup per step and plateau per epoch."""
+
+    supports_training_control = True
 
     def __init__(
         self,
@@ -202,6 +206,8 @@ class TFLocoformerTrainer:
             self.data.update_index = 0
         self._require_group_size(component_id)
         runtime.barrier()
+        if should_stop(self):
+            return self._result(checkpoint, "completed")
         if self._restored and (
             len(self.learning_rates) != self.logical_step or len(self.scheduled_rates) != self.logical_step
         ):
@@ -210,6 +216,8 @@ class TFLocoformerTrainer:
             )
         if self.phase == _PENDING:
             self._finish_boundary(runtime, checkpoint, component_id)
+            if should_stop(self):
+                return self._result(checkpoint, "completed")
             if self.early_stopped or self._epoch_cap_reached():
                 return self._result(checkpoint, "completed")
         while self.logical_step < self.max_logical_steps:
@@ -313,6 +321,8 @@ class TFLocoformerTrainer:
                 if self._stop_requested(runtime):
                     return self._result(checkpoint, "interrupted")
                 self._finish_boundary(runtime, checkpoint, component_id)
+                if should_stop(self):
+                    return self._result(checkpoint, "completed")
                 if self.early_stopped or self._epoch_cap_reached():
                     return self._result(checkpoint, "completed")
             finally:
@@ -427,6 +437,7 @@ class TFLocoformerTrainer:
             and early_stop(self.history, espnet_epoch, self.early_stopping_patience)
         ):
             self.early_stopped = True
+        observe_validation(self, runtime, {"loss": float(summary["loss"]), "si_snr": float(summary["si_snr"])})
         checkpoint.offer(
             "boundary",
             logical_step=self.logical_step,
@@ -580,6 +591,8 @@ class TFLocoformerTrainer:
         if reason == "completed":
             checkpoint.offer("final", logical_step=self.logical_step)
         self.stop_reason = reason
+        if reason == "completed" and should_stop(self):
+            reason = "early_stopping"
         return RunResult(
             stop_reason=reason,
             logical_step=self.logical_step,

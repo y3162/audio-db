@@ -19,6 +19,8 @@ DeepFilterNet3 sampler. Cached plans for the previous width are discarded.
 
 from __future__ import annotations
 
+from src.experiments.stopping import observe_validation, should_stop
+
 import json
 import os
 from pathlib import Path
@@ -145,6 +147,8 @@ def _clean_noisy(batch: Batch) -> tuple[torch.Tensor, torch.Tensor]:
 class DeepFilterNet3Trainer:
     """Official DeepFilterNet3 loop on one AdamW and a per-step cosine."""
 
+    supports_training_control = True
+
     def __init__(
         self,
         model: PreparedModel,
@@ -251,8 +255,12 @@ class DeepFilterNet3Trainer:
         self._stream = _stream_for(self.model.state_module, runtime.device)
         self._record_rfft(runtime, checkpoint)
         runtime.barrier()
+        if should_stop(self):
+            return self._result(checkpoint, "completed")
         if self.phase == _PENDING:
             self._finish_boundary(runtime, checkpoint, component_id)
+            if should_stop(self):
+                return self._result(checkpoint, "completed")
             if self.early_stopped or self._epoch_cap_reached():
                 return self._result(checkpoint, "completed")
         while self.logical_step < self.max_logical_steps:
@@ -344,6 +352,8 @@ class DeepFilterNet3Trainer:
                 if self._stop_requested(runtime):
                     return self._result(checkpoint, "interrupted")
                 self._finish_boundary(runtime, checkpoint, component_id)
+                if should_stop(self):
+                    return self._result(checkpoint, "completed")
                 if self.early_stopped or self._epoch_cap_reached():
                     return self._result(checkpoint, "completed")
             finally:
@@ -426,6 +436,7 @@ class DeepFilterNet3Trainer:
         self.data.update_index = 0
         if stop:
             self.early_stopped = True
+        observe_validation(self, runtime, {"loss": float(loss)})
         self._offer(runtime, checkpoint, "boundary", metrics={"loss": float(loss)})
 
     def _offer(
@@ -631,6 +642,8 @@ class DeepFilterNet3Trainer:
         if reason == "completed":
             checkpoint.offer("final", logical_step=self.logical_step, prepare=self._sync_ranks)
         self.stop_reason = reason
+        if reason == "completed" and should_stop(self):
+            reason = "early_stopping"
         return RunResult(
             stop_reason=reason,
             logical_step=self.logical_step,

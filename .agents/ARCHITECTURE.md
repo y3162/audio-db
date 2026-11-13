@@ -13,6 +13,7 @@
 - 公式の推論用の重み（`best_generator.pt`、`valid.loss.best.pt` など）は公式 Trainer の成果物で、checkpoint ではない。Selector に移さない。
 - 保存前に rank 間の parameter、buffer、optimizer、scheduler、trainer、data、Selector の決定と状態を比べる。不一致なら書かない。
 - 保存点は完了した logical step の境界と、Trainer が安全と宣言した点だけ。GAN の optimizer 対の途中では書かない。
+- 停止ポリシーは Selector と独立し、指標を評価しない。Trainer は境界処理後に指標を配送し、停止状態を更新してから保存点を offer する。停止設定は実験同一性に含み、状態を全 rank で照合して再開する。
 - 再開は同じ実験の厳密な続きである。`config_sha256` は `output`、`checkpoint`、`stop_after_logical_steps` を除いた設定の SHA-256 で、違う設定、違う出力ディレクトリ、違う world size を拒否する。Latest より前の Archive から続けることも拒否する。古い状態から始めるのは、`initialize` を使う別の実験である。
 - `initialize` は module、optimizer、scheduler の状態だけを読み、元の実験のファイルを変更しない。データ位置、Trainer の履歴、RNG は引き継がない。
 - 以前の世代のハッシュ（クラスパスの移動、Trainer の `checkpoint_interval` / `checkpoint_partial`）は `config_generations` が列挙したものだけを同じ設定として受ける。任意のハッシュは受けない。新しい保存は現在のハッシュを書く。

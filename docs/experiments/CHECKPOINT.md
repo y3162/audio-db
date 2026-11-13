@@ -98,7 +98,7 @@ checkpoint:
 
 ## 再開（Resume）
 
-再開は同じ実験の厳密な続きである。全状態、rank ごとの RNG、Selector の状態を戻す。
+再開は同じ実験の厳密な続きである。全状態、rank ごとの RNG、Selector と停止ポリシーの状態を戻す。停止ポリシーの設定と境界の意味は [停止ポリシー](STOPPING.md) を参照。
 
 ```bash
 .venvs/se/bin/python -m src.experiments.launcher --config CONFIG --resume OUTPUT_DIRECTORY

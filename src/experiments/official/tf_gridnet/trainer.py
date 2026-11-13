@@ -24,6 +24,8 @@ trainer also ranked by SI-SNR. That ranking is not copied here.
 
 from __future__ import annotations
 
+from src.experiments.stopping import observe_validation, should_stop
+
 import json
 import math
 import os
@@ -106,6 +108,8 @@ def early_stop(history: list[dict[str, Any]], espnet_epoch: int, patience: int) 
 
 class TFGridNetTrainer:
     """Single-optimizer MS-SNSD loop. The scheduler steps at epoch end."""
+
+    supports_training_control = True
 
     def __init__(
         self,
@@ -208,12 +212,16 @@ class TFGridNetTrainer:
             self.data.update_index = 0
         self._require_group_size(component_id)
         runtime.barrier()
+        if should_stop(self):
+            return self._result(checkpoint, "completed")
         if self._restored and len(self.learning_rates) != self.logical_step:
             raise RuntimeFailure(
                 f"component {component_id}: learning-rate history does not match logical step"
             )
         if self.phase == _PENDING:
             self._finish_boundary(runtime, checkpoint, component_id)
+            if should_stop(self):
+                return self._result(checkpoint, "completed")
             if self.early_stopped or self._epoch_cap_reached():
                 return self._result(checkpoint, "completed")
         while self.logical_step < self.max_logical_steps:
@@ -295,6 +303,8 @@ class TFGridNetTrainer:
                 if self._stop_requested(runtime):
                     return self._result(checkpoint, "interrupted")
                 self._finish_boundary(runtime, checkpoint, component_id)
+                if should_stop(self):
+                    return self._result(checkpoint, "completed")
                 if self.early_stopped or self._epoch_cap_reached():
                     return self._result(checkpoint, "completed")
             finally:
@@ -388,6 +398,7 @@ class TFGridNetTrainer:
             and early_stop(self.history, espnet_epoch, self.early_stopping_patience)
         ):
             self.early_stopped = True
+        observe_validation(self, runtime, {"loss": float(summary["loss"])})
         checkpoint.offer("boundary", logical_step=self.logical_step, metrics={"loss": float(summary["loss"])})
 
     def _validate(self, runtime: ProcessRuntime, trainer_epoch: int, component_id: str) -> dict[str, float | int]:
@@ -499,6 +510,8 @@ class TFGridNetTrainer:
         if reason == "completed":
             checkpoint.offer("final", logical_step=self.logical_step)
         self.stop_reason = reason
+        if reason == "completed" and should_stop(self):
+            reason = "early_stopping"
         return RunResult(
             stop_reason=reason,
             logical_step=self.logical_step,

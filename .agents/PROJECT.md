@@ -14,6 +14,7 @@
 | `src/experiments/core/` | コンポーネントの生成、依存の解決、状態の登録 | `builder` が使う |
 | `src/experiments/execution/` | CPU/GPU/DDP、checkpoint（Latest / Archive）、Selector、再開、中断、来歴、実行状態、プロファイリング | `runtime` と `checkpoint` |
 | `src/experiments/training/` | 共通の Trainer と損失。モデル固有の公式 Trainer は持たない | YAML の `class` |
+| `src/experiments/stopping.py` | 指標イベント、独立した停止判定、Trainer と rank 間の制御 | YAML の `stopping` component |
 | `src/experiments/data/` | 再現用 DB、スナップショット、サンプリング、オンデマンド描画。学習ループは持たない | `python -m src.experiments.data.cli` |
 | `src/experiments/official/` | 6 モデルの公式 Model、Trainer、参照ステップ。他の実験から個別に import する | YAML の `class` |
 | `src/experiments/calc/` | 手法を共有する STFT、スペクトル損失、scheduler、RNG。CLI ではない | テストと Trainer が呼ぶ |

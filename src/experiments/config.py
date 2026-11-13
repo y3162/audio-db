@@ -24,7 +24,7 @@ TOP_KEYS = frozenset(
 )
 DEFAULT_SELECTOR = "src.experiments.selectors.StandardSelector"
 CONCRETE_KEYS = frozenset({"role", "class", "kwargs", "inject", "parameters_of", "prepare", "state"})
-ROLES = frozenset({"module", "optimizer", "scheduler", "trainer", "data", "loss", "metric", "other"})
+ROLES = frozenset({"module", "optimizer", "scheduler", "trainer", "data", "loss", "metric", "other", "stopping"})
 PREPARE_KEYS = frozenset(
     {"trainable", "distribute", "find_unused_parameters", "broadcast_buffers", "sync_batchnorm"}
 )

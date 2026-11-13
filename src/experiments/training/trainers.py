@@ -21,10 +21,15 @@ from src.experiments.errors import BuildError, CheckpointError, ExperimentError,
 from src.experiments.execution.checkpoint import CheckpointManager
 from src.experiments.execution.results import RunResult
 from src.experiments.execution.runtime import PreparedModel, ProcessRuntime
+from src.experiments.stopping import MetricEvent, should_stop
 
 
 class StandardTrainer:
     """Single-model, single-optimizer loop on micro-batches."""
+
+    supports_training_control = True
+    training_metric_sources = ("train",)
+    training_metric_names = ("train.mean_rank_loss",)
 
     def __init__(
         self,
@@ -113,7 +118,7 @@ class StandardTrainer:
             self.losses = []
         self._require_group_size(component_id)
         runtime.barrier()
-        while self.logical_step < self.max_logical_steps:
+        while self.logical_step < self.max_logical_steps and not should_stop(self):
             from src.experiments.execution.signals import ranks_should_stop
 
             capped = (
@@ -188,13 +193,18 @@ class StandardTrainer:
                             "sample_id": sample_id,
                         },
                     )
+                control = getattr(self, "training_control", None)
+                if control is not None:
+                    rank_losses = runtime.gather_objects(loss_value)
+                    mean = sum(rank_losses) / len(rank_losses)
+                    control.observe(MetricEvent("train", self.logical_step, {"mean_rank_loss": mean}))
                 self._offer(checkpoint, "step")
             finally:
                 _close_epoch_view(view)
         self._offer(checkpoint, "final")
-        self.stop_reason = "completed"
+        self.stop_reason = "early_stopping" if should_stop(self) else "completed"
         return RunResult(
-            stop_reason="completed",
+            stop_reason=self.stop_reason,
             logical_step=self.logical_step,
             optimizer_updates=dict(self.optimizer_updates),
             output_dir=checkpoint.directory,

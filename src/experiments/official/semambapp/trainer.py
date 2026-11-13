@@ -16,6 +16,8 @@ decision, and changing the update order to make them atomic is out of scope.
 
 from __future__ import annotations
 
+from src.experiments.stopping import observe_validation, should_stop
+
 from pathlib import Path
 from typing import Any
 
@@ -72,6 +74,8 @@ _SUBSTITUTE_CLAIM = "protocol_conformant_substitute_materials"
 
 class SEMambaPPTrainer:
     """Discriminator-then-generator update for the official SEMamba++ loss."""
+
+    supports_training_control = True
 
     def __init__(
         self,
@@ -204,8 +208,12 @@ class SEMambaPPTrainer:
         self._check_data()
         self._require_group_size(component_id)
         runtime.barrier()
+        if should_stop(self):
+            return self._result(checkpoint, "completed")
         if self.phase == _PENDING:
             self._finish_boundary(runtime, checkpoint, component_id)
+            if should_stop(self):
+                return self._result(checkpoint, "completed")
             if self._epoch_cap_reached():
                 return self._result(checkpoint, "completed")
         while self.logical_step < self.max_logical_steps:
@@ -296,6 +304,8 @@ class SEMambaPPTrainer:
                 if self._stop_requested(runtime):
                     return self._result(checkpoint, "interrupted")
                 self._finish_boundary(runtime, checkpoint, component_id)
+                if should_stop(self):
+                    return self._result(checkpoint, "completed")
                 if self._epoch_cap_reached():
                     return self._result(checkpoint, "completed")
             finally:
@@ -557,6 +567,8 @@ class SEMambaPPTrainer:
         self.boundary = None
         self.phase = _IN_EPOCH
         self._on_boundary_phase(self.phase)
+        if boundary["validate"]:
+            observe_validation(self, runtime, metrics)
         self._offer(runtime, checkpoint, "boundary", metrics=metrics)
 
     def _validate(self, runtime: ProcessRuntime, trainer_epoch: int, component_id: str) -> dict[str, Any]:
@@ -852,6 +864,8 @@ class SEMambaPPTrainer:
         if reason == "completed":
             checkpoint.offer("final", logical_step=self.logical_step, prepare=self._sync_ranks)
         self.stop_reason = reason
+        if reason == "completed" and should_stop(self):
+            reason = "early_stopping"
         return RunResult(
             stop_reason=reason,
             logical_step=self.logical_step,

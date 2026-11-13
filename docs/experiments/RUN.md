@@ -6,6 +6,7 @@
 |---|---|
 | Latest、Archive、Selector、再開と初期化の条件 | [Checkpoint](CHECKPOINT.md) |
 | プロセスの監視、終了状態、停止、`RUNNING` の生死 | [Launcher](LAUNCHER.md) |
+| 検証指標による停止と設定例 | [停止ポリシー](STOPPING.md) |
 | 式、Optimizer の順序、変えてはいけない条件 | [.agents/ARCHITECTURE.md](../../.agents/ARCHITECTURE.md) |
 
 ## 設定の置き場

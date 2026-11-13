@@ -362,7 +362,7 @@ def _finish(directory: Path, record: dict[str, Any], code: int, killed: bool, st
     failures = read_failures(directory)
     if killed:
         state, reason = "FAILED", f"killed by the launcher: {record.get('kill_reason')}"
-    elif code == 0 and outcome == "completed" and isinstance(step, int):
+    elif code == 0 and outcome in {"completed", "early_stopping"} and isinstance(step, int):
         state, reason = "COMPLETED", None
     elif code == 0 and outcome == "interrupted":
         state, reason = "INTERRUPTED", stop.reason or "stop requested inside the experiment"
@@ -377,6 +377,9 @@ def _finish(directory: Path, record: dict[str, Any], code: int, killed: bool, st
     details: dict[str, Any] = {"exit_code": code, "world_size": record["world_size"], "launch_id": record["launch_id"]}
     if isinstance(step, int):
         details["logical_step"] = step
+    if outcome == "early_stopping" and state == "COMPLETED":
+        details["reason"] = "early_stopping"
+        details["stopping"] = reported.get("stopping")
     if reason is not None:
         details["reason"] = reason
     if state == "FAILED":
@@ -393,7 +396,8 @@ def _finish(directory: Path, record: dict[str, Any], code: int, killed: bool, st
         else:
             try:
                 if state == "COMPLETED":
-                    write_complete(directory, int(step))
+                    completed_details = {key: details[key] for key in ("reason", "stopping") if key in details}
+                    write_complete(directory, int(step), **completed_details)
                 write_status(directory, state, **details)
             finally:
                 lock.release()

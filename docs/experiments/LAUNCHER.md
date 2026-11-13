@@ -29,7 +29,7 @@ Launcher がしないこと: ジョブの投入、GPU の選択、再試行、�
 
 | `status.json` | 終了コード | 条件 |
 |---|---:|---|
-| `COMPLETED` | 0 | 全プロセスが終了コード 0 で終わり、Trainer が完了を報告した。このときだけ `complete.json` を書く |
+| `COMPLETED` | 0 | 全プロセスが終了コード 0 で終わり、Trainer が完了を報告した。このときだけ `complete.json` を書く。共通停止ポリシーの成立も完了に含む |
 | `INTERRUPTED` | 3 | 全プロセスが終了コード 0 で終わり、Trainer が安全な停止を報告した。`--resume` で続けられる |
 | `FAILED` | 1 | それ以外。例外、CUDA OOM、NCCL のエラー、rank の kill、猶予切れ、結果の報告なしの終了 |
 | （変更なし） | 1 | 起動を拒否した。別の Launcher または学習がそのディレクトリを使っている、設定が読めない、など |
@@ -48,7 +48,7 @@ SIGTERM、SIGINT、SIGHUP、`--stop-after` は、Trainer に次の安全な点�
 - DDP では、Launcher が rank へ直接 SIGTERM を送る。torchrun に送ると、torchrun が rank を即座に終了させるためである。
 - 2 回目のシグナル、または `--grace` 秒の経過で、全プロセスを kill する。これは `FAILED` である。
 
-安全な停止（`INTERRUPTED`）と異常終了（`FAILED`）は、`status.json` と終了コードで区別できる。
+安全な停止（`INTERRUPTED`）と異常終了（`FAILED`）は、`status.json` と終了コードで区別できる。指標による停止の理由と状態は [停止ポリシー](STOPPING.md) を参照。
 
 ## 記録
 
