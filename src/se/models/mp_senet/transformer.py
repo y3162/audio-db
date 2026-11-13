@@ -14,7 +14,6 @@ class FFN(nn.Module):
         self.dropout = Dropout(dropout)
     
     def forward(self, x):
-        self.gru.flatten_parameters()
         x, _ = self.gru(x)
         x = F.leaky_relu(x)
         x = self.dropout(x)

@@ -326,7 +326,7 @@ class SEMambaPPTrainer:
             self.optim_d.zero_grad(set_to_none=True)
             reuse_graph = len(batches) == 1
             cached: list[tuple[torch.Tensor, torch.Tensor, dict[str, torch.Tensor] | None]] = []
-            discriminator_total = 0.0
+            discriminator_total = None
             sample_ids: list[str] = []
             realization_ids: list[str] = []
             for index, batch in enumerate(batches):
@@ -355,7 +355,8 @@ class SEMambaPPTrainer:
                 with runtime.sync_context([self.mrd, self.cqt], sync=last):
                     loss = self._discriminator_loss(runtime, clean, audio.detach())
                     self._backward_if_finite(runtime, loss / self.accumulation, "discriminator loss")
-                discriminator_total += float(loss.detach())
+                term = loss.detach()
+                discriminator_total = term if discriminator_total is None else discriminator_total + term
                 self.mrd_forwards += 1
                 self.cqt_forwards += 1
             if self.grad_clip is not None:
@@ -400,6 +401,20 @@ class SEMambaPPTrainer:
                 self.frozen_during_generator = False
             if self.grad_clip is not None:
                 runtime.clip(self.generator.parameters, self.grad_clip)
+            log_terms = torch.stack(
+                [value.detach() if isinstance(value, torch.Tensor) else torch.tensor(float(value), device=runtime.device) for value in component_totals.values()]
+            )
+            if discriminator_total is None or not isinstance(generator_total, torch.Tensor):
+                raise RuntimeFailure("generator loss is missing")
+            log_pair = torch.stack([discriminator_total.detach(), generator_total.detach()])
+            if runtime.device.type == "cuda":
+                host_terms = torch.empty(log_terms.shape, dtype=torch.float32, pin_memory=True)
+                host_pair = torch.empty(log_pair.shape, dtype=torch.float32, pin_memory=True)
+                host_terms.copy_(log_terms.detach().float(), non_blocking=True)
+                host_pair.copy_(log_pair.detach().float(), non_blocking=True)
+            else:
+                host_terms = log_terms.detach().float().cpu()
+                host_pair = log_pair.detach().float().cpu()
             gen_norm = _grad_norm(self.generator.state_module.generator)
             if self.capture_gradients:
                 self.last_generator_grads = _clone_grads(self.generator.state_module.generator)
@@ -414,6 +429,11 @@ class SEMambaPPTrainer:
             count = len(batches)
             report = self.scan_report or {"configured": "", "executed": ""}
             self._on_update_phase("end_step")
+            component_totals = {
+                name: float(number) for name, number in zip(component_totals, host_terms.tolist(), strict=True)
+            }
+            discriminator_total = float(host_pair[0])
+            generator_total = float(host_pair[1])
             metrics: dict[str, float | str] = {
                 "adversarial": component_totals["adversarial"] / count,
                 "complex": component_totals["complex"] / count,
@@ -726,8 +746,8 @@ class SEMambaPPTrainer:
             raise RuntimeFailure("generator loss is missing")
         self._backward_if_finite(runtime, total / self.accumulation, "generator loss")
         for name, value in terms.items():
-            components[name] += float(value.detach())
-        return float(total.detach())
+            components[name] = components[name] + value.detach()
+        return total.detach()
 
     def _waveforms(self, batch: Batch, runtime: ProcessRuntime) -> tuple[torch.Tensor, torch.Tensor]:
         batch = _batch_on_device(batch, runtime.device)
@@ -738,9 +758,10 @@ class SEMambaPPTrainer:
         return clean, noisy
 
     def _backward_if_finite(self, runtime: ProcessRuntime, loss: torch.Tensor, what: str) -> None:
-        finite = bool(torch.isfinite(loss.detach()).all())
-        if not runtime.agree(finite, policy="all"):
-            raise RuntimeFailure(f"{what} is not finite on every rank")
+        if runtime.device.type != "cuda":
+            finite = bool(torch.isfinite(loss.detach()).all())
+            if not runtime.agree(finite, policy="all"):
+                raise RuntimeFailure(f"{what} is not finite on every rank")
         runtime.backward(loss)
 
     def _refuse_amp(self, runtime: ProcessRuntime) -> None:
@@ -840,13 +861,16 @@ class SEMambaPPTrainer:
 
 
 def _grad_norm(*modules: torch.nn.Module) -> float:
-    total = 0.0
-    for module in modules:
-        for parameter in module.parameters():
-            if parameter.grad is None:
-                continue
-            total += float(parameter.grad.detach().square().sum())
-    return total**0.5
+    pieces = [
+        parameter.grad.detach().square().sum()
+        for module in modules
+        for parameter in module.parameters()
+        if parameter.grad is not None
+    ]
+    if not pieces:
+        return 0.0
+    values = torch.stack(pieces).detach().cpu().tolist()
+    return sum(float(value) for value in values) ** 0.5
 
 
 def _clone_grads(*modules: torch.nn.Module) -> dict[str, torch.Tensor]:
@@ -865,6 +889,8 @@ def _inputs_ready(clean: torch.Tensor, noisy: torch.Tensor) -> bool:
         return False
     if int(clean.shape[-1]) <= 1024:
         return False
+    if clean.is_cuda:
+        return True
     return bool(torch.isfinite(clean).all()) and bool(torch.isfinite(noisy).all())
 
 

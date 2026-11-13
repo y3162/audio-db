@@ -28,6 +28,7 @@ validation profile is the research set
 from __future__ import annotations
 
 import json
+import math
 import os
 import re
 from pathlib import Path
@@ -163,6 +164,7 @@ class TFLocoformerTrainer:
         self.early_stopped = False
         self.stop_reason = "initialized"
         self._restored = False
+        self._step_io: tuple[Any, ...] | None = None
 
     def run(self, runtime: ProcessRuntime, checkpoint: CheckpointManager) -> RunResult:
         """Train until the step budget, an epoch cap, or early stopping."""
@@ -212,10 +214,12 @@ class TFLocoformerTrainer:
                 return self._result(checkpoint, "completed")
         while self.logical_step < self.max_logical_steps:
             if self._stop_requested(runtime):
+                self._drain_step_io(metrics_path, sample_path, rank, checkpoint)
                 if self.logical_step > 0:
                     checkpoint.offer("stop", logical_step=self.logical_step)
                 return self._result(checkpoint, "interrupted")
             if self._epoch_cap_reached():
+                self._drain_step_io(metrics_path, sample_path, rank, checkpoint)
                 return self._result(checkpoint, "completed")
             epoch = int(self.data.epoch)
             index = int(self.data.update_index)
@@ -236,15 +240,18 @@ class TFLocoformerTrainer:
                         f"component {component_id}: accumulation {self.accumulation} "
                         f"does not fit at update {index}"
                     )
+                planned: list[list[Batch]] = []
+                for offset in range(self.accumulation):
+                    planned.append(view.batch(index + offset))
+                self._drain_step_io(metrics_path, sample_path, rank, checkpoint)
                 self.model.module.train()
                 self.optimizer.zero_grad(set_to_none=True)
                 total: torch.Tensor | None = None
                 sample_ids: list[str] = []
-                monitor_sum = 0.0
+                monitor_sum: torch.Tensor | None = None
                 monitor_count = 0
-                for offset in range(self.accumulation):
+                for offset, batches in enumerate(planned):
                     sync = offset == self.accumulation - 1
-                    batches = view.batch(index + offset)
                     sample_ids.extend(batch.sample_id for batch in batches)
                     with runtime.sync_context([self.model], sync=sync):
                         with runtime.autocast():
@@ -253,17 +260,23 @@ class TFLocoformerTrainer:
                         runtime.backward(micro)
                     detached = micro.detach()
                     total = detached if total is None else total + detached
-                    monitor_sum += monitor
+                    monitor_sum = monitor if monitor_sum is None else monitor_sum + monitor
                     monitor_count += count
                 if self.grad_clip is not None:
                     runtime.clip(self.model.parameters, self.grad_clip, optimizer=self.optimizer)
+                if total is None:
+                    raise RuntimeFailure(f"component {component_id}: loss is not finite")
+                if monitor_sum is None or monitor_count < 1:
+                    raise RuntimeFailure(f"component {component_id}: SI-SDR monitor has no batches")
                 used_lr = float(self.optimizer.param_groups[0]["lr"])
+                host_loss = runtime.host_scalar(total)
+                host_monitor = runtime.host_scalar(monitor_sum / monitor_count)
                 result = runtime.step(self.optimizer)
                 runtime.end_step()
-                if total is None or not bool(torch.isfinite(total).all()):
+                loss_value = float(host_loss)
+                if not math.isfinite(loss_value):
                     raise RuntimeFailure(f"component {component_id}: loss is not finite")
-                if monitor_count < 1:
-                    raise RuntimeFailure(f"component {component_id}: SI-SDR monitor has no batches")
+                si_sdr = float(host_monitor)
                 scheduled_lr = used_lr
                 if result.applied:
                     self.optimizer_updates[self.optimizer_id] += 1
@@ -271,42 +284,27 @@ class TFLocoformerTrainer:
                     scheduled_lr = float(self.optimizer.param_groups[0]["lr"])
                 self.logical_step += 1
                 index += self.accumulation
-                loss_value = float(total)
-                si_sdr = monitor_sum / monitor_count
                 self.losses.append(loss_value)
                 self.learning_rates.append(used_lr)
                 self.scheduled_rates.append(scheduled_lr)
                 self.data.epoch = epoch
                 self.data.update_index = index
                 sample_id = ",".join(sample_ids)
-                if rank == 0:
-                    self._append_metrics(
-                        metrics_path,
-                        loss_value,
-                        result.applied,
-                        sample_id,
-                        used_lr,
-                        scheduled_lr,
-                        si_sdr,
-                        epoch,
-                    )
-                if sample_path is not None:
-                    _append_jsonl(
-                        sample_path,
-                        {
-                            "epoch": epoch,
-                            "logical_step": self.logical_step,
-                            "loss": loss_value,
-                            "lr": used_lr,
-                            "sample_id": sample_id,
-                            "scheduled_lr": scheduled_lr,
-                            "si_sdr": si_sdr,
-                        },
-                    )
                 epoch_done = index == view.updates
+                self._step_io = (
+                    loss_value,
+                    result.applied,
+                    sample_id,
+                    used_lr,
+                    scheduled_lr,
+                    si_sdr,
+                    epoch,
+                    self.logical_step,
+                    not epoch_done,
+                )
                 if not epoch_done:
-                    checkpoint.offer("step", logical_step=self.logical_step)
                     continue
+                self._drain_step_io(metrics_path, sample_path, rank, checkpoint)
                 self.phase = _PENDING
                 self.finished_epoch = epoch
                 self.boundary = _open_boundary(epoch, warmup_updated=bool(result.applied))
@@ -319,6 +317,7 @@ class TFLocoformerTrainer:
                     return self._result(checkpoint, "completed")
             finally:
                 _close_epoch_view(view)
+        self._drain_step_io(metrics_path, sample_path, rank, checkpoint)
         return self._result(checkpoint, "completed")
 
     def state_dict(self) -> dict[str, Any]:
@@ -536,11 +535,11 @@ class TFLocoformerTrainer:
         batches: list[Batch],
         component_id: str,
         runtime: ProcessRuntime,
-    ) -> tuple[torch.Tensor, float, int]:
+    ) -> tuple[torch.Tensor, torch.Tensor, int]:
         if not batches:
             raise RuntimeFailure(f"component {component_id}: empty micro-batch")
         total: torch.Tensor | None = None
-        monitor = 0.0
+        monitor: torch.Tensor | None = None
         for batch in batches:
             batch = _batch_on_device(batch, runtime.device)
             try:
@@ -552,8 +551,9 @@ class TFLocoformerTrainer:
                 raise RuntimeFailure(f"component {component_id}: loss did not return a tensor")
             total = value if total is None else total + value
             with torch.no_grad():
-                monitor += float(si_sdr_loss(prediction, batch.targets).detach())
-        assert total is not None
+                term = si_sdr_loss(prediction, batch.targets).detach()
+                monitor = term if monitor is None else monitor + term
+        assert total is not None and monitor is not None
         count = len(batches)
         return total / count, monitor, count
 
@@ -587,31 +587,60 @@ class TFLocoformerTrainer:
             output_dir=checkpoint.directory,
         )
 
-    def _append_metrics(
+    def _drain_step_io(
         self,
-        path: Path,
-        loss_value: float,
-        applied: bool,
-        sample_id: str,
-        used_lr: float,
-        scheduled_lr: float,
-        si_sdr: float,
-        epoch: int,
+        metrics_path: Path,
+        sample_path: Path | None,
+        rank: int,
+        checkpoint: CheckpointManager,
     ) -> None:
-        record = {
-            "applied": applied,
-            "epoch": epoch,
-            "logical_step": self.logical_step,
-            "loss": loss_value,
-            "lr": used_lr,
-            "optimizer_updates": dict(self.optimizer_updates),
-            "sample_id": sample_id,
-            "scheduled_lr": scheduled_lr,
-            "si_sdr": si_sdr,
-            "step_num": int(self.scheduler.step_num),
-        }
-        with path.open("a", encoding="utf-8") as handle:
-            handle.write(json.dumps(record, sort_keys=True) + "\n")
+        """Write the previous step while the next forward is already queued."""
+
+        item = self._step_io
+        if item is None:
+            return
+        self._step_io = None
+        (
+            loss_value,
+            applied,
+            sample_id,
+            used_lr,
+            scheduled_lr,
+            si_sdr,
+            epoch,
+            logical_step,
+            offer_step,
+        ) = item
+        if rank == 0:
+            record = {
+                "applied": applied,
+                "epoch": epoch,
+                "logical_step": logical_step,
+                "loss": loss_value,
+                "lr": used_lr,
+                "optimizer_updates": dict(self.optimizer_updates),
+                "sample_id": sample_id,
+                "scheduled_lr": scheduled_lr,
+                "si_sdr": si_sdr,
+                "step_num": int(self.scheduler.step_num),
+            }
+            with metrics_path.open("a", encoding="utf-8") as handle:
+                handle.write(json.dumps(record, sort_keys=True) + "\n")
+        if sample_path is not None:
+            _append_jsonl(
+                sample_path,
+                {
+                    "epoch": epoch,
+                    "logical_step": logical_step,
+                    "loss": loss_value,
+                    "lr": used_lr,
+                    "sample_id": sample_id,
+                    "scheduled_lr": scheduled_lr,
+                    "si_sdr": si_sdr,
+                },
+            )
+        if offer_step:
+            checkpoint.offer("step", logical_step=logical_step)
 
 
 def _open_boundary(trainer_epoch: int, *, warmup_updated: bool) -> dict[str, Any]:

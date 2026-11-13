@@ -45,7 +45,7 @@ class CudaAmpRuntimeTests(unittest.TestCase):
         runtime.backward(loss)
         self.assertTrue(torch.equal(weight.grad, torch.full_like(weight, 64)))
         norm = runtime.clip([weight], 10.0, optimizer=optimizer)
-        self.assertAlmostEqual(norm, 8.0**0.5, places=5)
+        self.assertAlmostEqual(float(norm), 8.0**0.5, places=5)
         self.assertTrue(torch.allclose(weight.grad, torch.full_like(weight, 2)))
         with self.assertRaises(RuntimeFailure):
             runtime.clip([weight], 10.0, optimizer=optimizer)
@@ -58,9 +58,12 @@ class CudaAmpRuntimeTests(unittest.TestCase):
     def test_nonfinite_loss_is_not_an_overflow_skip(self) -> None:
         _require_devices(1)
         runtime = ProcessRuntime(device="cuda", precision="amp_fp16", init_scale=8.0)
+        weight = torch.nn.Parameter(torch.ones(1, device="cuda"))
+        optimizer = torch.optim.SGD([weight], lr=0.1)
         loss = torch.tensor(float("nan"), device="cuda", requires_grad=True)
+        runtime.backward(loss)
         with self.assertRaises(RuntimeFailure) as caught:
-            runtime.backward(loss)
+            runtime.step(optimizer)
         self.assertIn("not finite", str(caught.exception))
         runtime.shutdown()
 

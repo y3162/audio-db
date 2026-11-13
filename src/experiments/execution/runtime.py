@@ -124,6 +124,7 @@ class ProcessRuntime:
         self._clipped: set[frozenset[int]] = set()
         self._unscaled: set[int] = set()
         self._stepped: set[int] = set()
+        self._loss_finite: torch.Tensor | None = None
         self._group_started = False
         self._scaler: torch.amp.GradScaler | None = None
         self.allow_busy_gpu = bool(allow_busy_gpu)
@@ -249,7 +250,7 @@ class ProcessRuntime:
         return nullcontext()
 
     def backward(self, loss: torch.Tensor, *, retain_graph: bool = False) -> None:
-        """Backpropagate a finite loss. Non-finite values never call backward.
+        """Backpropagate a loss. A non-finite loss is rejected by step() before the update.
 
         AMP scales the loss and does not change the scale during gradient
         accumulation. A finite loss can still overflow in the backward; that
@@ -260,8 +261,13 @@ class ProcessRuntime:
             raise RuntimeFailure("loss must be a tensor")
         if loss.numel() != 1:
             raise RuntimeFailure("loss must be a scalar")
-        if not bool(torch.isfinite(loss.detach()).all()):
-            raise RuntimeFailure("loss is not finite")
+        # Reading this flag here would finish the forward before backward is launched.
+        # step() reads it once, before the optimizer applies the gradients.
+        flag = torch.isfinite(loss.detach()).all()
+        if self._loss_finite is None:
+            self._loss_finite = flag
+        else:
+            self._loss_finite = torch.logical_and(self._loss_finite, flag)
         from src.experiments.execution.profile import Span
 
         with Span("backward", self.device):
@@ -276,7 +282,7 @@ class ProcessRuntime:
         max_norm: float,
         *,
         optimizer: torch.optim.Optimizer | None = None,
-    ) -> float:
+    ) -> torch.Tensor:
         """Clip gradients once per parameter set in the current step.
 
         AMP unscales ``optimizer`` first and refuses a second unscale of that
@@ -296,7 +302,8 @@ class ProcessRuntime:
         if isinstance(max_norm, bool) or not isinstance(max_norm, (int, float)) or max_norm <= 0:
             raise RuntimeFailure("max_norm must be a positive number")
         norm = torch.nn.utils.clip_grad_norm_(params, float(max_norm))
-        return float(norm)
+        # Reading the norm here would drain the stream before the optimizer step.
+        return norm
 
     def clip_repeated(self, parameters: Iterable[torch.nn.Parameter], max_norm: float) -> float:
         """Clip gradients on every call.
@@ -324,6 +331,22 @@ class ProcessRuntime:
         norm = torch.nn.utils.clip_grad_norm_(params, float(max_norm))
         return float(norm)
 
+    def host_scalar(self, value: torch.Tensor) -> torch.Tensor:
+        """Queue a host copy of one scalar.
+
+        Call this before :meth:`step`. That method waits for work already
+        queued, which finishes this copy, and only then launches the optimizer.
+        Reading the returned CPU tensor does not wait for the optimizer.
+        """
+
+        if not isinstance(value, torch.Tensor) or value.numel() != 1:
+            raise RuntimeFailure("host_scalar requires a scalar tensor")
+        if value.device.type != "cuda":
+            return value.detach()
+        host = torch.empty((), dtype=torch.float32, pin_memory=True)
+        host.copy_(value.detach().to(dtype=torch.float32), non_blocking=True)
+        return host
+
     def step(self, optimizer: torch.optim.Optimizer) -> StepResult:
         """Apply one optimizer update, or skip it on every rank.
 
@@ -339,6 +362,7 @@ class ProcessRuntime:
             raise RuntimeFailure("optimizer must be a torch optimizer")
         if id(optimizer) in self._stepped:
             raise RuntimeFailure("optimizer was already stepped in this logical step")
+        self._require_finite_loss()
         from src.experiments.execution.profile import Span
 
         if self._scaler is None:
@@ -355,6 +379,14 @@ class ProcessRuntime:
         self._stepped.add(id(optimizer))
         return StepResult(applied=applied)
 
+    def _require_finite_loss(self) -> None:
+        flag = self._loss_finite
+        self._loss_finite = None
+        if flag is None:
+            return
+        if not self.agree(bool(flag), policy="all"):
+            raise RuntimeFailure("loss is not finite")
+
     def end_step(self) -> None:
         """Finish one logical step. AMP updates the scaler once."""
 
@@ -370,6 +402,7 @@ class ProcessRuntime:
             self._clipped.clear()
             self._unscaled.clear()
             self._stepped.clear()
+            self._loss_finite = None
 
     def set_grad_scale(self, scale: float) -> None:
         """Replace the AMP scale between logical steps.

@@ -82,7 +82,8 @@ components:
     class: src.experiments.data.SnapshotDataModule
     kwargs:
       require_profile: official_faithful
-      prefetch: false
+      prefetch: true
+      load_workers: 1
     inject:
       source: {ref: source}
       sampler: {ref: sampler}

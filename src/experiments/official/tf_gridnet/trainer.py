@@ -25,6 +25,7 @@ trainer also ranked by SI-SNR. That ranking is not copied here.
 from __future__ import annotations
 
 import json
+import math
 import os
 import re
 from pathlib import Path
@@ -158,6 +159,7 @@ class TFGridNetTrainer:
         if stop_after_logical_steps is not None:
             stop_after_logical_steps = _positive_int("stop_after_logical_steps", stop_after_logical_steps)
         self.stop_after_logical_steps = stop_after_logical_steps
+        self._step_io: tuple[Any, ...] | None = None
         self.logical_step = 0
         self.optimizer_updates = {optimizer_id: 0}
         self.losses: list[float] = []
@@ -216,10 +218,12 @@ class TFGridNetTrainer:
                 return self._result(checkpoint, "completed")
         while self.logical_step < self.max_logical_steps:
             if self._stop_requested(runtime):
+                self._drain_step_io(metrics_path, sample_path, rank, checkpoint)
                 if self.logical_step > 0:
                     checkpoint.offer("stop", logical_step=self.logical_step)
                 return self._result(checkpoint, "interrupted")
             if self._epoch_cap_reached():
+                self._drain_step_io(metrics_path, sample_path, rank, checkpoint)
                 return self._result(checkpoint, "completed")
             epoch = int(self.data.epoch)
             index = int(self.data.update_index)
@@ -240,13 +244,16 @@ class TFGridNetTrainer:
                         f"component {component_id}: accumulation {self.accumulation} "
                         f"does not fit at update {index}"
                     )
+                planned: list[list[Batch]] = []
+                for offset in range(self.accumulation):
+                    planned.append(view.batch(index + offset))
+                self._drain_step_io(metrics_path, sample_path, rank, checkpoint)
                 self.model.module.train()
                 self.optimizer.zero_grad(set_to_none=True)
                 total: torch.Tensor | None = None
                 sample_ids: list[str] = []
-                for offset in range(self.accumulation):
+                for offset, batches in enumerate(planned):
                     sync = offset == self.accumulation - 1
-                    batches = view.batch(index + offset)
                     sample_ids.extend(batch.sample_id for batch in batches)
                     with runtime.sync_context([self.model], sync=sync):
                         with runtime.autocast():
@@ -257,38 +264,29 @@ class TFGridNetTrainer:
                     total = detached if total is None else total + detached
                 if self.grad_clip is not None:
                     runtime.clip(self.model.parameters, self.grad_clip, optimizer=self.optimizer)
+                if total is None:
+                    raise RuntimeFailure(f"component {component_id}: loss is not finite")
+                host_loss = runtime.host_scalar(total)
                 result = runtime.step(self.optimizer)
                 runtime.end_step()
-                if total is None or not bool(torch.isfinite(total).all()):
+                loss_value = float(host_loss)
+                if not math.isfinite(loss_value):
                     raise RuntimeFailure(f"component {component_id}: loss is not finite")
                 self.logical_step += 1
                 index += self.accumulation
                 if result.applied:
                     self.optimizer_updates[self.optimizer_id] += 1
-                loss_value = float(total)
                 learning_rate = float(self.optimizer.param_groups[0]["lr"])
                 self.losses.append(loss_value)
                 self.learning_rates.append(learning_rate)
                 self.data.epoch = epoch
                 self.data.update_index = index
                 sample_id = ",".join(sample_ids)
-                if rank == 0:
-                    self._append_metrics(metrics_path, loss_value, result.applied, sample_id, learning_rate, epoch)
-                if sample_path is not None:
-                    _append_jsonl(
-                        sample_path,
-                        {
-                            "epoch": epoch,
-                            "logical_step": self.logical_step,
-                            "loss": loss_value,
-                            "lr": learning_rate,
-                            "sample_id": sample_id,
-                        },
-                    )
                 epoch_done = index == view.updates
+                self._step_io = (loss_value, result.applied, sample_id, learning_rate, epoch, self.logical_step, not epoch_done)
                 if not epoch_done:
-                    checkpoint.offer("step", logical_step=self.logical_step)
                     continue
+                self._drain_step_io(metrics_path, sample_path, rank, checkpoint)
                 self.phase = _PENDING
                 self.finished_epoch = epoch
                 self.boundary = _open_boundary(epoch)
@@ -301,6 +299,7 @@ class TFGridNetTrainer:
                     return self._result(checkpoint, "completed")
             finally:
                 _close_epoch_view(view)
+        self._drain_step_io(metrics_path, sample_path, rank, checkpoint)
         return self._result(checkpoint, "completed")
 
     def state_dict(self) -> dict[str, Any]:
@@ -507,26 +506,45 @@ class TFGridNetTrainer:
             output_dir=checkpoint.directory,
         )
 
-    def _append_metrics(
+    def _drain_step_io(
         self,
-        path: Path,
-        loss_value: float,
-        applied: bool,
-        sample_id: str,
-        learning_rate: float,
-        epoch: int,
+        metrics_path: Path,
+        sample_path: Path | None,
+        rank: int,
+        checkpoint: CheckpointManager,
     ) -> None:
-        record = {
-            "applied": applied,
-            "epoch": epoch,
-            "logical_step": self.logical_step,
-            "loss": loss_value,
-            "lr": learning_rate,
-            "optimizer_updates": dict(self.optimizer_updates),
-            "sample_id": sample_id,
-        }
-        with path.open("a", encoding="utf-8") as handle:
-            handle.write(json.dumps(record, sort_keys=True) + "\n")
+        """Write the previous step while the next forward is already queued."""
+
+        item = self._step_io
+        if item is None:
+            return
+        self._step_io = None
+        loss_value, applied, sample_id, learning_rate, epoch, logical_step, offer_step = item
+        if rank == 0:
+            record = {
+                "applied": applied,
+                "epoch": epoch,
+                "logical_step": logical_step,
+                "loss": loss_value,
+                "lr": learning_rate,
+                "optimizer_updates": dict(self.optimizer_updates),
+                "sample_id": sample_id,
+            }
+            with metrics_path.open("a", encoding="utf-8") as handle:
+                handle.write(json.dumps(record, sort_keys=True) + "\n")
+        if sample_path is not None:
+            _append_jsonl(
+                sample_path,
+                {
+                    "epoch": epoch,
+                    "logical_step": logical_step,
+                    "loss": loss_value,
+                    "lr": learning_rate,
+                    "sample_id": sample_id,
+                },
+            )
+        if offer_step:
+            checkpoint.offer("step", logical_step=logical_step)
 
 
 def _open_boundary(trainer_epoch: int) -> dict[str, Any]:

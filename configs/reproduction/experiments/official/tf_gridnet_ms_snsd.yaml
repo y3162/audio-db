@@ -85,7 +85,8 @@ components:
     role: data
     class: src.experiments.data.SnapshotDataModule
     kwargs:
-      prefetch: false
+      prefetch: true
+      load_workers: 1
     inject:
       source: {ref: source}
       sampler: {ref: sampler}

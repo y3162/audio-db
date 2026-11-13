@@ -34,6 +34,47 @@ def phase_losses(reference: torch.Tensor, generated: torch.Tensor) -> tuple[torc
     return instantaneous, group_delay, angular
 
 
+def generator_signal_losses(
+    clean_mag: torch.Tensor,
+    generated_mag: torch.Tensor,
+    clean_phase: torch.Tensor,
+    generated_phase: torch.Tensor,
+    clean_complex: torch.Tensor,
+    generated_complex: torch.Tensor,
+    recomputed_complex: torch.Tensor,
+    clean_audio: torch.Tensor,
+    generated_audio: torch.Tensor,
+) -> dict[str, torch.Tensor]:
+    """Weighted signal losses, without the metric term.
+
+    The sum is the generator objective minus ``metric * METRIC_WEIGHT``.
+    A CUDA step can backpropagate this while PESQ is still running, then add
+    the metric term after the discriminator update.
+    """
+
+    magnitude = F.mse_loss(clean_mag, generated_mag)
+    instantaneous, group_delay, angular = phase_losses(clean_phase, generated_phase)
+    phase = instantaneous + group_delay + angular
+    complex_loss = F.mse_loss(clean_complex, generated_complex) * COMPLEX_SCALE
+    consistency = F.mse_loss(generated_complex, recomputed_complex) * COMPLEX_SCALE
+    time = F.l1_loss(clean_audio, generated_audio)
+    signal = (
+        magnitude * MAGNITUDE_WEIGHT
+        + phase * PHASE_WEIGHT
+        + complex_loss * COMPLEX_WEIGHT
+        + consistency * CONSISTENCY_WEIGHT
+        + time * TIME_WEIGHT
+    )
+    return {
+        "signal": signal,
+        "magnitude": magnitude,
+        "phase": phase,
+        "complex": complex_loss,
+        "consistency": consistency,
+        "time": time,
+    }
+
+
 def generator_losses(
     clean_mag: torch.Tensor,
     generated_mag: torch.Tensor,
@@ -47,29 +88,27 @@ def generator_losses(
     metric: torch.Tensor,
     ones: torch.Tensor,
 ) -> dict[str, torch.Tensor]:
-    magnitude = F.mse_loss(clean_mag, generated_mag)
-    instantaneous, group_delay, angular = phase_losses(clean_phase, generated_phase)
-    phase = instantaneous + group_delay + angular
-    complex_loss = F.mse_loss(clean_complex, generated_complex) * COMPLEX_SCALE
-    consistency = F.mse_loss(generated_complex, recomputed_complex) * COMPLEX_SCALE
-    time = F.l1_loss(clean_audio, generated_audio)
-    metric_loss = F.mse_loss(metric.flatten(), ones)
-    total = (
-        magnitude * MAGNITUDE_WEIGHT
-        + phase * PHASE_WEIGHT
-        + complex_loss * COMPLEX_WEIGHT
-        + consistency * CONSISTENCY_WEIGHT
-        + metric_loss * METRIC_WEIGHT
-        + time * TIME_WEIGHT
+    terms = generator_signal_losses(
+        clean_mag,
+        generated_mag,
+        clean_phase,
+        generated_phase,
+        clean_complex,
+        generated_complex,
+        recomputed_complex,
+        clean_audio,
+        generated_audio,
     )
+    metric_loss = F.mse_loss(metric.flatten(), ones)
+    total = terms["signal"] + metric_loss * METRIC_WEIGHT
     return {
         "total": total,
-        "magnitude": magnitude,
-        "phase": phase,
-        "complex": complex_loss,
-        "consistency": consistency,
+        "magnitude": terms["magnitude"],
+        "phase": terms["phase"],
+        "complex": terms["complex"],
+        "consistency": terms["consistency"],
         "metric": metric_loss,
-        "time": time,
+        "time": terms["time"],
     }
 
 

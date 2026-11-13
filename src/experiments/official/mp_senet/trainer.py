@@ -20,6 +20,7 @@ from __future__ import annotations
 import json
 import math
 import os
+import threading
 from pathlib import Path
 from typing import Any
 
@@ -45,7 +46,7 @@ from src.experiments.trainers import (
     _sample_path,
 )
 from src.experiments.calc.errors import TrainingError
-from src.experiments.calc.losses import discriminator_loss, generator_losses
+from src.experiments.calc.losses import METRIC_WEIGHT, discriminator_loss, generator_losses, generator_signal_losses
 from src.experiments.official.mp_senet.reference import _require_discriminator_resolution, validation_model
 
 _IN_EPOCH = "in_epoch"
@@ -131,6 +132,7 @@ class MPSENetGANTrainer:
         if stop_after_logical_steps is not None:
             stop_after_logical_steps = _positive_int("stop_after_logical_steps", stop_after_logical_steps)
         self.stop_after_logical_steps = stop_after_logical_steps
+        self._mp_io: tuple[Any, ...] | None = None
         self.logical_step = 0
         self.optimizer_updates = {optim_g_id: 0, optim_d_id: 0}
         self.scheduler_steps = 0
@@ -195,10 +197,12 @@ class MPSENetGANTrainer:
                 return self._result(checkpoint, "completed")
         while self.logical_step < self.max_logical_steps:
             if self._stop_requested(runtime):
+                self._drain_mp_io()
                 if self.logical_step > 0 and not self._in_official_step:
                     self._offer(checkpoint, "stop")
                 return self._result(checkpoint, "interrupted")
             if self._epoch_cap_reached():
+                self._drain_mp_io()
                 return self._result(checkpoint, "completed")
             epoch = int(self.data.epoch)
             index = int(self.data.update_index)
@@ -251,15 +255,22 @@ class MPSENetGANTrainer:
                     "time": shared["time"],
                 }
                 self.step_log.append(entry)
-                if rank == 0:
-                    _append_jsonl(metrics_path, entry)
-                if sample_path is not None:
-                    _append_jsonl(sample_path, {**local, "logical_step": self.logical_step, "loss": local["generator"]})
                 epoch_done = index == view.updates
                 will_validate = self.validation_interval > 0 and self.logical_step % self.validation_interval == 0
-                if not will_validate and not epoch_done:
-                    self._offer(checkpoint, "step")
-                    continue
+                offer_step = not will_validate and not epoch_done
+                if runtime.device.type == "cuda" and runtime.world_size == 1:
+                    self._mp_io = (entry, local, metrics_path, sample_path, rank, offer_step, checkpoint)
+                    if offer_step:
+                        continue
+                    self._drain_mp_io()
+                else:
+                    if rank == 0:
+                        _append_jsonl(metrics_path, entry)
+                    if sample_path is not None:
+                        _append_jsonl(sample_path, {**local, "logical_step": self.logical_step, "loss": local["generator"]})
+                    if offer_step:
+                        self._offer(checkpoint, "step")
+                        continue
                 self.phase = _PENDING
                 self.boundary = _open_boundary(epoch, validate=will_validate, epoch_done=epoch_done)
                 self._on_boundary_phase(self.phase)
@@ -271,7 +282,127 @@ class MPSENetGANTrainer:
                     return self._result(checkpoint, "completed")
             finally:
                 _close_epoch_view(view)
+        self._drain_mp_io()
         return self._result(checkpoint, "completed")
+
+    def _drain_mp_io(self) -> None:
+        """Write the previous step while the next signal backward is queued."""
+
+        item = self._mp_io
+        if item is None:
+            return
+        self._mp_io = None
+        entry, local, metrics_path, sample_path, rank, offer_step, checkpoint = item
+        if rank == 0:
+            _append_jsonl(metrics_path, entry)
+        if sample_path is not None:
+            _append_jsonl(sample_path, {**local, "logical_step": entry["logical_step"], "loss": local["generator"]})
+        if offer_step:
+            self._offer(checkpoint, "step")
+
+    def _cuda_overlapped_step(self, batch: Batch, runtime: ProcessRuntime) -> dict[str, float]:
+        """PESQ runs while the signal backward uses the same generator graph.
+
+        The discriminator optimizer still steps before the metric term and the
+        generator optimizer. CPU training keeps the original order so the
+        reference comparison stays exact.
+        """
+
+        self._on_update_phase("zero_grad")
+        self.optim_d.zero_grad(set_to_none=True)
+        self.optim_g.zero_grad(set_to_none=True)
+        clean, noisy = self._waveforms(batch, runtime)
+        if not _inputs_ready(clean, noisy, self.generator.state_module.n_fft):
+            raise RuntimeFailure("a rank rejected its micro-batch before the generator forward")
+        self._on_update_phase("before_generator_forward")
+        try:
+            parts = pack_forward(self.generator.module(noisy, clean))
+            _require_discriminator_resolution(parts["clean_mag"].shape[-2], parts["clean_mag"].shape[-1])
+        except (TrainingError, RuntimeFailure, RuntimeError, ValueError) as exc:
+            raise RuntimeFailure(f"generator forward failed: {type(exc).__name__}: {exc}") from exc
+        pending = _schedule_metric_targets(
+            clean,
+            parts["audio"],
+            int(self.generator.state_module.architecture["sampling_rate"]),
+        )
+        ones = torch.ones(clean.shape[0], device=clean.device)
+        signal = generator_signal_losses(
+            parts["clean_mag"],
+            parts["mag"],
+            parts["clean_phase"],
+            parts["phase"],
+            parts["clean_complex"],
+            parts["complex"],
+            parts["recomputed_complex"],
+            clean,
+            parts["audio"],
+        )
+        self._backward_if_finite(runtime, signal["signal"] / self.accumulation, "generator signal loss", retain_graph=True)
+        self._drain_mp_io()
+        try:
+            targets = pending.result()
+            real = self.discriminator.module(parts["clean_mag"], parts["clean_mag"])
+            fake = self.discriminator.module(parts["clean_mag"], parts["mag_hat"].detach())
+            loss_d = discriminator_loss(real, fake, ones, targets) / self.accumulation
+        except (TrainingError, RuntimeFailure, RuntimeError, ValueError) as exc:
+            raise RuntimeFailure(f"discriminator forward failed: {type(exc).__name__}: {exc}") from exc
+        self._backward_if_finite(runtime, loss_d, "discriminator loss")
+        discriminator_result = runtime.step(self.optim_d)
+        self._on_update_phase("after_discriminator_step", [(clean, parts)])
+        raw = self.discriminator.state_module.discriminator
+        frozen = [parameter for parameter in raw.parameters() if parameter.requires_grad]
+        try:
+            for parameter in frozen:
+                parameter.requires_grad_(False)
+            try:
+                metric = raw(parts["clean_mag"], parts["mag_hat"])
+                metric_loss = torch.nn.functional.mse_loss(metric.flatten(), ones)
+            except (TrainingError, RuntimeFailure, RuntimeError, ValueError) as exc:
+                raise RuntimeFailure(f"generator loss failed: {type(exc).__name__}: {exc}") from exc
+            self._backward_if_finite(runtime, metric_loss * METRIC_WEIGHT / self.accumulation, "generator metric loss")
+        finally:
+            for parameter in frozen:
+                parameter.requires_grad_(True)
+        self._average_calls += 1
+        runtime.average_gradients(self.generator.parameters)
+        total = signal["signal"] + metric_loss * METRIC_WEIGHT
+        logged = torch.stack(
+            [
+                signal["complex"].detach(),
+                signal["consistency"].detach(),
+                loss_d.detach() * self.accumulation,
+                total.detach(),
+                signal["magnitude"].detach(),
+                metric_loss.detach(),
+                signal["phase"].detach(),
+                signal["time"].detach(),
+            ]
+        )
+        host = torch.empty(logged.shape, dtype=torch.float32, pin_memory=True)
+        host.copy_(logged.detach().float(), non_blocking=True)
+        generator_result = runtime.step(self.optim_g)
+        runtime.end_step()
+        runtime.broadcast_buffers(self.generator.state_module)
+        runtime.broadcast_buffers(self.discriminator.state_module)
+        if not discriminator_result.applied or not generator_result.applied:
+            raise RuntimeFailure("MP-SENet GAN requires both optimizers to apply in one logical step")
+        complex_v, consistency_v, disc_v, total_v, magnitude_v, metric_v, phase_v, time_v = (
+            float(item) for item in host.tolist()
+        )
+        self._on_update_phase("end_step")
+        return {
+            "complex": complex_v,
+            "consistency": consistency_v,
+            "discriminator": disc_v,
+            "generator": total_v,
+            "lr_d": float(self.optim_d.param_groups[0]["lr"]),
+            "lr_g": float(self.optim_g.param_groups[0]["lr"]),
+            "magnitude": magnitude_v,
+            "metric": metric_v,
+            "phase": phase_v,
+            "sample_id": batch.sample_id,
+            "time": time_v,
+        }
 
     def official_step(self, batches: list[Batch], runtime: ProcessRuntime) -> dict[str, float]:
         """Run one official GAN update. Both optimizers step, or neither is checkpointed."""
@@ -288,6 +419,8 @@ class MPSENetGANTrainer:
         self.discriminator.module.train()
         self._in_official_step = True
         try:
+            if runtime.device.type == "cuda" and runtime.world_size == 1 and len(batches) == 1:
+                return self._cuda_overlapped_step(batches[0], runtime)
             self._on_update_phase("zero_grad")
             self.optim_d.zero_grad(set_to_none=True)
             self.optim_g.zero_grad(set_to_none=True)
@@ -643,11 +776,19 @@ class MPSENetGANTrainer:
             raise RuntimeFailure(f"expected matching [batch, time] waveforms, got {tuple(clean.shape)}")
         return clean, noisy
 
-    def _backward_if_finite(self, runtime: ProcessRuntime, loss: torch.Tensor, what: str) -> None:
-        finite = bool(torch.isfinite(loss.detach()).all())
-        if not runtime.agree(finite, policy="all"):
-            raise RuntimeFailure(f"{what} is not finite on every rank")
-        runtime.backward(loss)
+    def _backward_if_finite(
+        self,
+        runtime: ProcessRuntime,
+        loss: torch.Tensor,
+        what: str,
+        *,
+        retain_graph: bool = False,
+    ) -> None:
+        if runtime.device.type != "cuda":
+            finite = bool(torch.isfinite(loss.detach()).all())
+            if not runtime.agree(finite, policy="all"):
+                raise RuntimeFailure(f"{what} is not finite on every rank")
+        runtime.backward(loss, retain_graph=retain_graph)
 
     def _refuse_amp(self, runtime: ProcessRuntime) -> None:
         if getattr(runtime, "precision", "fp32") == "amp_fp16":
@@ -721,6 +862,42 @@ class MPSENetGANTrainer:
         )
 
 
+def _schedule_metric_targets(clean: torch.Tensor, enhanced: torch.Tensor, sample_rate: int):
+    """Copy waveforms without blocking, then score PESQ on a side thread."""
+
+    from src.experiments.calc.losses import metric_targets
+
+    clean_cpu = torch.empty(clean.shape, dtype=clean.dtype, pin_memory=True)
+    enhanced_cpu = torch.empty(enhanced.shape, dtype=enhanced.dtype, pin_memory=True)
+    clean_cpu.copy_(clean.detach(), non_blocking=True)
+    enhanced_cpu.copy_(enhanced.detach(), non_blocking=True)
+    event = torch.cuda.Event()
+    event.record()
+    box: dict[str, object] = {}
+    done = threading.Event()
+
+    def run() -> None:
+        try:
+            event.synchronize()
+            box["value"] = metric_targets(clean_cpu, enhanced_cpu, sample_rate)
+        except Exception as exc:
+            box["error"] = exc
+        finally:
+            done.set()
+
+    thread = threading.Thread(target=run, name="mp-pesq", daemon=True)
+    thread.start()
+
+    class _Pending:
+        def result(self):
+            done.wait()
+            if "error" in box:
+                raise box["error"]
+            return box.get("value")
+
+    return _Pending()
+
+
 def _metric_targets(clean: torch.Tensor, enhanced: torch.Tensor, sample_rate: int) -> torch.Tensor | None:
     """Look up PESQ targets on the losses module so tests can patch that function."""
 
@@ -734,6 +911,9 @@ def _inputs_ready(clean: torch.Tensor, noisy: torch.Tensor, n_fft: int) -> bool:
         return False
     if int(clean.shape[-1]) <= n_fft // 2:
         return False
+    if clean.is_cuda:
+        # A non-finite waveform makes the loss non-finite, which rejects the step.
+        return True
     return bool(torch.isfinite(clean).all()) and bool(torch.isfinite(noisy).all())
 
 

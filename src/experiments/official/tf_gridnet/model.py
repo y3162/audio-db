@@ -79,8 +79,6 @@ class TFGridNetModel(torch.nn.Module):
             raise RuntimeFailure(
                 f"TF-GridNet length {tuple(enhanced.shape)} does not match the input {tuple(waveform.shape)}"
             )
-        if not bool(torch.isfinite(enhanced).all()):
-            raise RuntimeFailure("TF-GridNet waveform is not finite")
         return enhanced
 
     def export_for_inference(self) -> dict[str, torch.Tensor]:

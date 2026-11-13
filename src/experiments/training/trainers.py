@@ -299,15 +299,16 @@ def _batch_on_device(batch: Batch, device: torch.device) -> Batch:
     inputs = batch.inputs
     targets = batch.targets
     lengths = batch.lengths
+    non_blocking = device.type == "cuda"
     changed = False
     if inputs.device != device:
-        inputs = inputs.to(device)
+        inputs = inputs.to(device, non_blocking=non_blocking and inputs.device.type == "cpu")
         changed = True
     if targets.device != device:
-        targets = targets.to(device)
+        targets = targets.to(device, non_blocking=non_blocking and targets.device.type == "cpu")
         changed = True
     if lengths is not None and lengths.device != device:
-        lengths = lengths.to(device)
+        lengths = lengths.to(device, non_blocking=non_blocking and lengths.device.type == "cpu")
         changed = True
     if not changed:
         return batch
