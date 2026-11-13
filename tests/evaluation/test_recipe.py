@@ -220,7 +220,7 @@ class StagingTests(unittest.TestCase):
                 rebuild_database(staging, destination)
             self.assertFalse(destination.exists())
 
-    def test_results_round_trip_and_legacy_schema_is_left_unchanged(self):
+    def test_results_round_trip_and_incompatible_schema_is_left_unchanged(self):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
             database = root / "source.duckdb"
@@ -271,16 +271,16 @@ class StagingTests(unittest.TestCase):
             rebuilt = root / "rebuilt.duckdb"
             rebuild_database(staging, rebuilt)
             self.assertEqual(_result_ids(database), _result_ids(rebuilt))
-            legacy = root / "legacy.duckdb"
-            connection = _duck(legacy)
+            incompatible = root / "incompatible.duckdb"
+            connection = _duck(incompatible)
             connection.execute("CREATE SCHEMA eval")
             connection.execute("CREATE TABLE eval.cases (case_id VARCHAR PRIMARY KEY, snr_db DOUBLE)")
             connection.execute("INSERT INTO eval.cases VALUES ('kept', 1.5)")
             connection.close()
             with self.assertRaises(DatasetError) as caught:
-                EvaluationDB(legacy, project_root=root).ensure_schema()
-            self.assertIn("previous", str(caught.exception))
-            connection = _duck(legacy, read_only=True)
+                EvaluationDB(incompatible, project_root=root).ensure_schema()
+            self.assertIn("recipe_json", str(caught.exception))
+            connection = _duck(incompatible, read_only=True)
             row = connection.execute("SELECT case_id, snr_db FROM eval.cases").fetchone()
             columns = connection.execute(
                 """

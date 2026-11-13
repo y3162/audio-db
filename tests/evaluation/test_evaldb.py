@@ -62,9 +62,7 @@ class EvaluationDBTests(unittest.TestCase):
                     """
                 ).fetchone()
                 stored = json.loads(metadata)
-                legacy = "corpus:old-id"
-                stored["legacy_case_id"] = legacy
-                stored["source_id"] = legacy
+                stored["source_id"] = "changed-source"
                 body = {
                     "kind": kind,
                     "dataset": dataset,

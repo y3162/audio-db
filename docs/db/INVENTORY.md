@@ -193,9 +193,7 @@ Babble は 48,000 Hz、2,880,000 frames、1 ch、5,760,044 バイト。SSN は 4
 | `TCAR_48k.zip` | `8ff68f65c8af88764a6bae44ce35747f592929753b03319e68211f9ef58c55d6` |
 | `TMETRO_48k.zip` | `2d9be4da51098491be1ed67474dabfa7f5ed254cae921cca1dd06585bddfe883` |
 
-SNR シフトレシピの当時の原記録は `/net/spring/work/seki/database/recipes/voicebank-snr-shift-v1/`。実行時の場所と SHA-256 は `configs/data/voicebank_snr_shift.yaml`。v1 の `recipes.jsonl` は `836ca5f1566404b016087332a764467d36ed0c237f6bcee2736e6003b6f0bd23`、`common.json` は `9a290d8b149293fc59663822425efe20414ff7d39d7cb08b773b873a806493b0`。発話は 12,396。このレシピは `eval.cases` に入れていない。
-
-2026-11-13 以降、再生に使う正本は `/net/spring/work/seki/database/recipes/voicebank-snr-shift-v2/recipes.jsonl`（`9502da7b24b81bed04781c1e66726945dfcb3024045111df8bbb5839e0d01c14`）である。`depends.json` は `a61039bc139f0c83c55131e08ca07ffd4a3193fcd3b8cfa54d2d8e6bdeba0f9e`、`path_map.json` は `935a69450a517e6321ace60024318c33e35671b452df2087997d06a2faaf6338`。`common.json` と `counts.json` は v1 のファイルを明示参照し、v2 には複製していない。v1 の `noise_path` はリポジトリ直下の研究ディレクトリを指していたため、2026-11-13 にその7ディレクトリを削除したあと、v1 単体では再生できない。調査の原記録は `/net/spring/work/seki/database/investigations/voicebank-20261112/`（非重複 251 ファイル、175,257,599 バイト）。重複していた DEMAND48 の ZIP と ch01、babble、ssn、babble_ssn.zip は、既存のコーパスと `_provenance` と SHA-256 が一致したので重ねてコピーしていない。削除前の全件照合は v2 の `verification_report.json`（`606a21f4d827291846c51330070d1d6af776644f9d05d8f8fe68e4f51057bd4c`）にある。
+SNR シフトレシピの正本は `/net/spring/work/seki/database/recipes/voicebank-snr-shift-v1/`。実行時の場所と SHA-256 は `configs/data/voicebank_snr_shift.yaml`。発話は 12,396。このレシピは `eval.cases` に入れていない。調査の原記録は `/net/spring/work/seki/database/investigations/voicebank-20261112/`。
 
 ## 2026-11-12 に在ったファイル
 
@@ -492,7 +490,3 @@ SEMamba++ のオンライン劣化は `reproduction-p9` に置く。ready な代
 - 無くなっていたパスが、削除されたのか別ホストに残っているのか
 - `tf_gridnet.ms_snsd.espnet_recipe` の train / valid / test の内訳（行数の合計だけ一致）
 - `reproduction-vb-ondemand.duckdb` を、どの引数で既定パス以外へ書いたか
-
-### 2026-11-13: VoiceBank SNR シフトの v1 統一
-
-再生用の v2 の内容を `recipes/voicebank-snr-shift-v1/` に反映した。`recipes.jsonl` は旧 v2 と同じ SHA-256 で、`common.json` と `counts.json` はそのまま使う。`path_map.json` と `depends.json` は v1 のパスと現在の素材だけを示す形に更新した。現在のハッシュは `configs/data/voicebank_snr_shift.yaml`。上の v1 / v2 の記述は変更前の記録であり、現在の配置を表さない。

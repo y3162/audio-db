@@ -67,6 +67,19 @@ GPU_TARGETS = (
     "tests.experiments.test_launcher.LauncherCudaTests",
 )
 
+# Long subprocess-heavy modules start first to avoid leaving one worker busy
+# after the rest of the suite has finished. Discovery still determines coverage.
+SLOW_CPU_MODULES = (
+    "tests.experiments.test_launcher",
+    "tests.experiments.test_phase6_mossformergan_safe",
+    "tests.experiments.test_distributed_data",
+    "tests.experiments.test_mossformergan",
+    "tests.experiments.test_semambapp",
+    "tests.numerics.test_four_process",
+    "tests.data.reproduction.test_p9_semamba",
+    "tests.experiments.test_ddp",
+)
+
 _PRINT = threading.Lock()
 _PROCS: list[subprocess.Popen[str]] = []
 _PROCS_LOCK = threading.Lock()
@@ -368,7 +381,8 @@ def run_lane(
     timeout: float,
 ) -> tuple[list[dict[str, object]], float]:
     started = time.perf_counter()
-    pending = list(names)
+    priority = {name: index for index, name in enumerate(SLOW_CPU_MODULES)} if label == "cpu" else {}
+    pending = sorted(names, key=lambda name: priority.get(name, len(priority)))
     running: list[dict[str, object]] = []
     finished: list[dict[str, object]] = []
     directory = tempfile.TemporaryDirectory(prefix=f"audio-db-{label}-")

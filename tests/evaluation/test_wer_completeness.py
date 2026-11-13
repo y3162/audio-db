@@ -293,7 +293,7 @@ class WerCompletenessTests(unittest.TestCase):
             self.assertEqual(enhanced["wer_normalized"], 0.0)
             self.assertIsNone(enhanced["pesq_mean"])
 
-    def test_summarize_incomplete_and_legacy_directories_are_not_official(self):
+    def test_summarize_incomplete_directory_is_not_official(self):
         with self._temporary_dir() as directory:
             root = Path(directory)
             samples = self._samples()
@@ -315,18 +315,13 @@ class WerCompletenessTests(unittest.TestCase):
             summarized = summarize_directory(Path(failed["run_dir"]))
             self.assertFalse(summarized["official_wer"])
 
-            legacy = root / "legacy" / "old"
-            self._write_legacy(legacy)
-            with self.assertRaises(ValueError):
-                summarize_directory(legacy)
-
-    def test_resume_recomputes_a_legacy_success(self):
+    def test_resume_recomputes_record_missing_required_evaluation(self):
         with self._temporary_dir() as directory:
             root = Path(directory)
             samples = self._samples()
             enhancer = _Enhancer()
             recognizer = _Recognizer(self._texts())
-            config = self._config(root / "migrated", "migrated")
+            config = self._config(root / "runs", "missing-evaluation")
             first = self._run(config, samples, enhancer, recognizer)
             self.assertTrue(first["summary"]["official_wer"])
             first_groups = {group["condition"]: group for group in first["summary"]["groups"]}
@@ -364,7 +359,7 @@ class WerCompletenessTests(unittest.TestCase):
             self.assertEqual(stored["schema_version"], 1)
             self.assertTrue(stored["evaluation"]["required_wer"])
 
-    def test_schema_two_results_cannot_be_resumed_or_summarized(self):
+    def test_unsupported_result_version_cannot_be_resumed_or_summarized(self):
         with self._temporary_dir() as directory:
             root = Path(directory)
             config = self._config(root / "runs", "schema-two")
@@ -450,40 +445,6 @@ class WerCompletenessTests(unittest.TestCase):
             enhancer_factory=lambda model, device: enhancer,
             recognizer_factory=lambda _asr: recognizer,
             bundle=DatasetBundle(samples=samples),
-        )
-
-    def _write_legacy(self, run_dir: Path) -> None:
-        counts = {"S": 1, "D": 0, "I": 0, "N": 2, "wer": 0.5}
-        record = {
-            "schema_version": 1,
-            "record_id": "legacy-record",
-            "status": "ok",
-            "utterance_id": "legacy",
-            "identity": {"config_hash": "legacy"},
-            "model": {"name": "mock", "variant": None},
-            "snr_db": None,
-            "wer": {
-                "status": "ok",
-                "values": {
-                    "noisy": {"status": "ok", "raw": counts, "normalized": counts},
-                    "enhanced": {"status": "ok", "raw": counts, "normalized": counts},
-                },
-            },
-            "pesq": {"values": {}},
-            "stoi": {"values": {}},
-            "estoi": {"values": {}},
-            "si_sdr": {"values": {}},
-            "timing_sec": {"enhance": 0.0},
-        }
-        (run_dir / "records").mkdir(parents=True)
-        (run_dir / "records" / "legacy-record.json").write_text(
-            json.dumps(record),
-            encoding="utf-8",
-        )
-        (run_dir / "results.jsonl").write_text(json.dumps(record) + "\n", encoding="utf-8")
-        (run_dir / "run.json").write_text(
-            json.dumps({"schema_version": 1, "status": "completed", "config_hash": "legacy"}),
-            encoding="utf-8",
         )
 
     def _temporary_dir(self):

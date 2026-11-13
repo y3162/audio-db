@@ -22,7 +22,7 @@ def create_eval_schema(con) -> None:
         names = {row[0] for row in existing}
         if "recipe_json" not in names:
             raise ValueError(
-                "eval.cases is the previous fixed-column schema. Refusing to alter this database."
+                "eval.cases is missing recipe_json. Refusing to alter this database."
             )
     con.execute("""
         CREATE TABLE IF NOT EXISTS eval.cases (

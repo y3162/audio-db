@@ -448,6 +448,8 @@ class RankSplitSelector(StandardSelector):
 
     def decide(self, point: SavePoint) -> Decision:
         rank = int(os.environ.get("RANK", os.environ.get("LOCAL_RANK", "0")))
+        if point.logical_step == 1:
+            return Decision(latest=True)
         if rank == 1 and point.logical_step == 2:
             return Decision(latest=True, archive=("rank1.pt",))
         return super().decide(point)

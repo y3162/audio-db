@@ -10,6 +10,7 @@ make test         # CPU に加え、空いている GPU があれば GPU レー�
 ```
 
 どちらも `scripts/tests/run_suite.py` を呼ぶ。`tests/asr`、`tests/data`、`tests/evaluation`、`tests/experiments`、`tests/se`、`tests/setup`、`tests/numerics` のモジュールをプロセスプールで並列に実行する。
+時間のかかるモジュールは先に起動し、他のワーカーが先に遊休になる時間を減らす。
 
 ディレクトリ単体、モジュール単体は `unittest` をそのまま使う。本番データの保護を付けるときは `tests.suite_guard` を前に置く。
 

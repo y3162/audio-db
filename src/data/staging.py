@@ -45,7 +45,7 @@ def export_database(database: str | Path, staging: str | Path) -> Path:
     directory.mkdir(parents=True, exist_ok=True)
     connection = _connect(database, read_only=True)
     try:
-        _reject_legacy(connection)
+        _require_recipe_column(connection)
         corpora = directory / "corpora" / "audio_files.parquet"
         cases = directory / "evaluation" / "cases.parquet"
         sets = directory / "evaluation" / "sets.parquet"
@@ -566,7 +566,7 @@ def _column_signature(columns: list[str]) -> str:
     return f"sha256(concat_ws('|', {parts}))"
 
 
-def _reject_legacy(connection) -> None:
+def _require_recipe_column(connection) -> None:
     columns = connection.execute(
         """
         SELECT column_name FROM information_schema.columns
@@ -574,7 +574,7 @@ def _reject_legacy(connection) -> None:
         """
     ).fetchall()
     if columns and "recipe_json" not in {row[0] for row in columns}:
-        raise StagingError("refusing to export the previous fixed-column eval.cases schema")
+        raise StagingError("eval.cases is missing recipe_json; refusing to export")
 
 
 def _connect(path: str | Path, *, read_only: bool):

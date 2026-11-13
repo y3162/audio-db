@@ -48,7 +48,6 @@ def main():
     resolved = dest.resolve()
     for relative in (
         "recipes/voicebank-snr-shift-v1",
-        "recipes/voicebank-snr-shift-v2",
         "investigations/voicebank-20261112",
     ):
         protected = (dataset / relative).resolve()
