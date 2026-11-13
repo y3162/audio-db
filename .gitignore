@@ -30,7 +30,3 @@ __pycache__/
 
 # official implementation
 /src/se/official/
-
-# VoiceBank noise investigation trees stay on disk and out of Git.
-# Agent constraints are in .agents/. Reusable scripts are in scripts/data/voicebank/.
-/research_voicebank_*/
