@@ -123,6 +123,9 @@ class _ValidationData:
         del epoch
         return iter((self._batch,))
 
+    def identity(self) -> dict[str, object]:
+        return {"sample_rate": 48000, "teacher": "official_mixed_target"}
+
 
 class DeepFilterNet3LibraryTests(unittest.TestCase):
     def test_native_library_status_is_explicit(self) -> None:

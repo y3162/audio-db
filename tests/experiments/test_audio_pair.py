@@ -85,6 +85,8 @@ class AudioPairContractTest(unittest.TestCase):
         with self.assertRaises(RuntimeFailure):
             require_audio_contract(_Identity(sample_rate=16000, teacher="dry_clean"), sample_rate=16000, teachers=("official_mixed_target",))
         require_audio_contract(_Identity(**{"class": "src.experiments.data.TensorPairData", "features": 4}), sample_rate=16000, teachers=("dry_clean",))
+        with self.assertRaises(RuntimeFailure):
+            require_audio_contract(_Identity(features=4), sample_rate=16000, teachers=("dry_clean",))
 
     def test_the_same_pair_satisfies_every_16k_dry_clean_model(self) -> None:
         data = AudioPairData(_pairs(), sample_rate=16000, teacher="dry_clean")

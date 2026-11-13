@@ -392,8 +392,10 @@ def _module(item: dict[str, Any], runtime: ProcessRuntime, *, load_workers: int)
     kind = item["kind"]
     seed = int(item["seed"])
     if kind == "fixed":
-        protocol: object = FixedPairProtocol(source)
-        sampler: object = OrderSampler(source, protocol, seed=seed)  # type: ignore[arg-type]
+        from tests.experiments.pipeline_args import fixed_protocol, order_sampler
+
+        protocol: object = fixed_protocol(source)
+        sampler: object = order_sampler(source, protocol, seed=seed)
     elif kind == "chunk":
         protocol = ChunkProtocol(source)
         sampler = ChunkSampler(
@@ -408,8 +410,10 @@ def _module(item: dict[str, Any], runtime: ProcessRuntime, *, load_workers: int)
         protocol = Dfn3Protocol(source)
         sampler = Dfn3IndexSampler(source, seed=seed)
     elif kind == "semamba":
+        from tests.experiments.pipeline_args import order_sampler
+
         protocol = SemambaProtocol(source)
-        sampler = OrderSampler(source, protocol, seed=seed)  # type: ignore[arg-type]
+        sampler = order_sampler(source, protocol, seed=seed)
     else:
         raise RuntimeError(f"unknown pipeline kind {kind}")
     module = SnapshotDataModule(

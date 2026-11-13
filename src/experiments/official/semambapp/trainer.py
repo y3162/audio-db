@@ -25,7 +25,7 @@ import torch
 
 from src.experiments.checkpoint import CheckpointManager
 from src.experiments.data import Batch
-from src.experiments.data.pair import require_audio_contract
+from src.experiments.data.pair import bind_trainer_data
 from src.experiments.errors import BuildError, RuntimeFailure
 from src.experiments.official.semambapp.models import (
     SEMambaPPCQTDiscriminator,
@@ -136,6 +136,8 @@ class SEMambaPPTrainer:
         self.optim_g_id = optim_g_id
         self.optim_d_id = optim_d_id
         self.claim_label = claim_label
+        self.audio_sample_rate = int(generator.state_module.sampling_rate)
+        self.audio_teachers = ("dry_clean",)
         self.max_logical_steps = _positive_int("max_logical_steps", max_logical_steps)
         self.accumulation = _positive_int("accumulation", accumulation)
         self.grad_clip = None if grad_clip is None else _positive_float("grad_clip", grad_clip)
@@ -206,7 +208,7 @@ class SEMambaPPTrainer:
             self.phase = _IN_EPOCH
             self.data.epoch = 0
             self.data.update_index = 0
-        self._check_data()
+        bind_trainer_data(self)
         self._require_group_size(component_id)
         runtime.barrier()
         if should_stop(self):
@@ -799,25 +801,7 @@ class SEMambaPPTrainer:
                 f"scan_backend fused on CUDA resolved to {report['executed']}, not the fused kernel"
             )
 
-    def _check_data(self) -> None:
-        identity_fn = getattr(self.data, "identity", None)
-        if not callable(identity_fn):
-            return
-        identity = identity_fn()
-        if not isinstance(identity, dict):
-            raise RuntimeFailure("data identity is not a mapping")
-        claim = identity.get("claim_label")
-        if claim == "official_reproduction":
-            raise RuntimeFailure("semambapp.gsr.official is blocked; refusing official_reproduction")
-        if claim is not None and claim != self.claim_label:
-            raise RuntimeFailure(f"data claim_label {claim} does not match trainer claim_label {self.claim_label}")
-
     def _require_group_size(self, component_id: str) -> None:
-        require_audio_contract(
-            self.data,
-            sample_rate=int(self.generator.state_module.sampling_rate),
-            teachers=("dry_clean",),
-        )
         group_size = getattr(self.data, "group_size", None)
         if group_size is None:
             return

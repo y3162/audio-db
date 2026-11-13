@@ -72,6 +72,13 @@ class ExperimentBuilder:
         trainer = registry.get(config.entry)
         if not callable(getattr(trainer, "run", None)):
             raise BuildError(f"component {config.entry}: trainer has no run method")
+        from src.experiments.data.pair import bind_trainer_data
+        from src.experiments.errors import DataError, RuntimeFailure
+
+        try:
+            bind_trainer_data(trainer)
+        except (DataError, RuntimeFailure) as exc:
+            raise BuildError(f"component {config.entry}: {exc}") from exc
         stops = [i for i, spec in config.components.items() if spec.role == "stopping" and spec.ref is None]
         if stops:
             from src.experiments.stopping import TrainingControl

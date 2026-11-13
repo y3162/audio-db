@@ -544,8 +544,10 @@ def _module(spec: dict[str, object], *, seed: int = 7, require_profile: str | No
         corpora=spec["corpora"],  # type: ignore[arg-type]
         generated=spec["generated"],  # type: ignore[arg-type]
     )
-    protocol = FixedPairProtocol(source)
-    sampler = OrderSampler(source, protocol, seed=seed)
+    from tests.experiments.pipeline_args import fixed_protocol, order_sampler
+
+    protocol = fixed_protocol(source)
+    sampler = order_sampler(source, protocol, seed=seed)
     batcher = MicroBatcher(micro_batch=2, group_size=1)
     return SnapshotDataModule(
         source,
@@ -572,6 +574,9 @@ def _experiment_config(
     directory.mkdir(parents=True, exist_ok=True)
     stop = "" if stop_after is None else f"      stop_after_logical_steps: {stop_after}\n"
     profile = "" if require_profile is None else f"\n      require_profile: {require_profile}"
+    order = spec["order"]
+    order_text = order if isinstance(order, str) else "[" + ", ".join(str(item) for item in order) + "]"
+    scope = "per_rank" if order == "rank_mod_fixed_v1" else "rank0"
     text = f"""schema: audio-db-experiment/v1
 checkpoint:
   selector:
@@ -609,7 +614,11 @@ components:
   protocol:
     role: other
     class: src.experiments.data.FixedPairProtocol
-    kwargs: {{}}
+    kwargs:
+      normalize: {spec["normalize"]}
+      window: {spec["window"]}
+      sample_rate: {spec["sample_rate"]}
+      validation_crop: {spec["validation_crop"]}
     inject:
       source: {{ref: source}}
   sampler:
@@ -617,6 +626,8 @@ components:
     class: src.experiments.data.OrderSampler
     kwargs:
       seed: 7
+      order: {order_text}
+      validation_scope: {scope}
     inject:
       source: {{ref: source}}
       protocol: {{ref: protocol}}
@@ -816,8 +827,13 @@ def _write_snapshot(
         "derived": derived,
         "directory": directory,
         "generated": generated,
+        "normalize": normalize,
+        "order": order,
         "root": root,
+        "sample_rate": 16000,
         "selector": f"{name}@1",
+        "validation_crop": validation_crop,
+        "window": 8,
     }
 
 

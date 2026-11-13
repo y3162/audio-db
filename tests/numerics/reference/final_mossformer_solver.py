@@ -142,7 +142,9 @@ class _Data:
         return {
             "algorithm": "fixed_pair.mossformergan_se_16k",
             "profile": "official_faithful",
+            "sample_rate": 16000,
             "selection_uses_test": True,
+            "teacher": "dry_clean",
         }
 
 

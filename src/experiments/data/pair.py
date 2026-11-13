@@ -7,6 +7,7 @@ supplies pairs that were not read from a named dataset.
 
 from __future__ import annotations
 
+from pathlib import Path
 from typing import Sequence
 
 import numpy as np
@@ -16,7 +17,7 @@ from src.experiments.data.sample import Batch
 from src.experiments.errors import DataError, RuntimeFailure, StateError
 
 TEACHERS = ("dry_clean", "reverberant_clean", "official_mixed_target")
-_SNAPSHOT_CLASS = "src.experiments.data.SnapshotDataModule"
+_TENSOR_CLASS = "src.experiments.data.TensorPairData"
 
 
 def check_waveforms(
@@ -52,20 +53,19 @@ def check_waveforms(
 def require_audio_contract(data: object, *, sample_rate: int, teachers: tuple[str, ...]) -> None:
     """Refuse a data module whose declared rate or teacher disagrees with the model.
 
-    Modules that do not declare either field, such as feature-vector stand-ins,
-    are left to their own callers. A snapshot identity always declares both.
+    Feature-vector ``TensorPairData`` is the only identity that may omit both
+    fields. Every other identity, including a snapshot, must declare them.
     """
 
     if not teachers or any(kind not in TEACHERS for kind in teachers):
         raise RuntimeFailure("model teacher requirements are not training targets")
     identity_fn = getattr(data, "identity", None)
     if not callable(identity_fn):
-        return
+        raise RuntimeFailure("audio data has no identity")
     identity = identity_fn()
     if not isinstance(identity, dict):
         raise RuntimeFailure("data identity is not a mapping")
-    declared = "sample_rate" in identity or "teacher" in identity
-    if not declared and identity.get("class") != _SNAPSHOT_CLASS:
+    if identity.get("class") == _TENSOR_CLASS:
         return
     rate = identity.get("sample_rate")
     teacher = identity.get("teacher")
@@ -74,6 +74,64 @@ def require_audio_contract(data: object, *, sample_rate: int, teachers: tuple[st
     if teacher not in teachers:
         expected = ", ".join(teachers)
         raise RuntimeFailure(f"data teacher {teacher} is not accepted by this model ({expected})")
+
+
+def bind_trainer_data(trainer: object) -> None:
+    """Check the audio contract and the publication claim before a training step.
+
+    The check lives here so the six trainers do not each reimplement it.
+    Forward and the loss do not call it.
+    """
+
+    data = getattr(trainer, "data", None)
+    rate = getattr(trainer, "audio_sample_rate", None)
+    teachers = getattr(trainer, "audio_teachers", None)
+    if rate is not None or teachers is not None:
+        if data is None or rate is None or not teachers:
+            raise RuntimeFailure("trainer audio contract is incomplete")
+        require_audio_contract(data, sample_rate=int(rate), teachers=tuple(teachers))
+    check_publication(trainer)
+
+
+def check_publication(trainer: object) -> None:
+    """Compare an official claim with the dataset profile. Research does not.
+
+    ``research`` trains on a compatible pair without recording the run as the
+    paper's official reproduction. Official and leakage-safe claims keep the
+    profile and test-selection checks.
+    """
+
+    claim = getattr(trainer, "experiment_claim", None)
+    label = getattr(trainer, "claim_label", None)
+    if claim is None and label is None:
+        return
+    if claim == "research" or label == "research":
+        return
+    data = getattr(trainer, "data", None)
+    identity_fn = getattr(data, "identity", None)
+    identity = identity_fn() if callable(identity_fn) else {}
+    if not isinstance(identity, dict):
+        raise RuntimeFailure("data identity is not a mapping")
+    if claim == "official_faithful":
+        profile = identity.get("profile")
+        uses_test = identity.get("selection_uses_test")
+        if profile not in (None, "official_faithful"):
+            raise RuntimeFailure("official_faithful data profile must be official_faithful")
+        if uses_test is False:
+            raise RuntimeFailure("official_faithful selection uses the dataset test split as validation")
+    elif claim == "leakage_safe":
+        profile = identity.get("profile")
+        uses_test = identity.get("selection_uses_test")
+        if profile not in (None, "leakage_safe"):
+            raise RuntimeFailure("leakage_safe data profile must be leakage_safe")
+        if uses_test is True:
+            raise RuntimeFailure("leakage_safe selection keeps the test split out of best-checkpoint decisions")
+    if isinstance(label, str) and label:
+        data_claim = identity.get("claim_label")
+        if data_claim == "official_reproduction":
+            raise RuntimeFailure("semambapp.gsr.official is blocked; refusing official_reproduction")
+        if data_claim is not None and data_claim != label:
+            raise RuntimeFailure(f"data claim_label {data_claim} does not match trainer claim_label {label}")
 
 
 def check_training_batch(batch: Batch, *, sample_rate: int, teachers: tuple[str, ...]) -> None:
@@ -89,15 +147,18 @@ def check_training_batch(batch: Batch, *, sample_rate: int, teachers: tuple[str,
         raise RuntimeFailure("training batch is empty")
     if not torch.isfinite(noisy).all() or not torch.isfinite(target).all():
         raise RuntimeFailure("training batch contains a non-finite sample")
-    if batch.lengths is not None:
-        lengths = batch.lengths
-        if lengths.ndim != 1 or int(lengths.shape[0]) != int(noisy.shape[0]):
-            raise RuntimeFailure("valid lengths do not match the batch")
-        if int(lengths.min()) < 1 or int(lengths.max()) > int(noisy.shape[1]):
-            raise RuntimeFailure("valid length does not fit the collated waveform")
-    if batch.sample_rate is not None and int(batch.sample_rate) != int(sample_rate):
+    if not noisy.is_floating_point() or not target.is_floating_point():
+        raise RuntimeFailure("training batch waveforms must be floating point")
+    if batch.lengths is None:
+        raise RuntimeFailure("training batch has no valid lengths")
+    lengths = batch.lengths
+    if lengths.ndim != 1 or int(lengths.shape[0]) != int(noisy.shape[0]):
+        raise RuntimeFailure("valid lengths do not match the batch")
+    if int(lengths.min()) < 1 or int(lengths.max()) > int(noisy.shape[1]):
+        raise RuntimeFailure("valid length does not fit the collated waveform")
+    if batch.sample_rate is None or int(batch.sample_rate) != int(sample_rate):
         raise RuntimeFailure(f"batch sample_rate {batch.sample_rate} does not match the model requirement {sample_rate}")
-    if batch.teacher_kind is not None and batch.teacher_kind not in teachers:
+    if batch.teacher_kind not in teachers:
         raise RuntimeFailure(f"batch teacher {batch.teacher_kind} is not accepted by this model")
 
 
@@ -270,6 +331,64 @@ class AudioPairData:
         digest.update(str(self.sample_rate).encode("utf-8"))
         digest.update(self.teacher.encode("utf-8"))
         return digest.hexdigest()
+
+
+class WavePairData(AudioPairData):
+    """Paired wavs addressed by filename. The teacher is the caller's declaration.
+
+    Files are read at ``sample_rate``. A different rate is refused instead of
+    resampled. This is a dataset adapter: trainers do not grow a name list
+    when a directory is added.
+    """
+
+    def __init__(self, root: str, *, sample_rate: int, teacher: str, batch_size: int = 1) -> None:
+        directory = Path(root)
+        pairs = _load_wave_pairs(directory, sample_rate)
+        super().__init__(pairs, sample_rate=sample_rate, teacher=teacher, batch_size=batch_size)
+        self.root = str(directory)
+
+    def identity(self) -> dict[str, object]:
+        recorded = super().identity()
+        recorded["class"] = "src.experiments.data.pair.WavePairData"
+        recorded["root"] = self.root
+        return recorded
+
+
+def _load_wave_pairs(root: Path, sample_rate: int) -> list[tuple[np.ndarray, np.ndarray]]:
+    import soundfile as sf
+
+    noisy_dir = root / "noisy"
+    target_dir = root / "target"
+    if not noisy_dir.is_dir() or not target_dir.is_dir():
+        raise DataError(f"{root} needs noisy/ and target/ wav directories")
+    names = sorted(path.name for path in noisy_dir.glob("*.wav"))
+    if not names:
+        raise DataError(f"{noisy_dir} has no wav files")
+    pairs: list[tuple[np.ndarray, np.ndarray]] = []
+    for name in names:
+        target_path = target_dir / name
+        if not target_path.is_file():
+            raise DataError(f"target wav is missing for {name}")
+        noisy, noisy_rate = _read_wav(sf, noisy_dir / name)
+        target, target_rate = _read_wav(sf, target_path)
+        if noisy_rate != sample_rate or target_rate != sample_rate:
+            raise DataError(
+                f"{name} is {noisy_rate}/{target_rate} Hz; refusing to resample to {sample_rate}"
+            )
+        if noisy.shape != target.shape:
+            raise DataError(f"{name} noisy and target lengths differ")
+        pairs.append((noisy, target))
+    return pairs
+
+
+def _read_wav(sf: object, path: Path) -> tuple[np.ndarray, int]:
+    audio, rate = sf.read(path, dtype="float32", always_2d=True)  # type: ignore[attr-defined]
+    if audio.size < 1 or int(audio.shape[1]) != 1:
+        raise DataError(f"{path} must be a non-empty mono wav")
+    mono = np.ascontiguousarray(audio[:, 0], dtype=np.float32)
+    if not np.isfinite(mono).all():
+        raise DataError(f"{path} is non-finite")
+    return mono, int(rate)
 
 
 def _as_float(value: np.ndarray | torch.Tensor, label: str) -> np.ndarray:

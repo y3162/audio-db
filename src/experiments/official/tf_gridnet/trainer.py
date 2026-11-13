@@ -37,7 +37,7 @@ import torch
 
 from src.experiments.checkpoint import CheckpointManager
 from src.experiments.data import Batch
-from src.experiments.data.pair import require_audio_contract
+from src.experiments.data.pair import bind_trainer_data
 from src.experiments.errors import BuildError, RuntimeFailure
 from src.experiments.losses import MultiResolutionL1Loss
 from src.experiments.results import RunResult
@@ -146,6 +146,8 @@ class TFGridNetTrainer:
         self.model = model
         self.loss = loss
         self.data = data
+        self.audio_sample_rate = 16000
+        self.audio_teachers = ("dry_clean",)
         self.optimizer = optimizer
         self.scheduler = scheduler
         self.optimizer_id = optimizer_id
@@ -211,6 +213,7 @@ class TFGridNetTrainer:
             self.early_stopped = False
             self.data.epoch = 0
             self.data.update_index = 0
+        bind_trainer_data(self)
         self._require_group_size(component_id)
         runtime.barrier()
         if should_stop(self):
@@ -489,7 +492,6 @@ class TFGridNetTrainer:
         return total / len(batches)
 
     def _require_group_size(self, component_id: str) -> None:
-        require_audio_contract(self.data, sample_rate=16000, teachers=("dry_clean",))
         group_size = getattr(self.data, "group_size", None)
         if group_size is None:
             return

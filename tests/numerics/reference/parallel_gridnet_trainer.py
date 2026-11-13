@@ -65,6 +65,9 @@ class _Data:
         del epoch
         return iter(())
 
+    def identity(self) -> dict[str, object]:
+        return {"sample_rate": 16000, "teacher": "dry_clean"}
+
 
 def _batch(noisy: torch.Tensor, clean: torch.Tensor, index: int) -> Batch:
     return Batch(inputs=noisy, targets=clean, sample_id=f"g{index}", realization_id=f"g{index}")

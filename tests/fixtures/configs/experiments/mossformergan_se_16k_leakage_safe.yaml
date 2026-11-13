@@ -63,7 +63,22 @@ components:
   protocol:
     role: other
     class: src.experiments.data.FixedPairProtocol
-    kwargs: {}
+    kwargs:
+      normalize: independent_audio_norm_v1
+      window: 32000
+      sample_rate: 16000
+      validation_crop: per_epoch_random
+      resample:
+        tool: soxr
+        quality: HQ
+        source_rate: 48000
+        target_rate: 16000
+        length: source_frames_plus_one_div_3
+        order:
+          - read_float32
+          - soxr_hq
+          - protocol_normalize
+          - protocol_window
     inject:
       source: {ref: source}
   sampler:
@@ -71,6 +86,8 @@ components:
     class: src.experiments.data.OrderSampler
     kwargs:
       seed: 777
+      validation_scope: per_rank
+      order: rank_mod_fixed_v1
     inject:
       source: {ref: source}
       protocol: {ref: protocol}

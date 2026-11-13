@@ -56,6 +56,9 @@ class _Data:
         del epoch
         return iter(())
 
+    def identity(self) -> dict[str, object]:
+        return {"sample_rate": 48000, "teacher": "official_mixed_target"}
+
 
 def main() -> None:
     OUT.mkdir(parents=True, exist_ok=True)

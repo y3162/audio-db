@@ -71,7 +71,9 @@ class WavePairData:
             "length": self.length,
             "micro_batch": self.micro_batch,
             "profile": self.profile,
+            "sample_rate": 16000,
             "seed": self.seed,
+            "teacher": "dry_clean",
             "selection_uses_test": self.selection_uses_test,
             "updates_per_epoch": self.updates_per_epoch,
         }

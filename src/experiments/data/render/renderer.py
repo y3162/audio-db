@@ -18,6 +18,91 @@ from src.experiments.data.render.transform import apply_window, independent_audi
 from src.experiments.data.render.types import RenderedSample, SampleRef
 
 
+def load_recorded_pair(
+    store: AssetStore,
+    case_id: str,
+    *,
+    sample_rate: int,
+    verify_on_read: bool = False,
+    resample: dict | None = None,
+) -> tuple[np.ndarray, np.ndarray]:
+    """Read one recorded pair at the pipeline rate, before normalization and crop.
+
+    Resampling runs only when ``resample`` names the soxr policy. A different
+    file rate without that policy is refused.
+    """
+
+    case = store.case(case_id)
+    clean_id = case.get("clean_asset_id")
+    noisy_id = case.get("noisy_asset_id")
+    if not clean_id or not noisy_id:
+        raise ReproductionError(f"case {case_id} is not a recorded pair")
+    if resample:
+        from src.experiments.data.ids import _check_resample
+
+        _check_resample(resample)
+        clean = _resample_asset(store, clean_id, verify_on_read)
+        noisy = _resample_asset(store, noisy_id, verify_on_read)
+        expected = int(case["frames"])
+        if int(clean.shape[0]) != expected or int(noisy.shape[0]) != expected:
+            raise ReproductionError(
+                f"case {case_id} resampled to {clean.shape[0]}/{noisy.shape[0]} samples; "
+                f"the snapshot says {expected}"
+            )
+    else:
+        clean, clean_rate = _read_mono(store.path(clean_id), verify_sha=_sha(store, clean_id, verify_on_read))
+        noisy, noisy_rate = _read_mono(store.path(noisy_id), verify_sha=_sha(store, noisy_id, verify_on_read))
+        if clean_rate != sample_rate or noisy_rate != sample_rate:
+            raise ReproductionError(
+                f"case {case_id} is {noisy_rate}/{clean_rate} Hz; "
+                f"refusing to resample to {sample_rate}"
+            )
+        _expect_frames(store, noisy_id, noisy, "noisy")
+        _expect_frames(store, clean_id, clean, "clean")
+    return noisy, clean
+
+
+def apply_fixed_pipeline(
+    noisy: np.ndarray,
+    clean: np.ndarray,
+    *,
+    normalize: str,
+    crop,
+    case_id: str,
+) -> tuple[np.ndarray, np.ndarray, int]:
+    """Normalize, then window. The formulas are the recorded fixed-pair steps."""
+
+    if normalize == "noisy_rms_unit_v1":
+        noisy, clean = trim_to_shorter(noisy, clean)
+        noisy, clean = noisy_rms_unit(noisy, clean)
+    elif normalize == "independent_audio_norm_v1":
+        if noisy.shape != clean.shape:
+            raise ReproductionError(
+                f"case {case_id} clean and noisy lengths differ "
+                f"({clean.shape[0]} vs {noisy.shape[0]})"
+            )
+        noisy = independent_audio_norm(noisy)
+        clean = independent_audio_norm(clean)
+    elif normalize == "independent_peak_v1":
+        if noisy.shape != clean.shape:
+            raise ReproductionError(
+                f"case {case_id} clean and noisy lengths differ "
+                f"({clean.shape[0]} vs {noisy.shape[0]})"
+            )
+        from src.experiments.data.protocols.online_semamba import independent_peak
+
+        noisy, _peak = independent_peak(noisy)
+        clean, _peak = independent_peak(clean)
+    else:
+        raise ReproductionError(f"normalization {normalize} is not implemented")
+    noisy, clean, valid = apply_window(noisy, clean, crop)
+    if noisy.shape != clean.shape:
+        raise ReproductionError(f"case {case_id} lost clean/noisy alignment")
+    if not np.isfinite(noisy).all() or not np.isfinite(clean).all():
+        raise ReproductionError(f"case {case_id} rendered a non-finite waveform")
+    return noisy, clean, valid
+
+
 def render_sample(
     store: AssetStore,
     sample: SampleRef,
@@ -32,50 +117,20 @@ def render_sample(
     case = store.case(sample.case_id)
     if case.get("teacher_kind") in (None, "none"):
         raise ReproductionError(f"case {sample.case_id} has no teacher")
-    clean_id = case.get("clean_asset_id")
-    noisy_id = case.get("noisy_asset_id")
-    if not clean_id or not noisy_id:
-        raise ReproductionError(f"case {sample.case_id} is not a recorded pair")
-    if resample:
-        from src.experiments.data.ids import _check_resample
-
-        _check_resample(resample)
-        clean = _resample_asset(store, clean_id, verify_on_read)
-        noisy = _resample_asset(store, noisy_id, verify_on_read)
-        expected = int(case["frames"])
-        if int(clean.shape[0]) != expected or int(noisy.shape[0]) != expected:
-            raise ReproductionError(
-                f"case {sample.case_id} resampled to {clean.shape[0]}/{noisy.shape[0]} samples; "
-                f"the snapshot says {expected}"
-            )
-    else:
-        clean, clean_rate = _read_mono(store.path(clean_id), verify_sha=_sha(store, clean_id, verify_on_read))
-        noisy, noisy_rate = _read_mono(store.path(noisy_id), verify_sha=_sha(store, noisy_id, verify_on_read))
-        if clean_rate != sample_rate or noisy_rate != sample_rate:
-            raise ReproductionError(
-                f"case {sample.case_id} is {noisy_rate}/{clean_rate} Hz; "
-                f"refusing to resample to {sample_rate}"
-            )
-        _expect_frames(store, noisy_id, noisy, "noisy")
-        _expect_frames(store, clean_id, clean, "clean")
-    if normalize == "noisy_rms_unit_v1":
-        noisy, clean = trim_to_shorter(noisy, clean)
-        noisy, clean = noisy_rms_unit(noisy, clean)
-    elif normalize == "independent_audio_norm_v1":
-        if noisy.shape != clean.shape:
-            raise ReproductionError(
-                f"case {sample.case_id} clean and noisy lengths differ "
-                f"({clean.shape[0]} vs {noisy.shape[0]})"
-            )
-        noisy = independent_audio_norm(noisy)
-        clean = independent_audio_norm(clean)
-    else:
-        raise ReproductionError(f"normalization {normalize} is not implemented")
-    noisy, clean, valid = apply_window(noisy, clean, sample.crop)
-    if noisy.shape != clean.shape:
-        raise ReproductionError(f"case {sample.case_id} lost clean/noisy alignment")
-    if not np.isfinite(noisy).all() or not np.isfinite(clean).all():
-        raise ReproductionError(f"case {sample.case_id} rendered a non-finite waveform")
+    noisy, clean = load_recorded_pair(
+        store,
+        sample.case_id,
+        sample_rate=sample_rate,
+        verify_on_read=verify_on_read,
+        resample=resample,
+    )
+    noisy, clean, valid = apply_fixed_pipeline(
+        noisy,
+        clean,
+        normalize=normalize,
+        crop=sample.crop,
+        case_id=sample.case_id,
+    )
     return RenderedSample(
         noisy=noisy,
         clean=clean,

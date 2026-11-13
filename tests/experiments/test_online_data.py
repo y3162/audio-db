@@ -521,10 +521,12 @@ def _semamba_module(
     seed: int = 7,
 ) -> SnapshotDataModule:
     source = _source(spec)
+    from tests.experiments.pipeline_args import order_sampler
+
     protocol = SemambaProtocol(source)
     return SnapshotDataModule(
         source,
-        OrderSampler(source, protocol, seed=seed, global_batch=global_batch),
+        order_sampler(source, protocol, seed=seed, global_batch=global_batch),
         protocol,
         MicroBatcher(micro_batch, group_size),
         prefetch=prefetch,
@@ -692,6 +694,9 @@ def _experiment_config(
         sampler = f"""    class: src.experiments.data.OrderSampler
     kwargs:
       seed: {seed}
+      order: per_rank_independent_v1
+      validation_scope: rank0
+      validation_batch: 1
     inject:
       source: {{ref: source}}
       protocol: {{ref: protocol}}"""

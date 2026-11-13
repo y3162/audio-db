@@ -997,7 +997,7 @@ def _semamba_trainer_once(sem, device, trainer_cls, gen_cls, mrd_cls, cqt_cls, p
         prepared_g.state_module.generator.load_state_dict(official_g.state_dict(), strict=True)
         prepared_m.state_module.discriminator.load_state_dict(official_mrd.state_dict(), strict=True)
         prepared_c.state_module.discriminator.load_state_dict(official_cqt.state_dict(), strict=True)
-        data = _FixedWaves(pairs, {"algorithm": "online.semambapp_gsr", "claim_label": "protocol_conformant_substitute_materials", "group_size": 1})
+        data = _FixedWaves(pairs, {"algorithm": "online.semambapp_gsr", "claim_label": "protocol_conformant_substitute_materials", "group_size": 1, "sample_rate": 16000, "teacher": "dry_clean"})
         opt_g = torch.optim.AdamW(prepared_g.parameters, lr=sem.LR, betas=sem.BETAS, eps=1e-8, weight_decay=sem.WEIGHT_DECAY)
         opt_d = torch.optim.AdamW(list(prepared_m.parameters) + list(prepared_c.parameters), lr=sem.LR, betas=sem.BETAS, eps=1e-8, weight_decay=sem.WEIGHT_DECAY)
         opt_g._experiment_component_id = "optim_g"
@@ -1191,7 +1191,7 @@ def _mp_trainer_once(cmp, h, device, trainer_cls, gen_cls, disc_cls, policy_cls,
         prepared_d = runtime.prepare_model(discriminator, policy_cls(trainable=True, distribute="none"))
         prepared_g.state_module.generator.load_state_dict(official_g.state_dict(), strict=True)
         prepared_d.state_module.discriminator.load_state_dict(official_d.state_dict(), strict=True)
-        data = _FixedWaves(pairs, {"algorithm": "fixed_pair.mp_senet", "profile": "official_faithful", "selection_uses_test": True, "group_size": 1})
+        data = _FixedWaves(pairs, {"algorithm": "fixed_pair.mp_senet", "profile": "official_faithful", "sample_rate": 16000, "selection_uses_test": True, "teacher": "dry_clean", "group_size": 1})
         opt_g = torch.optim.AdamW(prepared_g.parameters, lr=cmp.LR, betas=cmp.BETAS, eps=1e-8, weight_decay=cmp.WEIGHT_DECAY)
         opt_d = torch.optim.AdamW(prepared_d.parameters, lr=cmp.LR, betas=cmp.BETAS, eps=1e-8, weight_decay=cmp.WEIGHT_DECAY)
         opt_g._experiment_component_id = "optim_g"

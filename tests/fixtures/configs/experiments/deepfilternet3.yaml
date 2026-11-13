@@ -46,12 +46,16 @@ components:
     kwargs:
       seed: 7
       global_batch: 16
+      validation_batch: 64
+      validation_scope: rank0
     inject:
       source: {ref: source}
   protocol:
     role: other
     class: src.experiments.data.Dfn3Protocol
-    kwargs: {}
+    kwargs:
+      sample_rate: 48000
+      window: 144000
     inject:
       source: {ref: source}
   batcher:

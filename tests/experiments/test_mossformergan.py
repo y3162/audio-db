@@ -665,16 +665,16 @@ class MossFormerGANAlgorithmTests(unittest.TestCase):
                 shared,
                 max_logical_steps=1,
             )
-        with self.assertRaises(BuildError):
-            MossFormerGANTrainer(
-                self.generator,
-                self.discriminator,
-                _IdleData(),
-                self.optim_g,
-                self.optim_d,
-                max_logical_steps=1,
-                experiment_claim="research",
-            )
+        research = MossFormerGANTrainer(
+            self.generator,
+            self.discriminator,
+            _IdleData(),
+            self.optim_g,
+            self.optim_d,
+            max_logical_steps=1,
+            experiment_claim="research",
+        )
+        research._check_claim()
         leakage = MossFormerGANTrainer(
             self.generator,
             self.discriminator,
@@ -979,7 +979,9 @@ class _ProfileData:
         return {
             "algorithm": "fixed_pair.mossformergan_se_16k",
             "profile": self.profile,
+            "sample_rate": 16000,
             "selection_uses_test": self.selection_uses_test,
+            "teacher": "dry_clean",
         }
 
 
@@ -1000,7 +1002,9 @@ class _IdleData:
         return {
             "algorithm": "fixed_pair.mossformergan_se_16k",
             "profile": "official_faithful",
+            "sample_rate": 16000,
             "selection_uses_test": True,
+            "teacher": "dry_clean",
         }
 
 

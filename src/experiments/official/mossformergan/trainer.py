@@ -31,7 +31,7 @@ import torch.nn.functional as F
 
 from src.experiments.checkpoint import CheckpointManager
 from src.experiments.data import Batch
-from src.experiments.data.pair import require_audio_contract
+from src.experiments.data.pair import bind_trainer_data, check_publication
 from src.experiments.errors import BuildError, RuntimeFailure
 from src.experiments.official.mossformergan.models import (
     MossFormerGANDiscriminator,
@@ -63,7 +63,7 @@ _IN_EPOCH = "in_epoch"
 _PENDING = "pending_boundary"
 OFFICIAL_FAITHFUL = "official_faithful"
 LEAKAGE_SAFE = "leakage_safe"
-_CLAIMS = frozenset({OFFICIAL_FAITHFUL, LEAKAGE_SAFE})
+_CLAIMS = frozenset({OFFICIAL_FAITHFUL, LEAKAGE_SAFE, "research"})
 OFFICIAL_LEARNING_RATE = 0.0005
 OFFICIAL_DISCRIMINATOR_LEARNING_RATE = 0.001
 OFFICIAL_BETAS = (0.9, 0.999)
@@ -113,7 +113,7 @@ class MossFormerGANTrainer:
         _require_adamw(optim_d, "optim_d", lr=OFFICIAL_DISCRIMINATOR_LEARNING_RATE)
         _require_disjoint(optim_g, optim_d)
         if experiment_claim not in _CLAIMS:
-            raise BuildError("experiment_claim must be official_faithful or leakage_safe")
+            raise BuildError("experiment_claim must be official_faithful, leakage_safe, or research")
         if not hasattr(data, "train_epoch") or not hasattr(data, "validation_epoch"):
             raise BuildError("data must provide train_epoch and validation_epoch")
         optim_g_id = getattr(optim_g, "_experiment_component_id", None)
@@ -142,6 +142,8 @@ class MossFormerGANTrainer:
         self.win = int(generator.state_module.win)
         self.hop = int(generator.state_module.hop)
         self.sample_rate = int(generator.state_module.sampling_rate)
+        self.audio_sample_rate = self.sample_rate
+        self.audio_teachers = ("dry_clean",)
         self.logical_step = 0
         self.optimizer_updates = {optim_g_id: 0, optim_d_id: 0}
         self.counters = _empty_counters()
@@ -220,7 +222,7 @@ class MossFormerGANTrainer:
             self._clear_window_log()
             self.data.epoch = 0
             self.data.update_index = 0
-        self._check_claim()
+        bind_trainer_data(self)
         self._require_group_size(component_id)
         runtime.barrier()
         if should_stop(self):
@@ -806,22 +808,7 @@ class MossFormerGANTrainer:
             )
 
     def _check_claim(self) -> None:
-        identity_fn = getattr(self.data, "identity", None)
-        identity = identity_fn() if callable(identity_fn) else {}
-        if not isinstance(identity, dict):
-            raise RuntimeFailure("data identity is not a mapping")
-        profile = identity.get("profile")
-        uses_test = identity.get("selection_uses_test")
-        if self.experiment_claim == OFFICIAL_FAITHFUL:
-            if profile not in (None, OFFICIAL_FAITHFUL):
-                raise RuntimeFailure("official_faithful data profile must be official_faithful")
-            if uses_test is False:
-                raise RuntimeFailure("official_faithful selection uses the dataset test split as validation")
-            return
-        if profile not in (None, LEAKAGE_SAFE):
-            raise RuntimeFailure("leakage_safe data profile must be leakage_safe")
-        if uses_test is True:
-            raise RuntimeFailure("leakage_safe selection keeps the test split out of best-checkpoint decisions")
+        check_publication(self)
 
     def _publish_interrupt(self, runtime: ProcessRuntime, checkpoint: CheckpointManager) -> None:
         """Save the last finished boundary. A GAN optimizer pair is not a boundary."""
@@ -833,7 +820,6 @@ class MossFormerGANTrainer:
         self._offer(runtime, checkpoint, "stop")
 
     def _require_group_size(self, component_id: str) -> None:
-        require_audio_contract(self.data, sample_rate=self.sample_rate, teachers=("dry_clean",))
         group_size = getattr(self.data, "group_size", None)
         if group_size is None:
             return

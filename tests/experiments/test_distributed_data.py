@@ -349,10 +349,12 @@ def _fixed_module(spec: dict[str, object], runtime: object, workers: int) -> Sna
         corpora=spec["corpora"],  # type: ignore[arg-type]
         generated=spec["generated"],  # type: ignore[arg-type]
     )
-    protocol = FixedPairProtocol(source)
+    from tests.experiments.pipeline_args import fixed_protocol, order_sampler
+
+    protocol = fixed_protocol(source)
     module = SnapshotDataModule(
         source,
-        OrderSampler(source, protocol, seed=7),
+        order_sampler(source, protocol, seed=7),
         protocol,
         MicroBatcher(1, 1),
         require_profile="leakage_safe",
@@ -546,10 +548,22 @@ def _write_training_yaml(
 ) -> Path:
     spec = pipeline["spec"]
     kind = pipeline["kind"]
+    protocol_kwargs = "{}"
     if kind == "fixed":
+        order = spec["order"]
+        order_text = order if isinstance(order, str) else "[" + ", ".join(str(item) for item in order) + "]"
+        scope = "per_rank" if order == "rank_mod_fixed_v1" else "rank0"
+        protocol_kwargs = (
+            f"\n      normalize: {spec['normalize']}"
+            f"\n      window: {spec['window']}"
+            f"\n      sample_rate: {spec['sample_rate']}"
+            f"\n      validation_crop: {spec['validation_crop']}"
+        )
         sampler = f"""    class: src.experiments.data.OrderSampler
     kwargs:
       seed: 7
+      order: {order_text}
+      validation_scope: {scope}
     inject:
       source: {{ref: source}}
       protocol: {{ref: protocol}}"""
@@ -585,6 +599,9 @@ def _write_training_yaml(
         sampler = """    class: src.experiments.data.OrderSampler
     kwargs:
       seed: 7
+      order: per_rank_independent_v1
+      validation_scope: rank0
+      validation_batch: 1
     inject:
       source: {ref: source}
       protocol: {ref: protocol}"""
@@ -643,7 +660,7 @@ components:
   protocol:
     role: other
     class: {protocol}
-    kwargs: {{}}
+    kwargs: {protocol_kwargs}
     inject:
       source: {{ref: source}}
   sampler:

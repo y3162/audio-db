@@ -32,6 +32,30 @@ def chunk_case_length(store: AssetStore, case_id: str) -> int:
     return planned
 
 
+def planned_case_length(store: AssetStore, case_id: str) -> int:
+    """Length a chunk plan can use. Realizations keep their stored length.
+
+    A recorded pair has no realization length. Its case frame count is the
+    length already stored for the snapshot, including a recorded resample.
+    """
+
+    document = store.docs.get(case_id)
+    output = document.get("output") if isinstance(document, dict) else None
+    if isinstance(output, dict) and "length" in output:
+        return chunk_case_length(store, case_id)
+    case = store.case(case_id)
+    frames = case.get("frames")
+    if isinstance(frames, bool) or frames is None:
+        raise ReproductionError(f"case {case_id} has no planned length")
+    try:
+        length = int(frames)
+    except (TypeError, ValueError) as exc:
+        raise ReproductionError(f"case {case_id} has no planned length") from exc
+    if length < 1:
+        raise ReproductionError(f"case {case_id} has no planned length")
+    return length
+
+
 def plan_fixed_pair(
     store: AssetStore,
     *,
@@ -143,6 +167,11 @@ def validation_refs(
     world_size: int,
     policy: str,
     rank: int | None = None,
+    crop_name: str | None = None,
+    window: int | None = None,
+    normalize: str | None = None,
+    resampled: bool | None = None,
+    lengths: list[int] | None = None,
 ) -> list[SampleRef]:
     """Validation samples for one rank, or the concatenated MossFormer view.
 
@@ -154,12 +183,20 @@ def validation_refs(
     sampler. ``epoch`` affects ``per_epoch_random`` crops only.
     """
     rule = store.dataset["rule_json"]
-    crop_name = str(rule["validation"]["crop"])
-    window = int(rule["window"])
-    normalize = str(rule["normalize"])
+    # Omitted fields are the registration reader. The training module passes
+    # the model pipeline values and does not inherit them from this rule.
+    if crop_name is None:
+        crop_name = str(rule["validation"]["crop"])
+    if window is None:
+        window = int(rule["window"])
+    if normalize is None:
+        normalize = str(rule["normalize"])
     pad = _pad_name(normalize)
     case_ids = store.case_ids("valid.cases")
-    lengths = [_pair_length(store, case_id, normalize) for case_id in case_ids]
+    if lengths is None:
+        lengths = [_pair_length(store, case_id, normalize, resampled=resampled) for case_id in case_ids]
+    elif len(lengths) != len(case_ids):
+        raise ReproductionError("validation lengths do not match the valid cases")
     if policy == "rank_mod_fixed_v1" and rank is not None:
         positions = rank_order(
             policy,
@@ -240,9 +277,17 @@ def _crop(case_id: str, length: int, window: int, seed: int, epoch: int | str, p
     return CropSpec(start=0, length=length, pad_to=window, pad=pad)
 
 
-def _pair_length(store: AssetStore, case_id: str, normalize: str) -> int:
+def _pair_length(
+    store: AssetStore,
+    case_id: str,
+    normalize: str,
+    *,
+    resampled: bool | None = None,
+) -> int:
     case = store.case(case_id)
-    if (store.dataset.get("rule_json") or {}).get("resample"):
+    if resampled is None:
+        resampled = bool((store.dataset.get("rule_json") or {}).get("resample"))
+    if resampled:
         length = int(case["frames"])
         if length < 1:
             raise ReproductionError(f"case {case_id} has no resampled samples")
@@ -253,7 +298,7 @@ def _pair_length(store: AssetStore, case_id: str, normalize: str) -> int:
         raise ReproductionError(f"case {case_id} has an empty asset")
     if normalize == "noisy_rms_unit_v1":
         return min(clean, noisy)
-    if normalize == "independent_audio_norm_v1":
+    if normalize in {"independent_audio_norm_v1", "independent_peak_v1"}:
         if clean != noisy:
             raise ReproductionError(f"case {case_id} clean and noisy durations differ")
         return clean
@@ -283,10 +328,16 @@ def fixed_pair_crop(
     return _crop(case_id, length, window, seed, epoch, pad)
 
 
-def fixed_pair_case_length(store: AssetStore, case_id: str, normalize: str) -> int:
+def fixed_pair_case_length(
+    store: AssetStore,
+    case_id: str,
+    normalize: str,
+    *,
+    resampled: bool | None = None,
+) -> int:
     """Public name for the fixed-pair case length. The formula remains ``_pair_length``."""
 
-    return _pair_length(store, case_id, normalize)
+    return _pair_length(store, case_id, normalize, resampled=resampled)
 
 
 def fixed_pair_pad_name(normalize: str) -> str:

@@ -116,10 +116,12 @@ def _adapter_pair(origin: str, length: int) -> tuple[np.ndarray, np.ndarray, int
 
     if origin == "voicebank":
         source = SnapshotSource("mp_senet.vb28.ondemand.official@1", ROOT / "data/db/snapshots-voicebank-float-v1", "train")
-        protocol = FixedPairProtocol(source)
+        from tests.experiments.pipeline_args import fixed_protocol, order_sampler
+
+        protocol = fixed_protocol(source)
         module = SnapshotDataModule(
             source,
-            OrderSampler(source, protocol, seed=0),
+            order_sampler(source, protocol, seed=0),
             protocol,
             MicroBatcher(1, 1),
         )

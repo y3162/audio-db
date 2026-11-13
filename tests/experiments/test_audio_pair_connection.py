@@ -17,6 +17,7 @@ from src.experiments.data.fixed_pair import (
 )
 from src.experiments.data.online import Dfn3IndexSampler, Dfn3Protocol, SemambaProtocol
 from src.experiments.data.pair import require_audio_contract
+from tests.experiments.pipeline_args import fixed_protocol, order_sampler
 from src.experiments.errors import RuntimeFailure
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -43,11 +44,11 @@ class SnapshotConnectionTest(unittest.TestCase):
         try:
             for name in ("mp_senet.vb28.ondemand.official@1", "mossformergan.vb28.ondemand.official@1"):
                 source = SnapshotSource(name, vb, "train")
-                protocol = FixedPairProtocol(source)
+                protocol = fixed_protocol(source)
                 module = _open(
                     SnapshotDataModule(
                         source,
-                        OrderSampler(source, protocol, seed=0),
+                        order_sampler(source, protocol, seed=0),
                         protocol,
                         MicroBatcher(1, 1),
                     )
@@ -124,7 +125,7 @@ class SnapshotConnectionTest(unittest.TestCase):
         sem_protocol = SemambaProtocol(sem_source)
         sem = SnapshotDataModule(
             sem_source,
-            OrderSampler(sem_source, sem_protocol, seed=0, global_batch=1),
+            order_sampler(sem_source, sem_protocol, seed=0, global_batch=1),
             sem_protocol,
             MicroBatcher(1, 1),
         )

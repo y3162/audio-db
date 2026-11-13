@@ -61,7 +61,22 @@ components:
   protocol:
     role: other
     class: src.experiments.data.FixedPairProtocol
-    kwargs: {}
+    kwargs:
+      normalize: noisy_rms_unit_v1
+      window: 32000
+      sample_rate: 16000
+      validation_crop: full_length
+      resample:
+        tool: soxr
+        quality: HQ
+        source_rate: 48000
+        target_rate: 16000
+        length: source_frames_plus_one_div_3
+        order:
+          - read_float32
+          - soxr_hq
+          - protocol_normalize
+          - protocol_window
     inject:
       source: {ref: source}
   sampler:
@@ -69,6 +84,10 @@ components:
     class: src.experiments.data.OrderSampler
     kwargs:
       seed: 1234
+      validation_scope: rank0
+      order:
+        - fixed_single_shuffle_v1
+        - torch_distributed_sampler_v1
     inject:
       source: {ref: source}
       protocol: {ref: protocol}

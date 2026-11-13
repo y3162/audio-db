@@ -31,7 +31,7 @@ import torch.nn.functional as F
 
 from src.experiments.checkpoint import CheckpointManager
 from src.experiments.data import Batch
-from src.experiments.data.pair import require_audio_contract
+from src.experiments.data.pair import bind_trainer_data
 from src.experiments.errors import BuildError, RuntimeFailure
 from src.experiments.official.deepfilternet3.model import DeepFilterNet3Model
 from src.experiments.results import RunResult
@@ -184,6 +184,8 @@ class DeepFilterNet3Trainer:
         self.data = data
         self.optimizer = optimizer
         self.optimizer_id = str(getattr(optimizer, "_experiment_component_id"))
+        self.audio_sample_rate = int(model.state_module.generator.params.sr)
+        self.audio_teachers = ("official_mixed_target",)
         self.max_logical_steps = _positive_int("max_logical_steps", max_logical_steps)
         self.accumulation = _positive_int("accumulation", accumulation)
         self.grad_clip = _positive_float("grad_clip", grad_clip)
@@ -252,6 +254,7 @@ class DeepFilterNet3Trainer:
             self.boundary = None
             self.data.epoch = 0
             self.data.update_index = 0
+        bind_trainer_data(self)
         self._require_group_size(component_id)
         self._stream = _stream_for(self.model.state_module, runtime.device)
         self._record_rfft(runtime, checkpoint)
@@ -602,11 +605,6 @@ class DeepFilterNet3Trainer:
             raise BuildError(str(exc)) from exc
 
     def _require_group_size(self, component_id: str) -> None:
-        require_audio_contract(
-            self.data,
-            sample_rate=int(self.model.state_module.generator.params.sr),
-            teachers=("official_mixed_target",),
-        )
         group_size = getattr(self.data, "group_size", None)
         if group_size is not None and group_size != self.accumulation:
             raise RuntimeFailure(

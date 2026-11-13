@@ -63,6 +63,9 @@ class _Data:
         del epoch
         return iter(())
 
+    def identity(self) -> dict[str, object]:
+        return {"sample_rate": 16000, "teacher": "dry_clean"}
+
 
 def _bank(steps: int, batch: int, length: int, device: torch.device) -> tuple[torch.Tensor, torch.Tensor]:
     generator = torch.Generator().manual_seed(3)

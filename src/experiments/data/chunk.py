@@ -18,7 +18,7 @@ from src.experiments.errors import DataError
 from src.experiments.data.errors import ReproductionError
 from src.experiments.data.render.chunking import ChunkEpochPlan, plan_chunk_epoch
 from src.experiments.data.sampling.order import order_params
-from src.experiments.data.sampling.planner import chunk_case_length
+from src.experiments.data.sampling.planner import planned_case_length
 
 
 class ChunkSampler:
@@ -34,6 +34,8 @@ class ChunkSampler:
         num_cache_chunks: int = 1,
         shuffle: bool = True,
         global_batch: int | None = None,
+        validation_scope: str = "per_rank",
+        max_chunks: int | None = None,
     ) -> None:
         self.source = source
         self.seed = _non_negative("seed", seed)
@@ -48,6 +50,12 @@ class ChunkSampler:
         if not isinstance(shuffle, bool):
             raise ValueError("shuffle must be a boolean")
         self.shuffle = shuffle
+        if validation_scope not in {"rank0", "per_rank"}:
+            raise ValueError("validation_scope must be rank0 or per_rank")
+        self.validation_scope = validation_scope
+        if max_chunks is not None and (isinstance(max_chunks, bool) or not isinstance(max_chunks, int) or max_chunks < 1):
+            raise ValueError("max_chunks must be a positive integer")
+        self.max_chunks = max_chunks
         self.global_batch = None if global_batch is None else _positive("global_batch", global_batch)
         self._resolved_global_batch: int | None = None
         self._bound_world: int | None = None
@@ -73,6 +81,7 @@ class ChunkSampler:
             "shard": base["shard"],
             "shift": int(self.chunk_length * self.shift_ratio),
             "shift_ratio": format(self.shift_ratio, ".6f"),
+            "max_chunks": self.max_chunks,
             "shuffle": self.shuffle,
             "training_seed": self.seed,
         }
@@ -136,12 +145,12 @@ class ChunkSampler:
             raise DataError(
                 f"chunk plan world_size {world_size} does not match the bound world_size {self._bound_world}"
             )
-        key = (slot, epoch, world_size, shuffle, num_samples, self._resolved_global_batch)
+        key = (slot, epoch, world_size, shuffle, num_samples, self._resolved_global_batch, self.max_chunks)
         cached = self._plans.get(key)
         if cached is not None:
             return cached
         case_ids = self.source.case_ids(slot)
-        samples = [(case_id, _call(chunk_case_length, self.source.store, case_id)) for case_id in case_ids]
+        samples = [(case_id, _call(planned_case_length, self.source.store, case_id)) for case_id in case_ids]
         try:
             plan = plan_chunk_epoch(
                 samples,
@@ -158,6 +167,8 @@ class ChunkSampler:
         except (ReproductionError, ValueError) as exc:
             raise DataError(str(exc)) from exc
         ranks = _refs(plan)
+        if self.max_chunks is not None:
+            ranks = tuple(tuple(rank[: self.max_chunks]) for rank in ranks)
         self._plans[key] = ranks
         return ranks
 
@@ -167,11 +178,22 @@ class ChunkProtocol:
 
     supply = "chunk"
 
-    def __init__(self, source: SnapshotSource, verify_on_read: bool = False) -> None:
+    def __init__(
+        self,
+        source: SnapshotSource,
+        verify_on_read: bool = False,
+        *,
+        sample_rate: int = 16000,
+        resample: dict | None = None,
+    ) -> None:
         if not isinstance(verify_on_read, bool):
             raise ValueError("verify_on_read must be a boolean")
         self.source = source
         self.verify_on_read = verify_on_read
+        self.sample_rate = _positive("sample_rate", sample_rate)
+        self.resample = resample
+        self.normalize = None
+        self.teacher: str | None = None
         self._adapter: ChunkAdapter | None = None
 
     def prepare(self) -> None:
@@ -179,9 +201,18 @@ class ChunkProtocol:
         rule = dataset.get("rule_json") or {}
         if not isinstance(rule, dict):
             raise DataError("snapshot rule_json is missing")
-        if rule.get("normalize") is not None:
-            raise DataError("chunk audio is not RMS-normalized at load time")
-        self._adapter = open_chunk_adapter(self.source, verify_on_read=self.verify_on_read)
+        # The snapshot may record a historical normalize. This pipeline does not
+        # apply it. Generated mixers still refuse a normalize of their own.
+        teacher = rule.get("teacher")
+        if teacher not in {"dry_clean", "reverberant_clean", "official_mixed_target"}:
+            raise DataError(f"dataset teacher {teacher!r} is not a training target")
+        self.teacher = str(teacher)
+        self._adapter = open_chunk_adapter(
+            self.source,
+            verify_on_read=self.verify_on_read,
+            sample_rate=self.sample_rate,
+            resample=self.resample,
+        )
         self._adapter.prepare()
 
     def render(self, sample: SampleRef) -> tuple[np.ndarray, np.ndarray, int]:
@@ -204,6 +235,8 @@ class ChunkProtocol:
         kind = self.source.document(sample.case_id).get("teacher_kind")
         if kind in (None, "none"):
             raise DataError(f"case {sample.case_id} has no teacher")
+        if self.teacher is not None and str(kind) != self.teacher:
+            raise DataError(f"case {sample.case_id} teacher {kind} is not the dataset teacher {self.teacher}")
         return str(kind)
 
 

@@ -65,6 +65,8 @@ class ScriptedChunkData:
         return {
             "length": self.length,
             "micro_batch": self.micro_batch,
+            "sample_rate": 16000,
+            "teacher": "dry_clean",
             "name": "scripted-chunk",
             "group_size": self.group_size,
             "seed": self.seed,

@@ -85,6 +85,8 @@ class LoopData:
             "algorithm": "online.semambapp_gsr",
             "claim_label": "protocol_conformant_substitute_materials",
             "group_size": self.group_size,
+            "sample_rate": 16000,
+            "teacher": "dry_clean",
         }
 
     @property
@@ -373,7 +375,9 @@ class SEMambaPPAlgorithmTests(unittest.TestCase):
     def test_smoke_snapshot_contract(self) -> None:
         source = SnapshotSource("semambapp.gsr.smoke@1", _ROOT / "data/db/snapshots", "train")
         protocol = SemambaProtocol(source)
-        sampler = OrderSampler(source, protocol, seed=1234)
+        from tests.experiments.pipeline_args import order_sampler
+
+        sampler = order_sampler(source, protocol, seed=1234)
         batcher = MicroBatcher(micro_batch=1, group_size=3)
         data = SnapshotDataModule(source, sampler, protocol, batcher, prefetch=False)
         runtime = ProcessRuntime(device="cpu", precision="fp32")
@@ -410,8 +414,10 @@ class SEMambaPPAlgorithmTests(unittest.TestCase):
             self.assertEqual(first.teacher_kind, "dry_clean")
             self.assertEqual(data.update_index, 0)
             valid = SnapshotSource("semambapp.gsr.smoke@1", _ROOT / "data/db/snapshots", "valid")
+            from tests.experiments.pipeline_args import order_sampler as _order_sampler
+
             valid_protocol = SemambaProtocol(valid)
-            valid_sampler = OrderSampler(valid, valid_protocol, seed=1234)
+            valid_sampler = _order_sampler(valid, valid_protocol, seed=1234)
             valid_data = SnapshotDataModule(
                 valid,
                 valid_sampler,
@@ -431,7 +437,9 @@ class SEMambaPPAlgorithmTests(unittest.TestCase):
     def test_one_smoke_microbatch_updates(self) -> None:
         source = SnapshotSource("semambapp.gsr.smoke@1", _ROOT / "data/db/snapshots", "train")
         protocol = SemambaProtocol(source)
-        sampler = OrderSampler(source, protocol, seed=1234)
+        from tests.experiments.pipeline_args import order_sampler
+
+        sampler = order_sampler(source, protocol, seed=1234)
         data = SnapshotDataModule(
             source,
             sampler,

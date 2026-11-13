@@ -372,7 +372,11 @@ components:
   protocol:
     role: other
     class: src.experiments.data.FixedPairProtocol
-    kwargs: {{}}
+    kwargs:
+      normalize: noisy_rms_unit_v1
+      window: {WAVEFORM_LENGTH}
+      sample_rate: 16000
+      validation_crop: full_length
     inject:
       source: {{ref: source}}
   sampler:
@@ -380,6 +384,8 @@ components:
     class: src.experiments.data.OrderSampler
     kwargs:
       seed: 17
+      validation_scope: rank0
+      order: [fixed_single_shuffle_v1, torch_distributed_sampler_v1]
     inject:
       source: {{ref: source}}
       protocol: {{ref: protocol}}

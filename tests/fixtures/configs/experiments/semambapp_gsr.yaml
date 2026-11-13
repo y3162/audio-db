@@ -102,7 +102,9 @@ components:
   protocol:
     role: other
     class: src.experiments.data.SemambaProtocol
-    kwargs: {}
+    kwargs:
+      sample_rate: 16000
+      window: 48000
     inject:
       source: {ref: source}
   sampler:
@@ -110,6 +112,9 @@ components:
     class: src.experiments.data.OrderSampler
     kwargs:
       seed: 1234
+      order: per_rank_independent_v1
+      validation_scope: rank0
+      validation_batch: 1
     inject:
       source: {ref: source}
       protocol: {ref: protocol}

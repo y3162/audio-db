@@ -161,9 +161,9 @@ class MPSENetGANTests(unittest.TestCase):
         wrong_path = wrong / "experiment.yaml"
         wrong.mkdir(parents=True, exist_ok=True)
         wrong_path.write_text(wrong_text, encoding="utf-8")
-        experiment = build_experiment(load_experiment(wrong_path))
-        with self.assertRaises(RuntimeFailure):
-            experiment.run()
+        with self.assertRaises(BuildError) as caught:
+            build_experiment(load_experiment(wrong_path)).close()
+        self.assertIn("leakage_safe", str(caught.exception))
 
     def test_one_stubbed_update_matches_the_task(self) -> None:
         report = _compare_update(accumulation=1, length=LENGTH, stub=True)
@@ -511,7 +511,13 @@ def _manual_trainer(runtime: ProcessRuntime, accumulation: int) -> tuple[object,
         update_index = 0
 
         def identity(self) -> dict[str, object]:
-            return {"algorithm": "fixed_pair.mp_senet", "profile": "official_faithful", "selection_uses_test": True}
+            return {
+                "algorithm": "fixed_pair.mp_senet",
+                "profile": "official_faithful",
+                "sample_rate": 16000,
+                "selection_uses_test": True,
+                "teacher": "dry_clean",
+            }
 
         def train_epoch(self, epoch: int, *, start_update: int):
             del epoch, start_update
@@ -917,7 +923,11 @@ components:
   protocol:
     role: other
     class: src.experiments.data.FixedPairProtocol
-    kwargs: {{}}
+    kwargs:
+      normalize: noisy_rms_unit_v1
+      window: {LENGTH}
+      sample_rate: 16000
+      validation_crop: full_length
     inject:
       source: {{ref: source}}
   sampler:
@@ -925,6 +935,8 @@ components:
     class: src.experiments.data.OrderSampler
     kwargs:
       seed: 17
+      validation_scope: rank0
+      order: [fixed_single_shuffle_v1, torch_distributed_sampler_v1]
     inject:
       source: {{ref: source}}
       protocol: {{ref: protocol}}

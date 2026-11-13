@@ -70,10 +70,22 @@ def online_sample(
 class Dfn3IndexSampler:
     """Sample indexes from ``plan_online_epoch``. Speech keys are not indexes."""
 
-    def __init__(self, source: SnapshotSource, seed: int = 0, global_batch: int | None = None) -> None:
+    def __init__(
+        self,
+        source: SnapshotSource,
+        seed: int = 0,
+        global_batch: int | None = None,
+        *,
+        validation_batch: int = 64,
+        validation_scope: str = "rank0",
+    ) -> None:
         self.source = source
         self.seed = _non_negative("seed", seed)
         self.global_batch = None if global_batch is None else _positive("global_batch", global_batch)
+        if validation_scope != "rank0":
+            raise ValueError("DeepFilterNet3 validation is read on rank 0")
+        self.validation_scope = validation_scope
+        self.validation_batch_width = _positive("validation_batch", validation_batch)
         self._micro_batch: int | None = None
         self._world: int | None = None
         self._batch_warning: str | None = None
@@ -148,10 +160,7 @@ class Dfn3IndexSampler:
         return tuple(ranks[0] if rank == 0 else () for rank in range(world_size))
 
     def validation_batch(self) -> tuple[int, bool, int]:
-        width = int(self._rule()["validation"]["batch"])
-        if width < 1:
-            raise DataError("validation batch must be positive")
-        return width, True, 1
+        return self.validation_batch_width, True, 1
 
     def _split(self) -> str:
         return self.source.split
@@ -269,23 +278,37 @@ class Dfn3Protocol:
 
     supply = "online_dfn3"
 
-    def __init__(self, source: SnapshotSource, verify_on_read: bool = False) -> None:
+    def __init__(
+        self,
+        source: SnapshotSource,
+        verify_on_read: bool = False,
+        *,
+        sample_rate: int = DFN3_RATE,
+        window: int = NUM_SAMPLES,
+    ) -> None:
         if not isinstance(verify_on_read, bool):
             raise ValueError("verify_on_read must be a boolean")
+        if int(sample_rate) != DFN3_RATE:
+            raise ValueError("DeepFilterNet3 pipeline sample_rate must be 48000")
+        if int(window) != NUM_SAMPLES:
+            raise ValueError("DeepFilterNet3 pipeline window must be 144000")
         self.source = source
         self.verify_on_read = verify_on_read
+        self.sample_rate = DFN3_RATE
+        self.window = NUM_SAMPLES
+        self.normalize = None
+        self.teacher: str | None = None
         self.spec = DFN3OnlineSpec.shipped()
         self._clips: dict[str, tuple[Dfn3Clip, ...]] = {}
         self._clip_lock = threading.Lock()
 
     def prepare(self) -> None:
         rule = self._rule()
-        if int(rule.get("sample_rate", DFN3_RATE)) != DFN3_RATE:
-            raise DataError("DeepFilterNet3 sample rate is not 48000")
-        if int(rule.get("window", NUM_SAMPLES)) != NUM_SAMPLES:
-            raise DataError("DeepFilterNet3 window is not 144000")
-        if rule.get("teacher") not in (None, "official_mixed_target"):
-            raise DataError("DeepFilterNet3 teacher is not official_mixed_target")
+        if int(rule.get("sample_rate") or 0) != DFN3_RATE:
+            raise DataError("DeepFilterNet3 dataset sample rate is not 48000")
+        if rule.get("teacher") != "official_mixed_target":
+            raise DataError("DeepFilterNet3 dataset teacher is not official_mixed_target")
+        self.teacher = "official_mixed_target"
         self._clips.clear()
 
     def render(self, sample: SampleRef) -> tuple[np.ndarray, np.ndarray, int]:
@@ -405,23 +428,37 @@ class SemambaProtocol:
 
     supply = "online_semamba"
 
-    def __init__(self, source: SnapshotSource, verify_on_read: bool = False) -> None:
+    def __init__(
+        self,
+        source: SnapshotSource,
+        verify_on_read: bool = False,
+        *,
+        sample_rate: int = SEMAMBA_RATE,
+        window: int = SEGMENT_SIZE,
+    ) -> None:
         if not isinstance(verify_on_read, bool):
             raise ValueError("verify_on_read must be a boolean")
+        if int(sample_rate) != SEMAMBA_RATE:
+            raise ValueError("SEMamba++ pipeline sample_rate must be 16000")
+        if int(window) != SEGMENT_SIZE:
+            raise ValueError("SEMamba++ pipeline window must be 48000")
         self.source = source
         self.verify_on_read = verify_on_read
+        self.sample_rate = SEMAMBA_RATE
+        self.window = SEGMENT_SIZE
+        self.normalize = "independent_peak_v1"
+        self.teacher: str | None = None
         self.seed: int | None = None
         self._clips: dict[str, tuple[SemambaClip, ...]] = {}
         self._clip_lock = threading.Lock()
 
     def prepare(self) -> None:
         rule = self._rule()
-        if int(rule.get("sample_rate", SEMAMBA_RATE)) != SEMAMBA_RATE:
-            raise DataError("SEMamba++ sample rate is not 16000")
-        if int(rule.get("window", SEGMENT_SIZE)) != SEGMENT_SIZE:
-            raise DataError("SEMamba++ window is not 48000")
-        if rule.get("teacher") not in (None, "dry_clean"):
-            raise DataError("SEMamba++ teacher is not dry_clean")
+        if int(rule.get("sample_rate") or 0) != SEMAMBA_RATE:
+            raise DataError("SEMamba++ dataset sample rate is not 16000")
+        if rule.get("teacher") != "dry_clean":
+            raise DataError("SEMamba++ dataset teacher is not dry_clean")
+        self.teacher = "dry_clean"
         self._clips.clear()
 
     def material_count(self, split: str) -> int:

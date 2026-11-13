@@ -67,12 +67,14 @@ components:
       num_cache_chunks: 1024
       shuffle: true
       global_batch: 4
+      validation_scope: per_rank
     inject:
       source: {ref: source}
   protocol:
     role: other
     class: src.experiments.data.ChunkProtocol
-    kwargs: {}
+    kwargs:
+      sample_rate: 16000
     inject:
       source: {ref: source}
   batcher:

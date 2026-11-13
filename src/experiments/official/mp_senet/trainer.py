@@ -30,7 +30,7 @@ import torch
 
 from src.experiments.checkpoint import CheckpointManager
 from src.experiments.data import Batch
-from src.experiments.data.pair import require_audio_contract
+from src.experiments.data.pair import bind_trainer_data
 from src.experiments.errors import BuildError, RuntimeFailure
 from src.experiments.official.mp_senet.models import (
     MPSENetGANGenerator,
@@ -56,7 +56,7 @@ _IN_EPOCH = "in_epoch"
 _PENDING = "pending_boundary"
 OFFICIAL_FAITHFUL = "official_faithful"
 LEAKAGE_SAFE = "leakage_safe"
-_CLAIMS = frozenset({OFFICIAL_FAITHFUL, LEAKAGE_SAFE})
+_CLAIMS = frozenset({OFFICIAL_FAITHFUL, LEAKAGE_SAFE, "research"})
 OFFICIAL_VALIDATION_INTERVAL = 5000
 LEAKAGE_SAFE_VALIDATION_INTERVAL = 2675
 OFFICIAL_CHECKPOINT_INTERVAL = 5000
@@ -112,7 +112,7 @@ class MPSENetGANTrainer:
         if not hasattr(data, "train_epoch") or not hasattr(data, "validation_epoch"):
             raise BuildError("data must provide train_epoch and validation_epoch")
         if experiment_claim not in _CLAIMS:
-            raise BuildError("experiment_claim must be official_faithful or leakage_safe")
+            raise BuildError("experiment_claim must be official_faithful, leakage_safe, or research")
         optim_g_id = getattr(optim_g, "_experiment_component_id", None)
         optim_d_id = getattr(optim_d, "_experiment_component_id", None)
         if not isinstance(optim_g_id, str) or not isinstance(optim_d_id, str):
@@ -127,6 +127,8 @@ class MPSENetGANTrainer:
         self.optim_g_id = optim_g_id
         self.optim_d_id = optim_d_id
         self.experiment_claim = experiment_claim
+        self.audio_sample_rate = 16000
+        self.audio_teachers = ("dry_clean",)
         self.max_logical_steps = _positive_int("max_logical_steps", max_logical_steps)
         self.accumulation = _positive_int("accumulation", accumulation)
         self.validation_interval = _non_negative_int("validation_interval", validation_interval)
@@ -193,7 +195,7 @@ class MPSENetGANTrainer:
             self.best_logical_step = None
             self.data.epoch = 0
             self.data.update_index = 0
-        self._check_claim()
+        bind_trainer_data(self)
         self._require_group_size(component_id)
         runtime.barrier()
         if should_stop(self):
@@ -811,26 +813,7 @@ class MPSENetGANTrainer:
                 "step and the generator step are not one atomic update. FP32 is unchanged."
             )
 
-    def _check_claim(self) -> None:
-        identity_fn = getattr(self.data, "identity", None)
-        identity = identity_fn() if callable(identity_fn) else {}
-        if not isinstance(identity, dict):
-            raise RuntimeFailure("data identity is not a mapping")
-        profile = identity.get("profile")
-        uses_test = identity.get("selection_uses_test")
-        if self.experiment_claim == OFFICIAL_FAITHFUL:
-            if profile not in (None, OFFICIAL_FAITHFUL):
-                raise RuntimeFailure("official_faithful data profile must be official_faithful")
-            if uses_test is False:
-                raise RuntimeFailure("official_faithful selection uses the dataset test split as validation")
-            return
-        if profile not in (None, LEAKAGE_SAFE):
-            raise RuntimeFailure("leakage_safe data profile must be leakage_safe")
-        if uses_test is True:
-            raise RuntimeFailure("leakage_safe selection keeps the test split out of best-checkpoint decisions")
-
     def _require_group_size(self, component_id: str) -> None:
-        require_audio_contract(self.data, sample_rate=16000, teachers=("dry_clean",))
         group_size = getattr(self.data, "group_size", None)
         if group_size is None:
             return

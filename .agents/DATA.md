@@ -65,7 +65,7 @@ DuckDB は `data/db/resource.duckdb`（`src/data/constants.py`）。
 - Latest と Archive、再開と初期化の条件、`status.json` の値は `docs/experiments/CHECKPOINT.md` と `docs/experiments/LAUNCHER.md`。
 - 評価結果の `independent` は true / false / `UNKNOWN` である。`checkpoint_selection_overlap` は、選択に使った素材と内容または既知の派生元が重なった評価セット名である。情報が足りないときは null で、空リストは重なりが無いと確認できたときだけ使う。`selection_uses_test` は独立性とは別に残す。判定は checkpoint 横の JSON と評価レシピの SHA-256 だけで、`reproduction.duckdb` は開かない。
 
-実験の学習はスナップショットを読む。評価用の名前付きセットを学習の入力にしない。
+実験の学習はスナップショットを読む。評価用の名前付きセットを学習の入力にしない。正規化、窓、crop、chunk、順序、validation の rank 分割、resample は実験 YAML の pipeline 引数である。公開済み snapshot の `rule_json` に残る同名の値は登録時の記録で、学習中の変換を上書きしない。
 
 公開済み snapshot のディレクトリ名は `.` で始まらず、`.partial` で終わらない。export は `.{dataset_id}.partial` に書いてからその名前へ rename する。探索側はこの未公開ディレクトリを開かない。
 

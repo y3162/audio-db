@@ -46,6 +46,6 @@ Global batch は micro-batch、world size、蓄積回数の積と一致しない
 
 - 学習はスナップショットと純関数だけを読む。`(seed, epoch, world_size, rank, index)` から再計算し、データ側の乱数状態は保存しない。
 - 固定ペア、chunk、DeepFilterNet3 のオンライン混合、SEMamba++ のオンライン劣化は別の描画。共通の混合エンジンにはまとめない。Adapter の選択はデータ供給の準備時に行い、Trainer は dataset algorithm で分岐しない。
-- Trainer がデータに要求するのは sample rate、teacher kind（`dry_clean`、`reverberant_clean`、`official_mixed_target`）、波形の形状と有効長である。正規化、crop、chunk、順序は pipeline の明示的な設定であり、生成アルゴリズム名から選ばない。
+- Trainer がデータに要求するのは sample rate、teacher kind（`dry_clean`、`reverberant_clean`、`official_mixed_target`）、波形の形状と有効長である。正規化、crop、chunk、順序、validation の rank 分割は実験 YAML の pipeline 引数であり、スナップショットの `rule_json` や生成アルゴリズム名から選ばない。公開済み `rule_json` に残る同名のフィールドは登録時の記録であり、学習はそれを上書きに使わない。サンプルレートが違うときは、明示した resample があるときだけ変換する。
 - 重み付き抽選 `weighted_categorical_v1` は研究用。重みを渡さない epoch の `rank_order` は変えない。
 - world size が違う再開は拒否する。

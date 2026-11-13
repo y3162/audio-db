@@ -41,7 +41,8 @@ from src.experiments.data.sampling.planner import (
     validation_refs,
 )
 from src.experiments.data.snapshot_provenance import snapshot_provenance_parts
-from src.experiments.data.render.renderer import render_sample
+from src.experiments.data.pair import check_training_batch
+from src.experiments.data.render.renderer import apply_fixed_pipeline, render_sample
 from src.experiments.data.assets.store import AssetStore
 from src.experiments.data.render.types import CropSpec
 from src.experiments.data.render.types import SampleRef as PlannedRef
@@ -51,16 +52,21 @@ _IDENTITY_CLASS = "src.experiments.data.SnapshotDataModule"
 
 
 def validation_scope(policy: str) -> str:
-    """How a fixed-pair validation set is divided across ranks.
+    """Official preset for a fixed-pair order policy.
 
-    ``rank_mod_fixed_v1`` keeps each rank's official slice. Every other order
-    policy is read on rank 0 as one concatenated pass. The dataset name is not
-    an input.
+    Live validation uses the sampler's ``validation_scope`` argument. This
+    function only records which scope the official presets select. The dataset
+    name is not an input.
     """
 
     if policy == "rank_mod_fixed_v1":
         return "per_rank"
     return "rank0"
+
+
+_PIPELINE_NORMALIZES = ("noisy_rms_unit_v1", "independent_audio_norm_v1", "independent_peak_v1")
+_VALIDATION_CROPS = ("full_length", "per_epoch_random", "fixed")
+_VALIDATION_SCOPES = ("rank0", "per_rank")
 
 
 _MISSING = object()
@@ -249,11 +255,36 @@ class OrderSampler:
     Fixed-pair rows call ``protocol.locate``. Online SEMamba++ rows do not.
     """
 
-    def __init__(self, source: SnapshotSource, protocol: FixedPairProtocol, seed: int = 0, global_batch: int | None = None) -> None:
+    def __init__(
+        self,
+        source: SnapshotSource,
+        protocol: FixedPairProtocol,
+        seed: int = 0,
+        global_batch: int | None = None,
+        *,
+        order: str | list[str],
+        validation_scope: str,
+        validation_batch: int | None = None,
+        max_epoch_samples: int | None = None,
+    ) -> None:
         self.source = source
         self.protocol = protocol
         self.seed = _non_negative("seed", seed)
         self.global_batch = None if global_batch is None else _positive("global_batch", global_batch)
+        if not isinstance(order, str) and not (
+            isinstance(order, list) and order and all(isinstance(item, str) for item in order)
+        ):
+            raise ValueError("order must be a policy name or a list of policy names")
+        if validation_scope not in _VALIDATION_SCOPES:
+            raise ValueError("validation_scope must be rank0 or per_rank")
+        self.order = order
+        self.validation_scope = validation_scope
+        self._validation_width = 1 if validation_batch is None else _positive("validation_batch", validation_batch)
+        if max_epoch_samples is not None and (
+            isinstance(max_epoch_samples, bool) or not isinstance(max_epoch_samples, int) or max_epoch_samples < 1
+        ):
+            raise ValueError("max_epoch_samples must be a positive integer")
+        self.max_epoch_samples = max_epoch_samples
         self._bound_world: int | None = None
         self._micro_batch: int | None = None
         self._group_size: int | None = None
@@ -261,10 +292,7 @@ class OrderSampler:
         self._draw_weights: dict[str, float] | None = None
 
     def policy(self, world_size: int) -> str:
-        rule = self.source.dataset().get("rule_json")
-        if not isinstance(rule, dict) or "order" not in rule:
-            raise DataError("snapshot rule has no order")
-        return _call(resolve_order_policy, rule["order"], world_size)
+        return _call(resolve_order_policy, self.order, world_size)
 
     def order_parameters(self) -> dict[str, Any]:
         """Permutation parameters. Fixed-pair returns the existing ``order_params`` dict."""
@@ -334,10 +362,9 @@ class OrderSampler:
 
         if self._supply() != "online_semamba":
             raise DataError("validation_batch on OrderSampler is only for online SEMamba++")
-        width = int(self._rule()["validation"]["batch"])
-        if width < 1:
-            raise DataError("validation batch must be positive")
-        return width, True, 1
+        if self.validation_scope != "rank0":
+            raise DataError("SEMamba++ validation is read on rank 0")
+        return self._validation_width, True, 1
 
     def training_ids(self) -> tuple[str, ...]:
         """Canonical training sample ids. Fixed pairs use case ids. SEMamba uses speech ids."""
@@ -399,6 +426,7 @@ class OrderSampler:
                 world_size=world_size,
                 rank=rank,
             )
+        positions = self._cap_positions(list(positions))
         return tuple(
             self.protocol.reference(int(position), epoch, self.source.split)  # type: ignore[attr-defined]
             for position in positions
@@ -421,11 +449,12 @@ class OrderSampler:
                 world_size=world_size,
                 rank=rank,
             )
+        positions = self._cap_positions(list(positions))
         self.protocol.seed = self.seed
         refs: list[SampleRef] = []
         for local, position in enumerate(positions):
             case_id = case_ids[position]
-            length = _call(fixed_pair_case_length, self.source.store, case_id, self.protocol.normalize)
+            length = self.protocol.case_length(case_id)
             crop = self.protocol.locate(case_id, length, epoch)
             if weighted:
                 index = int(position)
@@ -456,33 +485,78 @@ class OrderSampler:
         )
         if not positions:
             raise DataError("weighted epoch has no samples for this rank")
-        return positions
+        return self._cap_positions(positions)
+
+    def _cap_positions(self, positions: list[int]) -> list[int]:
+        if self.max_epoch_samples is None:
+            return positions
+        chosen = positions[: self.max_epoch_samples]
+        if not chosen:
+            raise DataError("max_epoch_samples left this rank with no samples")
+        return chosen
 
 
 class FixedPairProtocol:
-    """Crop coordinates and ``render_sample`` for one fixed-pair snapshot."""
+    """Crop and normalize an adapter pair. The settings are this object's arguments.
 
-    def __init__(self, source: SnapshotSource, verify_on_read: bool = False) -> None:
+    The snapshot names the teacher and the audio the adapter emits. It does not
+    choose ``normalize``, ``window``, ``resample``, or the validation crop.
+    """
+
+    def __init__(
+        self,
+        source: SnapshotSource,
+        verify_on_read: bool = False,
+        *,
+        normalize: str,
+        window: int,
+        sample_rate: int,
+        validation_crop: str,
+        resample: dict | None = None,
+    ) -> None:
         if not isinstance(verify_on_read, bool):
             raise ValueError("verify_on_read must be a boolean")
+        if normalize not in _PIPELINE_NORMALIZES:
+            raise ValueError(f"normalize {normalize!r} is not a pipeline policy")
+        if validation_crop not in _VALIDATION_CROPS:
+            raise ValueError(f"validation_crop {validation_crop!r} is not a pipeline crop")
         self.source = source
         self.verify_on_read = verify_on_read
+        self.normalize = normalize
+        self.window = _positive("window", window)
+        self.sample_rate = _positive("sample_rate", sample_rate)
+        self.validation_crop = validation_crop
+        self.resample = resample
+        self.teacher: str | None = None
         self.seed: int | None = None
+        self._adapter: Any = None
 
     def prepare(self) -> None:
-        """Check the pipeline fields. The dataset algorithm is not consulted."""
+        """Check the dataset declaration and bind the pair adapter."""
+
+        from src.experiments.data.adapters import open_pair_adapter
 
         rule = self._rule()
-        rate = rule.get("sample_rate")
-        if isinstance(rate, bool) or not isinstance(rate, int) or rate < 1:
-            raise DataError("fixed-pair sample_rate is missing")
-        if rule.get("teacher") not in {"dry_clean", "reverberant_clean", "official_mixed_target"}:
-            raise DataError(f"fixed-pair teacher {rule.get('teacher')!r} is not a training target")
-        if rule.get("normalize") not in {"noisy_rms_unit_v1", "independent_audio_norm_v1"}:
-            raise DataError("fixed-pair normalize is not a pipeline policy")
-        window = rule.get("window")
-        if isinstance(window, bool) or not isinstance(window, int) or window < 1:
-            raise DataError("fixed-pair window is missing")
+        teacher = rule.get("teacher")
+        if teacher not in {"dry_clean", "reverberant_clean", "official_mixed_target"}:
+            raise DataError(f"dataset teacher {teacher!r} is not a training target")
+        self.teacher = str(teacher)
+        self._adapter = open_pair_adapter(
+            self.source,
+            verify_on_read=self.verify_on_read,
+            sample_rate=self.sample_rate,
+            resample=self.resample,
+        )
+        self._adapter.prepare()
+
+    def case_length(self, case_id: str) -> int:
+        if self._adapter is None:
+            raise DataError("fixed-pair protocol is not prepared")
+        return self._adapter.case_length(
+            case_id,
+            normalize=self.normalize,
+            resampled=self.resample is not None,
+        )
 
     def locate(self, case_id: str, length: int, epoch: int) -> Crop:
         if self.seed is None:
@@ -501,6 +575,8 @@ class FixedPairProtocol:
     def render(self, sample: SampleRef) -> tuple[np.ndarray, np.ndarray, int]:
         if not sample.case_id:
             raise DataError("fixed-pair rendering requires a case id")
+        if self._adapter is None:
+            raise DataError("fixed-pair protocol is not prepared")
         crop = None
         if sample.crop is not None:
             pad = "none" if sample.crop.length == sample.crop.pad_to else self.pad_name
@@ -510,6 +586,17 @@ class FixedPairProtocol:
                 pad_to=sample.crop.pad_to,
                 pad=pad,
             )
+        if self._adapter is not None and not self._adapter.recorded:
+            noisy, clean = self._adapter.render_full(sample.case_id)
+            noisy, clean, valid = _call(
+                apply_fixed_pipeline,
+                noisy,
+                clean,
+                normalize=self.normalize,
+                crop=crop,
+                case_id=sample.case_id,
+            )
+            return noisy, clean, valid
         planned = PlannedRef(
             case_id=sample.case_id,
             index=sample.index,
@@ -518,18 +605,16 @@ class FixedPairProtocol:
             crop=crop,
             chunk=None,
         )
-        rule = self._rule()
-        resample = rule.get("resample")
-        if resample is not None and not isinstance(resample, dict):
-            raise DataError("snapshot resample rule is invalid")
+        if self.resample is not None and not isinstance(self.resample, dict):
+            raise DataError("pipeline resample policy is invalid")
         rendered = _call(
             render_sample,
             self.source.store,
             planned,
             normalize=self.normalize,
-            sample_rate=int(rule["sample_rate"]),
+            sample_rate=self.sample_rate,
             verify_on_read=self.verify_on_read,
-            resample=resample,
+            resample=self.resample,
         )
         return rendered.noisy, rendered.clean, int(rendered.valid_length)
 
@@ -539,15 +624,9 @@ class FixedPairProtocol:
         kind = self.source.document(sample.case_id).get("teacher_kind")
         if kind in (None, "none"):
             raise DataError(f"case {sample.case_id} has no teacher")
+        if self.teacher is not None and str(kind) != self.teacher:
+            raise DataError(f"case {sample.case_id} teacher {kind} is not the dataset teacher {self.teacher}")
         return str(kind)
-
-    @property
-    def normalize(self) -> str:
-        return str(self._rule()["normalize"])
-
-    @property
-    def window(self) -> int:
-        return int(self._rule()["window"])
 
     @property
     def pad_name(self) -> str:
@@ -650,6 +729,8 @@ class SnapshotDataModule:
         prefetch: bool = False,
         load_workers: int | None = None,
         worker_join_timeout: float = 30.0,
+        *,
+        max_validation_batches: int | None = None,
     ) -> None:
         if require_profile is not None and not isinstance(require_profile, str):
             raise ValueError("require_profile must be a string")
@@ -671,11 +752,18 @@ class SnapshotDataModule:
             or float(worker_join_timeout) <= 0
         ):
             raise ValueError("worker_join_timeout must be a positive number")
+        if max_validation_batches is not None and (
+            isinstance(max_validation_batches, bool)
+            or not isinstance(max_validation_batches, int)
+            or max_validation_batches < 1
+        ):
+            raise ValueError("max_validation_batches must be a positive integer")
         self.source = source
         self.sampler = sampler
         self.protocol = protocol
         self.batcher = batcher
         self.require_profile = require_profile
+        self.max_validation_batches = max_validation_batches
         self.prefetch = prefetch
         self.load_workers = resolved_workers
         self.worker_join_timeout = float(worker_join_timeout)
@@ -715,12 +803,12 @@ class SnapshotDataModule:
         if not isinstance(rule, dict):
             raise DataError("snapshot rule_json is missing")
         chunk_length = getattr(self.sampler, "chunk_length", None)
+        window = getattr(self.protocol, "window", None)
         if chunk_length is not None:
             window = int(chunk_length)
-        else:
-            window = rule.get("window")
-            if window is None:
-                window = rule.get("chunk_length")
+        teacher = getattr(self.protocol, "teacher", None)
+        if teacher is None:
+            teacher = rule.get("teacher")
         return {
             "algorithm": dataset.get("algorithm"),
             "claim_label": dataset.get("claim_label"),
@@ -730,16 +818,19 @@ class SnapshotDataModule:
             "dataset_version": dataset.get("version"),
             "group_size": self.batcher.group_size,
             "micro_batch": self.batcher.micro_batch,
-            "normalize": rule.get("normalize"),
+            "normalize": getattr(self.protocol, "normalize", None),
             "order_policy": self.sampler.policy(self.world_size),
             "profile": dataset.get("profile"),
             "protocol_id": dataset.get("protocol_id"),
+            "resample": getattr(self.protocol, "resample", None),
             "seed": self.sampler.seed,
             "selection_uses_test": dataset.get("selection_uses_test"),
             "snapshot_hash": self.source.snapshot_hash,
-            "sample_rate": rule.get("sample_rate"),
+            "sample_rate": getattr(self.protocol, "sample_rate", None),
             "split": self.source.split,
-            "teacher": rule.get("teacher"),
+            "teacher": teacher,
+            "validation_crop": getattr(self.protocol, "validation_crop", None),
+            "validation_scope": getattr(self.sampler, "validation_scope", None),
             "window": window,
         }
 
@@ -801,18 +892,30 @@ class SnapshotDataModule:
                 return iter(())
             width, keep_partial, group_size = self.sampler.validation_batch()
             grouped = _group_samples(samples, width, group_size, keep_partial)
-            return iter(self._collate(group) for group in grouped)
+            return iter(self._collate(group) for group in self._limit_validation(grouped))
         if callable(validation_ranks) and supply == "chunk":
             self._bind_sampler()
-            samples = validation_ranks(epoch, self.world_size)[self.rank]
+            ranks = validation_ranks(epoch, self.world_size)
+            scope = getattr(self.sampler, "validation_scope", None)
+            if scope not in _VALIDATION_SCOPES:
+                raise DataError("chunk validation_scope must be rank0 or per_rank")
+            if scope == "rank0":
+                if self.rank != 0:
+                    return iter(())
+                samples = tuple(sample for rank_samples in ranks for sample in rank_samples)
+            else:
+                samples = ranks[self.rank]
             if not samples:
                 return iter(())
             grouped = self.batcher.groups(samples)
-            return iter(self._collate(group) for group in grouped)
+            return iter(self._collate(group) for group in self._limit_validation(grouped))
         policy = self.sampler.policy(self.world_size)
-        scope = validation_scope(policy)
+        scope = getattr(self.sampler, "validation_scope", None)
+        if scope not in _VALIDATION_SCOPES:
+            raise DataError("validation_scope must be rank0 or per_rank")
         if scope == "rank0" and self.rank != 0:
             return iter(())
+        valid_ids = self.source.case_ids("valid.cases")
         raw = _call(
             validation_refs,
             self.source.store,
@@ -821,10 +924,17 @@ class SnapshotDataModule:
             world_size=self.world_size,
             policy=policy,
             rank=None if scope == "rank0" else self.rank,
+            crop_name=self.protocol.validation_crop,
+            window=self.protocol.window,
+            normalize=self.protocol.normalize,
+            resampled=self.protocol.resample is not None,
+            lengths=[self.protocol.case_length(case_id) for case_id in valid_ids],
         )
         refs = tuple(_validation_sample(sample, epoch) for sample in raw)
-        batches: list[Batch] = []
         width = self.batcher.micro_batch
+        if self.max_validation_batches is not None:
+            refs = refs[: self.max_validation_batches * width]
+        batches: list[Batch] = []
         for start in range(0, len(refs), width):
             batches.append(self._collate(refs[start : start + width]))
         return iter(batches)
@@ -971,13 +1081,12 @@ class SnapshotDataModule:
             kinds.append(self.protocol.teacher_kind(sample))
         if any(kind != kinds[0] for kind in kinds):
             raise DataError("micro-batch mixes teacher kinds")
-        rule = self.source.dataset().get("rule_json")
-        if not isinstance(rule, dict):
-            raise DataError("snapshot rule_json is missing")
-        rate = rule.get("sample_rate")
+        rate = getattr(self.protocol, "sample_rate", None)
         if isinstance(rate, bool) or not isinstance(rate, int) or rate < 1:
-            raise DataError("snapshot sample_rate is missing")
-        return replace(self.batcher.collate(rendered), teacher_kind=kinds[0], sample_rate=rate)
+            raise DataError("pipeline sample_rate is missing")
+        batch = replace(self.batcher.collate(rendered), teacher_kind=kinds[0], sample_rate=rate)
+        check_training_batch(batch, sample_rate=rate, teachers=(kinds[0],))
+        return batch
 
     def _epoch_plan(self, epoch: int) -> _EpochPlan:
         cached = self._plans.get(epoch)
@@ -1032,8 +1141,13 @@ class SnapshotDataModule:
             "micro_batch": self.batcher.micro_batch,
             "order_params": recorded,
             "order_policy": policy,
+            "pipeline_normalize": getattr(self.protocol, "normalize", None),
+            "pipeline_sample_rate": getattr(self.protocol, "sample_rate", None),
+            "pipeline_window": getattr(self.protocol, "window", None) if getattr(self.sampler, "chunk_length", None) is None else int(self.sampler.chunk_length),
             "protocol_id": dataset.get("protocol_id"),
+            "max_epoch_samples": getattr(self.sampler, "max_epoch_samples", None),
             "ranks": [[_ref_payload(sample) for group in rank_groups for sample in group] for rank_groups in groups],
+            "validation_scope": getattr(self.sampler, "validation_scope", None),
             "seed": self.sampler.seed,
             "snapshot_hash": self.source.snapshot_hash,
             "weights_sha256": sha,
@@ -1101,6 +1215,11 @@ class SnapshotDataModule:
             test = set(self.source.case_ids("test.cases")) if "test.cases" in bindings else set()
             if valid & test:
                 raise DataError("leakage_safe validation shares cases with test")
+
+    def _limit_validation(self, groups: tuple | list) -> tuple | list:
+        if self.max_validation_batches is None:
+            return groups
+        return groups[: self.max_validation_batches]
 
     def _bind_sampler(self) -> None:
         bind = getattr(self.sampler, "bind_batch", None)
