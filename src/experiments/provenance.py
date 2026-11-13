@@ -1,18 +1,19 @@
-"""公開 import パス。実装は ``src.experiments.execution.provenance``。"""
+"""Public API; implementation: ``src.experiments.execution.provenance``."""
 
+from src.experiments.execution.provenance import (
+    attach_provenance_sidecar,
+    bind_provenance,
+    dataset_identity_map,
+    experiment_directory,
+    judge_experiment_checkpoint,
+    require_provenance,
+)
 
-def _export(module: object) -> list[str]:
-    public: list[str] = []
-    for name, value in vars(module).items():
-        if name.startswith("__"):
-            continue
-        globals()[name] = value
-        if not name.startswith("_"):
-            public.append(name)
-    return public
-
-
-from src.experiments.execution import provenance as _impl
-
-__all__ = _export(_impl)
-del _export, _impl
+__all__ = [
+    "attach_provenance_sidecar",
+    "bind_provenance",
+    "dataset_identity_map",
+    "experiment_directory",
+    "judge_experiment_checkpoint",
+    "require_provenance",
+]

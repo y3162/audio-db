@@ -21,6 +21,8 @@
 
 `api.py`、`cli.py`、`launcher.py`、`config.py`、`errors.py` は `src/experiments/` 直下の入口である。`launcher.py` は学習プロセスを起動して終了状態を記録するだけで、ジョブの投入、GPU の選択、再試行はしない。`builder.py`、`factory.py`、`registry.py`、`state.py`、`runtime.py`、`checkpoint.py`、`selectors.py`、`provenance.py`、`signals.py`、`profile.py`、`results.py`、`trainers.py`、`losses.py` は公開 import パスで、実装は上の3ディレクトリにある。YAML の `class` はこの公開パスのままである。公開モジュールは実装と同じオブジェクトを返す。クラスの identity は同じである。公開モジュール上の関数名を差し替えても、実装モジュールのグローバルは変わらない。
 
+YAML から参照する公式モデル・Trainer の `official/<model>/model(s).py`・`trainer.py` と共有 scheduler の `calc/optim.py` は直接の公開モジュールである。公開名と checkpoint の識別規則は `docs/experiments/CHECKPOINT.md` を参照する。
+
 `src/training/` と `configs/training/` は無い。旧形式 `audio-db-training-v1` の checkpoint は再開しない。研究用の実装を足すときは、公式再現の Model、Trainer、参照ステップを変えず、独立した領域に置く。
 
 ## 推論と学習

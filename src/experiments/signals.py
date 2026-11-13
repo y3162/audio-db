@@ -1,18 +1,17 @@
-"""公開 import パス。実装は ``src.experiments.execution.signals``。"""
+"""Public API; implementation: ``src.experiments.execution.signals``."""
 
+from src.experiments.execution.signals import (
+    clear_interrupt,
+    install_interrupt_handler,
+    interrupt_requested,
+    ranks_should_stop,
+    request_interrupt,
+)
 
-def _export(module: object) -> list[str]:
-    public: list[str] = []
-    for name, value in vars(module).items():
-        if name.startswith("__"):
-            continue
-        globals()[name] = value
-        if not name.startswith("_"):
-            public.append(name)
-    return public
-
-
-from src.experiments.execution import signals as _impl
-
-__all__ = _export(_impl)
-del _export, _impl
+__all__ = [
+    "clear_interrupt",
+    "install_interrupt_handler",
+    "interrupt_requested",
+    "ranks_should_stop",
+    "request_interrupt",
+]

@@ -16,7 +16,7 @@
 - 停止ポリシーは Selector と独立し、指標を評価しない。Trainer は境界処理後に指標を配送し、停止状態を更新してから保存点を offer する。停止設定は実験同一性に含み、状態を全 rank で照合して再開する。
 - 再開は同じ実験の厳密な続きである。`config_sha256` は `output`、`checkpoint`、`stop_after_logical_steps` を除いた設定の SHA-256 で、違う設定、違う出力ディレクトリ、違う world size を拒否する。Latest より前の Archive から続けることも拒否する。古い状態から始めるのは、`initialize` を使う別の実験である。
 - `initialize` は module、optimizer、scheduler の状態だけを読み、元の実験のファイルを変更しない。データ位置、Trainer の履歴、RNG は引き継がない。
-- 以前の世代のハッシュ（クラスパスの移動、Trainer の `checkpoint_interval` / `checkpoint_partial`）は `config_generations` が列挙したものだけを同じ設定として受ける。任意のハッシュは受けない。新しい保存は現在のハッシュを書く。
+- 再開は現行の設定ハッシュだけを受ける。Selector のクラス ID と設定はハッシュとは別に照合し、停止ポリシーもクラス ID と状態を照合する。旧設定世代のハッシュを再開時に受け入れない。
 - `COMPLETED` と `complete.json` は、全プロセスが正常終了したあとに書く。Launcher の下では Launcher が書く。一部の rank だけが学習を続ける経路を作らない。
 - `provenance_sha256` が None の checkpoint は来歴なしのまま再開できる。後から同じディレクトリに JSON ができても、その checkpoint を証明済みにしない。
 - FSDP、sharded checkpoint、AMP BF16 は未実装。複数 Optimizer の `amp_fp16` は拒否する。

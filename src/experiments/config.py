@@ -16,7 +16,6 @@ import yaml
 
 from src.experiments.errors import ConfigError
 from src.experiments.execution.runtime import PreparePolicy
-from src.experiments.execution.selector import DEFAULT_LATEST_EVERY
 
 SCHEMA = "audio-db-experiment/v1"
 TOP_KEYS = frozenset(
@@ -460,45 +459,7 @@ def _reject_differentiable(components: dict[str, ComponentConfig]) -> None:
         _reject_differentiable_value(spec.kwargs, spec.component_id)
 
 
-# Historical class paths. Each mapping is one saved generation. Resume accepts
-# the current hash or one of these rewrites, and does not accept an arbitrary
-# hash. The scheduler move and the official-component move are separate
-# generations; checkpoints that predate both use the combined mapping.
-_SCHEDULER_CLASS_PATHS = {
-    "src.experiments.calc.optim.WarmupReduceLROnPlateau": "src.training.se.optim.WarmupReduceLROnPlateau",
-}
-_OFFICIAL_CLASS_PATHS = {
-    "src.experiments.official.mp_senet.trainer.MPSENetGANTrainer": "src.experiments.mp_senet.MPSENetGANTrainer",
-    "src.experiments.official.mp_senet.models.MPSENetGANGenerator": "src.experiments.models.mp_senet_gan.MPSENetGANGenerator",
-    "src.experiments.official.mp_senet.models.MPSENetMetricDiscriminator": "src.experiments.models.mp_senet_gan.MPSENetMetricDiscriminator",
-    "src.experiments.official.mp_senet.waveform.MPSENetWaveformAdapter": "src.experiments.models.mp_senet.MPSENetWaveformAdapter",
-    "src.experiments.official.mossformergan.trainer.MossFormerGANTrainer": "src.experiments.mossformergan.MossFormerGANTrainer",
-    "src.experiments.official.mossformergan.models.MossFormerGANGenerator": "src.experiments.models.mossformergan.MossFormerGANGenerator",
-    "src.experiments.official.mossformergan.models.MossFormerGANDiscriminator": "src.experiments.models.mossformergan.MossFormerGANDiscriminator",
-    "src.experiments.official.tf_gridnet.trainer.TFGridNetTrainer": "src.experiments.tf_gridnet.TFGridNetTrainer",
-    "src.experiments.official.tf_gridnet.model.TFGridNetModel": "src.experiments.models.tf_gridnet.TFGridNetModel",
-    "src.experiments.official.tf_locoformer.trainer.TFLocoformerTrainer": "src.experiments.tf_locoformer.TFLocoformerTrainer",
-    "src.experiments.official.tf_locoformer.model.TFLocoformerModel": "src.experiments.models.tf_locoformer.TFLocoformerModel",
-    "src.experiments.official.deepfilternet3.trainer.DeepFilterNet3Trainer": "src.experiments.deepfilternet3.DeepFilterNet3Trainer",
-    "src.experiments.official.deepfilternet3.model.DeepFilterNet3Model": "src.experiments.models.deepfilternet3.DeepFilterNet3Model",
-    "src.experiments.official.semambapp.trainer.SEMambaPPTrainer": "src.experiments.semambapp.SEMambaPPTrainer",
-    "src.experiments.official.semambapp.models.SEMambaPPGenerator": "src.experiments.models.semambapp.SEMambaPPGenerator",
-    "src.experiments.official.semambapp.models.SEMambaPPMRD": "src.experiments.models.semambapp.SEMambaPPMRD",
-    "src.experiments.official.semambapp.models.SEMambaPPCQTDiscriminator": "src.experiments.models.semambapp.SEMambaPPCQTDiscriminator",
-}
-LEGACY_CLASS_PATHS = (
-    _SCHEDULER_CLASS_PATHS,
-    _OFFICIAL_CLASS_PATHS,
-    {**_OFFICIAL_CLASS_PATHS, **_SCHEDULER_CLASS_PATHS},
-)
-
-
-def config_sha256(
-    config: ExperimentConfig,
-    *,
-    class_paths: dict[str, str] | None = None,
-    legacy_trainer_kwargs: dict[str, Any] | None = None,
-) -> str:
+def config_sha256(config: ExperimentConfig) -> str:
     """Hash the experiment identity.
 
     ``output`` is excluded. Resume refuses a different directory by comparing
@@ -508,19 +469,11 @@ def config_sha256(
     decides which states are kept and does not change a training step.
     ``initialize`` is included when present, because another initial state is
     another experiment. A document without it hashes as before.
-
-    ``legacy_trainer_kwargs`` reproduces the hash of a document written before
-    selectors, where the entry trainer took ``checkpoint_interval`` and, for
-    MossFormerGAN, ``checkpoint_partial``.
     """
 
     payload: dict[str, Any] = {
         "components": {
-            component_id: _component_identity(
-                spec,
-                class_paths,
-                legacy_trainer_kwargs if component_id == config.entry else None,
-            )
+            component_id: _component_identity(spec)
             for component_id, spec in config.components.items()
         },
         "deterministic": config.deterministic,
@@ -538,56 +491,14 @@ def config_sha256(
     return hashlib.sha256(encoded.encode("utf-8")).hexdigest()
 
 
-def config_generations(config: ExperimentConfig) -> list[tuple[dict[str, str] | None, str]]:
-    """Current identity first, then each accepted historical one, as ``(class_paths, hash)``.
-
-    A generation is one complete rewrite: a set of historical class paths,
-    with or without the entry trainer's former checkpoint arguments. Those
-    values are not stored in a new document. A run migrated to a selector is
-    recognized when the selector's ``latest_every`` equals the
-    ``checkpoint_interval`` it was started with and its ``partial`` equals the
-    former ``checkpoint_partial``, or when the old document left them out.
-    """
-
-    intervals: list[int | None] = [None]
-    latest_every = config.selector_kwargs.get("latest_every", DEFAULT_LATEST_EVERY)
-    if isinstance(latest_every, int) and not isinstance(latest_every, bool) and latest_every >= 1:
-        intervals.append(latest_every)
-    partials: list[bool | None] = [None]
-    partial = config.selector_kwargs.get("partial", False)
-    if isinstance(partial, bool):
-        partials.append(partial)
-    generations: list[tuple[dict[str, str] | None, str]] = []
-    seen: set[str] = set()
-    for interval in intervals:
-        for partial in partials:
-            legacy: dict[str, Any] = {}
-            if interval is not None:
-                legacy["checkpoint_interval"] = interval
-            if partial is not None:
-                legacy["checkpoint_partial"] = partial
-            for mapping in (None, *LEGACY_CLASS_PATHS):
-                digest = config_sha256(config, class_paths=mapping, legacy_trainer_kwargs=legacy or None)
-                if digest in seen:
-                    continue
-                seen.add(digest)
-                generations.append((mapping, digest))
-    return generations
-
-
-def _component_identity(
-    spec: ComponentConfig,
-    class_paths: dict[str, str] | None = None,
-    legacy_kwargs: dict[str, Any] | None = None,
-) -> dict[str, Any]:
+def _component_identity(spec: ComponentConfig) -> dict[str, Any]:
     if spec.ref is not None:
         return {"ref": spec.ref}
     kwargs = _jsonable(spec.kwargs)
     if isinstance(kwargs, dict):
         kwargs.pop("stop_after_logical_steps", None)
-        kwargs.update(legacy_kwargs or {})
     payload: dict[str, Any] = {
-        "class": (class_paths or {}).get(spec.class_path, spec.class_path),
+        "class": spec.class_path,
         "kwargs": kwargs,
         "role": spec.role,
     }

@@ -70,7 +70,7 @@ make reproduction-doctor
 - preflight が GPU を拒否する: 空いている番号だけを `CUDA_VISIBLE_DEVICES` に入れる。自分のジョブでなければ `allow_busy_gpu` を付けない。
 - 評価が Manifest を読めない: 評価の入力は名前付きセットだけである。登録は `make db-init`。
 - `make db-init` が拒否する: `recipe_json` の無い `eval.cases` がある。DB は変更されていない。
-- 再開が設定差で失敗する: `output`、`checkpoint`、`stop_after_logical_steps` 以外を変えていないか確認する。以前の YAML にあった Trainer の `checkpoint_interval` は、同じ値を Selector の `latest_every` に書く（[Checkpoint](experiments/CHECKPOINT.md) の「以前の形式との互換」）。`latest_every` を省くと既定は 1000 で、旧文書の `checkpoint_interval: 1` には合わない。
+- 再開が設定差で失敗する: `output` と `stop_after_logical_steps` 以外の実験設定、および Selector のクラスと設定を確認する。旧 YAML や旧 checkpoint との再開互換性は保証しない（[Checkpoint](experiments/CHECKPOINT.md)）。
 - GPU メモリの推移: 実験ディレクトリの `gpu_memory.json`（最大）と `gpu_memory.jsonl`（時刻ごとの `nvidia-smi` のデバイス全体）。`show_status.py` も最大を出す。PyTorch の allocated / reserved ではない。
 - 新規の起動が `output directory already holds a run` で止まる: そのディレクトリに `complete.json`、`latest.pt`、`archive/*.pt`、以前の形式の `step_*.pt` のどれかがある。続きは `--resume`、やり直しは別の `output.directory` を使う。
 - 再開が「behind latest.pt」で止まる: Latest より前の Archive から続けようとしている。古い状態から始めるときは、新しい `output.directory` と `initialize` を書く。

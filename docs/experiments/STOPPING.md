@@ -19,7 +19,7 @@ components:
 
 `mode` は `min` または `max`。`start_after` は監視対象の有効な観測値を初めに何回読み飛ばすかであり、step や epoch ではない。最初の監視対象値を best とする。以後の改善は min では `best - value > min_delta`、max ではその逆であり、同値と閾値ちょうどは改善ではない。連続した非改善が正の整数 `patience` に到達すると停止する。対象外 source は数えない。
 
-`StopPolicy` は `observe(MetricEvent) -> StopDecision`、`state_dict()`、`load_state_dict()` を実装する。評価計算、モデル、Optimizer、保存方針は扱わない。`TrainingControl` は全 rank でイベントを配送し、判定と状態を比較する。Trainer は検証・scheduler・公式選択の完了後に配送し、その後 Selector に境界を渡す。停止時には次の更新に進まず、final を offer して終了する。最終状態が Latest に保存されない Selector では停止を失敗として扱う。現在、制御層を明示的にサポートする Trainer だけに設定でき、複数ポリシーの合成は未実装。
+`StopPolicy` は [Checkpoint](CHECKPOINT.md) のクラス ID を具象クラス自身に宣言し、`observe(MetricEvent) -> StopDecision`、`state_dict()`、`load_state_dict()` を実装する。評価計算、モデル、Optimizer、保存方針は扱わない。`TrainingControl` は全 rank でイベントを配送し、判定と状態を比較する。Trainer は検証・scheduler・公式選択の完了後に配送し、その後 Selector に境界を渡す。停止時には次の更新に進まず、final を offer して終了する。最終状態が Latest に保存されない Selector では停止を失敗として扱う。現在、制御層を明示的にサポートする Trainer だけに設定でき、複数ポリシーの合成は未実装。
 
 状態にはポリシーの best、best の logical step、読み飛ばしを含む有効観測回数、連続非改善回数、停止状態と、制御層の直近イベントを含む。checkpoint の通常の状態検査と復元に参加し、設定も実験同一性に入る。再開でポリシーや設定を変えること、旧 checkpoint に新規ポリシーを加えることはできない。`boundary_pending` からの再開では未完了の境界を処理し、完了済みの境界は再観測しない。
 

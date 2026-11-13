@@ -88,6 +88,10 @@ class ExperimentBuilder:
                         raise BuildError("a stopping policy is incompatible with official_reproduction")
             if not getattr(trainer, "supports_training_control", False):
                 raise BuildError(f"component {config.entry}: trainer does not support stopping policies")
+            from src.experiments.core.identity import policy_identity
+
+            if policy_identity(policy) != config.components[stops[0]].class_path:
+                raise BuildError("stopping checkpoint_class_id must equal its public class path")
             try:
                 sources = getattr(trainer, "training_metric_sources", ("validation",))
                 names = getattr(trainer, "training_metric_names", None)

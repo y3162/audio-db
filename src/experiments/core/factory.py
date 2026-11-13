@@ -36,24 +36,30 @@ class ComponentFactory:
         :class:`BuildError`.
         """
 
-        if not isinstance(spec.class_path, str) or "." not in spec.class_path:
-            raise BuildError(f"invalid class path {spec.class_path!r}")
-        module_name, class_name = spec.class_path.rsplit(".", 1)
-        if not module_name or not class_name:
-            raise BuildError(f"invalid class path {spec.class_path!r}")
-        try:
-            module = importlib.import_module(module_name)
-        except ImportError as exc:
-            raise BuildError(f"cannot import {spec.class_path}: {exc}") from exc
-        try:
-            cls = getattr(module, class_name)
-        except AttributeError as exc:
-            raise BuildError(f"class not found: {spec.class_path}") from exc
-        if not isinstance(cls, type):
-            raise BuildError(f"{spec.class_path} is not a class")
+        cls = self.resolve(spec.class_path)
         try:
             return cls(**dict(spec.kwargs))
         except ExperimentError:
             raise
         except (TypeError, ValueError) as exc:
             raise BuildError(f"failed to construct {spec.class_path}: {exc}") from exc
+
+    @staticmethod
+    def resolve(class_path: str) -> type:
+        """Resolve a fully qualified path to exactly one class."""
+        if not isinstance(class_path, str) or "." not in class_path:
+            raise BuildError(f"invalid class path {class_path!r}")
+        module_name, class_name = class_path.rsplit(".", 1)
+        if not module_name or not class_name:
+            raise BuildError(f"invalid class path {class_path!r}")
+        try:
+            module = importlib.import_module(module_name)
+        except ImportError as exc:
+            raise BuildError(f"cannot import {class_path}: {exc}") from exc
+        try:
+            cls = getattr(module, class_name)
+        except AttributeError as exc:
+            raise BuildError(f"class not found: {class_path}") from exc
+        if not isinstance(cls, type):
+            raise BuildError(f"{class_path} is not a class")
+        return cls

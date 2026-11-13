@@ -40,7 +40,7 @@ from typing import Any, Callable, Literal, Mapping
 
 import torch
 
-from src.experiments.config import ExperimentConfig, config_generations, config_sha256
+from src.experiments.config import ExperimentConfig, config_sha256
 from src.experiments.data.identity import comparable_identity
 from src.experiments.errors import CheckpointError, ExperimentError, StateError
 from src.experiments.calc.errors import TrainingError
@@ -70,8 +70,7 @@ _PROTECTED = (
     "data/db",
     "data/staging",
 )
-# ``init`` is read for files written before selectors. It is no longer written.
-_LABELS = frozenset({"step", "init", "validation_pending"})
+_LABELS = frozenset({"step", "validation_pending"})
 _PAYLOAD_KEYS = frozenset(
     {
         "aliases",
@@ -90,14 +89,13 @@ _PAYLOAD_KEYS = frozenset(
         "rank_count_in_rng",
         "rng_by_rank",
         "schema_version",
+        "selector",
         "state_ids",
         "states",
         "validation_pending",
         "world_size",
     }
 )
-# Files written before selectors have no ``selector`` entry.
-_OPTIONAL_PAYLOAD_KEYS = frozenset({"selector"})
 _CODE_KEYS = frozenset({"dirty", "git_commit"})
 _LOAD_ORDER = ("module", "optimizer", "scheduler", "data", "trainer", "stopping", "runtime")
 # Data position, trainer history, RNG, and runtime state belong to the source
@@ -255,6 +253,12 @@ class CheckpointManager:
 
         if self._selector is None:
             self._selector = build_selector(config.selector_class, config.selector_kwargs)
+        from src.experiments.core.factory import ComponentFactory
+
+        if type(self._selector) is not ComponentFactory.resolve(config.selector_class):
+            raise CheckpointError("selector class does not match the configured class")
+        if selector_identity(self._selector) != config.selector_class:
+            raise CheckpointError("selector checkpoint_class_id must equal its public class path")
         self._config = config
         self._states = graph.states
         self._components = graph.components
@@ -414,7 +418,7 @@ class CheckpointManager:
                 if prepare is not None:
                     prepare(runtime)
                 with Span("replicated_state_compare"):
-                    _assert_replicated_states(states, self.selector, runtime)
+                    _assert_replicated_states(states, self.selector, runtime, config.selector_kwargs)
                 local_rng = dict(runtime.capture_rng())
                 local_rng["rank"] = int(runtime.rank)
                 rngs = runtime.gather_objects(local_rng)
@@ -593,7 +597,7 @@ def _payload(
         "rank_count_in_rng": runtime.world_size,
         "rng_by_rank": list(rngs),
         "schema_version": SCHEMA_VERSION,
-        "selector": {"class": selector_identity(selector), "state": _selector_state(selector)},
+        "selector": {"class": selector_identity(selector), "kwargs": config.selector_kwargs, "state": _selector_state(selector)},
         "state_ids": list(states.ids()),
         "states": blobs,
         "validation_pending": {"logical_step": logical_step} if label == "validation_pending" else None,
@@ -640,17 +644,18 @@ def _validate_resume(
         raise CheckpointError("resume from a different directory is not supported")
     if payload.get("output_directory") != str(root):
         raise CheckpointError("resume from a different directory is not supported")
-    if payload.get("config_sha256") not in {digest for _, digest in config_generations(config)}:
+    if payload.get("config_sha256") != config_sha256(config):
         raise CheckpointError("checkpoint config identity does not match this experiment")
     saved_selector = payload.get("selector")
-    if saved_selector is not None:
-        if not isinstance(saved_selector, dict) or not isinstance(saved_selector.get("state"), dict):
-            raise CheckpointError("checkpoint selector state is invalid")
-        if saved_selector.get("class") != selector_identity(selector):
-            raise CheckpointError(
-                f"checkpoint selector {saved_selector.get('class')} does not match "
-                f"{selector_identity(selector)}; its state cannot be restored"
-            )
+    if not isinstance(saved_selector, dict) or set(saved_selector) != {"class", "kwargs", "state"} or not isinstance(saved_selector.get("state"), dict):
+        raise CheckpointError("checkpoint selector state is invalid")
+    if saved_selector.get("kwargs") != config.selector_kwargs:
+        raise CheckpointError("checkpoint selector settings do not match this experiment")
+    if saved_selector.get("class") != selector_identity(selector):
+        raise CheckpointError(
+            f"checkpoint selector {saved_selector.get('class')} does not match "
+            f"{selector_identity(selector)}; its state cannot be restored"
+        )
     _align_scheduled_batches(payload, components)
     if not _dataset_identities_match(payload.get("dataset_identity"), _dataset_identity(config, components)):
         raise CheckpointError("checkpoint dataset identity does not match this experiment")
@@ -670,15 +675,8 @@ def _validate_initialize(
 ) -> None:
     saved_states = _saved_states(payload)
     current = set(states.ids())
-    allowed = payload.get("initialize")
-    if allowed is not None:
-        # A file written with label ``init`` lists the states its producer released.
-        allow = allowed.get("allow") if isinstance(allowed, dict) else None
-        if not isinstance(allow, list) or not all(isinstance(item, str) for item in allow):
-            raise CheckpointError("initialize.allow must be a list of state ids")
-        for state_id in requested:
-            if state_id not in allow:
-                raise CheckpointError(f"checkpoint does not release state {state_id} for initialization")
+    if payload.get("initialize") is not None:
+        raise CheckpointError("checkpoint initialize field must be null")
     for state_id in requested:
         if state_id not in current:
             raise StateError(f"unknown state id {state_id}")
@@ -947,7 +945,7 @@ def _read_payload(path: Path) -> dict[str, Any]:
     version = payload.get("schema_version")
     if version != SCHEMA_VERSION:
         raise CheckpointError(f"unsupported checkpoint schema version {version!r}")
-    unknown = sorted(set(payload) - _PAYLOAD_KEYS - _OPTIONAL_PAYLOAD_KEYS)
+    unknown = sorted(set(payload) - _PAYLOAD_KEYS)
     if unknown:
         raise CheckpointError(f"unknown checkpoint field {unknown[0]}")
     missing = sorted(_PAYLOAD_KEYS - set(payload))
@@ -1081,7 +1079,9 @@ def _code_identity() -> dict[str, Any]:
     return {"dirty": dirty != 0, "git_commit": commit or None}
 
 
-def _assert_replicated_states(states: StateRegistry, selector: Selector, runtime: Any) -> None:
+def _assert_replicated_states(
+    states: StateRegistry, selector: Selector, runtime: Any, selector_kwargs: Mapping[str, Any] | None = None
+) -> None:
     """Refuse a checkpoint when replicated state differs across ranks.
 
     RNG is not compared here. It is gathered separately because each rank keeps
@@ -1099,7 +1099,7 @@ def _assert_replicated_states(states: StateRegistry, selector: Selector, runtime
     for state_id in states.ids():
         owner = states.owner(state_id)
         local[state_id] = _cpu_tree(owner.state_dict())
-    local["checkpoint.selector"] = _selector_state(selector)
+    local["checkpoint.selector"] = {"class": selector_identity(selector), "kwargs": selector_kwargs, "state": _selector_state(selector)}
     gathered = runtime.gather_objects(local)
     for rank, other in enumerate(gathered):
         mismatch = _first_difference(gathered[0], other, "state")

@@ -23,7 +23,7 @@ import yaml
 
 from src.experiments.api import build_experiment
 from src.experiments.checkpoint import FORMAT, CheckpointManager
-from src.experiments.config import config_generations, config_sha256, load_experiment
+from src.experiments.config import config_sha256, load_experiment
 from src.experiments.data import TensorPairData
 from src.experiments.errors import BuildError, CheckpointError, ConfigError, StateError
 from src.experiments.selectors import (
@@ -193,7 +193,7 @@ class ResumeTests(_Base):
         result = build_experiment(load_experiment(whole)).run(resume=out / "archive" / "step_00000003.pt")
         self.assertEqual((result.stop_reason, result.logical_step), ("completed", 5))
 
-    def test_resume_requires_the_same_selector_class_but_not_the_same_settings(self) -> None:
+    def test_resume_requires_the_same_selector_class_and_settings(self) -> None:
         directory = self._directory()
         periodic = (PERIODIC, {"archive_every": 1, "keep_last": 2})
         _run(_write_yaml(directory, "stopped", "run", steps=4, stop_after=2, selector=periodic))
@@ -204,13 +204,12 @@ class ResumeTests(_Base):
             build_experiment(load_experiment(other)).run(resume=out)
         self.assertIn("selector", str(caught.exception))
         self.assertEqual(_tree(out), before)
-        # Settings of the same class may change: they are not part of the experiment identity.
         wider = _write_yaml(
             directory, "wider", "run", steps=4, stop_after=None, selector=(PERIODIC, {"archive_every": 1, "keep_last": 3})
         )
-        result = build_experiment(load_experiment(wider)).run(resume=out)
-        self.assertEqual(result.logical_step, 4)
-        self.assertEqual(_archives(out), ["step_00000002.pt", "step_00000003.pt", "step_00000004.pt"])
+        with self.assertRaisesRegex(CheckpointError, "selector settings"):
+            build_experiment(load_experiment(wider)).run(resume=out)
+        self.assertEqual(_tree(out), before)
 
     def test_state_identity_and_foreign_formats_are_refused(self) -> None:
         directory = self._directory()
@@ -227,8 +226,8 @@ class ResumeTests(_Base):
             "version": _replace(payload, "schema_version", 2),
             "unknown": _replace(payload, "unexpected", 1),
             "world": _replace(payload, "world_size", 2),
-            "selector": _replace(payload, "selector", {"class": "x.Y", "state": {}}),
-            "selector_state": _replace(payload, "selector", {"class": payload["selector"]["class"], "state": None}),
+            "selector": _replace(payload, "selector", {**payload["selector"], "class": "x.Y"}),
+            "selector_state": _replace(payload, "selector", {**payload["selector"], "state": None}),
         }
         expected = {
             "missing": StateError,
@@ -568,7 +567,8 @@ class SelectorTests(_Base):
         self.assertEqual(
             _load(stopped / "latest.pt")["selector"],
             {
-                "class": "src.experiments.execution.selector.PeriodicArchiveSelector",
+                "class": "src.experiments.selectors.PeriodicArchiveSelector",
+                "kwargs": {"latest_every": 3, "archive_every": 2, "keep_last": 2},
                 "state": {"kept": ["step_00000002.pt", "step_00000004.pt"]},
             },
         )
@@ -879,99 +879,11 @@ class InitializeTests(_Base):
         self.assertEqual(_tree(self.source_dir), self.before)
 
 
-class LegacyTests(_Base):
-    def test_a_checkpoint_written_before_selectors_resumes(self) -> None:
-        continuous_dir = self._directory()
-        legacy_dir = self._directory()
-        _run(_write_yaml(continuous_dir, "run", steps=4, stop_after=None))
-        _run(_write_yaml(legacy_dir, "stopped", "run", steps=4, stop_after=2))
-        out = legacy_dir / "run"
-        # The former layout: ``step_XXXXXXXX.pt`` in the directory itself, no selector entry.
-        payload = _load(out / "latest.pt")
-        del payload["selector"]
-        legacy = out / "step_00000002.pt"
-        torch.save(payload, legacy)
-        (out / "latest.data_provenance.json").rename(out / "step_00000002.data_provenance.json")
-        (out / "latest.pt").unlink()
-        original = legacy.read_bytes()
-        whole = _write_yaml(legacy_dir, "whole", "run", steps=4, stop_after=None)
-        with self.assertRaises(CheckpointError) as caught:
-            _run(whole)
-        self.assertIn("already holds a run (step_00000002.pt)", str(caught.exception))
-        _run(whole, resume=legacy)
-        self.assertEqual(_status(out), "COMPLETED")
-        self.assertEqual(legacy.read_bytes(), original)
-        left = _load(continuous_dir / "run" / "latest.pt")
-        right = _load(out / "latest.pt")
-        self.assertEqual(right["logical_step"], 4)
-        _assert_equal(left["states"], right["states"])
-        _assert_equal(left["rng_by_rank"], right["rng_by_rank"])
-        self.assertEqual(_metrics(continuous_dir / "run"), _metrics(out))
-
-    def test_the_identity_of_a_document_before_selectors_is_accepted(self) -> None:
-        directory = self._directory()
-        modern = load_experiment(
-            _write_yaml(directory, "modern", steps=4, stop_after=None, selector=(STANDARD, {"latest_every": 3}))
-        )
-        text = _write_yaml(directory, "old", steps=4, stop_after=None).read_text(encoding="utf-8")
-        accepted = {digest for _, digest in config_generations(modern)}
-        self.assertEqual(config_generations(modern)[0][1], config_sha256(modern))
-        for interval, expected in ((3, True), (None, True), (5, False)):
-            with self.subTest(interval=interval):
-                line = "" if interval is None else f"      checkpoint_interval: {interval}\n"
-                path = directory / "old.yaml"
-                path.write_text(text.replace("      accumulation: 1\n", "      accumulation: 1\n" + line), encoding="utf-8")
-                self.assertEqual(config_sha256(load_experiment(path)) in accepted, expected)
-
-    def test_the_former_partial_argument_is_part_of_the_accepted_identity(self) -> None:
-        directory = self._directory()
-        text = _write_yaml(directory, "old", steps=4, stop_after=None).read_text(encoding="utf-8")
-
-        def old_identity(lines: str) -> str:
-            path = directory / "old.yaml"
-            path.write_text(text.replace("      accumulation: 1\n", "      accumulation: 1\n" + lines), encoding="utf-8")
-            return config_sha256(load_experiment(path))
-
-        for partial in (False, True):
-            modern = load_experiment(
-                _write_yaml(
-                    directory,
-                    f"modern-{partial}",
-                    steps=4,
-                    stop_after=None,
-                    selector=(STANDARD, {"latest_every": 3, "partial": partial}),
-                )
-            )
-            accepted = {digest for _, digest in config_generations(modern)}
-            same = str(partial).lower()
-            other = str(not partial).lower()
-            with self.subTest(partial=partial):
-                self.assertIn(old_identity(f"      checkpoint_interval: 3\n      checkpoint_partial: {same}\n"), accepted)
-                self.assertIn(old_identity(f"      checkpoint_partial: {same}\n"), accepted)
-                self.assertNotIn(old_identity(f"      checkpoint_interval: 3\n      checkpoint_partial: {other}\n"), accepted)
-
-    def test_an_omitted_interval_matches_the_default_not_every_step(self) -> None:
-        directory = self._directory()
-        modern = load_experiment(_write_yaml(directory, "modern", steps=4, stop_after=None))
-        self.assertEqual(modern.selector_kwargs, {})
-        text = _write_yaml(directory, "old", steps=4, stop_after=None).read_text(encoding="utf-8")
-        accepted = {digest for _, digest in config_generations(modern)}
-
-        def old_identity(line: str) -> str:
-            path = directory / "old.yaml"
-            path.write_text(
-                text.replace("      accumulation: 1\n", "      accumulation: 1\n" + line),
-                encoding="utf-8",
-            )
-            return config_sha256(load_experiment(path))
-
-        self.assertIn(old_identity(""), accepted)
-        self.assertIn(old_identity(f"      checkpoint_interval: {DEFAULT_LATEST_EVERY}\n"), accepted)
-        self.assertNotIn(old_identity("      checkpoint_interval: 1\n"), accepted)
-
 
 class _Scripted(Selector):
     """Answers every offer with one fixed decision."""
+
+    checkpoint_class_id = "tests.experiments.test_checkpoint._Scripted"
 
     def __init__(self, decision: object) -> None:
         self._decision = decision

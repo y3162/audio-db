@@ -23,7 +23,7 @@ from src.evaluation.provenance import (
     parse_provenance_bytes,
     sidecar_path,
 )
-from src.experiments.config import ExperimentConfig, config_generations, config_sha256
+from src.experiments.config import ExperimentConfig, config_sha256
 from src.experiments.errors import CheckpointError
 from src.experiments.calc.errors import TrainingError
 from src.experiments.calc.provenance import build_provenance, provenance_sha256, publish_provenance
@@ -84,31 +84,12 @@ def bind_provenance(
 ) -> tuple[bytes, str]:
     """Publish the run provenance once and return its canonical bytes and SHA-256."""
 
-    generations = config_generations(config)
-    provenance_path = directory / PROVENANCE_NAME
-    if not provenance_path.is_file():
-        generations = generations[:1]
-    last_error: TrainingError | None = None
-    for class_paths, digest in generations:
-        try:
-            document = _document(
-                config,
-                components,
-                runtime,
-                directory=directory,
-                config_digest=digest,
-                class_paths=class_paths,
-            )
-            raw = publish_provenance(directory, document, rank=0)
-        except TrainingError as exc:
-            if provenance_path.is_file() and "does not match this run" in str(exc):
-                last_error = exc
-                continue
-            raise CheckpointError(str(exc)) from exc
-        except (OSError, TypeError, ValueError) as exc:
-            raise CheckpointError(f"data provenance could not be written: {exc}") from exc
-        return raw, provenance_sha256(raw)
-    raise CheckpointError(str(last_error) if last_error is not None else "data provenance does not match this run")
+    try:
+        document = _document(config, components, runtime, directory=directory)
+        raw = publish_provenance(directory, document, rank=0)
+    except (TrainingError, OSError, TypeError, ValueError) as exc:
+        raise CheckpointError(f"data provenance could not be written: {exc}") from exc
+    return raw, provenance_sha256(raw)
 
 
 def attach_provenance_sidecar(checkpoint: Path, raw: bytes) -> None:
@@ -216,7 +197,6 @@ def _document(
     *,
     directory: Path | None = None,
     config_digest: str | None = None,
-    class_paths: dict[str, str] | None = None,
 ) -> dict[str, Any]:
     identity_map = dataset_identity_map(config, components)
     parts = _parts(components, identity_map)
@@ -227,7 +207,7 @@ def _document(
     process = _Process(int(getattr(runtime, "world_size", 1)))
     digest = config_sha256(config) if config_digest is None else config_digest
     training_config = {
-        "model": {"name": _model_name(config, class_paths)},
+        "model": {"name": _model_name(config)},
         "seed": config.seed,
         "loss": {"experiment_config_sha256": digest},
         "data": {},
@@ -429,12 +409,12 @@ def _comparable_map(value: object) -> object:
     return converted
 
 
-def _model_name(config: ExperimentConfig, class_paths: dict[str, str] | None = None) -> str:
+def _model_name(config: ExperimentConfig) -> str:
     names = []
     for _, spec in sorted(config.components.items()):
         if spec.ref is not None or spec.role != "module" or not spec.class_path:
             continue
-        names.append((class_paths or {}).get(spec.class_path, spec.class_path))
+        names.append(spec.class_path)
     if not names:
         return "experiment"
     return ",".join(names)

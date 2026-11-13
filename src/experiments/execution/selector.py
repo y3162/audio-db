@@ -87,6 +87,8 @@ class StandardSelector(Selector):
     inside an accumulation window.
     """
 
+    checkpoint_class_id = "src.experiments.selectors.StandardSelector"
+
     def __init__(self, latest_every: int = DEFAULT_LATEST_EVERY, partial: bool = False) -> None:
         self.latest_every = _positive_int("latest_every", latest_every)
         if not isinstance(partial, bool):
@@ -116,6 +118,8 @@ class PeriodicArchiveSelector(StandardSelector):
     number of Archives; ``None`` keeps all of them. ``name`` is formatted with
     ``step``.
     """
+
+    checkpoint_class_id = "src.experiments.selectors.PeriodicArchiveSelector"
 
     def __init__(
         self,
@@ -167,6 +171,8 @@ class TopKSelector(StandardSelector):
     metric, or with a non-finite value, is not ranked. On a tie the earlier
     step stays ahead. ``name`` is formatted with ``step``.
     """
+
+    checkpoint_class_id = "src.experiments.selectors.TopKSelector"
 
     def __init__(
         self,
@@ -269,8 +275,9 @@ def build_selector(class_path: str, kwargs: Mapping[str, Any]) -> Selector:
 def selector_identity(selector: object) -> str:
     """Class identity stored in a checkpoint. It does not depend on the import path used in YAML."""
 
-    kind = type(selector)
-    return f"{kind.__module__}.{kind.__qualname__}"
+    from src.experiments.core.identity import policy_identity
+
+    return policy_identity(selector)
 
 
 def _positive_int(name: str, value: object) -> int:

@@ -19,6 +19,8 @@
 | `configs/data/` | Dataset、Protocol、Build、公式リスト。ID はファイルの置き場所ではなく内容から決まる |
 | `configs/db/init.yaml` | 評価用 DB の名前付きセット。学習の入力には使わない |
 
+YAML の `class` には公開 import パスを書く。公開境界と checkpoint のクラス識別は [Checkpoint](CHECKPOINT.md#公開パスとクラス識別) を参照する。
+
 `official/` に無い設定を、パスを変えただけでは公式再現と呼ばない。`dfn3.online.official@1` と `semambapp.gsr.official@1` は blocked である。
 
 ## 実行
@@ -74,7 +76,7 @@ make experiment CONFIG=... RESUME=OUTPUT_DIRECTORY
 
 ディレクトリを渡すと `latest.pt` から続く。`--resume` を付けない起動は、`complete.json`、`latest.pt`、`archive/*.pt`、以前の形式の `step_*.pt` のどれかがあるディレクトリを拒否する。続きは `--resume`、やり直しは別の `output.directory` で行う。
 
-再開は設定の違いを拒否する。`stop_after_logical_steps` で止めた実行は、その上限だけを外した設定で再開できる。保存の方針（`checkpoint`）も変えてよい。拒否の条件と、以前の形式からの移行は [Checkpoint](CHECKPOINT.md)。
+再開は設定の違いを拒否する。`stop_after_logical_steps` で止めた実行は、その上限だけを外した設定で再開できる。Selector のクラスと設定も一致させる。拒否の条件は [Checkpoint](CHECKPOINT.md)。
 
 ## 保存の方針を変える
 

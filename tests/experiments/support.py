@@ -24,6 +24,8 @@ class StepArchiveSelector(StandardSelector):
     stays as an Archive. ``interval`` is the Latest period inside an epoch.
     """
 
+    checkpoint_class_id = "tests.experiments.support.StepArchiveSelector"
+
     def __init__(self, interval: int = 1, partial: bool = False) -> None:
         super().__init__(latest_every=interval, partial=partial)
 
@@ -445,6 +447,8 @@ class FaultTrainer:
 
 class RankSplitSelector(StandardSelector):
     """Decides differently on rank 1. The manager must refuse to write."""
+
+    checkpoint_class_id = "tests.experiments.support.RankSplitSelector"
 
     def decide(self, point: SavePoint) -> Decision:
         rank = int(os.environ.get("RANK", os.environ.get("LOCAL_RANK", "0")))

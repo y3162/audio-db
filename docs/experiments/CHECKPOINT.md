@@ -46,6 +46,8 @@ Selector は Python のクラスで、保存点ごとに `Decision(latest, archi
 from src.experiments.selectors import Decision, SavePoint, Selector
 
 class EveryEpoch(Selector):
+    checkpoint_class_id = "my_package.policies.EveryEpoch"
+
     def decide(self, point: SavePoint) -> Decision:
         if point.event == "boundary":
             return Decision(latest=True, archive=(f"epoch_{point.logical_step:08d}.pt",))
@@ -77,7 +79,7 @@ checkpoint:
       latest_every: 5000
 ```
 
-`checkpoint` を省くと `StandardSelector` で、Latest は 1000 logical step ごと、各境界、安全な停止、完了で置き換える。毎 step 保存は `latest_every: 1` と書いたときだけである。`checkpoint` は実験の同一性（`config_sha256`）に入らない。保存の方針を変えても同じ実験として再開できる。ただし、checkpoint に入っている Selector の状態は同じクラスにしか戻せないので、クラスを変えた再開は拒否する。
+`checkpoint` を省くと `StandardSelector` で、Latest は 1000 logical step ごと、各境界、安全な停止、完了で置き換える。毎 step 保存は `latest_every: 1` と書いたときだけである。`checkpoint` は実験の同一性（`config_sha256`）に入らない。再開では別途保存した Selector のクラス ID、設定、状態を照合し、クラスまたは設定が違う場合は拒否する。
 
 ## 書き込みの保証
 
@@ -113,7 +115,7 @@ checkpoint:
 - `complete.json` がある。完了した実験は再開しない。
 - `latest.pt` より前の step の Archive から続けようとした。続けると、その先の記録と Latest を黙って捨てることになるためである。古い状態から始めるときは、次節の新しい実験にする。
 
-停止した点より後の `metrics.jsonl` の行は、再開時に巻き戻す。
+Trainer の検証履歴と Selector・停止ポリシーの状態は checkpoint から復元する。記録された評価状態に整合させるため、停止した logical step より後の `metrics.jsonl` の行は再開時に巻き戻す。
 
 ## 新しい実験の初期化
 
@@ -133,15 +135,13 @@ initialize:
 - `initialize` は `config_sha256` に入る。初期状態が違えば別の実験である。出力ディレクトリは元の実験と別にする。
 - 初期化元のパス、SHA-256、logical step、選んだ state は `initialization.json` に残る。元の来歴 sidecar は写しを取り、新しい実験の来歴に引き継ぐ。
 
-## 以前の形式との互換
+## 公開パスとクラス識別
 
-checkpoint の形式は `audio-db-experiment-v1` のままである。`audio-db-training-v1` は読まない。
+現在の仕様では YAML の `class` に安定して維持する公開 import パスを書く。旧 YAML との互換性は保証しない。Experiment の共通構築、実行、Trainer、損失は `src.experiments` 直下の公開モジュール、データ供給は `src.experiments.data`、公式モデルと Trainer は `src.experiments.official.<model>.model` / `models` / `trainer`、共有 scheduler は `src.experiments.calc.optim`、外部ライブラリはその公開パスを使う。公式モジュールは公開モジュールに直接実装を置いている。推論は `src.se` と `src.asr`、評価は `src.evaluation` の API と CLI を使う。公開モジュール上の monkeypatch は実装モジュールのグローバル参照を書き換えない。
 
-- Selector 導入前の実験は、checkpoint をディレクトリ直下の `step_*.pt` に持つ。これは再開元として読める。再開後の保存は `latest.pt` と `archive/` に書く。古い `step_*.pt` は消さない。
-- 以前の YAML は Trainer に `checkpoint_interval`（MossFormerGAN は `checkpoint_partial` も）を持っていた。新しい YAML ではそれを消し、`StandardSelector` の `latest_every`（と `partial`）に同じ値を書く。この対応が成り立つとき、以前の `config_sha256` を同じ実験として受け付ける。以前の YAML がその引数を省いていた場合も受け付ける。`latest_every` を省いた新しい設定が受け付ける旧間隔は 1000 であり、旧文書の `checkpoint_interval: 1` は `latest_every: 1` を書いたときだけ受け付ける。
-- クラスパスを移動した世代（`src.training.se.optim.WarmupReduceLROnPlateau`、`src.experiments.<model>`、`src.experiments.models.*`）のハッシュも、同じ設定として受け付ける。新しい保存は現在のハッシュを書く。
-- CLI の `--initialize-from` は無い。初期化は YAML の `initialize` に書く。
-- `provenance_sha256` が None の checkpoint は来歴なしのまま再開できる。後から JSON ができても証明済みにはしない。
+Selector と StopPolicy は具象クラス自身に `checkpoint_class_id` を宣言する。ID は YAML に指定する公開クラスパスと一致させ、実装の移動では変えない。継承による暗黙の ID 再利用、無効な ID、同じプロセス内で異なるクラスによる ID の重複を拒否する。Selector は ID・設定・状態を保存し、StopPolicy は ID と状態を TrainingControl の状態に含める。保存前に rank 間でも照合する。Model、Optimizer、Scheduler、Trainer、DataModule のクラスは設定の公開パスと `config_sha256` で識別し、各 state ID と state 構造を検証する。`output`、`checkpoint` と `stop_after_logical_steps` はハッシュ対象外で、Selector の設定は別途照合する。
+
+形式は `audio-db-experiment-v1` のままである。旧クラスパスや旧 Trainer 引数に基づく設定ハッシュ、Selector 情報のない checkpoint、以前の実装パスを Selector ID として保存した checkpoint は再開できない。停止ポリシー ID のない停止状態も再開できない。これらを自動的に初期化として扱わない。`initialize` は module・Optimizer・scheduler 状態の読み込みであり、再開とは別である。`audio-db-training-v1` は読まない。来歴が欠けた checkpoint の扱いは従来どおり UNKNOWN のままである。
 
 ## 未実装
 

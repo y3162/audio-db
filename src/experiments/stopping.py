@@ -44,6 +44,8 @@ class StopPolicy(Protocol):
 class PatienceStopPolicy:
     """Stop after consecutive non-improving observations of a named metric."""
 
+    checkpoint_class_id = "src.experiments.stopping.PatienceStopPolicy"
+
     def __init__(self, metric: str, mode: str, patience: int, min_delta: float = 0.0, start_after: int = 0):
         if not isinstance(metric, str) or metric.count(".") != 1:
             raise ValueError("metric must be source.name")
@@ -123,7 +125,10 @@ class TrainingControl:
         metric = getattr(policy, "metric", None)
         if isinstance(metric, str) and metric.split(".", 1)[0] not in supported_sources:
             raise ValueError(f"this trainer emits only {', '.join(supported_sources)} metrics")
+        from src.experiments.core.identity import policy_identity
+
         self.policy = policy
+        self.policy_class_id = policy_identity(policy)
         self.runtime = runtime
         self.stopped = False
         self.last_event = None
@@ -167,11 +172,13 @@ class TrainingControl:
         return self.stopped
 
     def state_dict(self) -> dict:
-        return {"policy": self.policy.state_dict(), "stopped": self.stopped, "last_event": self.last_event}
+        return {"policy_class": self.policy_class_id, "policy": self.policy.state_dict(), "stopped": self.stopped, "last_event": self.last_event}
 
     def load_state_dict(self, state: dict) -> None:
-        if not isinstance(state, dict) or set(state) != {"policy", "stopped", "last_event"}:
+        if not isinstance(state, dict) or set(state) != {"policy_class", "policy", "stopped", "last_event"}:
             raise ValueError("invalid training control state")
+        if state["policy_class"] != self.policy_class_id:
+            raise ValueError("stopping policy class does not match")
         if not isinstance(state["policy"], dict) or not isinstance(state["stopped"], bool):
             raise ValueError("invalid training control state")
         event = state["last_event"]

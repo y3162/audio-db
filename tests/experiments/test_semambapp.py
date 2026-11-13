@@ -9,6 +9,7 @@ hidden GPU does not add a skip to this module.
 
 from __future__ import annotations
 
+import math
 import os
 import socket
 import subprocess
@@ -510,8 +511,19 @@ def _assert_matches_task(test: unittest.TestCase, *, accumulation: int, count: i
                 for index, (noisy, clean) in enumerate(waves)
             ]
             new = trainer.official_step(batches, experiment._graph.runtime)
+            test.assertEqual(set(old), {
+                "generator", "discriminator", "generator_grad_norm", "discriminator_grad_norm",
+                "adversarial", "matching", "mel", "magnitude", "phase", "complex", "consistency",
+            })
+            test.assertTrue(set(old).issubset(new), "missing trainer metric")
             for key in old:
-                if isinstance(old[key], float):
+                test.assertIsInstance(old[key], float, key)
+                test.assertIsInstance(new[key], float, key)
+                test.assertTrue(math.isfinite(old[key]) and math.isfinite(new[key]), key)
+                if accumulation > 1 and key in {"discriminator", "matching", "complex", "consistency"}:
+                    # Python-float and float32-tensor accumulation round differently.
+                    test.assertAlmostEqual(old[key], new[key], delta=1e-6, msg=key)
+                else:
                     test.assertEqual(old[key], new[key], key)
             if accumulation == 1:
                 test.assertEqual(trainer.generator_graph_forwards, 1)

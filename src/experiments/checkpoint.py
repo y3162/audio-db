@@ -1,18 +1,42 @@
-"""公開 import パス。実装は ``src.experiments.execution.checkpoint``。"""
+"""Public API; implementation: ``src.experiments.execution.checkpoint``."""
 
+from src.experiments.execution.checkpoint import (
+    ARCHIVE_DIR,
+    CheckpointError,
+    CheckpointManager,
+    DirectoryLock,
+    FORMAT,
+    INITIALIZATION_FORMAT,
+    INITIALIZATION_NAME,
+    INITIALIZATION_PROVENANCE_NAME,
+    LATEST_NAME,
+    REPO_ROOT,
+    RestoreReport,
+    SCHEMA_VERSION,
+    SaveReport,
+    _assert_replicated_states,
+    acquire_directory_lock,
+    assert_output_allowed,
+    pickle_error,
+    used_directory_marker,
+)
 
-def _export(module: object) -> list[str]:
-    public: list[str] = []
-    for name, value in vars(module).items():
-        if name.startswith("__"):
-            continue
-        globals()[name] = value
-        if not name.startswith("_"):
-            public.append(name)
-    return public
-
-
-from src.experiments.execution import checkpoint as _impl
-
-__all__ = _export(_impl)
-del _export, _impl
+__all__ = [
+    "ARCHIVE_DIR",
+    "CheckpointError",
+    "CheckpointManager",
+    "DirectoryLock",
+    "FORMAT",
+    "INITIALIZATION_FORMAT",
+    "INITIALIZATION_NAME",
+    "INITIALIZATION_PROVENANCE_NAME",
+    "LATEST_NAME",
+    "REPO_ROOT",
+    "RestoreReport",
+    "SCHEMA_VERSION",
+    "SaveReport",
+    "acquire_directory_lock",
+    "assert_output_allowed",
+    "pickle_error",
+    "used_directory_marker",
+]
