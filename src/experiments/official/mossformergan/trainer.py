@@ -196,6 +196,44 @@ class MossFormerGANTrainer:
         self.lifecycle.start()
         runtime = self.runtime
         checkpoint = self.lifecycle.checkpoint
+        component_id = self._prepare_run(runtime, checkpoint)
+        if should_stop(self):
+            return self._result(checkpoint, "completed")
+        while True:
+            if self.phase == _PENDING:
+                self._finish_boundary(runtime, checkpoint, component_id)
+                if should_stop(self):
+                    return self._result(checkpoint, "completed")
+                if self.stop_training:
+                    return self._result(checkpoint, "completed")
+                continue
+            if self.logical_step >= self.max_logical_steps:
+                return self._result(checkpoint, "completed")
+            if self._stop_requested(runtime):
+                self._publish_interrupt(runtime, checkpoint)
+                return self._result(checkpoint, "interrupted")
+            epoch = int(self.data.epoch)
+            index = int(self.data.update_index)
+            if self.max_epochs is not None and epoch >= self.max_epochs and index == 0:
+                self.halt_reason = "max_epochs"
+                return self._result(checkpoint, "completed")
+            opened = self._open_micro_batch(runtime, checkpoint, component_id, epoch, index)
+            if opened is None:
+                continue
+            view, batch, updates = opened
+            try:
+                stepped = self.consume_micro_batch(batch, runtime, update_index=index)
+                index += 1
+                self.data.epoch = epoch
+                self.data.update_index = index
+                self._note_micro_batch(runtime, checkpoint, stepped, epoch)
+                if index == updates:
+                    self._open_boundary(runtime, checkpoint, epoch)
+            finally:
+                _close_epoch_view(view)
+
+    def _prepare_run(self, runtime: ProcessRuntime, checkpoint: CheckpointManager) -> str:
+        """Rewind metrics and the skip sidecar. Does not run an optimizer pair."""
 
         self.research.rewind(
             checkpoint.directory,
@@ -244,89 +282,86 @@ class MossFormerGANTrainer:
         bind_trainer_data(self)
         self._require_group_size(component_id)
         runtime.barrier()
-        if should_stop(self):
-            return self._result(checkpoint, "completed")
-        while True:
-            if self.phase == _PENDING:
-                self._finish_boundary(runtime, checkpoint, component_id)
-                if should_stop(self):
-                    return self._result(checkpoint, "completed")
-                if self.stop_training:
-                    return self._result(checkpoint, "completed")
-                continue
-            if self.logical_step >= self.max_logical_steps:
-                return self._result(checkpoint, "completed")
-            if self._stop_requested(runtime):
-                self._publish_interrupt(runtime, checkpoint)
-                return self._result(checkpoint, "interrupted")
-            epoch = int(self.data.epoch)
-            index = int(self.data.update_index)
-            if self.max_epochs is not None and epoch >= self.max_epochs and index == 0:
-                self.halt_reason = "max_epochs"
-                return self._result(checkpoint, "completed")
-            view = self.data.train_epoch(epoch, start_update=index)
-            try:
-                updates = int(view.updates)
-                self._require_same_updates(runtime, updates, component_id)
-                if updates < 1:
-                    raise RuntimeFailure(f"component {component_id}: epoch {epoch} has no micro-batches")
-                if updates % self.accumulation != 0:
-                    raise RuntimeFailure(
-                        f"component {component_id}: epoch micro-batches {updates} "
-                        f"are not divisible by accumulation {self.accumulation}"
-                    )
-                if index > updates:
-                    raise RuntimeFailure(f"component {component_id}: update {index} is past epoch {epoch}")
-                if index == updates:
-                    self._open_boundary(runtime, checkpoint, epoch)
-                    continue
-                if index == 0:
-                    self._epoch_success_start = int(self.counters["micro_batches_succeeded"])
-                    self._epoch_update_start = int(self.counters["optimizer_updates"])
-                batches = view.batch(index)
-                if len(batches) != 1 or not isinstance(batches[0], Batch):
-                    raise RuntimeFailure(f"component {component_id}: expected one micro-batch")
-                stepped = self.consume_micro_batch(batches[0], runtime, update_index=index)
-                index += 1
-                self.data.epoch = epoch
-                self.data.update_index = index
-                if stepped is not None:
-                    self.logical_step += 1
-                    self.step_log.append(stepped)
-                    self.journal.write_metrics(
-                        {
-                            "discriminator": stepped["discriminator"],
-                            "generator": stepped["generator"],
-                            "logical_step": stepped["logical_step"],
-                            "loss": stepped["loss"],
-                            "sample_id": stepped["sample_id"],
-                        }
-                    )
-                    self.journal.write_sample(
-                        {
-                            "logical_step": self.logical_step,
-                            "loss": stepped["loss"],
-                            "sample_id": stepped["sample_id"],
-                        }
-                    )
-                    step_metrics = self.research.score(
-                        runtime,
-                        checkpoint,
-                        kind="step",
-                        epoch=epoch,
-                        logical_step=self.logical_step,
-                        stopping=getattr(self, "training_control", None),
-                    )
-                    if step_metrics:
-                        self._offer(runtime, checkpoint, "step", metrics=step_metrics)
-                    else:
-                        self._offer(runtime, checkpoint, "step")
-                else:
-                    self._offer(runtime, checkpoint, "partial")
-                if index == updates:
-                    self._open_boundary(runtime, checkpoint, epoch)
-            finally:
+        return str(component_id)
+
+    def _open_micro_batch(
+        self,
+        runtime: ProcessRuntime,
+        checkpoint: CheckpointManager,
+        component_id: str,
+        epoch: int,
+        index: int,
+    ) -> tuple[Any, Batch, int] | None:
+        """Return one micro-batch, or ``None`` after opening an exhausted-epoch boundary."""
+
+        view = self.data.train_epoch(epoch, start_update=index)
+        try:
+            updates = int(view.updates)
+            self._require_same_updates(runtime, updates, component_id)
+            if updates < 1:
+                raise RuntimeFailure(f"component {component_id}: epoch {epoch} has no micro-batches")
+            if updates % self.accumulation != 0:
+                raise RuntimeFailure(
+                    f"component {component_id}: epoch micro-batches {updates} "
+                    f"are not divisible by accumulation {self.accumulation}"
+                )
+            if index > updates:
+                raise RuntimeFailure(f"component {component_id}: update {index} is past epoch {epoch}")
+            if index == updates:
+                self._open_boundary(runtime, checkpoint, epoch)
                 _close_epoch_view(view)
+                return None
+            if index == 0:
+                self._epoch_success_start = int(self.counters["micro_batches_succeeded"])
+                self._epoch_update_start = int(self.counters["optimizer_updates"])
+            batches = view.batch(index)
+            if len(batches) != 1 or not isinstance(batches[0], Batch):
+                raise RuntimeFailure(f"component {component_id}: expected one micro-batch")
+        except Exception:
+            _close_epoch_view(view)
+            raise
+        return view, batches[0], updates
+
+    def _note_micro_batch(
+        self,
+        runtime: ProcessRuntime,
+        checkpoint: CheckpointManager,
+        stepped: dict[str, Any] | None,
+        epoch: int,
+    ) -> None:
+        if stepped is None:
+            self._offer(runtime, checkpoint, "partial")
+            return
+        self.logical_step += 1
+        self.step_log.append(stepped)
+        self.journal.write_metrics(
+            {
+                "discriminator": stepped["discriminator"],
+                "generator": stepped["generator"],
+                "logical_step": stepped["logical_step"],
+                "loss": stepped["loss"],
+                "sample_id": stepped["sample_id"],
+            }
+        )
+        self.journal.write_sample(
+            {
+                "logical_step": self.logical_step,
+                "loss": stepped["loss"],
+                "sample_id": stepped["sample_id"],
+            }
+        )
+        step_metrics = self.research.score(
+            runtime,
+            checkpoint,
+            kind="step",
+            epoch=epoch,
+            logical_step=self.logical_step,
+            stopping=getattr(self, "training_control", None),
+        )
+        if step_metrics:
+            self._offer(runtime, checkpoint, "step", metrics=step_metrics)
+        else:
+            self._offer(runtime, checkpoint, "step")
 
     def consume_micro_batch(
         self,
