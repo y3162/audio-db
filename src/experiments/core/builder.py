@@ -77,8 +77,8 @@ class ExperimentBuilder:
         self._assert_unique_parameters(config, registry)
         self._build_stage(config, registry, 2, runtime)
         trainer = registry.get(config.entry)
-        if not callable(getattr(trainer, "run", None)):
-            raise BuildError(f"component {config.entry}: trainer has no run method")
+        if not callable(getattr(trainer, "fit", None)) and not callable(getattr(trainer, "run", None)):
+            raise BuildError(f"component {config.entry}: trainer has no fit method")
         from src.experiments.data.pair import bind_trainer_data
         from src.experiments.data.publication import require_declared_publication
         from src.experiments.errors import DataError, RuntimeFailure

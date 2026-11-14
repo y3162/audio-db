@@ -85,6 +85,15 @@ class StandardTrainer:
         self._restored = False
 
     def run(self, runtime: ProcessRuntime, checkpoint: CheckpointManager) -> RunResult:
+        """Bind a direct caller and train. Experiment calls :meth:`fit` itself."""
+
+        self.runtime = runtime
+        current = getattr(self, "lifecycle", None)
+        if current is None or getattr(current, "checkpoint", None) is not checkpoint:
+            self.lifecycle = _DirectLifecycle(checkpoint)
+        return self.fit()
+
+    def fit(self) -> RunResult:
         """Run until ``max_logical_steps``. A restored trainer continues.
 
         The loss is divided by accumulation. A new run clears ``metrics.jsonl``.
@@ -92,6 +101,8 @@ class StandardTrainer:
         anything written past that commit.
         """
 
+        runtime = self.runtime
+        checkpoint = self.lifecycle.checkpoint
         component_id = getattr(self, "_experiment_component_id", "trainer")
         rank = _rank(runtime)
         metrics_path = Path(checkpoint.directory) / "metrics.jsonl"
@@ -157,7 +168,7 @@ class StandardTrainer:
                     sync = offset == self.accumulation - 1
                     batches = view.batch(index + offset)
                     sample_ids.extend(batch.sample_id for batch in batches)
-                    with runtime.sync_context([self.model], sync=sync):
+                    with runtime.sync_gradients([self.model], enabled=sync):
                         with runtime.autocast():
                             micro = self._forward_loss(batches, component_id, runtime)
                         micro = micro / self.accumulation
@@ -254,9 +265,10 @@ class StandardTrainer:
         twice and a resumed run would no longer match a continuous one.
         """
 
-        checkpoint.offer(
+        self.lifecycle.save_if_needed(
             event,
             logical_step=self.logical_step,
+            progress={"logical_step": int(self.logical_step)},
             prepare=lambda runtime: self._before_checkpoint(runtime, checkpoint),
         )
 
@@ -294,6 +306,22 @@ class StandardTrainer:
         }
         with path.open("a", encoding="utf-8") as handle:
             handle.write(json.dumps(record, sort_keys=True) + "\n")
+
+
+class _DirectLifecycle:
+    """Save adapter for callers that still pass a checkpoint into ``run``."""
+
+    def __init__(self, checkpoint: CheckpointManager) -> None:
+        self.checkpoint = checkpoint
+
+    def save_if_needed(self, event: str, **kwargs: Any) -> Any:
+        return self.checkpoint.offer(
+            event,
+            logical_step=kwargs.get("logical_step"),
+            metrics=kwargs.get("metrics"),
+            prepare=kwargs.get("prepare"),
+            progress=kwargs.get("progress"),
+        )
 
 
 def _close_epoch_view(view: object) -> None:
@@ -391,6 +419,9 @@ class GanTrainer:
         self.optim_d = optim_d
         self.max_logical_steps = max_logical_steps
 
+    def fit(self) -> RunResult:
+        return self.run(getattr(self, "runtime", None), getattr(getattr(self, "lifecycle", None), "checkpoint", None))
+
     def run(self, runtime: ProcessRuntime, checkpoint: CheckpointManager) -> RunResult:
         del runtime, checkpoint
         raise ExperimentError("GanTrainer training is not implemented in Phase 1")
@@ -421,6 +452,9 @@ class MixtureTrainer:
         self.optim_experts = optim_experts
         self.optim_router = optim_router
         self.max_logical_steps = max_logical_steps
+
+    def fit(self) -> RunResult:
+        return self.run(getattr(self, "runtime", None), getattr(getattr(self, "lifecycle", None), "checkpoint", None))
 
     def run(self, runtime: ProcessRuntime, checkpoint: CheckpointManager) -> RunResult:
         del runtime, checkpoint

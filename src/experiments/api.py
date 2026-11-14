@@ -140,7 +140,13 @@ class Experiment:
                 device = getattr(runtime, "device", None)
                 if device is not None and getattr(device, "type", None) == "cuda" and torch.cuda.is_available():
                     torch.cuda.reset_peak_memory_stats(int(device.index or 0))
-            result = self._graph.trainer.run(self._graph.runtime, self._checkpoint)  # type: ignore[attr-defined]
+            trainer = self._graph.trainer
+            if callable(getattr(type(trainer), "fit", None)):
+                trainer.runtime = self._graph.runtime  # type: ignore[attr-defined]
+                trainer.lifecycle = lifecycle  # type: ignore[attr-defined]
+                result = trainer.fit()  # type: ignore[attr-defined]
+            else:
+                result = trainer.run(self._graph.runtime, self._checkpoint)  # type: ignore[attr-defined]
             if not isinstance(result, RunResult):
                 raise BuildError(f"component {self.config.entry}: trainer did not return RunResult")
             control = getattr(self._graph.trainer, "training_control", None)

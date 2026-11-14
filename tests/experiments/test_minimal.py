@@ -40,7 +40,7 @@ def _config_text(directory: Path, steps: int) -> Path:
 
 class MinimalExperimentTests(unittest.TestCase):
     def test_standard_trainer_updates_through_runtime(self) -> None:
-        source = inspect.getsource(StandardTrainer.run)
+        source = inspect.getsource(StandardTrainer.fit)
         self.assertNotIn("optimizer.step", source)
         self.assertIn("runtime.step", source)
 
