@@ -43,15 +43,13 @@ from src.experiments.data import Batch
 from src.experiments.data.pair import bind_trainer_data
 from src.experiments.errors import BuildError, RuntimeFailure
 from src.experiments.training.objectives import call_objective, coerce_spectral_objective, term_floats
+from src.experiments.execution.journal import StepJournal
 from src.experiments.results import RunResult
 from src.experiments.runtime import PreparedModel, ProcessRuntime
 from src.experiments.official.tf_gridnet.trainer import early_stop, rank_validation_loss
 from src.experiments.trainers import (
-    _append_jsonl,
     _close_epoch_view,
     _rank,
-    _rewind_metrics,
-    _sample_path,
 )
 from src.experiments.calc.average import average_checkpoint_files, remove_symlink, replace_symlink
 from src.experiments.calc.rng import capture_rank_rng, restore_rank_rng
@@ -188,23 +186,11 @@ class TFLocoformerTrainer:
             self._research_runtime = runtime
         rewind_on_resume(self, checkpoint.directory)
         component_id = getattr(self, "_experiment_component_id", "trainer")
-        rank = _rank(runtime)
-        metrics_path = Path(checkpoint.directory) / "metrics.jsonl"
-        sample_path = _sample_path(checkpoint.directory, runtime)
-        if self._restored:
-            if not hasattr(self.data, "epoch") or not hasattr(self.data, "update_index"):
-                raise RuntimeFailure("resumed data has no epoch position")
-            if rank == 0:
-                self.losses = _rewind_metrics(metrics_path, self.logical_step)
-            if sample_path is not None:
-                sample_losses = _rewind_metrics(sample_path, self.logical_step)
-                if rank != 0:
-                    self.losses = sample_losses
-        else:
-            if rank == 0:
-                metrics_path.write_text("", encoding="utf-8")
-            if sample_path is not None:
-                sample_path.write_text("", encoding="utf-8")
+        self.journal = StepJournal(checkpoint.directory, runtime)
+        if self._restored and (not hasattr(self.data, "epoch") or not hasattr(self.data, "update_index")):
+            raise RuntimeFailure("resumed data has no epoch position")
+        self.losses = self.journal.begin(restored=self._restored, logical_step=self.logical_step)
+        if not self._restored:
             self.logical_step = 0
             self.optimizer_updates = {self.optimizer_id: 0}
             self.losses = []
@@ -237,12 +223,12 @@ class TFLocoformerTrainer:
                 return self._result(checkpoint, "completed")
         while self.logical_step < self.max_logical_steps:
             if self._stop_requested(runtime):
-                self._drain_step_io(metrics_path, sample_path, rank, checkpoint)
+                self._drain_step_io(checkpoint)
                 if self.logical_step > 0:
                     self.lifecycle.save_if_needed("stop", logical_step=self.logical_step)
                 return self._result(checkpoint, "interrupted")
             if self._epoch_cap_reached():
-                self._drain_step_io(metrics_path, sample_path, rank, checkpoint)
+                self._drain_step_io(checkpoint)
                 return self._result(checkpoint, "completed")
             epoch = int(self.data.epoch)
             index = int(self.data.update_index)
@@ -266,7 +252,7 @@ class TFLocoformerTrainer:
                 planned: list[list[Batch]] = []
                 for offset in range(self.accumulation):
                     planned.append(view.batch(index + offset))
-                self._drain_step_io(metrics_path, sample_path, rank, checkpoint)
+                self._drain_step_io(checkpoint)
                 self.model.module.train()
                 self.optimizer.zero_grad(set_to_none=True)
                 total: torch.Tensor | None = None
@@ -337,7 +323,7 @@ class TFLocoformerTrainer:
                 )
                 if not epoch_done:
                     continue
-                self._drain_step_io(metrics_path, sample_path, rank, checkpoint)
+                self._drain_step_io(checkpoint)
                 self.phase = _PENDING
                 self.finished_epoch = epoch
                 self.boundary = _open_boundary(epoch, warmup_updated=bool(result.applied))
@@ -352,7 +338,7 @@ class TFLocoformerTrainer:
                     return self._result(checkpoint, "completed")
             finally:
                 _close_epoch_view(view)
-        self._drain_step_io(metrics_path, sample_path, rank, checkpoint)
+        self._drain_step_io(checkpoint)
         return self._result(checkpoint, "completed")
 
     def state_dict(self) -> dict[str, Any]:
@@ -650,13 +636,7 @@ class TFLocoformerTrainer:
             )
         )
 
-    def _drain_step_io(
-        self,
-        metrics_path: Path,
-        sample_path: Path | None,
-        rank: int,
-        checkpoint: CheckpointManager,
-    ) -> None:
+    def _drain_step_io(self, checkpoint: CheckpointManager) -> None:
         """Write the previous step while the next forward is already queued."""
 
         item = self._step_io
@@ -676,8 +656,8 @@ class TFLocoformerTrainer:
             terms,
             step_metrics,
         ) = item
-        if rank == 0:
-            record = {
+        self.journal.write_metrics(
+            {
                 "applied": applied,
                 "epoch": epoch,
                 "logical_step": logical_step,
@@ -690,21 +670,18 @@ class TFLocoformerTrainer:
                 "step_num": int(self.scheduler.step_num),
                 "terms": terms,
             }
-            with metrics_path.open("a", encoding="utf-8") as handle:
-                handle.write(json.dumps(record, sort_keys=True) + "\n")
-        if sample_path is not None:
-            _append_jsonl(
-                sample_path,
-                {
-                    "epoch": epoch,
-                    "logical_step": logical_step,
-                    "loss": loss_value,
-                    "lr": used_lr,
-                    "sample_id": sample_id,
-                    "scheduled_lr": scheduled_lr,
-                    "si_sdr": si_sdr,
-                },
-            )
+        )
+        self.journal.write_sample(
+            {
+                "epoch": epoch,
+                "logical_step": logical_step,
+                "loss": loss_value,
+                "lr": used_lr,
+                "sample_id": sample_id,
+                "scheduled_lr": scheduled_lr,
+                "si_sdr": si_sdr,
+            }
+        )
         if offer_step:
             if step_metrics:
                 self.lifecycle.save_if_needed("step", logical_step=logical_step, metrics=step_metrics)

@@ -18,7 +18,6 @@ from __future__ import annotations
 
 from src.experiments.stopping import observe_validation, should_stop
 
-from pathlib import Path
 from typing import Any
 
 import torch
@@ -34,16 +33,11 @@ from src.experiments.official.semambapp.models import (
     pack_forward,
     scan_execution,
 )
+from src.experiments.execution.journal import StepJournal
 from src.experiments.results import RunResult
 from src.experiments.runtime import PreparedModel, ProcessRuntime
 from src.experiments.selectors import scalar_metrics
-from src.experiments.trainers import (
-    _append_jsonl,
-    _close_epoch_view,
-    _rank,
-    _rewind_metrics,
-    _sample_path,
-)
+from src.experiments.trainers import _close_epoch_view
 from src.experiments.calc.metrics import _aggregate_validation
 from src.experiments.calc.errors import TrainingError
 from src.experiments.official.semambapp.reference import validation_model
@@ -186,25 +180,15 @@ class SEMambaPPTrainer:
         self._refuse_amp(runtime)
         self._require_scan(runtime)
         component_id = getattr(self, "_experiment_component_id", "trainer")
-        rank = _rank(runtime)
-        metrics_path = Path(checkpoint.directory) / "metrics.jsonl"
-        sample_path = _sample_path(checkpoint.directory, runtime)
-        if self._restored:
-            if not hasattr(self.data, "epoch") or not hasattr(self.data, "update_index"):
-                raise RuntimeFailure("resumed data has no epoch position")
-            if rank == 0:
-                kept = _rewind_metrics(metrics_path, self.logical_step)
-                if len(kept) != len(self.step_log):
-                    raise RuntimeFailure("metrics.jsonl does not match the trainer log")
-            if sample_path is not None:
-                kept = _rewind_metrics(sample_path, self.logical_step)
-                if len(kept) != len(self.step_log):
-                    raise RuntimeFailure("sample log does not match the trainer log")
-        else:
-            if rank == 0:
-                metrics_path.write_text("", encoding="utf-8")
-            if sample_path is not None:
-                sample_path.write_text("", encoding="utf-8")
+        self.journal = StepJournal(checkpoint.directory, runtime)
+        if self._restored and (not hasattr(self.data, "epoch") or not hasattr(self.data, "update_index")):
+            raise RuntimeFailure("resumed data has no epoch position")
+        self.journal.begin(
+            restored=self._restored,
+            logical_step=self.logical_step,
+            expect_rows=len(self.step_log) if self._restored else None,
+        )
+        if not self._restored:
             self.logical_step = 0
             self.optimizer_updates = {self.optim_g_id: 0, self.optim_d_id: 0}
             self.scheduler_steps = 0
@@ -290,18 +274,15 @@ class SEMambaPPTrainer:
                     "scan_executed": shared["scan_executed"],
                 }
                 self.step_log.append(entry)
-                if rank == 0:
-                    _append_jsonl(metrics_path, entry)
-                if sample_path is not None:
-                    _append_jsonl(
-                        sample_path,
-                        {
-                            "logical_step": self.logical_step,
-                            "loss": local["generator"],
-                            "realization_id": local["realization_id"],
-                            "sample_id": local["sample_id"],
-                        },
-                    )
+                self.journal.write_metrics(entry)
+                self.journal.write_sample(
+                    {
+                        "logical_step": self.logical_step,
+                        "loss": local["generator"],
+                        "realization_id": local["realization_id"],
+                        "sample_id": local["sample_id"],
+                    }
+                )
                 epoch_done = index == view.updates
                 will_validate = self.validation_interval > 0 and self.logical_step % self.validation_interval == 0
                 if not will_validate and not epoch_done:

@@ -38,15 +38,13 @@ from src.experiments.official.mp_senet.models import (
     pack_forward,
     require_official_architecture,
 )
+from src.experiments.execution.journal import StepJournal
 from src.experiments.results import RunResult
 from src.experiments.runtime import PreparedModel, ProcessRuntime
 from src.experiments.selectors import scalar_metrics
 from src.experiments.trainers import (
-    _append_jsonl,
     _close_epoch_view,
     _rank,
-    _rewind_metrics,
-    _sample_path,
 )
 from src.experiments.calc.errors import TrainingError
 from src.experiments.training.objectives import call_objective
@@ -187,25 +185,15 @@ class MPSENetGANTrainer:
         rewind_on_resume(self, checkpoint.directory)
         self._refuse_amp(runtime)
         component_id = getattr(self, "_experiment_component_id", "trainer")
-        rank = _rank(runtime)
-        metrics_path = Path(checkpoint.directory) / "metrics.jsonl"
-        sample_path = _sample_path(checkpoint.directory, runtime)
-        if self._restored:
-            if not hasattr(self.data, "epoch") or not hasattr(self.data, "update_index"):
-                raise RuntimeFailure("resumed data has no epoch position")
-            if rank == 0:
-                kept = _rewind_metrics(metrics_path, self.logical_step)
-                if len(kept) != len(self.step_log):
-                    raise RuntimeFailure("metrics.jsonl does not match the trainer log")
-            if sample_path is not None:
-                kept = _rewind_metrics(sample_path, self.logical_step)
-                if len(kept) != len(self.step_log):
-                    raise RuntimeFailure("sample log does not match the trainer log")
-        else:
-            if rank == 0:
-                metrics_path.write_text("", encoding="utf-8")
-            if sample_path is not None:
-                sample_path.write_text("", encoding="utf-8")
+        self.journal = StepJournal(checkpoint.directory, runtime)
+        if self._restored and (not hasattr(self.data, "epoch") or not hasattr(self.data, "update_index")):
+            raise RuntimeFailure("resumed data has no epoch position")
+        self.journal.begin(
+            restored=self._restored,
+            logical_step=self.logical_step,
+            expect_rows=len(self.step_log) if self._restored else None,
+        )
+        if not self._restored:
             self.logical_step = 0
             self.optimizer_updates = {self.optim_g_id: 0, self.optim_d_id: 0}
             self.scheduler_steps = 0
@@ -299,15 +287,15 @@ class MPSENetGANTrainer:
 
                     step_metrics = research_metrics(self, runtime, checkpoint, kind="step", epoch=epoch)
                 if runtime.device.type == "cuda" and runtime.world_size == 1:
-                    self._mp_io = (entry, local, metrics_path, sample_path, rank, offer_step, checkpoint, step_metrics)
+                    self._mp_io = (entry, local, offer_step, checkpoint, step_metrics)
                     if offer_step:
                         continue
                     self._drain_mp_io()
                 else:
-                    if rank == 0:
-                        _append_jsonl(metrics_path, entry)
-                    if sample_path is not None:
-                        _append_jsonl(sample_path, {**local, "logical_step": self.logical_step, "loss": local["generator"]})
+                    self.journal.write_metrics(entry)
+                    self.journal.write_sample(
+                        {**local, "logical_step": self.logical_step, "loss": local["generator"]}
+                    )
                     if offer_step:
                         if step_metrics:
                             self._offer(checkpoint, "step", metrics=step_metrics)
@@ -337,11 +325,11 @@ class MPSENetGANTrainer:
         if item is None:
             return
         self._mp_io = None
-        entry, local, metrics_path, sample_path, rank, offer_step, checkpoint, step_metrics = item
-        if rank == 0:
-            _append_jsonl(metrics_path, entry)
-        if sample_path is not None:
-            _append_jsonl(sample_path, {**local, "logical_step": entry["logical_step"], "loss": local["generator"]})
+        entry, local, offer_step, checkpoint, step_metrics = item
+        self.journal.write_metrics(entry)
+        self.journal.write_sample(
+            {**local, "logical_step": entry["logical_step"], "loss": local["generator"]}
+        )
         if offer_step:
             if step_metrics:
                 self._offer(checkpoint, "step", metrics=step_metrics)

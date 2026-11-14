@@ -34,14 +34,12 @@ from src.experiments.data import Batch
 from src.experiments.data.pair import bind_trainer_data
 from src.experiments.errors import BuildError, RuntimeFailure
 from src.experiments.official.deepfilternet3.model import DeepFilterNet3Model
+from src.experiments.execution.journal import StepJournal
 from src.experiments.results import RunResult
 from src.experiments.runtime import PreparedModel, ProcessRuntime
 from src.experiments.trainers import (
-    _append_jsonl,
     _close_epoch_view,
     _rank,
-    _rewind_metrics,
-    _sample_path,
 )
 from src.se.models.deepfilternet3.dsp import DFStream, vorbis_window
 from src.experiments.calc.batch_schedule import scheduled_batch_size
@@ -275,21 +273,15 @@ class DeepFilterNet3Trainer:
             self._research_runtime = runtime
         rewind_on_resume(self, checkpoint.directory)
         component_id = getattr(self, "_experiment_component_id", "trainer")
-        rank = _rank(runtime)
-        metrics_path = Path(checkpoint.directory) / "metrics.jsonl"
-        sample_path = _sample_path(checkpoint.directory, runtime)
+        self.journal = StepJournal(checkpoint.directory, runtime)
         if self.batch_schedule is not None and runtime.world_size != 1:
             raise RuntimeFailure("batch_schedule is implemented for one process")
-        if self._restored:
-            if rank == 0:
-                self.losses = _rewind_metrics(metrics_path, self.logical_step)
-            if sample_path is not None and rank != 0:
-                self.losses = _rewind_metrics(sample_path, self.logical_step)
-        else:
-            if rank == 0:
-                metrics_path.write_text("", encoding="utf-8")
-            if sample_path is not None:
-                sample_path.write_text("", encoding="utf-8")
+        self.losses = self.journal.begin(
+            restored=self._restored,
+            logical_step=self.logical_step,
+            rewind_samples_on_rank0=False,
+        )
+        if not self._restored:
             self.logical_step = 0
             self.optimizer_updates = {self.optimizer_id: 0}
             self.losses = []
@@ -381,23 +373,29 @@ class DeepFilterNet3Trainer:
                 self.data.epoch = epoch
                 self.data.update_index = index
                 sample_id = ",".join(sample_ids)
-                if rank == 0:
-                    self._append_metrics(
-                        metrics_path, loss_value, result.applied, sample_id, learning_rate, decay, epoch
-                    )
-                if sample_path is not None:
-                    _append_jsonl(
-                        sample_path,
-                        {
-                            "epoch": epoch,
-                            "logical_step": self.logical_step,
-                            "loss": loss_value,
-                            "lr": learning_rate,
-                            "sample_id": sample_id,
-                            "schedule_index": position,
-                            "weight_decay": decay,
-                        },
-                    )
+                self.journal.write_metrics(
+                    {
+                        "applied": result.applied,
+                        "epoch": epoch,
+                        "logical_step": self.logical_step,
+                        "loss": loss_value,
+                        "lr": learning_rate,
+                        "optimizer_updates": dict(self.optimizer_updates),
+                        "sample_id": sample_id,
+                        "weight_decay": decay,
+                    }
+                )
+                self.journal.write_sample(
+                    {
+                        "epoch": epoch,
+                        "logical_step": self.logical_step,
+                        "loss": loss_value,
+                        "lr": learning_rate,
+                        "sample_id": sample_id,
+                        "schedule_index": position,
+                        "weight_decay": decay,
+                    }
+                )
                 if index != view.updates:
                     step_metrics: dict[str, float] = {}
                     if research_attached(self):
@@ -739,30 +737,6 @@ class DeepFilterNet3Trainer:
                 output_dir=checkpoint.directory,
             )
         )
-
-    def _append_metrics(
-        self,
-        path: Path,
-        loss_value: float,
-        applied: bool,
-        sample_id: str,
-        learning_rate: float,
-        decay: float,
-        epoch: int,
-    ) -> None:
-        record = {
-            "applied": applied,
-            "epoch": epoch,
-            "logical_step": self.logical_step,
-            "loss": loss_value,
-            "lr": learning_rate,
-            "optimizer_updates": dict(self.optimizer_updates),
-            "sample_id": sample_id,
-            "weight_decay": decay,
-        }
-        with path.open("a", encoding="utf-8") as handle:
-            handle.write(json.dumps(record, sort_keys=True) + "\n")
-
 
 def _analyze(stream: DFStream, generator: torch.nn.Module, waveform: torch.Tensor):
     return _analyze_features(stream, generator, waveform)

@@ -37,16 +37,11 @@ from src.experiments.official.mossformergan.models import (
     MossFormerGANGenerator,
     require_official_architecture,
 )
+from src.experiments.execution.journal import StepJournal
 from src.experiments.results import RunResult
 from src.experiments.runtime import PreparedModel, ProcessRuntime
 from src.experiments.selectors import scalar_metrics
-from src.experiments.trainers import (
-    _append_jsonl,
-    _close_epoch_view,
-    _rank,
-    _rewind_metrics,
-    _sample_path,
-)
+from src.experiments.trainers import _close_epoch_view
 from src.experiments.calc.errors import TrainingError
 from src.experiments.official.mossformergan import reference as mossformer_lib
 from src.experiments.official.mossformergan.reference import (
@@ -201,28 +196,20 @@ class MossFormerGANTrainer:
         rewind_on_resume(self, checkpoint.directory)
         self._refuse_amp(runtime)
         component_id = getattr(self, "_experiment_component_id", "trainer")
-        rank = _rank(runtime)
-        metrics_path = Path(checkpoint.directory) / "metrics.jsonl"
-        sample_path = _sample_path(checkpoint.directory, runtime)
-        self._skip_path = Path(checkpoint.directory) / "skip_log.jsonl"
-        if self._restored:
-            if not hasattr(self.data, "epoch") or not hasattr(self.data, "update_index"):
-                raise RuntimeFailure("resumed data has no epoch position")
-            if rank == 0:
-                kept = _rewind_metrics(metrics_path, self.logical_step)
-                if len(kept) != len(self.step_log):
-                    raise RuntimeFailure("metrics.jsonl does not match the trainer log")
-                _rewind_jsonl(self._skip_path, len(self.skip_log))
-            if sample_path is not None:
-                kept = _rewind_metrics(sample_path, self.logical_step)
-                if len(kept) != len(self.step_log):
-                    raise RuntimeFailure("sample log does not match the trainer log")
-        else:
-            if rank == 0:
-                metrics_path.write_text("", encoding="utf-8")
-                self._skip_path.write_text("", encoding="utf-8")
-            if sample_path is not None:
-                sample_path.write_text("", encoding="utf-8")
+        self.journal = StepJournal(checkpoint.directory, runtime)
+        if self._restored and (not hasattr(self.data, "epoch") or not hasattr(self.data, "update_index")):
+            raise RuntimeFailure("resumed data has no epoch position")
+        self.journal.begin(
+            restored=self._restored,
+            logical_step=self.logical_step,
+            expect_rows=len(self.step_log) if self._restored else None,
+        )
+        self._skip_path = self.journal.begin_sidecar(
+            "skip_log.jsonl",
+            restored=self._restored,
+            keep_lines=len(self.skip_log) if self._restored else None,
+        )
+        if not self._restored:
             self.logical_step = 0
             self.optimizer_updates = {self.optim_g_id: 0, self.optim_d_id: 0}
             self.counters = _empty_counters()
@@ -297,17 +284,22 @@ class MossFormerGANTrainer:
                 if stepped is not None:
                     self.logical_step += 1
                     self.step_log.append(stepped)
-                    if rank == 0:
-                        _append_metrics(metrics_path, stepped)
-                    if sample_path is not None:
-                        _append_jsonl(
-                            sample_path,
-                            {
-                                "logical_step": self.logical_step,
-                                "loss": stepped["loss"],
-                                "sample_id": stepped["sample_id"],
-                            },
-                        )
+                    self.journal.write_metrics(
+                        {
+                            "discriminator": stepped["discriminator"],
+                            "generator": stepped["generator"],
+                            "logical_step": stepped["logical_step"],
+                            "loss": stepped["loss"],
+                            "sample_id": stepped["sample_id"],
+                        }
+                    )
+                    self.journal.write_sample(
+                        {
+                            "logical_step": self.logical_step,
+                            "loss": stepped["loss"],
+                            "sample_id": stepped["sample_id"],
+                        }
+                    )
                     step_metrics: dict[str, float] = {}
                     if research_attached(self):
                         from src.experiments.evaluation.boundary import research_metrics
@@ -589,8 +581,8 @@ class MossFormerGANTrainer:
         self.skip_log.append(record)
         self.last_skip = record
         self.counters["micro_batches_failed"] += 1
-        if _rank(runtime) == 0 and self._skip_path is not None:
-            _append_jsonl(self._skip_path, record)
+        if self._skip_path is not None:
+            self.journal.write_sidecar(self._skip_path, record)
         return True
 
     def _open_boundary(self, runtime: ProcessRuntime, checkpoint: CheckpointManager, epoch: int) -> None:
@@ -1019,34 +1011,6 @@ def _case_ids(batch: Batch) -> list[str]:
     if batch.sample_ids:
         return [str(item) for item in batch.sample_ids]
     return [str(batch.sample_id)]
-
-
-def _append_metrics(path: Path, record: dict[str, Any]) -> None:
-    _append_jsonl(
-        path,
-        {
-            "discriminator": record["discriminator"],
-            "generator": record["generator"],
-            "logical_step": record["logical_step"],
-            "loss": record["loss"],
-            "sample_id": record["sample_id"],
-        },
-    )
-
-
-def _rewind_jsonl(path: Path, count: int) -> None:
-    if not path.is_file():
-        if count:
-            raise RuntimeFailure("skip log is missing")
-        return
-    lines = [line for line in path.read_text(encoding="utf-8").splitlines() if line]
-    if len(lines) < count:
-        raise RuntimeFailure("skip log is shorter than the trainer")
-    kept = lines[:count]
-    body = "".join(line + "\n" for line in kept)
-    temporary = path.with_name(f".{path.name}.tmp")
-    temporary.write_text(body, encoding="utf-8")
-    temporary.replace(path)
 
 
 def _require_adamw(optimizer: torch.optim.Optimizer, name: str, *, lr: float) -> None:
