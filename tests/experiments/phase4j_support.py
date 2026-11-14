@@ -3,12 +3,11 @@
 from __future__ import annotations
 
 import time
-from pathlib import Path
 
 from src.experiments.execution.direct import run_direct
+from src.experiments.execution.journal import StepJournal
 from src.experiments.results import RunResult
 from src.experiments.signals import interrupt_requested, ranks_should_stop
-from src.experiments.trainers import _append_jsonl, _rewind_metrics
 
 
 class InterruptProbe:
@@ -48,14 +47,9 @@ class InterruptProbe:
         self.lifecycle.start()
         checkpoint = self.lifecycle.checkpoint
         runtime = self.runtime
-        path = Path(checkpoint.directory) / "metrics.jsonl"
-        rank = int(getattr(runtime, "rank", 0))
-        if self._restored:
-            if rank == 0:
-                _rewind_metrics(path, self.logical_step)
-        else:
-            if rank == 0:
-                path.write_text("", encoding="utf-8")
+        journal = StepJournal(checkpoint.directory, runtime)
+        journal.begin(restored=self._restored, logical_step=self.logical_step, samples=False)
+        if not self._restored:
             self.logical_step = 0
             self.optimizer_updates = {"probe": 0}
         while self.logical_step < self.max_logical_steps:
@@ -74,16 +68,14 @@ class InterruptProbe:
             _pause(0.2)
             self.logical_step += 1
             self.optimizer_updates["probe"] += 1
-            if rank == 0:
-                _append_jsonl(
-                    path,
-                    {
-                        "applied": True,
-                        "logical_step": self.logical_step,
-                        "loss": 0.0,
-                        "sample_id": f"probe-{self.logical_step}",
-                    },
-                )
+            journal.write_metrics(
+                {
+                    "applied": True,
+                    "logical_step": self.logical_step,
+                    "loss": 0.0,
+                    "sample_id": f"probe-{self.logical_step}",
+                }
+            )
             self.lifecycle.save_if_needed("step", logical_step=self.logical_step)
         self.stop_reason = "completed"
         self.lifecycle.save_if_needed("final", logical_step=self.logical_step)

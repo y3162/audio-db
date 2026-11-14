@@ -17,9 +17,6 @@ from src.experiments.data import Batch
 from src.experiments.errors import BuildError, CheckpointError, ExperimentError, RuntimeFailure
 from src.experiments.execution.checkpoint import CheckpointManager
 from src.experiments.execution.journal import StepJournal
-from src.experiments.execution.journal import append_jsonl as _append_jsonl  # noqa: F401
-from src.experiments.execution.journal import rewind_metrics as _rewind_metrics  # noqa: F401
-from src.experiments.execution.journal import sample_path as _sample_path  # noqa: F401
 from src.experiments.execution.results import RunResult
 from src.experiments.execution.runtime import PreparedModel, ProcessRuntime, require_prepared
 from src.experiments.stopping import MetricEvent, should_stop

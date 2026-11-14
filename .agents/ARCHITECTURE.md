@@ -7,7 +7,7 @@
 仕様は `docs/experiments/CHECKPOINT.md`、プロセスの監視は `docs/experiments/LAUNCHER.md`。ここは変えてはいけない条件だけを書く。
 
 - 形式は `audio-db-experiment-v1`。実装は `src/experiments/execution/checkpoint.py`。`audio-db-training-v1` は読まない。
-- 保存の方針は Selector（`src/experiments/selectors.py`）だけが持つ。Trainer は整合した点で `lifecycle.save_if_needed(...)` を呼ぶだけで、いつ保存するかを決めない。Lifecycle（`src/experiments/lifecycle.py`）が `start` と `finish` を一度ずつ行い、書く点では `CheckpointManager.offer` を呼ぶ。Selector が断った点は何も書かない。Trainer に保存間隔の引数を足さない。YAML は `checkpoint.selector` だけを書く。標準 Selector は、間隔を省くと毎 step では保存しない。間隔の既定値は `docs/experiments/CHECKPOINT.md`。
+- 保存の方針は Selector（`src/experiments/selectors.py`）だけが持つ。Trainer は自分の更新順の中で状態が整合した点を選び `lifecycle.save_if_needed(...)` を呼ぶ。ファイルを書くかは Selector が決める。Lifecycle（`src/experiments/lifecycle.py`）の `start` と `finish` は Trainer の `fit` が一度ずつ呼ぶ。書く点では `CheckpointManager.offer` を呼ぶ。Selector が断った点は何も書かない。Trainer に保存間隔の引数を足さない。YAML は `checkpoint.selector` だけを書く。標準 Selector は、間隔を省くと毎 step では保存しない。間隔の既定値は `docs/experiments/CHECKPOINT.md`。Experiment は build し、Lifecycle を注入し、`fit` を一度呼び、資源を解放する。
 - Latest は `latest.pt` の 1 つだけ。共通基盤が一時ファイルに書き、検証してから `os.replace` する。失敗した保存が以前の Latest を壊す経路を作らない。Selector は Latest の名前、形式、削除に触れない。
 - Archive は `archive/` の中だけ。Selector の削除は `archive/` の外に届かない。Latest と Archive はどちらも完全な checkpoint で、どちらからも再開できる。
 - 公式の推論用の重み（`best_generator.pt`、`valid.loss.best.pt` など）は公式 Trainer の成果物で、checkpoint ではない。Selector に移さない。
