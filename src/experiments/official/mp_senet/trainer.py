@@ -19,9 +19,7 @@ from __future__ import annotations
 
 from src.experiments.stopping import observe_validation, should_stop
 
-import json
 import math
-import os
 import threading
 from pathlib import Path
 from typing import Any
@@ -32,6 +30,7 @@ from src.experiments.checkpoint import CheckpointManager
 from src.experiments.data import Batch
 from src.experiments.data.pair import bind_trainer_data
 from src.experiments.errors import BuildError, RuntimeFailure
+from src.experiments.official.mp_senet.artifacts import write_best
 from src.experiments.official.mp_senet.models import (
     MPSENetGANGenerator,
     MPSENetMetricDiscriminator,
@@ -185,6 +184,62 @@ class MPSENetGANTrainer:
         self.lifecycle.start()
         runtime = self.runtime
         checkpoint = self.lifecycle.checkpoint
+        component_id = self._prepare_run(runtime, checkpoint)
+        if should_stop(self):
+            return self._result(checkpoint, "completed")
+        if self.phase == _PENDING:
+            self._finish_boundary(runtime, checkpoint, component_id)
+            if should_stop(self):
+                return self._result(checkpoint, "completed")
+            if self._epoch_cap_reached():
+                return self._result(checkpoint, "completed")
+        while self.logical_step < self.max_logical_steps:
+            if self._stop_requested(runtime):
+                self._drain_mp_io()
+                if self.logical_step > 0 and not self._in_official_step:
+                    self._offer(checkpoint, "stop")
+                return self._result(checkpoint, "interrupted")
+            if self._epoch_cap_reached():
+                self._drain_mp_io()
+                return self._result(checkpoint, "completed")
+            epoch, index, view, batches = self._open_window(component_id)
+            try:
+                local = self.official_step(batches, runtime)
+                self.logical_step += 1
+                index += self.accumulation
+                self.optimizer_updates[self.optim_g_id] += 1
+                self.optimizer_updates[self.optim_d_id] += 1
+                self.data.epoch = epoch
+                self.data.update_index = index
+                epoch_done = index == view.updates
+                will_validate = self.validation_interval > 0 and self.logical_step % self.validation_interval == 0
+                if self._record_step(
+                    runtime,
+                    checkpoint,
+                    local,
+                    epoch=epoch,
+                    epoch_done=epoch_done,
+                    will_validate=will_validate,
+                ):
+                    continue
+                self.phase = _PENDING
+                self.boundary = _open_boundary(epoch, validate=will_validate, epoch_done=epoch_done)
+                self._on_boundary_phase(self.phase)
+                self._offer(checkpoint, "boundary_pending")
+                if self._stop_requested(runtime):
+                    return self._result(checkpoint, "interrupted")
+                self._finish_boundary(runtime, checkpoint, component_id)
+                if should_stop(self):
+                    return self._result(checkpoint, "completed")
+                if self._epoch_cap_reached():
+                    return self._result(checkpoint, "completed")
+            finally:
+                _close_epoch_view(view)
+        self._drain_mp_io()
+        return self._result(checkpoint, "completed")
+
+    def _prepare_run(self, runtime: ProcessRuntime, checkpoint: CheckpointManager) -> str:
+        """Rewind logs. Does not run a discriminator or generator update."""
 
         self.research.rewind(
             checkpoint.directory,
@@ -219,118 +274,96 @@ class MPSENetGANTrainer:
         bind_trainer_data(self)
         self._require_group_size(component_id)
         runtime.barrier()
-        if should_stop(self):
-            return self._result(checkpoint, "completed")
-        if self.phase == _PENDING:
-            self._finish_boundary(runtime, checkpoint, component_id)
-            if should_stop(self):
-                return self._result(checkpoint, "completed")
-            if self._epoch_cap_reached():
-                return self._result(checkpoint, "completed")
-        while self.logical_step < self.max_logical_steps:
-            if self._stop_requested(runtime):
-                self._drain_mp_io()
-                if self.logical_step > 0 and not self._in_official_step:
-                    self._offer(checkpoint, "stop")
-                return self._result(checkpoint, "interrupted")
-            if self._epoch_cap_reached():
-                self._drain_mp_io()
-                return self._result(checkpoint, "completed")
-            epoch = int(self.data.epoch)
-            index = int(self.data.update_index)
-            view = self.data.train_epoch(epoch, start_update=index)
-            try:
-                if view.updates < 1:
-                    raise RuntimeFailure(f"component {component_id}: epoch {epoch} has no micro-batches")
-                if view.updates % self.accumulation != 0:
-                    raise RuntimeFailure(
-                        f"component {component_id}: epoch micro-batches {view.updates} "
-                        f"are not divisible by accumulation {self.accumulation}"
-                    )
-                if index > view.updates:
-                    raise RuntimeFailure(f"component {component_id}: update {index} is past epoch {epoch}")
-                if index == view.updates:
-                    raise RuntimeFailure(
-                        f"component {component_id}: epoch {epoch} is exhausted without a pending boundary"
-                    )
-                if index + self.accumulation > view.updates:
-                    raise RuntimeFailure(
-                        f"component {component_id}: accumulation {self.accumulation} does not fit at update {index}"
-                    )
-                batches: list[Batch] = []
-                for offset in range(self.accumulation):
-                    batches.extend(view.batch(index + offset))
-                local = self.official_step(batches, runtime)
-                shared = _shared_log(runtime, local)
-                self.logical_step += 1
-                index += self.accumulation
-                self.optimizer_updates[self.optim_g_id] += 1
-                self.optimizer_updates[self.optim_d_id] += 1
-                self.data.epoch = epoch
-                self.data.update_index = index
-                entry = {
-                    "applied_d": True,
-                    "applied_g": True,
-                    "complex": shared["complex"],
-                    "consistency": shared["consistency"],
-                    "discriminator": shared["discriminator"],
-                    "epoch": epoch,
-                    "generator": shared["generator"],
-                    "logical_step": self.logical_step,
-                    "loss": shared["generator"],
-                    "lr_d": shared["lr_d"],
-                    "lr_g": shared["lr_g"],
-                    "magnitude": shared["magnitude"],
-                    "metric": shared["metric"],
-                    "phase": shared["phase"],
-                    "sample_id": shared["sample_id"],
-                    "time": shared["time"],
-                }
-                self.step_log.append(entry)
-                epoch_done = index == view.updates
-                will_validate = self.validation_interval > 0 and self.logical_step % self.validation_interval == 0
-                offer_step = not will_validate and not epoch_done
-                step_metrics: dict[str, float] = {}
-                if offer_step:
-                    step_metrics = self.research.score(
-                        runtime,
-                        checkpoint,
-                        kind="step",
-                        epoch=epoch,
-                        logical_step=self.logical_step,
-                        stopping=getattr(self, "training_control", None),
-                    )
-                if runtime.device.type == "cuda" and runtime.world_size == 1:
-                    self._mp_io = (entry, local, offer_step, checkpoint, step_metrics)
-                    if offer_step:
-                        continue
-                    self._drain_mp_io()
-                else:
-                    self.journal.write_metrics(entry)
-                    self.journal.write_sample(
-                        {**local, "logical_step": self.logical_step, "loss": local["generator"]}
-                    )
-                    if offer_step:
-                        if step_metrics:
-                            self._offer(checkpoint, "step", metrics=step_metrics)
-                        else:
-                            self._offer(checkpoint, "step")
-                        continue
-                self.phase = _PENDING
-                self.boundary = _open_boundary(epoch, validate=will_validate, epoch_done=epoch_done)
-                self._on_boundary_phase(self.phase)
-                self._offer(checkpoint, "boundary_pending")
-                if self._stop_requested(runtime):
-                    return self._result(checkpoint, "interrupted")
-                self._finish_boundary(runtime, checkpoint, component_id)
-                if should_stop(self):
-                    return self._result(checkpoint, "completed")
-                if self._epoch_cap_reached():
-                    return self._result(checkpoint, "completed")
-            finally:
-                _close_epoch_view(view)
-        self._drain_mp_io()
-        return self._result(checkpoint, "completed")
+        return str(component_id)
+
+    def _open_window(self, component_id: str) -> tuple[int, int, Any, list[Batch]]:
+        epoch = int(self.data.epoch)
+        index = int(self.data.update_index)
+        view = self.data.train_epoch(epoch, start_update=index)
+        try:
+            if view.updates < 1:
+                raise RuntimeFailure(f"component {component_id}: epoch {epoch} has no micro-batches")
+            if view.updates % self.accumulation != 0:
+                raise RuntimeFailure(
+                    f"component {component_id}: epoch micro-batches {view.updates} "
+                    f"are not divisible by accumulation {self.accumulation}"
+                )
+            if index > view.updates:
+                raise RuntimeFailure(f"component {component_id}: update {index} is past epoch {epoch}")
+            if index == view.updates:
+                raise RuntimeFailure(
+                    f"component {component_id}: epoch {epoch} is exhausted without a pending boundary"
+                )
+            if index + self.accumulation > view.updates:
+                raise RuntimeFailure(
+                    f"component {component_id}: accumulation {self.accumulation} does not fit at update {index}"
+                )
+            batches: list[Batch] = []
+            for offset in range(self.accumulation):
+                batches.extend(view.batch(index + offset))
+        except Exception:
+            _close_epoch_view(view)
+            raise
+        return epoch, index, view, batches
+
+    def _record_step(
+        self,
+        runtime: ProcessRuntime,
+        checkpoint: CheckpointManager,
+        local: dict[str, Any],
+        *,
+        epoch: int,
+        epoch_done: bool,
+        will_validate: bool,
+    ) -> bool:
+        """Write or defer the step log. Return True when the epoch continues."""
+
+        shared = _shared_log(runtime, local)
+        entry = {
+            "applied_d": True,
+            "applied_g": True,
+            "complex": shared["complex"],
+            "consistency": shared["consistency"],
+            "discriminator": shared["discriminator"],
+            "epoch": epoch,
+            "generator": shared["generator"],
+            "logical_step": self.logical_step,
+            "loss": shared["generator"],
+            "lr_d": shared["lr_d"],
+            "lr_g": shared["lr_g"],
+            "magnitude": shared["magnitude"],
+            "metric": shared["metric"],
+            "phase": shared["phase"],
+            "sample_id": shared["sample_id"],
+            "time": shared["time"],
+        }
+        self.step_log.append(entry)
+        offer_step = not will_validate and not epoch_done
+        step_metrics: dict[str, float] = {}
+        if offer_step:
+            step_metrics = self.research.score(
+                runtime,
+                checkpoint,
+                kind="step",
+                epoch=epoch,
+                logical_step=self.logical_step,
+                stopping=getattr(self, "training_control", None),
+            )
+        if runtime.device.type == "cuda" and runtime.world_size == 1:
+            self._mp_io = (entry, local, offer_step, checkpoint, step_metrics)
+            if offer_step:
+                return True
+            self._drain_mp_io()
+            return False
+        self.journal.write_metrics(entry)
+        self.journal.write_sample({**local, "logical_step": self.logical_step, "loss": local["generator"]})
+        if offer_step:
+            if step_metrics:
+                self._offer(checkpoint, "step", metrics=step_metrics)
+            else:
+                self._offer(checkpoint, "step")
+            return True
+        return False
 
     def _drain_mp_io(self) -> None:
         """Write the previous step while the next signal backward is queued."""
@@ -816,7 +849,7 @@ class MPSENetGANTrainer:
         error: str | None = None
         if _rank(runtime) == 0 and decision["selected"]:
             try:
-                _write_best_files(
+                write_best(
                     directory,
                     self.generator.unwrapped().export_for_inference(),
                     decision,
@@ -1064,31 +1097,6 @@ def _combine_metric(items: list[dict[str, Any]]) -> dict[str, Any]:
         return {"status": "ok", "value": sum(values) / len(values), "reason": None, "count": len(values)}
     reason = next((item.get("reason") for item in items if item.get("reason")), "no score")
     return {"status": "na", "value": None, "reason": reason, "count": 0}
-
-
-def _write_best_files(
-    directory: Path,
-    exported: dict[str, torch.Tensor],
-    decision: dict[str, Any],
-    experiment_claim: str,
-) -> None:
-    payload_path = directory / "best_generator.pt"
-    meta_path = directory / "best_generator.json"
-    temporary = directory / ".best_generator.pt.tmp"
-    torch.save(exported, temporary)
-    os.replace(temporary, payload_path)
-    meta = {
-        "checkpoint": payload_path.name,
-        "epoch": decision["epoch"],
-        "experiment_claim": experiment_claim,
-        "logical_step": decision["logical_step"],
-        "metric": "pesq",
-        "pesq": decision["pesq"],
-        "pesq_policy": "official_include_negative_one",
-    }
-    meta_temporary = directory / ".best_generator.json.tmp"
-    meta_temporary.write_text(json.dumps(meta, sort_keys=True) + "\n", encoding="utf-8")
-    os.replace(meta_temporary, meta_path)
 
 
 def _positive_int(name: str, value: object) -> int:
