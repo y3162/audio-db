@@ -48,9 +48,9 @@
 
 ## モデルごとの更新
 
-損失の足し方と Optimizer の順序は、対応する `src/experiments/official/<model>/reference.py` の参照ステップと一致させる。係数の正本は実験 YAML の Objective である。検証の統計、順位、patience、DeepFilterNet3 の一連の損失は、そのモデルの `metrics.py`、`selection.py`、`schedule.py`、`training_step.py` に置く。Trainer はいつ呼ぶかと更新順を持つ。MossFormerGAN の plateau の式は `reference.mossformer_validation_decision` にあり、重みの復帰と学習率の変更は Trainer が行う。意味が一致する終了処理、蓄積窓、rank 停止だけを `src/experiments/training/control.py` に置く。意味が違う `_prepare_run` と `_offer` は Trainer に残す。
+損失の足し方と Optimizer の順序は、対応する `src/experiments/official/<model>/reference.py` の参照ステップと一致させる。係数の正本は実験 YAML の Objective である。検証の統計、順位、patience、DeepFilterNet3 の一連の損失、MP-SENet の GAN 対は、そのモデルの `metrics.py`、`selection.py`、`schedule.py`、`training_step.py` に置く。Trainer はいつ更新・検証・scheduler・保存を呼ぶかを持つ。対の中の Optimizer 順を `training_step.py` に置いたモデルでは、Trainer がその対の中身を持たない。MossFormerGAN の plateau の式は `reference.mossformer_validation_decision` にあり、重みの復帰と学習率の変更は Trainer が行う。意味が一致する終了処理、蓄積窓、rank 停止だけを `src/experiments/training/control.py` に置く。意味が違う `_prepare_run` と `_offer` は Trainer に残す。
 
-- MP-SENet GAN: Discriminator を先に更新し、同じ Generator forward のグラフで Generator を更新する。信号項と metric 項は別の Objective で、CUDA の重なり経路は信号、Discriminator、metric の順に backward する。`ExponentialLR` は epoch の micro-batch が尽きたときだけ進む。検証は参照タスクの式のままである。
+- MP-SENet GAN: Discriminator を先に更新し、同じ Generator forward のグラフで Generator を更新する。この対は `official/mp_senet/training_step.py` にあり、Trainer はそれをいつ呼ぶかだけを持つ。信号項と metric 項は別の Objective で、CUDA の重なり経路は信号、Discriminator、metric の順に backward する。`ExponentialLR` は epoch の micro-batch が尽きたときだけ進む。検証は参照タスクの式のままである。
 - MossFormerGAN: RI、magnitude、time、GAN は 1 回の再構成が作るスカラーを Context Term が読む。time は波形 L1 ではない。Objective が公開係数を掛ける。Generator の backward のあと Discriminator の backward。両 AdamW はその後。PESQ が無い micro-batch は分母に残り、損失 0 にはしない。plateau は 5 回で Generator の学習率を半分にし、10 回で止める。検証は参照タスクの式のままである。
 - TF-GridNet: `mr_l1_tfd` を重み 1 の Objective で包む。Adam、epoch 末の `ReduceLROnPlateau`、`valid.loss` の n-best。検証は注入した Objective の total である。
 - TF-Locoformer: 同じスペクトル損失、AdamW、`WarmupReduceLROnPlateau`。warmup は Optimizer 更新のあと。最初の更新は構築時の学習率。SI-SDR は監視だけで backward に入れない。検証は注入した Objective の total である。

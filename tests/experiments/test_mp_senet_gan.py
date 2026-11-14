@@ -7,6 +7,7 @@ make ``metric_targets`` return None; the 16,000-sample test uses real PESQ.
 
 from __future__ import annotations
 
+import ast
 import hashlib
 import json
 import os
@@ -472,6 +473,56 @@ class MPSENetGANTests(unittest.TestCase):
         self.assertTrue(payload["parameter_ranks_agree"])
         self.assertEqual(payload["states"]["trainer"]["optimizer_updates"]["optim_g"], 1)
         self.assertEqual(payload["states"]["trainer"]["optimizer_updates"]["optim_d"], 1)
+
+
+    def test_cpu_update_exposes_phase_order_without_draining(self) -> None:
+        runtime = ProcessRuntime(device="cpu", precision="fp32")
+        try:
+            trainer, _gen, _disc = _manual_trainer(runtime, accumulation=2)
+            phases: list[tuple[str, int | None]] = []
+            drains: list[str] = []
+
+            def hook(phase: str, payload: object = None) -> None:
+                self.assertTrue(trainer._in_official_step)
+                size = len(payload) if isinstance(payload, list) else None
+                phases.append((phase, size))
+                if phase == "after_discriminator_step":
+                    self.assertEqual(trainer._average_calls, 0)
+                if phase == "end_step":
+                    self.assertEqual(trainer._average_calls, 1)
+
+            trainer._on_update_phase = hook
+            trainer._drain_mp_io = lambda: drains.append("drain")
+            trainer.official_step([_random_batch(LENGTH, 1), _random_batch(LENGTH, 2)], runtime)
+            self.assertEqual(
+                phases,
+                [
+                    ("zero_grad", None),
+                    ("before_generator_forward", None),
+                    ("before_generator_forward", None),
+                    ("after_discriminator_step", 2),
+                    ("end_step", None),
+                ],
+            )
+            self.assertEqual(drains, [])
+            self.assertFalse(trainer._in_official_step)
+            self.assertEqual(trainer._average_calls, 1)
+            self.assertFalse(trainer._generator_synced_during_backward)
+        finally:
+            runtime.shutdown()
+
+    def test_update_module_does_not_take_the_trainer(self) -> None:
+        path = ROOT / "src/experiments/official/mp_senet/training_step.py"
+        text = path.read_text(encoding="utf-8")
+        self.assertNotIn("MPSENetGANTrainer", text)
+        self.assertNotIn("self.trainer", text)
+        tree = ast.parse(text)
+        for node in ast.walk(tree):
+            if isinstance(node, ast.ImportFrom) and node.module is not None:
+                self.assertNotIn("mp_senet.trainer", node.module)
+            if isinstance(node, ast.Import):
+                for alias in node.names:
+                    self.assertNotIn("mp_senet.trainer", alias.name)
 
 
 class _FakeCheckpoint:

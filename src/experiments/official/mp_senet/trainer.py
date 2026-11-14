@@ -1,9 +1,11 @@
 """Official MP-SENet GAN loop for the experiment framework.
 
-The update order follows ``MPSENetTask._official``. One generator forward is
-kept until the discriminator has stepped. The generator backward then uses
-that graph and the updated discriminator. ``StandardTrainer`` and the
-TF-GridNet / TF-Locoformer trainers are not used for this loop.
+``fit`` orders one logical step, the step log, official validation, PESQ
+selection, both schedulers, research evaluation, and the checkpoint safe
+point. One GAN pair is :class:`~src.experiments.official.mp_senet.training_step.MPSENetUpdate`.
+That pair keeps one generator forward, steps the discriminator, then the
+generator. ``StandardTrainer`` and the TF-GridNet / TF-Locoformer trainers
+are not used for this loop.
 
 ``ExponentialLR`` advances once when the epoch's usable micro-batches are
 finished. A validation interval does not advance it. When the same update
@@ -19,7 +21,6 @@ from __future__ import annotations
 
 from src.experiments.stopping import observe_validation, should_stop
 
-import threading
 from pathlib import Path
 from typing import Any
 
@@ -35,9 +36,9 @@ from src.experiments.training.control import finish_training_run, open_flat_wind
 from src.experiments.official.mp_senet.models import (
     MPSENetGANGenerator,
     MPSENetMetricDiscriminator,
-    pack_forward,
     require_official_architecture,
 )
+from src.experiments.official.mp_senet.training_step import MPSENetUpdate, refuse_gan_amp
 from src.experiments.execution.journal import StepJournal
 from src.experiments.results import RunResult
 from src.experiments.runtime import PreparedModel, ProcessRuntime, require_prepared
@@ -47,9 +48,8 @@ from src.experiments.trainers import (
     _rank,
 )
 from src.experiments.calc.errors import TrainingError
-from src.experiments.training.objectives import call_objective
 from src.experiments.training.official_objectives import require_mp_senet
-from src.experiments.official.mp_senet.reference import _require_discriminator_resolution, validation_model
+from src.experiments.official.mp_senet.reference import validation_model
 
 _IN_EPOCH = "in_epoch"
 _PENDING = "pending_boundary"
@@ -65,11 +65,10 @@ OFFICIAL_LEARNING_RATE = 0.0005
 OFFICIAL_BETAS = (0.8, 0.99)
 OFFICIAL_WEIGHT_DECAY = 0.01
 OFFICIAL_GAMMA = 0.99
-_LOSS_NAMES = ("total", "magnitude", "phase", "complex", "consistency", "metric", "time")
 
 
 class MPSENetGANTrainer:
-    """Discriminator-then-generator update for the official MP-SENet loss."""
+    """Orders MP-SENet updates, official validation, and checkpoint safe points."""
 
     supports_training_control = True
     progress_keys = ("logical_step", "epoch")
@@ -178,6 +177,16 @@ class MPSENetGANTrainer:
         self._shadow = None
         self._average_calls = 0
         self._generator_synced_during_backward = False
+        self._update = MPSENetUpdate(
+            generator=self.generator,
+            discriminator=self.discriminator,
+            optim_g=self.optim_g,
+            optim_d=self.optim_d,
+            signal_objective=self.signal_objective,
+            metric_objective=self.metric_objective,
+            discriminator_objective=self.discriminator_objective,
+            accumulation=self.accumulation,
+        )
 
     def fit(self) -> RunResult:
         """Train until the step budget, an epoch cap, or an interrupt."""
@@ -357,241 +366,35 @@ class MPSENetGANTrainer:
             else:
                 self._offer("step")
 
-    def _cuda_overlapped_step(self, batch: Batch, runtime: ProcessRuntime) -> dict[str, float]:
-        """PESQ runs while the signal backward uses the same generator graph.
-
-        The discriminator optimizer still steps before the metric term and the
-        generator optimizer. CPU training keeps the original order so the
-        reference comparison stays exact.
-        """
-
-        self._on_update_phase("zero_grad")
-        self.optim_d.zero_grad(set_to_none=True)
-        self.optim_g.zero_grad(set_to_none=True)
-        clean, noisy = self._waveforms(batch, runtime)
-        if not _inputs_ready(clean, noisy, self.generator.unwrapped().n_fft):
-            raise RuntimeFailure("a rank rejected its micro-batch before the generator forward")
-        self._on_update_phase("before_generator_forward")
-        try:
-            parts = pack_forward(self.generator(noisy, clean))
-            _require_discriminator_resolution(parts["clean_mag"].shape[-2], parts["clean_mag"].shape[-1])
-        except (TrainingError, RuntimeFailure, RuntimeError, ValueError) as exc:
-            raise RuntimeFailure(f"generator forward failed: {type(exc).__name__}: {exc}") from exc
-        pending = _schedule_metric_targets(
-            clean,
-            parts["audio"],
-            int(self.generator.unwrapped().architecture["sampling_rate"]),
-        )
-        ones = torch.ones(clean.shape[0], device=clean.device)
-        signal = call_objective(self.signal_objective, _signal_context(parts, clean))
-        self._backward_if_finite(runtime, signal.total / self.accumulation, "generator signal loss", retain_graph=True)
-        self._drain_mp_io()
-        try:
-            targets = pending.result()
-            real = self.discriminator(parts["clean_mag"], parts["clean_mag"])
-            fake = self.discriminator(parts["clean_mag"], parts["mag_hat"].detach())
-            loss_d = call_objective(
-                self.discriminator_objective,
-                {"real_score": real, "fake_score": fake, "ones": ones, "pesq_target": targets},
-            ).total / self.accumulation
-        except (TrainingError, RuntimeFailure, RuntimeError, ValueError) as exc:
-            raise RuntimeFailure(f"discriminator forward failed: {type(exc).__name__}: {exc}") from exc
-        self._backward_if_finite(runtime, loss_d, "discriminator loss")
-        discriminator_result = runtime.step(self.optim_d)
-        self._on_update_phase("after_discriminator_step", [(clean, parts)])
-        raw = self.discriminator.unwrapped().discriminator
-        frozen = [parameter for parameter in raw.parameters() if parameter.requires_grad]
-        try:
-            for parameter in frozen:
-                parameter.requires_grad_(False)
-            try:
-                metric = raw(parts["clean_mag"], parts["mag_hat"])
-                metric_out = call_objective(self.metric_objective, {"metric": metric, "ones": ones})
-            except (TrainingError, RuntimeFailure, RuntimeError, ValueError) as exc:
-                raise RuntimeFailure(f"generator loss failed: {type(exc).__name__}: {exc}") from exc
-            self._backward_if_finite(runtime, metric_out.total / self.accumulation, "generator metric loss")
-        finally:
-            for parameter in frozen:
-                parameter.requires_grad_(True)
-        self._average_calls += 1
-        runtime.average_gradients(self.generator)
-        total = signal.total + metric_out.total
-        logged = torch.stack(
-            [
-                signal.terms["complex"].detach(),
-                signal.terms["consistency"].detach(),
-                loss_d.detach() * self.accumulation,
-                total.detach(),
-                signal.terms["magnitude"].detach(),
-                metric_out.terms["metric"].detach(),
-                signal.terms["phase"].detach(),
-                signal.terms["time"].detach(),
-            ]
-        )
-        host = torch.empty(logged.shape, dtype=torch.float32, pin_memory=True)
-        host.copy_(logged.detach().float(), non_blocking=True)
-        generator_result = runtime.step(self.optim_g)
-        runtime.end_step()
-        runtime.broadcast_buffers(self.generator)
-        runtime.broadcast_buffers(self.discriminator)
-        if not discriminator_result.applied or not generator_result.applied:
-            raise RuntimeFailure("MP-SENet GAN requires both optimizers to apply in one logical step")
-        complex_v, consistency_v, disc_v, total_v, magnitude_v, metric_v, phase_v, time_v = (
-            float(item) for item in host.tolist()
-        )
-        self._on_update_phase("end_step")
-        return {
-            "complex": complex_v,
-            "consistency": consistency_v,
-            "discriminator": disc_v,
-            "generator": total_v,
-            "lr_d": float(self.optim_d.param_groups[0]["lr"]),
-            "lr_g": float(self.optim_g.param_groups[0]["lr"]),
-            "magnitude": magnitude_v,
-            "metric": metric_v,
-            "phase": phase_v,
-            "sample_id": batch.sample_id,
-            "time": time_v,
-        }
-
     def official_step(self, batches: list[Batch], runtime: ProcessRuntime) -> dict[str, float]:
         """Run one official GAN update. Both optimizers step, or neither is checkpointed."""
 
-        self._refuse_amp(runtime)
-        if len(batches) != self.accumulation:
-            raise RuntimeFailure(
-                f"official step received {len(batches)} micro-batches, accumulation is {self.accumulation}"
-            )
-        counts = runtime.gather_objects(len(batches))
-        if any(item != len(batches) for item in counts):
-            raise RuntimeFailure("ranks disagree on the number of micro-batches")
-        self.generator.train()
-        self.discriminator.train()
         self._in_official_step = True
         try:
-            if runtime.device.type == "cuda" and runtime.world_size == 1 and len(batches) == 1:
-                return self._cuda_overlapped_step(batches[0], runtime)
-            self._on_update_phase("zero_grad")
-            self.optim_d.zero_grad(set_to_none=True)
-            self.optim_g.zero_grad(set_to_none=True)
-            stored: list[tuple[torch.Tensor, dict[str, torch.Tensor]]] = []
-            discriminator_total = 0.0
-            sample_ids: list[str] = []
-            with runtime.sync_gradients([self.generator], enabled=False):
-                for index, batch in enumerate(batches):
-                    last = index == len(batches) - 1
-                    clean, noisy = self._waveforms(batch, runtime)
-                    sample_ids.append(batch.sample_id)
-                    ready = _inputs_ready(clean, noisy, self.generator.unwrapped().n_fft)
-                    if not runtime.agree(ready, policy="all"):
-                        raise RuntimeFailure("a rank rejected its micro-batch before the generator forward")
-                    self._on_update_phase("before_generator_forward")
-                    error: str | None = None
-                    parts: dict[str, torch.Tensor] | None = None
-                    try:
-                        parts = pack_forward(self.generator(noisy, clean))
-                        _require_discriminator_resolution(parts["clean_mag"].shape[-2], parts["clean_mag"].shape[-1])
-                    except (TrainingError, RuntimeFailure, RuntimeError, ValueError) as exc:
-                        error = f"{type(exc).__name__}: {exc}"
-                    errors = runtime.gather_objects(error)
-                    if any(errors):
-                        raise RuntimeFailure("generator forward failed: " + "; ".join(item for item in errors if item))
-                    if parts is None:
-                        raise RuntimeFailure("generator forward produced no tensors")
-                    stored.append((clean, parts))
-                    ones = torch.ones(clean.shape[0], device=clean.device)
-                    with runtime.sync_gradients([self.discriminator], enabled=last):
-                        disc_error: str | None = None
-                        loss: torch.Tensor | None = None
-                        try:
-                            real = self.discriminator(parts["clean_mag"], parts["clean_mag"])
-                            fake = self.discriminator(parts["clean_mag"], parts["mag_hat"].detach())
-                            targets = _metric_targets(clean, parts["audio"], int(self.generator.unwrapped().architecture["sampling_rate"]))
-                            loss = call_objective(
-                                self.discriminator_objective,
-                                {"real_score": real, "fake_score": fake, "ones": ones, "pesq_target": targets},
-                            ).total / self.accumulation
-                        except (TrainingError, RuntimeError, ValueError) as exc:
-                            disc_error = f"{type(exc).__name__}: {exc}"
-                        disc_errors = runtime.gather_objects(disc_error)
-                        if any(disc_errors):
-                            raise RuntimeFailure(
-                                "discriminator forward failed: " + "; ".join(item for item in disc_errors if item)
-                            )
-                        if loss is None:
-                            raise RuntimeFailure("discriminator loss is missing")
-                        self._backward_if_finite(runtime, loss, "discriminator loss")
-                        discriminator_total += float(loss.detach()) * self.accumulation
-                discriminator_result = runtime.step(self.optim_d)
-                self._on_update_phase("after_discriminator_step", stored)
-                raw = self.discriminator.unwrapped().discriminator
-                frozen = [parameter for parameter in raw.parameters() if parameter.requires_grad]
-                component_totals = {name: 0.0 for name in _LOSS_NAMES}
-                try:
-                    for parameter in frozen:
-                        parameter.requires_grad_(False)
-                    for clean, parts in stored:
-                        ones = torch.ones(clean.shape[0], device=clean.device)
-                        gen_error: str | None = None
-                        total: torch.Tensor | None = None
-                        try:
-                            metric = raw(parts["clean_mag"], parts["mag_hat"])
-                            signal = call_objective(self.signal_objective, _signal_context(parts, clean))
-                            metric_out = call_objective(self.metric_objective, {"metric": metric, "ones": ones})
-                            total_tensor = signal.total + metric_out.total
-                            losses = {
-                                "total": total_tensor,
-                                "magnitude": signal.terms["magnitude"],
-                                "phase": signal.terms["phase"],
-                                "complex": signal.terms["complex"],
-                                "consistency": signal.terms["consistency"],
-                                "metric": metric_out.terms["metric"],
-                                "time": signal.terms["time"],
-                            }
-                            total = total_tensor / self.accumulation
-                        except (TrainingError, RuntimeError, ValueError) as exc:
-                            gen_error = f"{type(exc).__name__}: {exc}"
-                        gen_errors = runtime.gather_objects(gen_error)
-                        if any(gen_errors):
-                            raise RuntimeFailure(
-                                "generator loss failed: " + "; ".join(item for item in gen_errors if item)
-                            )
-                        if total is None:
-                            raise RuntimeFailure("generator loss is missing")
-                        synced = self.generator.gradient_sync_enabled()
-                        if synced is not None:
-                            self._generator_synced_during_backward = synced
-                        self._backward_if_finite(runtime, total, "generator loss")
-                        for name in _LOSS_NAMES:
-                            component_totals[name] += float(losses[name].detach())
-                finally:
-                    for parameter in frozen:
-                        parameter.requires_grad_(True)
-                self._average_calls += 1
-                runtime.average_gradients(self.generator)
-            generator_result = runtime.step(self.optim_g)
-            runtime.end_step()
-            runtime.broadcast_buffers(self.generator)
-            runtime.broadcast_buffers(self.discriminator)
-            if not discriminator_result.applied or not generator_result.applied:
-                raise RuntimeFailure("MP-SENet GAN requires both optimizers to apply in one logical step")
-            count = len(batches)
-            self._on_update_phase("end_step")
-            return {
-                "complex": component_totals["complex"] / count,
-                "consistency": component_totals["consistency"] / count,
-                "discriminator": discriminator_total / count,
-                "generator": component_totals["total"] / count,
-                "lr_d": float(self.optim_d.param_groups[0]["lr"]),
-                "lr_g": float(self.optim_g.param_groups[0]["lr"]),
-                "magnitude": component_totals["magnitude"] / count,
-                "metric": component_totals["metric"] / count,
-                "phase": component_totals["phase"] / count,
-                "sample_id": ",".join(sample_ids),
-                "time": component_totals["time"] / count,
-            }
+            return self._update.run(
+                batches,
+                runtime,
+                phase_hook=self._on_update_phase,
+                drain_previous=self._drain_mp_io,
+                note_generator_sync=self._note_generator_sync,
+                note_gradients_averaged=self._note_gradients_averaged,
+            )
         finally:
             self._in_official_step = False
+
+    def _note_generator_sync(self, enabled: bool) -> None:
+        """Remember the last DDP sync flag seen during generator backward.
+
+        This is a test observation. It is not stored in the checkpoint.
+        The CUDA overlap path does not report a flag.
+        """
+
+        self._generator_synced_during_backward = bool(enabled)
+
+    def _note_gradients_averaged(self) -> None:
+        """Count one gradient reduction, immediately before average_gradients."""
+
+        self._average_calls += 1
 
     def state_dict(self) -> dict[str, Any]:
         return {
@@ -818,35 +621,8 @@ class MPSENetGANTrainer:
         if failure:
             raise RuntimeFailure(f"best checkpoint write failed: {failure}")
 
-    def _waveforms(self, batch: Batch, runtime: ProcessRuntime) -> tuple[torch.Tensor, torch.Tensor]:
-        batch = runtime.move(batch)
-        clean = batch.targets
-        noisy = batch.inputs
-        if clean.ndim != 2 or clean.shape != noisy.shape:
-            raise RuntimeFailure(f"expected matching [batch, time] waveforms, got {tuple(clean.shape)}")
-        return clean, noisy
-
-    def _backward_if_finite(
-        self,
-        runtime: ProcessRuntime,
-        loss: torch.Tensor,
-        what: str,
-        *,
-        retain_graph: bool = False,
-    ) -> None:
-        if runtime.device.type != "cuda":
-            finite = bool(torch.isfinite(loss.detach()).all())
-            if not runtime.agree(finite, policy="all"):
-                raise RuntimeFailure(f"{what} is not finite on every rank")
-        runtime.backward(loss, retain_graph=retain_graph)
-
     def _refuse_amp(self, runtime: ProcessRuntime) -> None:
-        if getattr(runtime, "precision", "fp32") == "amp_fp16":
-            raise RuntimeFailure(
-                "MP-SENet official GAN refuses amp_fp16. "
-                "The current scaler decides overflow per optimizer, so the discriminator "
-                "step and the generator step are not one atomic update. FP32 is unchanged."
-            )
+        refuse_gan_amp(runtime)
 
     def _require_group_size(self, component_id: str) -> None:
         group_size = getattr(self.data, "group_size", None)
@@ -881,77 +657,6 @@ class MPSENetGANTrainer:
         """Score the research end and finish. This path does not broadcast buffers."""
 
         return finish_training_run(self, reason)
-
-
-def _signal_context(parts: dict[str, torch.Tensor], clean: torch.Tensor) -> dict[str, torch.Tensor]:
-    """Build the signal-term context from one generator forward."""
-    return {
-        "clean_audio": clean,
-        "clean_complex": parts["clean_complex"],
-        "clean_mag": parts["clean_mag"],
-        "clean_phase": parts["clean_phase"],
-        "generated_audio": parts["audio"],
-        "generated_complex": parts["complex"],
-        "generated_mag": parts["mag"],
-        "generated_phase": parts["phase"],
-        "recomputed_complex": parts["recomputed_complex"],
-    }
-
-
-def _schedule_metric_targets(clean: torch.Tensor, enhanced: torch.Tensor, sample_rate: int):
-    """Copy waveforms without blocking, then score PESQ on a side thread."""
-
-    from src.experiments.calc.losses import metric_targets
-
-    clean_cpu = torch.empty(clean.shape, dtype=clean.dtype, pin_memory=True)
-    enhanced_cpu = torch.empty(enhanced.shape, dtype=enhanced.dtype, pin_memory=True)
-    clean_cpu.copy_(clean.detach(), non_blocking=True)
-    enhanced_cpu.copy_(enhanced.detach(), non_blocking=True)
-    event = torch.cuda.Event()
-    event.record()
-    box: dict[str, object] = {}
-    done = threading.Event()
-
-    def run() -> None:
-        try:
-            event.synchronize()
-            box["value"] = metric_targets(clean_cpu, enhanced_cpu, sample_rate)
-        except Exception as exc:
-            box["error"] = exc
-        finally:
-            done.set()
-
-    thread = threading.Thread(target=run, name="mp-pesq", daemon=True)
-    thread.start()
-
-    class _Pending:
-        def result(self):
-            done.wait()
-            if "error" in box:
-                raise box["error"]
-            return box.get("value")
-
-    return _Pending()
-
-
-def _metric_targets(clean: torch.Tensor, enhanced: torch.Tensor, sample_rate: int) -> torch.Tensor | None:
-    """Look up PESQ targets on the losses module so tests can patch that function."""
-
-    from src.experiments.calc import losses as loss_lib
-
-    return loss_lib.metric_targets(clean, enhanced, sample_rate)
-
-
-def _inputs_ready(clean: torch.Tensor, noisy: torch.Tensor, n_fft: int) -> bool:
-    """Accept a matching pair long enough for the STFT. CPU also requires finite values."""
-    if clean.ndim != 2 or clean.shape != noisy.shape:
-        return False
-    if int(clean.shape[-1]) <= n_fft // 2:
-        return False
-    if clean.is_cuda:
-        # A non-finite waveform makes the loss non-finite, which rejects the step.
-        return True
-    return bool(torch.isfinite(clean).all()) and bool(torch.isfinite(noisy).all())
 
 
 def _shared_log(runtime: ProcessRuntime, local: dict[str, float]) -> dict[str, float | str]:
