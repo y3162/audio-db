@@ -48,24 +48,11 @@ from src.experiments.trainers import (
 from src.experiments.calc.metrics import _aggregate_validation
 from src.experiments.calc.errors import TrainingError
 from src.experiments.official.semambapp.reference import validation_model
-from src.experiments.calc.spectral import (
-    compressed_complex_losses,
-    feature_matching,
-    least_squares_discriminator,
-    least_squares_generator,
-    summed_slaney_log_mel,
-)
+from src.experiments.training.objectives import call_objective
 
 _IN_EPOCH = "in_epoch"
 _PENDING = "pending_boundary"
 _LOSS_NAMES = ("adversarial", "matching", "mel", "magnitude", "phase", "complex", "consistency")
-_ADV = 1.0
-_FM = 1.0
-_MEL = 0.1
-_MAG = 0.9
-_PHASE = 0.3
-_COMPLEX = 0.1
-_CONSISTENCY = 0.1
 _OFFICIAL_LR = 0.0002
 _OFFICIAL_BETAS = (0.8, 0.99)
 _OFFICIAL_WEIGHT_DECAY = 0.01
@@ -89,6 +76,8 @@ class SEMambaPPTrainer:
         scheduler_g: torch.optim.lr_scheduler.ExponentialLR,
         scheduler_d: torch.optim.lr_scheduler.ExponentialLR,
         *,
+        generator_objective: torch.nn.Module,
+        discriminator_objective: torch.nn.Module,
         max_logical_steps: int,
         accumulation: int = 1,
         grad_clip: float | None = None,
@@ -114,6 +103,8 @@ class SEMambaPPTrainer:
         _require_adamw(optim_d, "optim_d")
         _require_scheduler(scheduler_g, "scheduler_g")
         _require_scheduler(scheduler_d, "scheduler_d")
+        if not isinstance(generator_objective, torch.nn.Module) or not isinstance(discriminator_objective, torch.nn.Module):
+            raise BuildError("SEMamba++ objectives must be loss modules")
         _require_disjoint(optim_g, optim_d)
         if not hasattr(data, "train_epoch") or not hasattr(data, "validation_epoch"):
             raise BuildError("data must provide train_epoch and validation_epoch")
@@ -133,6 +124,8 @@ class SEMambaPPTrainer:
         self.optim_d = optim_d
         self.scheduler_g = scheduler_g
         self.scheduler_d = scheduler_d
+        self.generator_objective = generator_objective
+        self.discriminator_objective = discriminator_objective
         self.optim_g_id = optim_g_id
         self.optim_d_id = optim_d_id
         self.claim_label = claim_label
@@ -390,7 +383,7 @@ class SEMambaPPTrainer:
                 if parameter.requires_grad
             ]
             self.optim_g.zero_grad(set_to_none=True)
-            component_totals = {name: 0.0 for name in _LOSS_NAMES}
+            component_totals: dict[str, Any] = {}
             generator_total = 0.0
             try:
                 for parameter in frozen:
@@ -690,9 +683,15 @@ class SEMambaPPTrainer:
         try:
             real_q, fake_q, _real_qf, _fake_qf = self.cqt.module(clean, audio)
             real_r, fake_r, _real_rf, _fake_rf = self.mrd.module(clean, audio)
-            loss_q = sum(least_squares_discriminator(real, fake) for real, fake in zip(real_q, fake_q, strict=True))
-            loss_r = sum(least_squares_discriminator(real, fake) for real, fake in zip(real_r, fake_r, strict=True))
-            loss = loss_q + loss_r
+            loss = call_objective(
+                self.discriminator_objective,
+                {
+                    "fake_cqt": fake_q,
+                    "fake_mrd": fake_r,
+                    "real_cqt": real_q,
+                    "real_mrd": real_r,
+                },
+            ).total
         except (TrainingError, RuntimeFailure, RuntimeError, ValueError) as exc:
             error = f"{type(exc).__name__}: {exc}"
         errors = runtime.gather_objects(error)
@@ -717,41 +716,29 @@ class SEMambaPPTrainer:
             mrd = self.mrd.state_module.discriminator
             _real_q, fake_q, real_qf, fake_qf = band(clean, parts["audio"])
             _real_r, fake_r, real_rf, fake_rf = mrd(clean, parts["audio"])
-            adversarial = sum(least_squares_generator(score) for score in fake_q) + sum(
-                least_squares_generator(score) for score in fake_r
+            result = call_objective(
+                self.generator_objective,
+                {
+                    "clean_complex": parts["clean_complex"],
+                    "clean_mag": parts["clean_mag"],
+                    "clean_phase": parts["clean_phase"],
+                    "estimate": parts["audio"],
+                    "fake_cqt": fake_q,
+                    "fake_cqt_features": fake_qf,
+                    "fake_mrd": fake_r,
+                    "fake_mrd_features": fake_rf,
+                    "generated_complex": parts["complex"],
+                    "generated_mag": parts["mag"],
+                    "generated_phase": parts["phase"],
+                    "real_cqt_features": real_qf,
+                    "real_mrd_features": real_rf,
+                    "recomputed_complex": parts["recomputed"],
+                    "reference": clean,
+                    "sample_rate": int(self.generator.state_module.sampling_rate),
+                },
             )
-            matching = feature_matching(real_qf, fake_qf, scale=2.0, reduction="sum") + feature_matching(
-                real_rf, fake_rf, scale=2.0, reduction="sum"
-            )
-            spectral = compressed_complex_losses(
-                parts["clean_mag"],
-                parts["mag"],
-                parts["clean_phase"],
-                parts["phase"],
-                parts["clean_complex"],
-                parts["complex"],
-                parts["recomputed"],
-                phase_mode="matrix",
-            )
-            mel = summed_slaney_log_mel(clean, parts["audio"], self.generator.state_module.sampling_rate)
-            total = (
-                adversarial * _ADV
-                + matching * _FM
-                + mel * _MEL
-                + spectral["magnitude"] * _MAG
-                + spectral["phase"] * _PHASE
-                + spectral["complex"] * _COMPLEX
-                + spectral["consistency"] * _CONSISTENCY
-            )
-            terms = {
-                "adversarial": adversarial,
-                "complex": spectral["complex"],
-                "consistency": spectral["consistency"],
-                "magnitude": spectral["magnitude"],
-                "matching": matching,
-                "mel": mel,
-                "phase": spectral["phase"],
-            }
+            total = result.total
+            terms = result.terms
         except (TrainingError, RuntimeFailure, RuntimeError, ValueError) as exc:
             error = f"{type(exc).__name__}: {exc}"
         errors = runtime.gather_objects(error)
@@ -761,7 +748,8 @@ class SEMambaPPTrainer:
             raise RuntimeFailure("generator loss is missing")
         self._backward_if_finite(runtime, total / self.accumulation, "generator loss")
         for name, value in terms.items():
-            components[name] = components[name] + value.detach()
+            current = components.get(name, 0.0)
+            components[name] = current + value.detach()
         return total.detach()
 
     def _waveforms(self, batch: Batch, runtime: ProcessRuntime) -> tuple[torch.Tensor, torch.Tensor]:

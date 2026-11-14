@@ -26,6 +26,11 @@ from src.experiments.checkpoint import CheckpointError
 from src.experiments.data import Batch
 from src.experiments.errors import BuildError, RuntimeFailure
 from src.experiments.official.mossformergan.trainer import MossFormerGANTrainer
+from src.experiments.training.official_objectives import (
+    mossformer_discriminator_objective,
+    mossformer_generator_objective,
+)
+from tests.experiments.official_loss_yaml import MOSS_COMPONENTS, MOSS_INJECT
 from src.experiments.runtime import PreparePolicy, ProcessRuntime
 from src.experiments.calc.rng import set_determinism
 from src.experiments.official.mossformergan.reference import (
@@ -35,6 +40,13 @@ from src.experiments.official.mossformergan.reference import (
 )
 
 ROOT = Path(__file__).resolve().parents[2]
+
+
+def _moss_kwargs() -> dict[str, torch.nn.Module]:
+    return {
+        "discriminator_objective": mossformer_discriminator_objective(),
+        "generator_objective": mossformer_generator_objective(),
+    }
 LENGTH = 2400
 PESQ_LENGTH = 8000
 
@@ -220,7 +232,7 @@ components:
       lr: 0.001
       betas: [0.9, 0.999]
       weight_decay: 0.01
-  trainer:
+{MOSS_COMPONENTS}  trainer:
     role: trainer
     class: src.experiments.official.mossformergan.trainer.MossFormerGANTrainer
     kwargs:
@@ -235,6 +247,7 @@ components:
       data: {{ref: data}}
       optim_g: {{ref: optim_g}}
       optim_d: {{ref: optim_d}}
+{MOSS_INJECT}
 """
     path = directory / "experiment.yaml"
     path.write_text(text, encoding="utf-8")
@@ -426,7 +439,7 @@ class MossFormerGANAlgorithmTests(unittest.TestCase):
             _IdleData(),
             self.optim_g,
             self.optim_d,
-            max_logical_steps=4,
+            **_moss_kwargs(), max_logical_steps=4,
             accumulation=accumulation,
             grad_clip=float(kwargs.get("grad_clip", 10.0)),
             experiment_claim=claim,
@@ -663,7 +676,7 @@ class MossFormerGANAlgorithmTests(unittest.TestCase):
                 _IdleData(),
                 self.optim_g,
                 shared,
-                max_logical_steps=1,
+                **_moss_kwargs(), max_logical_steps=1,
             )
         research = MossFormerGANTrainer(
             self.generator,
@@ -671,7 +684,7 @@ class MossFormerGANAlgorithmTests(unittest.TestCase):
             _IdleData(),
             self.optim_g,
             self.optim_d,
-            max_logical_steps=1,
+            **_moss_kwargs(), max_logical_steps=1,
             experiment_claim="research",
         )
         research._check_claim()
@@ -681,7 +694,7 @@ class MossFormerGANAlgorithmTests(unittest.TestCase):
             _IdleData(),
             self.optim_g,
             self.optim_d,
-            max_logical_steps=1,
+            **_moss_kwargs(), max_logical_steps=1,
             experiment_claim="leakage_safe",
         )
         with self.assertRaises(RuntimeFailure):
@@ -695,7 +708,7 @@ class MossFormerGANAlgorithmTests(unittest.TestCase):
                 _IdleData(),
                 self.optim_g,
                 bad,
-                max_logical_steps=1,
+                **_moss_kwargs(), max_logical_steps=1,
             )
 
     def test_profile_must_match_the_claim(self) -> None:
@@ -713,7 +726,7 @@ class MossFormerGANAlgorithmTests(unittest.TestCase):
                 data,
                 self.optim_g,
                 self.optim_d,
-                max_logical_steps=1,
+                **_moss_kwargs(), max_logical_steps=1,
                 experiment_claim=claim,
             )
             with self.subTest(claim=claim, profile=profile, uses_test=uses_test):
@@ -728,7 +741,7 @@ class MossFormerGANAlgorithmTests(unittest.TestCase):
             _ProfileData("leakage_safe", False),
             self.optim_g,
             self.optim_d,
-            max_logical_steps=1,
+            **_moss_kwargs(), max_logical_steps=1,
             experiment_claim="leakage_safe",
         )
         trainer._check_claim()
@@ -743,7 +756,7 @@ class MossFormerGANAlgorithmTests(unittest.TestCase):
                 _ProfileData(profile, uses_test),
                 self.optim_g,
                 self.optim_d,
-                max_logical_steps=1,
+                **_moss_kwargs(), max_logical_steps=1,
                 experiment_claim=claim,
             )
             with self.subTest(claim=claim, profile=profile, uses_test=uses_test, accepted=False):

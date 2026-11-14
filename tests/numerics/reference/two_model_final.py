@@ -1017,8 +1017,15 @@ def _semamba_trainer_once(sem, device, trainer_cls, gen_cls, mrd_cls, cqt_cls, p
         sched_d.step = _count(sched_d.step)
         directory = OUT / "checkpoints" / f"semamba-{flag_mode}"
         directory.mkdir(parents=True, exist_ok=True)
+        from src.experiments.training.official_objectives import (
+            semamba_discriminator_objective,
+            semamba_generator_objective,
+        )
+
         trainer = trainer_cls(
             prepared_g, prepared_m, prepared_c, data, opt_g, opt_d, sched_g, sched_d,
+            generator_objective=semamba_generator_objective(),
+            discriminator_objective=semamba_discriminator_objective(),
             max_logical_steps=3, accumulation=1, grad_clip=None, validation_interval=0,
         )
         off_opt_g = torch.optim.AdamW(official_g.parameters(), lr=sem.LR, betas=sem.BETAS, eps=1e-8, weight_decay=sem.WEIGHT_DECAY)
@@ -1211,8 +1218,17 @@ def _mp_trainer_once(cmp, h, device, trainer_cls, gen_cls, disc_cls, policy_cls,
         sched_d.step = count_d
         directory = OUT / "checkpoints" / f"mp-{flag_mode}"
         directory.mkdir(parents=True, exist_ok=True)
+        from src.experiments.training.official_objectives import (
+            mp_senet_discriminator_objective,
+            mp_senet_metric_objective,
+            mp_senet_signal_objective,
+        )
+
         trainer = trainer_cls(
             prepared_g, prepared_d, data, opt_g, opt_d, sched_g, sched_d,
+            signal_objective=mp_senet_signal_objective(),
+            metric_objective=mp_senet_metric_objective(),
+            discriminator_objective=mp_senet_discriminator_objective(),
             max_logical_steps=3, experiment_claim="research", accumulation=1,
             validation_interval=0, best_checkpoint_start_epoch=40,
         )

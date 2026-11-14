@@ -319,26 +319,35 @@ def _vorbis_istft(spectrum: torch.Tensor, n_fft: int, hop: int, window: torch.Te
     return torch.istft(packed, n_fft=n_fft, hop_length=hop, window=window, normalized=True)
 
 
-def _multi_resolution_spectral(estimate: torch.Tensor, reference: torch.Tensor) -> torch.Tensor:
+def _multi_resolution_spectral(
+    estimate: torch.Tensor,
+    reference: torch.Tensor,
+    *,
+    factor: float = _MR_FACTOR,
+    complex_factor: float = _MR_COMPLEX,
+    gamma: float = _MR_GAMMA,
+    ffts: tuple[int, ...] = _MR_FFTS,
+    magnitude_floor: float = 1e-12,
+) -> torch.Tensor:
     length = min(estimate.shape[-1], reference.shape[-1])
     estimate = estimate[..., :length]
     reference = reference[..., :length]
     loss = estimate.new_zeros(())
-    for n_fft in _MR_FFTS:
+    for n_fft in ffts:
         hop = n_fft // 4
         # The official loss registers a CPU-created Hann window and moves it
         # with the loss module; CUDA's direct window generation differs.
         window = torch.hann_window(n_fft, dtype=estimate.dtype).to(estimate.device)
         predicted = _spectral_stft(estimate, n_fft, hop, window)
         target = _spectral_stft(reference, n_fft, hop, window)
-        predicted_abs = predicted.abs().clamp_min(1e-12).pow(_MR_GAMMA)
-        target_abs = target.abs().clamp_min(1e-12).pow(_MR_GAMMA)
-        loss = loss + F.mse_loss(predicted_abs, target_abs) * _MR_FACTOR
+        predicted_abs = predicted.abs().clamp_min(magnitude_floor).pow(gamma)
+        target_abs = target.abs().clamp_min(magnitude_floor).pow(gamma)
+        loss = loss + F.mse_loss(predicted_abs, target_abs) * factor
         predicted_compressed = _compressed_complex(predicted, predicted_abs)
         target_compressed = _compressed_complex(target, target_abs)
         loss = loss + F.mse_loss(
             torch.view_as_real(predicted_compressed), torch.view_as_real(target_compressed)
-        ) * _MR_COMPLEX
+        ) * complex_factor
     return loss
 
 
@@ -381,14 +390,16 @@ def _local_snr_db(
     hop: int,
     low: float,
     high: float,
+    milliseconds: int = _LSNR_MS,
+    floor: float = 1e-12,
 ) -> torch.Tensor:
-    speech = _local_energy(torch.view_as_real(clean).unsqueeze(1), _stft_window(_LSNR_MS, sample_rate, n_fft, hop))
+    speech = _local_energy(torch.view_as_real(clean).unsqueeze(1), _stft_window(milliseconds, sample_rate, n_fft, hop))
     disturbance = _local_energy(
         torch.view_as_real(noise).unsqueeze(1),
-        _stft_window(_LSNR_MS, sample_rate, n_fft, hop) * 2,
+        _stft_window(milliseconds, sample_rate, n_fft, hop) * 2,
     )
-    ratio = speech / disturbance.clamp_min(1e-12)
-    return (10.0 * torch.log10(ratio.clamp_min(1e-12))).clamp(low, high).squeeze(1)
+    ratio = speech / disturbance.clamp_min(floor)
+    return (10.0 * torch.log10(ratio.clamp_min(floor))).clamp(low, high).squeeze(1)
 
 
 def _stft_window(milliseconds: int, sample_rate: int, n_fft: int, hop: int) -> int:

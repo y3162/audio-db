@@ -55,6 +55,7 @@ from src.experiments.official.deepfilternet3.reference import (
     _vorbis_istft,
     deepfilter_cosine_schedules,
 )
+from src.experiments.training.objectives import apply_weight, call_objective
 
 _PENDING = "pending_validation"
 _IN_EPOCH = "in_epoch"
@@ -66,6 +67,7 @@ def component_losses(
     module: torch.nn.Module,
     clean: torch.Tensor,
     noisy: torch.Tensor,
+    objective: torch.nn.Module | None = None,
 ) -> dict[str, torch.Tensor]:
     """Spectral, local-SNR, and total loss for one batch.
 
@@ -90,23 +92,50 @@ def component_losses(
     window = vorbis_window(params.fft_size).to(device=enhanced_complex.device, dtype=enhanced_complex.real.dtype)
     enhanced_wave = _vorbis_istft(enhanced_complex, params.fft_size, params.hop_size, window)
     clean_wave = _vorbis_istft(clean_complex, params.fft_size, params.hop_size, window)
-    spectral = _multi_resolution_spectral(enhanced_wave, clean_wave)
-    target = _local_snr_db(
-        clean_complex,
-        noisy_complex - clean_complex,
-        sample_rate=params.sr,
-        n_fft=params.fft_size,
-        hop=params.hop_size,
-        low=params.lsnr_min - 1,
-        high=params.lsnr_max + 1,
-    )
-    predicted = lsnr.reshape(target.shape[0], -1)
-    if predicted.shape[-1] != target.shape[-1]:
-        raise RuntimeFailure(
-            f"local SNR length {predicted.shape[-1]} does not match the 20 ms target {target.shape[-1]}"
+    if objective is None:
+        spectral = _multi_resolution_spectral(enhanced_wave, clean_wave)
+        target = _local_snr_db(
+            clean_complex,
+            noisy_complex - clean_complex,
+            sample_rate=params.sr,
+            n_fft=params.fft_size,
+            hop=params.hop_size,
+            low=params.lsnr_min - 1,
+            high=params.lsnr_max + 1,
         )
-    local = F.mse_loss(predicted, target) * _LSNR
-    return {"local_snr": local, "spectral": spectral, "total": spectral + local}
+        predicted = lsnr.reshape(target.shape[0], -1)
+        if predicted.shape[-1] != target.shape[-1]:
+            raise RuntimeFailure(
+                f"local SNR length {predicted.shape[-1]} does not match the 20 ms target {target.shape[-1]}"
+            )
+        local = F.mse_loss(predicted, target) * _LSNR
+        return {"local_snr": local, "spectral": spectral, "total": spectral + local}
+    from src.experiments.training.objectives import ObjectiveOutput, call_objective
+
+    try:
+        result = call_objective(
+            objective,
+            {
+                "estimate": enhanced_wave,
+                "target": clean_wave,
+                "predicted_lsnr": lsnr,
+                "clean_complex": clean_complex,
+                "noise_complex": noisy_complex - clean_complex,
+                "sample_rate": int(params.sr),
+                "n_fft": int(params.fft_size),
+                "hop": int(params.hop_size),
+                "lsnr_low": float(params.lsnr_min - 1),
+                "lsnr_high": float(params.lsnr_max + 1),
+            },
+        )
+    except TrainingError:
+        raise
+    except ValueError as exc:
+        raise TrainingError(str(exc)) from exc
+    reported = {"total": result.total}
+    for name, value, weight in result.records:
+        reported[name] = apply_weight(value, weight)
+    return reported
 
 
 def schedule_index(epoch: int, index_in_epoch: int, steps_per_epoch: int) -> int:
@@ -156,6 +185,7 @@ class DeepFilterNet3Trainer:
         data: Any,
         optimizer: torch.optim.Optimizer,
         *,
+        objective: torch.nn.Module,
         max_logical_steps: int,
         accumulation: int = 1,
         grad_clip: float = 1.0,
@@ -175,6 +205,9 @@ class DeepFilterNet3Trainer:
             raise BuildError("model must be a prepared module handle")
         if not isinstance(model.state_module, DeepFilterNet3Model):
             raise BuildError("model must be DeepFilterNet3Model")
+        if not isinstance(objective, torch.nn.Module):
+            raise BuildError("objective must be a loss module")
+        self.objective = objective
         if not hasattr(data, "train_epoch") or not hasattr(data, "validation_epoch"):
             raise BuildError("data must provide train_epoch and validation_epoch")
         _require_adamw(optimizer)
@@ -546,7 +579,7 @@ class DeepFilterNet3Trainer:
         if self._stream is None:
             raise RuntimeFailure("DeepFilterNet3 stream is not ready")
         try:
-            parts = component_losses(self._stream, module, clean, noisy)
+            parts = component_losses(self._stream, module, clean, noisy, self.objective)
         except TrainingError as exc:
             raise RuntimeFailure(str(exc)) from exc
         total = parts["total"]

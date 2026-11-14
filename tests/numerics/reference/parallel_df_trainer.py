@@ -24,6 +24,7 @@ if libdf_dir not in sys.path:
 from src.experiments.data import Batch  # noqa: E402
 from src.experiments.official.deepfilternet3.model import DeepFilterNet3Model  # noqa: E402
 from src.experiments.official.deepfilternet3.reference import DeepFilterNetTask  # noqa: E402
+from src.experiments.official.deepfilternet3.losses import official_deepfilternet_objective  # noqa: E402
 from src.experiments.official.deepfilternet3.trainer import DeepFilterNet3Trainer  # noqa: E402
 from src.experiments.runtime import PreparePolicy, ProcessRuntime  # noqa: E402
 from tests.numerics.reference.compare_deepfilternet import _resample, _task_config  # noqa: E402
@@ -91,6 +92,7 @@ def main() -> None:
         model,
         _Data(batches, 8),
         optimizer,
+        objective=official_deepfilternet_objective(),
         max_logical_steps=3,
         accumulation=1,
         grad_clip=1.0,

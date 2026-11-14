@@ -45,6 +45,7 @@ components:
     role: loss
     class: src.experiments.losses.MultiResolutionL1Loss
     kwargs:
+      name: mr_l1
       windows: [256, 512, 768, 1024]
       time_domain_weight: 0.5
       normalize_variance: false
@@ -109,6 +110,15 @@ components:
       patience: 1
     inject:
       optimizer: {ref: optimizer}
+  objective:
+    role: loss
+    class: src.experiments.losses.WeightedObjective
+    kwargs:
+      weights:
+        mr_l1: 1.0
+    inject:
+      terms:
+        - {ref: loss}
   trainer:
     role: trainer
     class: src.experiments.official.tf_gridnet.trainer.TFGridNetTrainer
@@ -121,7 +131,7 @@ components:
       early_stopping_patience: 5
     inject:
       model: {ref: model}
-      loss: {ref: loss}
+      objective: {ref: objective}
       data: {ref: data}
       optimizer: {ref: optimizer}
       scheduler: {ref: scheduler}

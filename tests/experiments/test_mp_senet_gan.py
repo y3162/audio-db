@@ -24,6 +24,12 @@ import soundfile as sf
 import torch
 
 from src.experiments.api import build_experiment
+from src.experiments.training.official_objectives import (
+    mp_senet_discriminator_objective,
+    mp_senet_metric_objective,
+    mp_senet_signal_objective,
+)
+from tests.experiments.official_loss_yaml import MP_COMPONENTS, MP_INJECT
 from src.experiments.config import load_experiment
 from src.experiments.data import Batch
 from src.experiments.errors import BuildError, CheckpointError, RuntimeFailure
@@ -537,6 +543,9 @@ def _manual_trainer(runtime: ProcessRuntime, accumulation: int) -> tuple[object,
         optim_d,
         scheduler_g,
         scheduler_d,
+        signal_objective=mp_senet_signal_objective(),
+        metric_objective=mp_senet_metric_objective(),
+        discriminator_objective=mp_senet_discriminator_objective(),
         max_logical_steps=1,
         experiment_claim="official_faithful",
         accumulation=accumulation,
@@ -860,7 +869,7 @@ components:
       gamma: 0.99
     inject:
       optimizer: {{ref: optim_d}}
-  trainer:
+{MP_COMPONENTS}  trainer:
     role: trainer
     class: src.experiments.official.mp_senet.trainer.MPSENetGANTrainer
     kwargs:
@@ -877,6 +886,7 @@ components:
       optim_d: {{ref: optim_d}}
       scheduler_g: {{ref: scheduler_g}}
       scheduler_d: {{ref: scheduler_d}}
+{MP_INJECT}
 """
 
 
@@ -989,7 +999,7 @@ components:
       gamma: 0.99
     inject:
       optimizer: {{ref: optim_d}}
-  trainer:
+{MP_COMPONENTS}  trainer:
     role: trainer
     class: src.experiments.official.mp_senet.trainer.MPSENetGANTrainer
     kwargs:
@@ -1006,6 +1016,7 @@ components:
       optim_d: {{ref: optim_d}}
       scheduler_g: {{ref: scheduler_g}}
       scheduler_d: {{ref: scheduler_d}}
+{MP_INJECT}
 """,
         encoding="utf-8",
     )

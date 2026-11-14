@@ -36,6 +36,10 @@ from src.experiments.official.mossformergan.models import (  # noqa: E402
 )
 from src.experiments.official.mossformergan.reference import MossFormerGANTask  # noqa: E402
 from src.experiments.official.mossformergan.trainer import MossFormerGANTrainer  # noqa: E402
+from src.experiments.training.official_objectives import (  # noqa: E402
+    mossformer_discriminator_objective,
+    mossformer_generator_objective,
+)
 from src.experiments.runtime import PreparePolicy, ProcessRuntime  # noqa: E402
 from tests.experiments.test_mossformergan import _as_batch, _task_config  # noqa: E402
 
@@ -221,6 +225,8 @@ def main() -> None:
         data,
         optim_g,
         optim_d,
+        generator_objective=mossformer_generator_objective(),
+        discriminator_objective=mossformer_discriminator_objective(),
         max_logical_steps=3,
         accumulation=2,
         grad_clip=10.0,

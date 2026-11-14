@@ -166,6 +166,100 @@ components:
       gamma: 0.99
     inject:
       optimizer: {ref: optim_d}
+  adversarial_loss:
+    role: loss
+    class: src.experiments.losses.SummedLeastSquaresGenerator
+    kwargs:
+      name: adversarial
+      first: fake_cqt
+      second: fake_mrd
+  matching_loss:
+    role: loss
+    class: src.experiments.losses.PairedFeatureMatching
+    kwargs:
+      name: matching
+      scale: 2.0
+      reduction: sum
+      first_real: real_cqt_features
+      first_fake: fake_cqt_features
+      second_real: real_mrd_features
+      second_fake: fake_mrd_features
+  mel_loss:
+    role: loss
+    class: src.experiments.losses.SlaneyLogMelLoss
+    kwargs:
+      name: mel
+      n_mels: [40, 80, 160, 320]
+      windows: [256, 512, 1024, 2048]
+      clamp: 1.0e-5
+  magnitude_loss:
+    role: loss
+    class: src.experiments.losses.MagnitudeMSE
+    kwargs:
+      name: magnitude
+      estimate: generated_mag
+      target: clean_mag
+  phase_loss:
+    role: loss
+    class: src.experiments.losses.PhaseLoss
+    kwargs:
+      name: phase
+      mode: matrix
+  complex_loss:
+    role: loss
+    class: src.experiments.losses.ScaledComplexMSE
+    kwargs:
+      name: complex
+      scale: 2.0
+      estimate: generated_complex
+      target: clean_complex
+  consistency_loss:
+    role: loss
+    class: src.experiments.losses.ScaledComplexMSE
+    kwargs:
+      name: consistency
+      scale: 2.0
+      estimate: recomputed_complex
+      target: generated_complex
+  generator_objective:
+    role: loss
+    class: src.experiments.losses.WeightedObjective
+    kwargs:
+      weights:
+        adversarial: 1.0
+        matching: 1.0
+        mel: 0.1
+        magnitude: 0.9
+        phase: 0.3
+        complex: 0.1
+        consistency: 0.1
+    inject:
+      terms:
+        - {ref: adversarial_loss}
+        - {ref: matching_loss}
+        - {ref: mel_loss}
+        - {ref: magnitude_loss}
+        - {ref: phase_loss}
+        - {ref: complex_loss}
+        - {ref: consistency_loss}
+  discriminator_term:
+    role: loss
+    class: src.experiments.losses.SummedLeastSquaresDiscriminator
+    kwargs:
+      name: discriminator
+      first_real: real_cqt
+      first_fake: fake_cqt
+      second_real: real_mrd
+      second_fake: fake_mrd
+  discriminator_objective:
+    role: loss
+    class: src.experiments.losses.WeightedObjective
+    kwargs:
+      weights:
+        discriminator: 1.0
+    inject:
+      terms:
+        - {ref: discriminator_term}
   trainer:
     role: trainer
     class: src.experiments.official.semambapp.trainer.SEMambaPPTrainer
@@ -185,3 +279,5 @@ components:
       optim_d: {ref: optim_d}
       scheduler_g: {ref: scheduler_g}
       scheduler_d: {ref: scheduler_d}
+      generator_objective: {ref: generator_objective}
+      discriminator_objective: {ref: discriminator_objective}

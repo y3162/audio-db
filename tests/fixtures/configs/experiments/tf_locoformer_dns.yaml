@@ -56,6 +56,7 @@ components:
     role: loss
     class: src.experiments.losses.MultiResolutionL1Loss
     kwargs:
+      name: mr_l1
       windows: [256, 512, 768, 1024]
       time_domain_weight: 0.5
       normalize_variance: false
@@ -126,6 +127,15 @@ components:
       eps: 1.0e-8
     inject:
       optimizer: {ref: optimizer}
+  objective:
+    role: loss
+    class: src.experiments.losses.WeightedObjective
+    kwargs:
+      weights:
+        mr_l1: 1.0
+    inject:
+      terms:
+        - {ref: loss}
   trainer:
     role: trainer
     class: src.experiments.official.tf_locoformer.trainer.TFLocoformerTrainer
@@ -139,7 +149,7 @@ components:
       validation_profile: tf_locoformer.dns.accept_recipe.research_valid_fixed@1
     inject:
       model: {ref: model}
-      loss: {ref: loss}
+      objective: {ref: objective}
       data: {ref: data}
       optimizer: {ref: optimizer}
       scheduler: {ref: scheduler}

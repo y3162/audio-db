@@ -84,6 +84,34 @@ components:
       betas: [0.9, 0.999]
       weight_decay: 1.0e-12
       amsgrad: true
+  spectral_loss:
+    role: loss
+    class: src.experiments.official.deepfilternet3.losses.DeepFilterNetSpectralLoss
+    kwargs:
+      name: spectral
+      factor: 500.0
+      complex_factor: 500.0
+      gamma: 0.3
+      fft_sizes: [256, 512, 1024, 2048]
+      magnitude_floor: 1.0e-12
+  local_snr_loss:
+    role: loss
+    class: src.experiments.official.deepfilternet3.losses.LocalSNRLoss
+    kwargs:
+      name: local_snr
+      milliseconds: 20
+      energy_floor: 1.0e-12
+  objective:
+    role: loss
+    class: src.experiments.losses.WeightedObjective
+    kwargs:
+      weights:
+        spectral: 1.0
+        local_snr: 0.001
+    inject:
+      terms:
+        - {ref: spectral_loss}
+        - {ref: local_snr_loss}
   trainer:
     role: trainer
     class: src.experiments.official.deepfilternet3.trainer.DeepFilterNet3Trainer
@@ -111,3 +139,4 @@ components:
       model: {ref: model}
       data: {ref: data}
       optimizer: {ref: optimizer}
+      objective: {ref: objective}

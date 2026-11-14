@@ -27,7 +27,6 @@ from pathlib import Path
 from typing import Any
 
 import torch
-import torch.nn.functional as F
 
 from src.experiments.checkpoint import CheckpointManager
 from src.experiments.data import Batch
@@ -53,11 +52,14 @@ from src.experiments.official.mossformergan import reference as mossformer_lib
 from src.experiments.official.mossformergan.reference import (
     OFFICIAL_ADAMW_WEIGHT_DECAY,
     forward_spectra,
+    generator_parts,
     generator_terms,
     mossformer_validation_decision,
     reduce_validation,
     validation_report,
 )
+from src.experiments.training.objectives import call_objective
+from src.experiments.training.official_objectives import require_mossformer
 
 _IN_EPOCH = "in_epoch"
 _PENDING = "pending_boundary"
@@ -91,6 +93,8 @@ class MossFormerGANTrainer:
         optim_g: torch.optim.Optimizer,
         optim_d: torch.optim.Optimizer,
         *,
+        generator_objective: torch.nn.Module,
+        discriminator_objective: torch.nn.Module,
         max_logical_steps: int,
         accumulation: int = 2,
         grad_clip: float = OFFICIAL_CLIP,
@@ -114,6 +118,7 @@ class MossFormerGANTrainer:
         _require_disjoint(optim_g, optim_d)
         if experiment_claim not in _CLAIMS:
             raise BuildError("experiment_claim must be official_faithful, leakage_safe, or research")
+        require_mossformer(generator_objective, discriminator_objective, experiment_claim)
         if not hasattr(data, "train_epoch") or not hasattr(data, "validation_epoch"):
             raise BuildError("data must provide train_epoch and validation_epoch")
         optim_g_id = getattr(optim_g, "_experiment_component_id", None)
@@ -127,6 +132,8 @@ class MossFormerGANTrainer:
         self.data = data
         self.optim_g = optim_g
         self.optim_d = optim_d
+        self.generator_objective = generator_objective
+        self.discriminator_objective = discriminator_objective
         self.optim_g_id = optim_g_id
         self.optim_d_id = optim_d_id
         self.experiment_claim = experiment_claim
@@ -311,14 +318,29 @@ class MossFormerGANTrainer:
         generator_module = self.generator.module
         discriminator_module = self.discriminator.module
         with runtime.sync_context([self.generator, self.discriminator], sync=False):
-            terms = generator_terms(self._terms_view(), generator_module, discriminator_module, clean, noisy)
-            generator_loss = terms["generator"]
+            parts = generator_parts(self._terms_view(), generator_module, discriminator_module, clean, noisy)
+            result = call_objective(
+                self.generator_objective,
+                {
+                    "audio": parts["audio"],
+                    "estimate": parts["audio"],
+                    "gan": parts["gan"],
+                    "label_mag": parts["label_mag"],
+                    "magnitude": parts["magnitude"],
+                    "pred_mag": parts["pred_mag"],
+                    "ri": parts["ri"],
+                    "target": parts["teacher"],
+                    "teacher": parts["teacher"],
+                    "time": parts["time"],
+                },
+            )
+            generator_loss = result.total
             reason = None
             targets = None
             if not bool(torch.isfinite(generator_loss.detach()).all()):
                 reason = "non-finite generator loss"
             else:
-                targets = mossformer_lib.metric_targets(terms["teacher"], terms["audio"], self.sample_rate)
+                targets = mossformer_lib.metric_targets(parts["teacher"], parts["audio"], self.sample_rate)
                 if targets is None:
                     reason = "pesq"
             if self._skip(runtime, reason, batch, update_index):
@@ -326,11 +348,17 @@ class MossFormerGANTrainer:
             if targets is None:
                 raise RuntimeFailure("PESQ targets are missing on a micro-batch that was not skipped")
             ones = torch.ones(clean.shape[0], device=clean.device)
-            fake_detached = discriminator_module(terms["label_mag"], terms["pred_mag"].detach())
-            real_score = discriminator_module(terms["label_mag"], terms["label_mag"])
-            discriminator_loss = F.mse_loss(real_score.flatten(), ones) + F.mse_loss(
-                fake_detached.flatten(), targets.to(clean.device)
-            )
+            fake_detached = discriminator_module(parts["label_mag"], parts["pred_mag"].detach())
+            real_score = discriminator_module(parts["label_mag"], parts["label_mag"])
+            discriminator_loss = call_objective(
+                self.discriminator_objective,
+                {
+                    "fake_score": fake_detached,
+                    "ones": ones,
+                    "pesq_target": targets,
+                    "real_score": real_score,
+                },
+            ).total
             disc_reason = None if bool(torch.isfinite(discriminator_loss.detach()).all()) else "non-finite discriminator loss"
             if self._skip(runtime, disc_reason, batch, update_index):
                 return None
@@ -338,12 +366,10 @@ class MossFormerGANTrainer:
             self._accu_count += 1
             self.last_components = {
                 "discriminator": float(discriminator_loss.detach()),
-                "gan": float(terms["gan"].detach()),
                 "generator": float(generator_loss.detach()),
-                "magnitude": float(terms["magnitude"].detach()),
-                "ri": float(terms["ri"].detach()),
-                "time": float(terms["time"].detach()),
             }
+            for name, value in result.terms.items():
+                self.last_components[name] = float(value.detach())
             self._on_update_phase("before_generator_backward")
             self._backward_average_and_clip(runtime, generator_loss / self.accumulation, self.generator.parameters)
             self._on_update_phase("after_generator_clip")
@@ -909,6 +935,7 @@ class _OfficialCall:
     """
 
     _forward = forward_spectra
+    _generator_parts = generator_parts
     _generator_terms = generator_terms
     validation_report = validation_report
     reduce_validation = reduce_validation

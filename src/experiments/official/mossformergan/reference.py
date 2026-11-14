@@ -700,12 +700,12 @@ class MossFormerGANTask:
         """
         return self.validation_report(batch)
 
-    def _generator_terms(self, module, discriminator, clean: torch.Tensor, noisy: torch.Tensor) -> dict[str, torch.Tensor]:
-        """Released ``loss_mossformergan_se_16k`` generator terms.
+    def _generator_parts(self, module, discriminator, clean: torch.Tensor, noisy: torch.Tensor) -> dict[str, torch.Tensor]:
+        """Unweighted generator terms for ``loss_mossformergan_se_16k``.
 
         The time term reconstructs from the clean real part and the predicted
         imaginary part. The GAN term asks the discriminator to score the fake
-        pair as 1. Discriminator targets that use PESQ are not part of this sum.
+        pair as 1. The weighted sum is applied by the caller.
         """
         scale = torch.sqrt(noisy.shape[-1] / (noisy.square().sum(dim=-1) + 1e-6)).unsqueeze(-1)
         normalized = noisy * scale
@@ -720,9 +720,7 @@ class MossFormerGANTask:
         teacher = clean * scale
         length = min(audio.shape[-1], teacher.shape[-1])
         time_loss = (audio[..., :length] - teacher[..., :length]).abs().mean()
-        generator_loss = _RI * loss_ri + _MAG * loss_mag + _TIME * time_loss + _GAN * gan
         return {
-            "generator": generator_loss,
             "ri": loss_ri,
             "magnitude": loss_mag,
             "time": time_loss,
@@ -735,6 +733,13 @@ class MossFormerGANTask:
             "predicted_imag": imag,
             "label_real": label_real,
         }
+
+    def _generator_terms(self, module, discriminator, clean: torch.Tensor, noisy: torch.Tensor) -> dict[str, torch.Tensor]:
+        """Reference generator objective. Coefficients stay in this task."""
+
+        parts = self._generator_parts(module, discriminator, clean, noisy)
+        generator_loss = _RI * parts["ri"] + _MAG * parts["magnitude"] + _TIME * parts["time"] + _GAN * parts["gan"]
+        return {**parts, "generator": generator_loss}
 
     def _forward(self, module, noisy: torch.Tensor, clean: torch.Tensor):
         noisy_spec = _compress(_stft(noisy, self.n_fft, self.hop, self.win)).permute(0, 1, 3, 2)
@@ -805,6 +810,12 @@ def forward_spectra(view, module, noisy, clean):
     """Spectra for one MossFormerGAN forward. ``view`` supplies STFT sizes."""
 
     return MossFormerGANTask._forward(view, module, noisy, clean)
+
+
+def generator_parts(view, module, discriminator, clean, noisy):
+    """Unweighted official generator terms. ``view`` supplies STFT sizes."""
+
+    return MossFormerGANTask._generator_parts(view, module, discriminator, clean, noisy)
 
 
 def generator_terms(view, module, discriminator, clean, noisy):

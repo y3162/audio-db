@@ -49,7 +49,8 @@ from src.experiments.trainers import (
     _sample_path,
 )
 from src.experiments.calc.errors import TrainingError
-from src.experiments.calc.losses import METRIC_WEIGHT, discriminator_loss, generator_losses, generator_signal_losses
+from src.experiments.training.objectives import call_objective
+from src.experiments.training.official_objectives import require_mp_senet
 from src.experiments.official.mp_senet.reference import _require_discriminator_resolution, validation_model
 
 _IN_EPOCH = "in_epoch"
@@ -84,6 +85,9 @@ class MPSENetGANTrainer:
         scheduler_g: torch.optim.lr_scheduler.ExponentialLR,
         scheduler_d: torch.optim.lr_scheduler.ExponentialLR,
         *,
+        signal_objective: torch.nn.Module,
+        metric_objective: torch.nn.Module,
+        discriminator_objective: torch.nn.Module,
         max_logical_steps: int,
         experiment_claim: str,
         accumulation: int = 1,
@@ -113,6 +117,7 @@ class MPSENetGANTrainer:
             raise BuildError("data must provide train_epoch and validation_epoch")
         if experiment_claim not in _CLAIMS:
             raise BuildError("experiment_claim must be official_faithful, leakage_safe, or research")
+        require_mp_senet(signal_objective, metric_objective, discriminator_objective, experiment_claim)
         optim_g_id = getattr(optim_g, "_experiment_component_id", None)
         optim_d_id = getattr(optim_d, "_experiment_component_id", None)
         if not isinstance(optim_g_id, str) or not isinstance(optim_d_id, str):
@@ -124,6 +129,9 @@ class MPSENetGANTrainer:
         self.optim_d = optim_d
         self.scheduler_g = scheduler_g
         self.scheduler_d = scheduler_d
+        self.signal_objective = signal_objective
+        self.metric_objective = metric_objective
+        self.discriminator_objective = discriminator_objective
         self.optim_g_id = optim_g_id
         self.optim_d_id = optim_d_id
         self.experiment_claim = experiment_claim
@@ -339,24 +347,17 @@ class MPSENetGANTrainer:
             int(self.generator.state_module.architecture["sampling_rate"]),
         )
         ones = torch.ones(clean.shape[0], device=clean.device)
-        signal = generator_signal_losses(
-            parts["clean_mag"],
-            parts["mag"],
-            parts["clean_phase"],
-            parts["phase"],
-            parts["clean_complex"],
-            parts["complex"],
-            parts["recomputed_complex"],
-            clean,
-            parts["audio"],
-        )
-        self._backward_if_finite(runtime, signal["signal"] / self.accumulation, "generator signal loss", retain_graph=True)
+        signal = call_objective(self.signal_objective, _signal_context(parts, clean))
+        self._backward_if_finite(runtime, signal.total / self.accumulation, "generator signal loss", retain_graph=True)
         self._drain_mp_io()
         try:
             targets = pending.result()
             real = self.discriminator.module(parts["clean_mag"], parts["clean_mag"])
             fake = self.discriminator.module(parts["clean_mag"], parts["mag_hat"].detach())
-            loss_d = discriminator_loss(real, fake, ones, targets) / self.accumulation
+            loss_d = call_objective(
+                self.discriminator_objective,
+                {"real_score": real, "fake_score": fake, "ones": ones, "pesq_target": targets},
+            ).total / self.accumulation
         except (TrainingError, RuntimeFailure, RuntimeError, ValueError) as exc:
             raise RuntimeFailure(f"discriminator forward failed: {type(exc).__name__}: {exc}") from exc
         self._backward_if_finite(runtime, loss_d, "discriminator loss")
@@ -369,26 +370,26 @@ class MPSENetGANTrainer:
                 parameter.requires_grad_(False)
             try:
                 metric = raw(parts["clean_mag"], parts["mag_hat"])
-                metric_loss = torch.nn.functional.mse_loss(metric.flatten(), ones)
+                metric_out = call_objective(self.metric_objective, {"metric": metric, "ones": ones})
             except (TrainingError, RuntimeFailure, RuntimeError, ValueError) as exc:
                 raise RuntimeFailure(f"generator loss failed: {type(exc).__name__}: {exc}") from exc
-            self._backward_if_finite(runtime, metric_loss * METRIC_WEIGHT / self.accumulation, "generator metric loss")
+            self._backward_if_finite(runtime, metric_out.total / self.accumulation, "generator metric loss")
         finally:
             for parameter in frozen:
                 parameter.requires_grad_(True)
         self._average_calls += 1
         runtime.average_gradients(self.generator.parameters)
-        total = signal["signal"] + metric_loss * METRIC_WEIGHT
+        total = signal.total + metric_out.total
         logged = torch.stack(
             [
-                signal["complex"].detach(),
-                signal["consistency"].detach(),
+                signal.terms["complex"].detach(),
+                signal.terms["consistency"].detach(),
                 loss_d.detach() * self.accumulation,
                 total.detach(),
-                signal["magnitude"].detach(),
-                metric_loss.detach(),
-                signal["phase"].detach(),
-                signal["time"].detach(),
+                signal.terms["magnitude"].detach(),
+                metric_out.terms["metric"].detach(),
+                signal.terms["phase"].detach(),
+                signal.terms["time"].detach(),
             ]
         )
         host = torch.empty(logged.shape, dtype=torch.float32, pin_memory=True)
@@ -470,7 +471,10 @@ class MPSENetGANTrainer:
                             real = self.discriminator.module(parts["clean_mag"], parts["clean_mag"])
                             fake = self.discriminator.module(parts["clean_mag"], parts["mag_hat"].detach())
                             targets = _metric_targets(clean, parts["audio"], int(self.generator.state_module.architecture["sampling_rate"]))
-                            loss = discriminator_loss(real, fake, ones, targets) / self.accumulation
+                            loss = call_objective(
+                                self.discriminator_objective,
+                                {"real_score": real, "fake_score": fake, "ones": ones, "pesq_target": targets},
+                            ).total / self.accumulation
                         except (TrainingError, RuntimeError, ValueError) as exc:
                             disc_error = f"{type(exc).__name__}: {exc}"
                         disc_errors = runtime.gather_objects(disc_error)
@@ -496,20 +500,19 @@ class MPSENetGANTrainer:
                         total: torch.Tensor | None = None
                         try:
                             metric = raw(parts["clean_mag"], parts["mag_hat"])
-                            losses = generator_losses(
-                                parts["clean_mag"],
-                                parts["mag"],
-                                parts["clean_phase"],
-                                parts["phase"],
-                                parts["clean_complex"],
-                                parts["complex"],
-                                parts["recomputed_complex"],
-                                clean,
-                                parts["audio"],
-                                metric,
-                                ones,
-                            )
-                            total = losses["total"] / self.accumulation
+                            signal = call_objective(self.signal_objective, _signal_context(parts, clean))
+                            metric_out = call_objective(self.metric_objective, {"metric": metric, "ones": ones})
+                            total_tensor = signal.total + metric_out.total
+                            losses = {
+                                "total": total_tensor,
+                                "magnitude": signal.terms["magnitude"],
+                                "phase": signal.terms["phase"],
+                                "complex": signal.terms["complex"],
+                                "consistency": signal.terms["consistency"],
+                                "metric": metric_out.terms["metric"],
+                                "time": signal.terms["time"],
+                            }
+                            total = total_tensor / self.accumulation
                         except (TrainingError, RuntimeError, ValueError) as exc:
                             gen_error = f"{type(exc).__name__}: {exc}"
                         gen_errors = runtime.gather_objects(gen_error)
@@ -856,6 +859,20 @@ class MPSENetGANTrainer:
             optimizer_updates=dict(self.optimizer_updates),
             output_dir=checkpoint.directory,
         )
+
+
+def _signal_context(parts: dict[str, torch.Tensor], clean: torch.Tensor) -> dict[str, torch.Tensor]:
+    return {
+        "clean_audio": clean,
+        "clean_complex": parts["clean_complex"],
+        "clean_mag": parts["clean_mag"],
+        "clean_phase": parts["clean_phase"],
+        "generated_audio": parts["audio"],
+        "generated_complex": parts["complex"],
+        "generated_mag": parts["mag"],
+        "generated_phase": parts["phase"],
+        "recomputed_complex": parts["recomputed_complex"],
+    }
 
 
 def _schedule_metric_targets(clean: torch.Tensor, enhanced: torch.Tensor, sample_rate: int):

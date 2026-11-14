@@ -1,6 +1,6 @@
 # 学習の不変条件
 
-学習式を「整理」で変えない。モデル固有の参照ステップは `src/experiments/official/<model>/reference.py` にあり、共有の STFT・スペクトル損失・scheduler は `src/experiments/calc/` にある。テストが公式実装や連続実行と比べる。Trainer はその関数を呼ぶ。第二の学習 CLI は作らない。
+学習式を「整理」で変えない。モデル固有の参照ステップは `src/experiments/official/<model>/reference.py` にあり、共有の STFT・スペクトル損失・scheduler は `src/experiments/calc/` にある。学習が backward する損失は YAML の Loss Term と Objective で組み立て、Trainer は注入された Objective を呼ぶ。参照ステップは自分の係数を持ち、テストが両方を比べる。第二の学習 CLI は作らない。仕様は `docs/experiments/LOSS.md`。
 
 ## Checkpoint
 
@@ -31,16 +31,25 @@
 - `dfn3.online.official@1` と `semambapp.gsr.official@1` は blocked。代替素材を公式データの再現と呼ばない。
 - 追跡中の `libdf_rfft.so` は置き換えない。ファイルが在るのに読めないときは、ABI が合うローカル再ビルドだけを使い、無ければエラーにする。PyTorch に戻るのは、ファイル自体が無く `DF_RFFT_REQUIRED=1` でもないときだけで、そのとき libdf とのビット一致は成り立たない（`src/se/models/deepfilternet3/dsp.py`）。
 
+## 損失
+
+- Loss Term は 1 項を計算する。Objective は注入した項を、その並びの左から加重和する。Trainer は forward、backward、蓄積、Optimizer、GAN の更新順、DDP、AMP、再開を持つ。項も Objective も backward と Optimizer を呼ばない。
+- 加算順は Objective に注入した項の順である。同じ損失式を複数の学習経路へ複製しない。参照ステップは自分の係数を残し、学習経路はその定数を黙って読まない。
+- 重み `1.0` は乗算しない。`0.0` でも項は実行し、その勾配は 0 である。有限な負の重みは、項が禁じていない限り許す。非有限、未知のキー、重複名、欠ける context は拒否する。実行時に YAML を書き換えない。
+- `config_sha256` は損失コンポーネントの class、kwargs、inject を含む。係数が違う checkpoint は再開できない。損失の内部状態は保存しない。重みのスケジュールは未実装。
+- `official_faithful` と `leakage_safe` の MP-SENet と MossFormerGAN は、公開係数と違う Objective を構築時に拒否する。`research` は項の追加、削除、重み変更ができる。SEMamba++ の `official_reproduction` と DeepFilterNet3 の公式データセットは、損失とは別に拒否されたままである。
+- モデルの STFT 幅、sample rate、local SNR の上下限は、損失の YAML 定数に複製せず、モデルから context へ渡す。
+
 ## モデルごとの更新
 
-損失の足し方と Optimizer の順序は、対応する `src/experiments/official/<model>/reference.py` の参照ステップと一致させる。
+損失の足し方と Optimizer の順序は、対応する `src/experiments/official/<model>/reference.py` の参照ステップと一致させる。係数の正本は実験 YAML の Objective である。
 
-- MP-SENet GAN: Discriminator を先に更新し、同じ Generator forward のグラフで Generator を更新する。`ExponentialLR` は epoch の micro-batch が尽きたときだけ進む。
-- MossFormerGAN: Generator の backward のあと Discriminator の backward。両 AdamW はその後。PESQ が無い micro-batch は分母に残り、損失 0 にはしない。plateau は 5 回で Generator の学習率を半分にし、10 回で止める。
-- TF-GridNet: `mr_l1_tfd`、Adam、epoch 末の `ReduceLROnPlateau`、`valid.loss` の n-best。
-- TF-Locoformer: 同じスペクトル損失、AdamW、`WarmupReduceLROnPlateau`。warmup は Optimizer 更新のあと。最初の更新は構築時の学習率。
-- DeepFilterNet3: 出荷の multi-resolution スペクトルと local SNR。cosine は Optimizer 更新の前。batch schedule は world size 1 の micro-batch 幅だけを付け替える。
-- SEMamba++: Discriminator を先に更新する。蓄積 1 は Generator グラフを再利用する。蓄積 2 以上は再 forward し、DataModule は再消費しない。`best_generator.pt` は書かない。`resampy==0.4.3` は `kaiser_best` と `kaiser_fast` に必要。
+- MP-SENet GAN: Discriminator を先に更新し、同じ Generator forward のグラフで Generator を更新する。信号項と metric 項は別の Objective で、CUDA の重なり経路は信号、Discriminator、metric の順に backward する。`ExponentialLR` は epoch の micro-batch が尽きたときだけ進む。検証は参照タスクの式のままである。
+- MossFormerGAN: RI、magnitude、time、GAN は 1 回の再構成が作るスカラーを Context Term が読む。time は波形 L1 ではない。Objective が公開係数を掛ける。Generator の backward のあと Discriminator の backward。両 AdamW はその後。PESQ が無い micro-batch は分母に残り、損失 0 にはしない。plateau は 5 回で Generator の学習率を半分にし、10 回で止める。検証は参照タスクの式のままである。
+- TF-GridNet: `mr_l1_tfd` を重み 1 の Objective で包む。Adam、epoch 末の `ReduceLROnPlateau`、`valid.loss` の n-best。検証は注入した Objective の total である。
+- TF-Locoformer: 同じスペクトル損失、AdamW、`WarmupReduceLROnPlateau`。warmup は Optimizer 更新のあと。最初の更新は構築時の学習率。SI-SDR は監視だけで backward に入れない。検証は注入した Objective の total である。
+- DeepFilterNet3: multi-resolution スペクトルは 1 項で、local SNR の Objective 重みは `1e-3` である。FFT、hop、sample rate、SNR の上下限はモデルの context から渡す。cosine は Optimizer 更新の前。batch schedule は world size 1 の micro-batch 幅だけを付け替える。検証は注入した Objective の total である。
+- SEMamba++: Discriminator を先に更新する。蓄積 1 は Generator グラフを再利用する。蓄積 2 以上は再 forward し、DataModule は再消費しない。CQT 族と MRD 族はそれぞれ 1 項にまとめ、外側の重みは族の和へ一度だけ掛かる。波形 L1 は学習の和に入らない。`best_generator.pt` は書かない。検証は参照タスクの波形 L1 のままである。`resampy==0.4.3` は `kaiser_best` と `kaiser_fast` に必要。
 
 Global batch は micro-batch、world size、蓄積回数の積と一致しない構成を拒否する。logical step は、蓄積 1 回ぶんの Optimizer 更新を試みた回数。AMP が更新を skip した step も logical step とデータ位置を進め、`optimizer_updates` は適用された更新だけを数える。
 

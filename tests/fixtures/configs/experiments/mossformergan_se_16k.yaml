@@ -153,6 +153,44 @@ components:
       lr: 0.001
       betas: [0.9, 0.999]
       weight_decay: 0.01
+  ri_loss:
+    role: loss
+    class: src.experiments.losses.ContextTerm
+    kwargs:
+      name: ri
+  magnitude_loss:
+    role: loss
+    class: src.experiments.losses.ContextTerm
+    kwargs:
+      name: magnitude
+  time_loss:
+    role: loss
+    class: src.experiments.losses.ContextTerm
+    kwargs:
+      name: time
+  gan_loss:
+    role: loss
+    class: src.experiments.losses.ContextTerm
+    kwargs:
+      name: gan
+  generator_objective:
+    role: loss
+    class: src.experiments.losses.WeightedObjective
+    kwargs:
+      weights:
+        ri: 0.1
+        magnitude: 0.9
+        time: 0.2
+        gan: 0.05
+    inject:
+      terms:
+        - {ref: ri_loss}
+        - {ref: magnitude_loss}
+        - {ref: time_loss}
+        - {ref: gan_loss}
+  discriminator_objective:
+    role: loss
+    class: src.experiments.losses.MossFormerDiscriminatorObjective
   trainer:
     role: trainer
     class: src.experiments.official.mossformergan.trainer.MossFormerGANTrainer
@@ -168,3 +206,5 @@ components:
       data: {ref: data}
       optim_g: {ref: optim_g}
       optim_d: {ref: optim_d}
+      generator_objective: {ref: generator_objective}
+      discriminator_objective: {ref: discriminator_objective}

@@ -7,12 +7,14 @@ setting and is not the model's internal waveform standard-deviation scaling.
 
 from __future__ import annotations
 
-from collections.abc import Sequence
+from collections.abc import Mapping, Sequence
+from typing import Any
 
 import torch
 
 from src.experiments.errors import BuildError
 from src.experiments.calc.spectral import multi_resolution_l1
+from src.experiments.training.objectives import require_tensor
 
 OFFICIAL_WINDOWS = (256, 512, 768, 1024)
 
@@ -30,8 +32,13 @@ class MultiResolutionL1Loss(torch.nn.Module):
         windows: Sequence[int] = OFFICIAL_WINDOWS,
         time_domain_weight: float = 0.5,
         normalize_variance: bool = False,
+        *,
+        name: str = "mr_l1",
     ) -> None:
         super().__init__()
+        if not isinstance(name, str) or not name:
+            raise BuildError("loss term name must be a non-empty string")
+        self.name = name
         if normalize_variance:
             raise BuildError(
                 "MS-SNSD mr_l1_tfd does not use variance normalization; "
@@ -53,10 +60,21 @@ class MultiResolutionL1Loss(torch.nn.Module):
         self.time_domain_weight = weight
         self.normalize_variance = False
 
-    def forward(self, estimate: torch.Tensor, target: torch.Tensor) -> torch.Tensor:
+    def forward(
+        self,
+        estimate: torch.Tensor | Mapping[str, Any],
+        target: torch.Tensor | None = None,
+    ) -> torch.Tensor:
+        if target is None:
+            if not isinstance(estimate, Mapping):
+                raise ValueError(f"loss term {self.name} requires estimate and target, or a context mapping")
+            target = require_tensor(estimate, "target", self.name)
+            predicted = require_tensor(estimate, "estimate", self.name)
+        else:
+            predicted = estimate
         return multi_resolution_l1(
             target,
-            estimate,
+            predicted,
             self.windows,
             time_domain_weight=self.time_domain_weight,
             normalize_variance=False,

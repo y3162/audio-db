@@ -22,6 +22,7 @@ import numpy as np
 import torch
 
 from src.experiments.api import build_experiment, load_experiment
+from tests.experiments.official_loss_yaml import SEMAMBA_COMPONENTS, SEMAMBA_INJECT
 from src.experiments.data.fixed_pair import MicroBatcher, OrderSampler, SnapshotDataModule, SnapshotSource
 from src.experiments.data.online import SemambaProtocol
 from src.experiments.data.sample import Batch
@@ -748,7 +749,7 @@ components:
       gamma: 0.99
     inject:
       optimizer: {{ref: optim_d}}
-  trainer:
+{SEMAMBA_COMPONENTS}  trainer:
     role: trainer
     class: src.experiments.official.semambapp.trainer.SEMambaPPTrainer
     kwargs:
@@ -766,6 +767,7 @@ components:
       optim_d: {{ref: optim_d}}
       scheduler_g: {{ref: scheduler_g}}
       scheduler_d: {{ref: scheduler_d}}
+{SEMAMBA_INJECT}
 """,
         encoding="utf-8",
     )

@@ -42,7 +42,7 @@ from src.experiments.checkpoint import CheckpointManager
 from src.experiments.data import Batch
 from src.experiments.data.pair import bind_trainer_data
 from src.experiments.errors import BuildError, RuntimeFailure
-from src.experiments.losses import MultiResolutionL1Loss
+from src.experiments.training.objectives import call_objective, coerce_spectral_objective, term_floats
 from src.experiments.results import RunResult
 from src.experiments.runtime import PreparedModel, ProcessRuntime
 from src.experiments.official.tf_gridnet.trainer import early_stop, rank_validation_loss
@@ -103,7 +103,7 @@ class TFLocoformerTrainer:
     def __init__(
         self,
         model: PreparedModel,
-        loss: MultiResolutionL1Loss,
+        objective: torch.nn.Module,
         data: Any,
         optimizer: torch.optim.Optimizer,
         scheduler: WarmupReduceLROnPlateau,
@@ -119,10 +119,7 @@ class TFLocoformerTrainer:
     ) -> None:
         if not isinstance(model, PreparedModel):
             raise BuildError("model must be a prepared module handle")
-        if not isinstance(loss, MultiResolutionL1Loss):
-            raise BuildError("loss must be MultiResolutionL1Loss")
-        if loss.normalize_variance:
-            raise BuildError("DNS loss cannot normalize variance")
+        objective = coerce_spectral_objective(objective, label="DNS")
         if not hasattr(data, "train_epoch") or not hasattr(data, "validation_epoch"):
             raise BuildError("data must provide train_epoch and validation_epoch")
         if not isinstance(scheduler, WarmupReduceLROnPlateau):
@@ -135,7 +132,7 @@ class TFLocoformerTrainer:
         if not isinstance(optimizer_id, str):
             raise BuildError("optimizer has no component id")
         self.model = model
-        self.loss = loss
+        self.objective = objective
         self.data = data
         self.audio_sample_rate = 16000
         self.audio_teachers = ("dry_clean",)
@@ -262,18 +259,21 @@ class TFLocoformerTrainer:
                 sample_ids: list[str] = []
                 monitor_sum: torch.Tensor | None = None
                 monitor_count = 0
+                term_acc: dict[str, float] = {}
                 for offset, batches in enumerate(planned):
                     sync = offset == self.accumulation - 1
                     sample_ids.extend(batch.sample_id for batch in batches)
                     with runtime.sync_context([self.model], sync=sync):
                         with runtime.autocast():
-                            micro, monitor, count = self._forward_loss(batches, component_id, runtime)
+                            micro, monitor, count, terms = self._forward_loss(batches, component_id, runtime)
                         micro = micro / self.accumulation
                         runtime.backward(micro)
                     detached = micro.detach()
                     total = detached if total is None else total + detached
                     monitor_sum = monitor if monitor_sum is None else monitor_sum + monitor
                     monitor_count += count
+                    for name, value in terms.items():
+                        term_acc[name] = term_acc.get(name, 0.0) + value / self.accumulation
                 if self.grad_clip is not None:
                     runtime.clip(self.model.parameters, self.grad_clip, optimizer=self.optimizer)
                 if total is None:
@@ -313,6 +313,7 @@ class TFLocoformerTrainer:
                     epoch,
                     self.logical_step,
                     not epoch_done,
+                    term_acc,
                 )
                 if not epoch_done:
                     continue
@@ -468,7 +469,7 @@ class TFLocoformerTrainer:
                         prediction = self.model.state_module(batch.inputs)
                     except ValueError as exc:
                         raise RuntimeFailure(str(exc)) from exc
-                    value = self.loss(prediction, batch.targets)
+                    value = self._objective_total(prediction, batch.targets)
                     if not isinstance(value, torch.Tensor) or value.numel() != 1:
                         raise RuntimeFailure(f"component {component_id}: validation loss is not a scalar")
                     if not bool(torch.isfinite(value).all()):
@@ -545,32 +546,43 @@ class TFLocoformerTrainer:
             raise RuntimeFailure(f"n-best selection failed: {failure}")
         runtime.barrier()
 
+    def _objective_total(self, prediction: torch.Tensor, target: torch.Tensor) -> torch.Tensor:
+        try:
+            result = call_objective(self.objective, {"estimate": prediction, "target": target})
+        except ValueError as exc:
+            raise RuntimeFailure(str(exc)) from exc
+        return result.total
+
     def _forward_loss(
         self,
         batches: list[Batch],
         component_id: str,
         runtime: ProcessRuntime,
-    ) -> tuple[torch.Tensor, torch.Tensor, int]:
+    ) -> tuple[torch.Tensor, torch.Tensor, int, dict[str, float]]:
         if not batches:
             raise RuntimeFailure(f"component {component_id}: empty micro-batch")
         total: torch.Tensor | None = None
         monitor: torch.Tensor | None = None
+        term_sums: dict[str, float] = {}
         for batch in batches:
             batch = _batch_on_device(batch, runtime.device)
             try:
                 prediction = self.model.module(batch.inputs)
-                value = self.loss(prediction, batch.targets)
+                result = call_objective(self.objective, {"estimate": prediction, "target": batch.targets})
             except ValueError as exc:
                 raise RuntimeFailure(str(exc)) from exc
+            value = result.total
             if not isinstance(value, torch.Tensor):
                 raise RuntimeFailure(f"component {component_id}: loss did not return a tensor")
+            for name, amount in term_floats(result).items():
+                term_sums[name] = term_sums.get(name, 0.0) + amount
             total = value if total is None else total + value
             with torch.no_grad():
                 term = si_sdr_loss(prediction, batch.targets).detach()
                 monitor = term if monitor is None else monitor + term
         assert total is not None and monitor is not None
         count = len(batches)
-        return total / count, monitor, count
+        return total / count, monitor, count, {name: amount / count for name, amount in term_sums.items()}
 
     def _require_group_size(self, component_id: str) -> None:
         group_size = getattr(self.data, "group_size", None)
@@ -627,6 +639,7 @@ class TFLocoformerTrainer:
             epoch,
             logical_step,
             offer_step,
+            terms,
         ) = item
         if rank == 0:
             record = {
@@ -640,6 +653,7 @@ class TFLocoformerTrainer:
                 "scheduled_lr": scheduled_lr,
                 "si_sdr": si_sdr,
                 "step_num": int(self.scheduler.step_num),
+                "terms": terms,
             }
             with metrics_path.open("a", encoding="utf-8") as handle:
                 handle.write(json.dumps(record, sort_keys=True) + "\n")

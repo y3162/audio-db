@@ -164,6 +164,76 @@ components:
       gamma: 0.99
     inject:
       optimizer: {ref: optim_d}
+  magnitude_loss:
+    role: loss
+    class: src.experiments.losses.MagnitudeMSE
+    kwargs:
+      name: magnitude
+      estimate: generated_mag
+      target: clean_mag
+  phase_loss:
+    role: loss
+    class: src.experiments.losses.PhaseLoss
+    kwargs:
+      name: phase
+      mode: diff
+  complex_loss:
+    role: loss
+    class: src.experiments.losses.ScaledComplexMSE
+    kwargs:
+      name: complex
+      scale: 2.0
+      estimate: generated_complex
+      target: clean_complex
+  consistency_loss:
+    role: loss
+    class: src.experiments.losses.ScaledComplexMSE
+    kwargs:
+      name: consistency
+      scale: 2.0
+      estimate: recomputed_complex
+      target: generated_complex
+  time_loss:
+    role: loss
+    class: src.experiments.losses.TimeL1
+    kwargs:
+      name: time
+      estimate: generated_audio
+      target: clean_audio
+  metric_loss:
+    role: loss
+    class: src.experiments.losses.MetricMSE
+    kwargs:
+      name: metric
+  signal_objective:
+    role: loss
+    class: src.experiments.losses.WeightedObjective
+    kwargs:
+      weights:
+        magnitude: 0.9
+        phase: 0.3
+        complex: 0.1
+        consistency: 0.1
+        time: 0.2
+    inject:
+      terms:
+        - {ref: magnitude_loss}
+        - {ref: phase_loss}
+        - {ref: complex_loss}
+        - {ref: consistency_loss}
+        - {ref: time_loss}
+  metric_objective:
+    role: loss
+    class: src.experiments.losses.WeightedObjective
+    kwargs:
+      weights:
+        metric: 0.05
+    inject:
+      terms:
+        - {ref: metric_loss}
+  discriminator_objective:
+    role: loss
+    class: src.experiments.losses.MPSENetDiscriminatorObjective
   trainer:
     role: trainer
     class: src.experiments.official.mp_senet.trainer.MPSENetGANTrainer
@@ -181,3 +251,6 @@ components:
       optim_d: {ref: optim_d}
       scheduler_g: {ref: scheduler_g}
       scheduler_d: {ref: scheduler_d}
+      signal_objective: {ref: signal_objective}
+      metric_objective: {ref: metric_objective}
+      discriminator_objective: {ref: discriminator_objective}

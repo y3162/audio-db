@@ -39,7 +39,7 @@ from src.experiments.checkpoint import CheckpointManager
 from src.experiments.data import Batch
 from src.experiments.data.pair import bind_trainer_data
 from src.experiments.errors import BuildError, RuntimeFailure
-from src.experiments.losses import MultiResolutionL1Loss
+from src.experiments.training.objectives import call_objective, coerce_spectral_objective, term_floats
 from src.experiments.results import RunResult
 from src.experiments.runtime import PreparedModel, ProcessRuntime
 from src.experiments.trainers import (
@@ -115,7 +115,7 @@ class TFGridNetTrainer:
     def __init__(
         self,
         model: PreparedModel,
-        loss: MultiResolutionL1Loss,
+        objective: torch.nn.Module,
         data: Any,
         optimizer: torch.optim.Optimizer,
         scheduler: torch.optim.lr_scheduler.ReduceLROnPlateau,
@@ -130,10 +130,7 @@ class TFGridNetTrainer:
     ) -> None:
         if not isinstance(model, PreparedModel):
             raise BuildError("model must be a prepared module handle")
-        if not isinstance(loss, MultiResolutionL1Loss):
-            raise BuildError("loss must be MultiResolutionL1Loss")
-        if loss.normalize_variance:
-            raise BuildError("MS-SNSD loss cannot normalize variance")
+        objective = coerce_spectral_objective(objective, label="MS-SNSD")
         if not hasattr(data, "train_epoch") or not hasattr(data, "validation_epoch"):
             raise BuildError("data must provide train_epoch and validation_epoch")
         if not isinstance(scheduler, torch.optim.lr_scheduler.ReduceLROnPlateau):
@@ -144,7 +141,7 @@ class TFGridNetTrainer:
         if not isinstance(optimizer_id, str):
             raise BuildError("optimizer has no component id")
         self.model = model
-        self.loss = loss
+        self.objective = objective
         self.data = data
         self.audio_sample_rate = 16000
         self.audio_teachers = ("dry_clean",)
@@ -264,16 +261,19 @@ class TFGridNetTrainer:
                 self.optimizer.zero_grad(set_to_none=True)
                 total: torch.Tensor | None = None
                 sample_ids: list[str] = []
+                term_acc: dict[str, float] = {}
                 for offset, batches in enumerate(planned):
                     sync = offset == self.accumulation - 1
                     sample_ids.extend(batch.sample_id for batch in batches)
                     with runtime.sync_context([self.model], sync=sync):
                         with runtime.autocast():
-                            micro = self._forward_loss(batches, component_id, runtime)
+                            micro, terms = self._forward_loss(batches, component_id, runtime)
                         micro = micro / self.accumulation
                         runtime.backward(micro)
                     detached = micro.detach()
                     total = detached if total is None else total + detached
+                    for name, value in terms.items():
+                        term_acc[name] = term_acc.get(name, 0.0) + value / self.accumulation
                 if self.grad_clip is not None:
                     runtime.clip(self.model.parameters, self.grad_clip, optimizer=self.optimizer)
                 if total is None:
@@ -295,7 +295,16 @@ class TFGridNetTrainer:
                 self.data.update_index = index
                 sample_id = ",".join(sample_ids)
                 epoch_done = index == view.updates
-                self._step_io = (loss_value, result.applied, sample_id, learning_rate, epoch, self.logical_step, not epoch_done)
+                self._step_io = (
+                    loss_value,
+                    result.applied,
+                    sample_id,
+                    learning_rate,
+                    epoch,
+                    self.logical_step,
+                    not epoch_done,
+                    term_acc,
+                )
                 if not epoch_done:
                     continue
                 self._drain_step_io(metrics_path, sample_path, rank, checkpoint)
@@ -420,7 +429,7 @@ class TFGridNetTrainer:
                         raise RuntimeFailure(f"component {component_id}: validation did not return a batch")
                     batch = _batch_on_device(batch, runtime.device)
                     prediction = self.model.state_module(batch.inputs)
-                    value = self.loss(prediction, batch.targets)
+                    value = self._objective_total(prediction, batch.targets)
                     if not isinstance(value, torch.Tensor) or value.numel() != 1:
                         raise RuntimeFailure(f"component {component_id}: validation loss is not a scalar")
                     if not bool(torch.isfinite(value).all()):
@@ -474,22 +483,34 @@ class TFGridNetTrainer:
             raise RuntimeFailure(f"n-best selection failed: {failure}")
         runtime.barrier()
 
-    def _forward_loss(self, batches: list[Batch], component_id: str, runtime: ProcessRuntime) -> torch.Tensor:
+    def _objective_total(self, prediction: torch.Tensor, target: torch.Tensor) -> torch.Tensor:
+        try:
+            result = call_objective(self.objective, {"estimate": prediction, "target": target})
+        except ValueError as exc:
+            raise RuntimeFailure(str(exc)) from exc
+        return result.total
+
+    def _forward_loss(self, batches: list[Batch], component_id: str, runtime: ProcessRuntime) -> tuple[torch.Tensor, dict[str, float]]:
         if not batches:
             raise RuntimeFailure(f"component {component_id}: empty micro-batch")
         total: torch.Tensor | None = None
+        term_sums: dict[str, float] = {}
         for batch in batches:
             batch = _batch_on_device(batch, runtime.device)
             try:
                 prediction = self.model.module(batch.inputs)
-                value = self.loss(prediction, batch.targets)
+                result = call_objective(self.objective, {"estimate": prediction, "target": batch.targets})
             except ValueError as exc:
                 raise RuntimeFailure(str(exc)) from exc
+            value = result.total
             if not isinstance(value, torch.Tensor):
                 raise RuntimeFailure(f"component {component_id}: loss did not return a tensor")
+            for name, amount in term_floats(result).items():
+                term_sums[name] = term_sums.get(name, 0.0) + amount
             total = value if total is None else total + value
         assert total is not None
-        return total / len(batches)
+        count = len(batches)
+        return total / count, {name: amount / count for name, amount in term_sums.items()}
 
     def _require_group_size(self, component_id: str) -> None:
         group_size = getattr(self.data, "group_size", None)
@@ -536,7 +557,7 @@ class TFGridNetTrainer:
         if item is None:
             return
         self._step_io = None
-        loss_value, applied, sample_id, learning_rate, epoch, logical_step, offer_step = item
+        loss_value, applied, sample_id, learning_rate, epoch, logical_step, offer_step, terms = item
         if rank == 0:
             record = {
                 "applied": applied,
@@ -546,6 +567,7 @@ class TFGridNetTrainer:
                 "lr": learning_rate,
                 "optimizer_updates": dict(self.optimizer_updates),
                 "sample_id": sample_id,
+                "terms": terms,
             }
             with metrics_path.open("a", encoding="utf-8") as handle:
                 handle.write(json.dumps(record, sort_keys=True) + "\n")

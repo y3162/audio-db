@@ -23,6 +23,7 @@ import torch
 import yaml
 
 from src.experiments.api import build_experiment
+from tests.experiments.official_loss_yaml import SPECTRAL_OBJECTIVE
 from src.experiments.config import load_experiment
 from src.experiments.errors import BuildError, RuntimeFailure
 from src.experiments.losses import OFFICIAL_WINDOWS, MultiResolutionL1Loss
@@ -574,7 +575,7 @@ components:
       patience: 1
     inject:
       optimizer: {{ref: optimizer}}
-  trainer:
+{SPECTRAL_OBJECTIVE}  trainer:
     role: trainer
     class: src.experiments.official.tf_gridnet.trainer.TFGridNetTrainer
     kwargs:
@@ -585,7 +586,7 @@ components:
       max_epochs: {epochs}
 {stop}    inject:
       model: {{ref: model}}
-      loss: {{ref: loss}}
+      objective: {{ref: objective}}
       data: {{ref: data}}
       optimizer: {{ref: optimizer}}
       scheduler: {{ref: scheduler}}
@@ -690,7 +691,7 @@ components:
       patience: 1
     inject:
       optimizer: {{ref: optimizer}}
-  trainer:
+{SPECTRAL_OBJECTIVE}  trainer:
     role: trainer
     class: src.experiments.official.tf_gridnet.trainer.TFGridNetTrainer
     kwargs:
@@ -701,7 +702,7 @@ components:
       max_epochs: 1
     inject:
       model: {{ref: model}}
-      loss: {{ref: loss}}
+      objective: {{ref: objective}}
       data: {{ref: data}}
       optimizer: {{ref: optimizer}}
       scheduler: {{ref: scheduler}}

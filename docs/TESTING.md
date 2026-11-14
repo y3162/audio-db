@@ -81,6 +81,10 @@ GPU レーンは、親プロセスの `CUDA_VISIBLE_DEVICES` の範囲で、使�
 
 これらを混ぜて「検証済み」と書かない。未計測の条件での一致や、論文スコアの再現とは書かない。
 
+## 損失グラフ
+
+仕様は [損失](experiments/LOSS.md)。`tests/experiments/test_loss_objectives.py` が、6 モデルの YAML の係数と加算順、拒否、`config_sha256`、MP-SENet の項と勾配の `torch.equal`、DeepFilterNet3 の既存 oracle との一致、TF-GridNet の Trainer を通した研究用項の追加を見る。公式 Trainer の 1 step、蓄積、Gloo、再開は各 `tests/experiments/test_<model>.py` が、注入した Objective のまま既存の許容差で比べる。GPU を隠した成功は GPU の成功ではない。
+
 ## 公式実装との比較スクリプト
 
 `tests/numerics/reference/` のスクリプトは `.venvs/official` で動かす。出力先は `AUDIO_DB_NUMERICS_OUT`、未設定なら `/tmp/audio-db-official-compare` である。`data/results/` には書かない。MossFormerGAN の比較は、スレッド数を 1 にしないと MKL-DNN の非決定性で差が出る（`OMP_NUM_THREADS=1 MKL_NUM_THREADS=1`）。記録済みの誤差は [公式出力との数値比較](se/VALIDATION.md)。
