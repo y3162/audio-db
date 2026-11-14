@@ -7,7 +7,7 @@
 仕様は `docs/experiments/CHECKPOINT.md`、プロセスの監視は `docs/experiments/LAUNCHER.md`。ここは変えてはいけない条件だけを書く。
 
 - 形式は `audio-db-experiment-v1`。実装は `src/experiments/execution/checkpoint.py`。`audio-db-training-v1` は読まない。
-- 保存の方針は Selector（`src/experiments/selectors.py`）だけが持つ。Trainer は自分の更新順の中で状態が整合した点を選び `lifecycle.save_if_needed(...)` を呼ぶ。ファイルを書くかは Selector が決める。Lifecycle（`src/experiments/lifecycle.py`）の `start` と `finish` は Trainer の `fit` が一度ずつ呼ぶ。書く点では `CheckpointManager.offer` を呼ぶ。Selector が断った点は何も書かない。Trainer に保存間隔の引数を足さない。YAML は `checkpoint.selector` だけを書く。標準 Selector は、間隔を省くと毎 step では保存しない。間隔の既定値は `docs/experiments/CHECKPOINT.md`。Experiment は build し、Lifecycle を注入し、`fit` を一度呼び、資源を解放する。
+- 保存の方針は Selector（`src/experiments/selectors.py`）だけが持つ。Trainer は自分の更新順の中で状態が整合した点を選び `lifecycle.save_if_needed(...)` を呼ぶ。ファイルを書くかは Selector が決める。Lifecycle（`src/experiments/lifecycle.py`）の `start` と `finish` は Trainer の `fit` が一度ずつ呼ぶ。書く点では `CheckpointManager.offer` を呼ぶ。Selector が断った点は何も書かない。Trainer に保存間隔の引数を足さない。Trainer は CheckpointManager を受け取らない。出力先は `lifecycle.output_directory`、設定同一性は `lifecycle.config_identity` から読み、研究評価にも Manager は渡さない。`lifecycle.restored` は resume のときだけ真で、initialize は別実験なので偽である。YAML は `checkpoint.selector` だけを書く。標準 Selector は、間隔を省くと毎 step では保存しない。間隔の既定値は `docs/experiments/CHECKPOINT.md`。Experiment は build し、Lifecycle を注入し、`fit` を一度呼び、資源を解放する。
 - Latest は `latest.pt` の 1 つだけ。共通基盤が一時ファイルに書き、検証してから `os.replace` する。失敗した保存が以前の Latest を壊す経路を作らない。Selector は Latest の名前、形式、削除に触れない。
 - Archive は `archive/` の中だけ。Selector の削除は `archive/` の外に届かない。Latest と Archive はどちらも完全な checkpoint で、どちらからも再開できる。
 - 公式の推論用の重み（`best_generator.pt`、`valid.loss.best.pt` など）は公式 Trainer の成果物で、checkpoint ではない。Selector に移さない。
@@ -48,7 +48,7 @@
 
 ## モデルごとの更新
 
-損失の足し方と Optimizer の順序は、対応する `src/experiments/official/<model>/reference.py` の参照ステップと一致させる。係数の正本は実験 YAML の Objective である。
+損失の足し方と Optimizer の順序は、対応する `src/experiments/official/<model>/reference.py` の参照ステップと一致させる。係数の正本は実験 YAML の Objective である。検証の統計、順位、patience、DeepFilterNet3 の一連の損失は、そのモデルの `metrics.py`、`selection.py`、`schedule.py`、`training_step.py` に置く。Trainer はいつ呼ぶかと更新順を持つ。MossFormerGAN の plateau の式は `reference.mossformer_validation_decision` にあり、重みの復帰と学習率の変更は Trainer が行う。意味が一致する終了処理、蓄積窓、rank 停止だけを `src/experiments/training/control.py` に置く。意味が違う `_prepare_run` と `_offer` は Trainer に残す。
 
 - MP-SENet GAN: Discriminator を先に更新し、同じ Generator forward のグラフで Generator を更新する。信号項と metric 項は別の Objective で、CUDA の重なり経路は信号、Discriminator、metric の順に backward する。`ExponentialLR` は epoch の micro-batch が尽きたときだけ進む。検証は参照タスクの式のままである。
 - MossFormerGAN: RI、magnitude、time、GAN は 1 回の再構成が作るスカラーを Context Term が読む。time は波形 L1 ではない。Objective が公開係数を掛ける。Generator の backward のあと Discriminator の backward。両 AdamW はその後。PESQ が無い micro-batch は分母に残り、損失 0 にはしない。plateau は 5 回で Generator の学習率を半分にし、10 回で止める。検証は参照タスクの式のままである。

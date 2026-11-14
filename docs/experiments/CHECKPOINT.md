@@ -27,6 +27,8 @@
 
 Trainer は、自分の更新順の中で状態が整合している点を選び `lifecycle.save_if_needed(event, logical_step=..., metrics=..., progress=...)` を呼ぶ。`logical_step` は省略できる。ファイルを書くかどうかは Selector が決める。Lifecycle が `CheckpointManager.offer` を呼び、Selector が断った点は何も書かない。Core は安全地点を推定しない。`start` と `finish` は Trainer の `fit` が呼ぶ。
 
+Trainer は `CheckpointManager` を受け取らない。出力ディレクトリは `lifecycle.output_directory`、設定の同一性は `lifecycle.config_identity` である。研究評価にはこの二つを渡し、Manager も Trainer 自身も渡さない。`lifecycle.restored` は `restore_report.mode` が `resume` のときだけ真である。`initialize` は別の実験なので偽である。直接比較の `DirectSession` は同じ三つの読み取り属性を出す。
+
 `progress` は名前付きの非負整数である。6 つの公式 Trainer と `StandardTrainer` は `logical_step` と `epoch` を出す。出さない Trainer は、カウンタを要らない `final`、`stop`、`boundary` で Latest を残せる。`latest_every` や Archive の間隔は、既定のキー `logical_step` をその点から読む。キーが無いとその点を拒否する。`progress_key` で数える名前を変えられる。`progress_keys` を宣言した Trainer は、その Selector が要するキーを構築後の attach で検査する。宣言が無い Trainer は検査しない。
 
 payload は `progress` を必須にする。同じ形式名でも `progress` が無いファイルは再開を拒否し、`logical_step` だけから progress を作らない。`progress` に `logical_step` があるとき、payload の `logical_step` はその値と一致する。キーが無い保存点では `logical_step` は null である。

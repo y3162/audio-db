@@ -39,6 +39,8 @@
 
 完了した token は再開後に再実行しない。`boundary_pending` で再開した境界は 1 回だけ実行する。評価は `torch.inference_mode()` で行い、終了時に train/eval、RNG、データカーソルを戻す。GAN の更新途中では実行しない。全 rank が同じ評価に参加する。rank 0 だけが `research_metrics.jsonl` と研究用の推論ファイルを書く。
 
+Trainer は `ResearchSession.score` と `metrics` に、runtime、`output_directory`、`config_identity`、`kind`、`epoch`、progress、公式指標、停止状態を渡す。CheckpointManager は渡さない。ログに残る `config_sha256` はその同一性である。設定を持たない直接比較では null のままである。
+
 DeepFilterNet3 の波形は `DeepFilterNet3Trainer.research_predict` が返す。MossFormerGAN の研究用波形は予測した複素スペクトルの ISTFT であり、公式の time 項が clean の実部と予測の虚部を混ぜる経路とは別である。研究用の評価は弁別器を呼ばない。
 
 ## モデル選択
