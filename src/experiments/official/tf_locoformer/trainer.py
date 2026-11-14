@@ -29,10 +29,7 @@ from __future__ import annotations
 
 from src.experiments.stopping import observe_validation, should_stop
 
-import json
 import math
-import os
-import re
 from pathlib import Path
 from typing import Any
 
@@ -47,16 +44,15 @@ from src.experiments.execution.journal import StepJournal
 from src.experiments.results import RunResult
 from src.experiments.runtime import PreparedModel, ProcessRuntime, require_prepared
 from src.experiments.official.tf_gridnet.trainer import early_stop, rank_validation_loss
+from src.experiments.official.tf_locoformer.artifacts import write_selection
 from src.experiments.trainers import (
     _close_epoch_view,
     _rank,
 )
-from src.experiments.calc.average import average_checkpoint_files, remove_symlink, replace_symlink
 from src.experiments.calc.rng import capture_rank_rng, restore_rank_rng
 from src.experiments.calc.optim import WarmupReduceLROnPlateau
 from src.experiments.calc.spectral import si_sdr_loss
 
-_EPOCH_FILE = re.compile(r"^(\d+)epoch\.pt$")
 _PENDING = "pending_validation"
 _IN_EPOCH = "in_epoch"
 RESEARCH_VALIDATION_PROFILE = "tf_locoformer.dns.accept_recipe.research_valid_fixed@1"
@@ -178,7 +174,7 @@ class TFLocoformerTrainer:
         self.evaluators = self.research.evaluators
         self.model_selection = self.research.selection
         self._restored = False
-        self._step_io: tuple[Any, ...] | None = None
+        self._step_io: dict[str, Any] | None = None
 
     def fit(self) -> RunResult:
         """Train until the step budget, an epoch cap, or early stopping."""
@@ -186,35 +182,7 @@ class TFLocoformerTrainer:
         self.lifecycle.start()
         runtime = self.runtime
         checkpoint = self.lifecycle.checkpoint
-
-        self.research.rewind(
-            checkpoint.directory,
-            restored=self._restored,
-            phase=self.phase,
-            progress={"logical_step": int(self.logical_step)},
-        )
-        component_id = getattr(self, "_experiment_component_id", "trainer")
-        self.journal = StepJournal(checkpoint.directory, runtime)
-        if self._restored and (not hasattr(self.data, "epoch") or not hasattr(self.data, "update_index")):
-            raise RuntimeFailure("resumed data has no epoch position")
-        self.losses = self.journal.begin(restored=self._restored, logical_step=self.logical_step)
-        if not self._restored:
-            self.logical_step = 0
-            self.optimizer_updates = {self.optimizer_id: 0}
-            self.losses = []
-            self.learning_rates = []
-            self.scheduled_rates = []
-            self.history = []
-            self.completed_boundaries = []
-            self.boundary = None
-            self.phase = _IN_EPOCH
-            self.finished_epoch = None
-            self.early_stopped = False
-            self.data.epoch = 0
-            self.data.update_index = 0
-        bind_trainer_data(self)
-        self._require_group_size(component_id)
-        runtime.barrier()
+        component_id = self._prepare_run(runtime, checkpoint)
         if should_stop(self):
             return self._result(checkpoint, "completed")
         if self._restored and (
@@ -238,28 +206,8 @@ class TFLocoformerTrainer:
             if self._epoch_cap_reached():
                 self._drain_step_io(checkpoint)
                 return self._result(checkpoint, "completed")
-            epoch = int(self.data.epoch)
-            index = int(self.data.update_index)
-            view = self.data.train_epoch(epoch, start_update=index)
+            epoch, index, view, planned = self._open_window(component_id)
             try:
-                if view.updates < 1:
-                    raise RuntimeFailure(f"component {component_id}: epoch {epoch} has no micro-batches")
-                if index > view.updates:
-                    raise RuntimeFailure(
-                        f"component {component_id}: update {index} is past epoch {epoch}"
-                    )
-                if index == view.updates:
-                    raise RuntimeFailure(
-                        f"component {component_id}: epoch {epoch} is exhausted without a pending boundary"
-                    )
-                if index + self.accumulation > view.updates:
-                    raise RuntimeFailure(
-                        f"component {component_id}: accumulation {self.accumulation} "
-                        f"does not fit at update {index}"
-                    )
-                planned: list[list[Batch]] = []
-                for offset in range(self.accumulation):
-                    planned.append(view.batch(index + offset))
                 self._drain_step_io(checkpoint)
                 self.model.train()
                 self.optimizer.zero_grad(set_to_none=True)
@@ -321,18 +269,18 @@ class TFLocoformerTrainer:
                         logical_step=self.logical_step,
                         stopping=getattr(self, "training_control", None),
                     )
-                self._step_io = (
-                    loss_value,
-                    result.applied,
-                    sample_id,
-                    used_lr,
-                    scheduled_lr,
-                    si_sdr,
-                    epoch,
-                    self.logical_step,
-                    not epoch_done,
-                    term_acc,
-                    step_metrics,
+                self._queue_step(
+                    loss=loss_value,
+                    applied=result.applied,
+                    sample_id=sample_id,
+                    used_lr=used_lr,
+                    scheduled_lr=scheduled_lr,
+                    si_sdr=si_sdr,
+                    epoch=epoch,
+                    logical_step=self.logical_step,
+                    offer_step=not epoch_done,
+                    terms=term_acc,
+                    step_metrics=step_metrics,
                 )
                 if not epoch_done:
                     continue
@@ -562,7 +510,7 @@ class TFLocoformerTrainer:
         error: str | None = None
         if _rank(runtime) == 0:
             try:
-                _write_selection(
+                write_selection(
                     directory,
                     self.model.unwrapped().export_for_inference(),
                     espnet_epoch,
@@ -666,6 +614,71 @@ class TFLocoformerTrainer:
             )
         )
 
+    def _prepare_run(self, runtime: ProcessRuntime, checkpoint: CheckpointManager) -> str:
+        """Rewind logs and counters. Does not run an optimizer update."""
+
+        self.research.rewind(
+            checkpoint.directory,
+            restored=self._restored,
+            phase=self.phase,
+            progress={"logical_step": int(self.logical_step)},
+        )
+        component_id = getattr(self, "_experiment_component_id", "trainer")
+        self.journal = StepJournal(checkpoint.directory, runtime)
+        if self._restored and (not hasattr(self.data, "epoch") or not hasattr(self.data, "update_index")):
+            raise RuntimeFailure("resumed data has no epoch position")
+        self.losses = self.journal.begin(restored=self._restored, logical_step=self.logical_step)
+        if not self._restored:
+            self.logical_step = 0
+            self.optimizer_updates = {self.optimizer_id: 0}
+            self.losses = []
+            self.learning_rates = []
+            self.scheduled_rates = []
+            self.history = []
+            self.completed_boundaries = []
+            self.boundary = None
+            self.phase = _IN_EPOCH
+            self.finished_epoch = None
+            self.early_stopped = False
+            self.data.epoch = 0
+            self.data.update_index = 0
+        bind_trainer_data(self)
+        self._require_group_size(component_id)
+        runtime.barrier()
+        return str(component_id)
+
+    def _open_window(
+        self,
+        component_id: str,
+    ) -> tuple[int, int, Any, list[list[Batch]]]:
+        """Check the epoch cursor and take the next accumulation window."""
+
+        epoch = int(self.data.epoch)
+        index = int(self.data.update_index)
+        view = self.data.train_epoch(epoch, start_update=index)
+        try:
+            if view.updates < 1:
+                raise RuntimeFailure(f"component {component_id}: epoch {epoch} has no micro-batches")
+            if index > view.updates:
+                raise RuntimeFailure(f"component {component_id}: update {index} is past epoch {epoch}")
+            if index == view.updates:
+                raise RuntimeFailure(
+                    f"component {component_id}: epoch {epoch} is exhausted without a pending boundary"
+                )
+            if index + self.accumulation > view.updates:
+                raise RuntimeFailure(
+                    f"component {component_id}: accumulation {self.accumulation} "
+                    f"does not fit at update {index}"
+                )
+            planned = [view.batch(index + offset) for offset in range(self.accumulation)]
+        except Exception:
+            _close_epoch_view(view)
+            raise
+        return epoch, index, view, planned
+
+    def _queue_step(self, **record: Any) -> None:
+        self._step_io = record
+
     def _drain_step_io(self, checkpoint: CheckpointManager) -> None:
         """Write the previous step while the next forward is already queued."""
 
@@ -673,19 +686,17 @@ class TFLocoformerTrainer:
         if item is None:
             return
         self._step_io = None
-        (
-            loss_value,
-            applied,
-            sample_id,
-            used_lr,
-            scheduled_lr,
-            si_sdr,
-            epoch,
-            logical_step,
-            offer_step,
-            terms,
-            step_metrics,
-        ) = item
+        loss_value = item["loss"]
+        applied = item["applied"]
+        sample_id = item["sample_id"]
+        used_lr = item["used_lr"]
+        scheduled_lr = item["scheduled_lr"]
+        si_sdr = item["si_sdr"]
+        epoch = item["epoch"]
+        logical_step = item["logical_step"]
+        offer_step = item["offer_step"]
+        terms = item["terms"]
+        step_metrics = item["step_metrics"]
         self.journal.write_metrics(
             {
                 "applied": applied,
@@ -733,101 +744,6 @@ def _open_boundary(trainer_epoch: int, *, warmup_updated: bool) -> dict[str, Any
         "validation_weight": None,
         "warmup_updated": bool(warmup_updated),
     }
-
-
-def _write_selection(
-    directory: Path,
-    exported: dict[str, torch.Tensor],
-    espnet_epoch: int,
-    by_loss: list[dict[str, Any]],
-    by_si: list[dict[str, Any]],
-    keep: int,
-    logical_step: int,
-    validation_profile: str,
-) -> None:
-    """Write the epoch export, loss n-best, and SI-SNR best. Rank 0 only.
-
-    Loss uses the ESPnet n-best average. SI-SNR keeps its own best file and
-    protects its n-best epoch files. It does not write an average. Equal
-    scores already resolved to the earlier epoch in the ranked lists.
-    """
-
-    if not by_loss:
-        raise RuntimeFailure("n-best selection received an empty loss history")
-    directory.mkdir(parents=True, exist_ok=True)
-    _save_state(directory / f"{espnet_epoch}epoch.pt", exported)
-    loss_best = by_loss[0]
-    if int(loss_best["epoch"]) == int(espnet_epoch):
-        _save_state(directory / "valid.loss.best.pt", exported)
-        _write_json(
-            directory / "valid.loss.best.pt.json",
-            {
-                "criterion": "valid.loss.min",
-                "epoch": int(espnet_epoch),
-                "global_step": int(logical_step),
-                "metric": "loss",
-                "validation_profile": validation_profile,
-                "value": float(loss_best["loss"]),
-            },
-        )
-    if by_si and int(by_si[0]["epoch"]) == int(espnet_epoch):
-        _save_state(directory / "valid.si_snr.best.pt", exported)
-        _write_json(
-            directory / "valid.si_snr.best.pt.json",
-            {
-                "criterion": "valid.si_snr.max",
-                "epoch": int(espnet_epoch),
-                "global_step": int(logical_step),
-                "metric": "si_snr",
-                "sign": "si_sdr_db",
-                "validation_profile": validation_profile,
-                "value": float(by_si[0]["si_snr"]),
-            },
-        )
-    kept = {int(row["epoch"]) for row in by_loss + by_si}
-    for path in directory.glob("*epoch.pt"):
-        match = _EPOCH_FILE.match(path.name)
-        if match and int(match.group(1)) not in kept:
-            path.unlink()
-    best_name = f"{int(loss_best['epoch'])}epoch.pt"
-    if keep > 1 and len(by_loss) >= keep:
-        epochs = [int(row["epoch"]) for row in by_loss]
-        averaged = average_checkpoint_files([directory / f"{epoch}epoch.pt" for epoch in epochs])
-        average_name = f"valid.loss.ave_{keep}best.pt"
-        _save_state(directory / average_name, averaged)
-        _write_json(
-            directory / f"{average_name}.json",
-            {
-                "average": "espnet_nbest_float_mean_int_sum",
-                "criterion": "valid.loss.min",
-                "epochs": epochs,
-                "files": [f"{epoch}epoch.pt" for epoch in epochs],
-                "global_step": int(logical_step),
-                "metric": "loss",
-                "validation_profile": validation_profile,
-                "values": [float(row["loss"]) for row in by_loss],
-            },
-        )
-        replace_symlink(directory / "valid.loss.ave.pt", average_name)
-        # Left from the epochs before n-best existed. Its epoch file may be gone by now.
-        remove_symlink(directory / "valid.loss.ave_1best.pt")
-        return
-    replace_symlink(directory / "valid.loss.ave_1best.pt", best_name)
-    replace_symlink(directory / "valid.loss.ave.pt", "valid.loss.ave_1best.pt")
-
-
-def _save_state(path: Path, state: dict[str, torch.Tensor]) -> None:
-    temporary = path.with_name(f".{path.name}.tmp")
-    try:
-        torch.save(state, temporary)
-        os.replace(temporary, path)
-    except Exception:
-        temporary.unlink(missing_ok=True)
-        raise
-
-
-def _write_json(path: Path, payload: dict[str, Any]) -> None:
-    path.write_text(json.dumps(payload, sort_keys=True) + "\n", encoding="utf-8")
 
 
 def _positive_int(name: str, value: object) -> int:

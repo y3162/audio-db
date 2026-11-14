@@ -30,10 +30,10 @@ from src.experiments.losses import OFFICIAL_WINDOWS, MultiResolutionL1Loss
 from src.experiments.official.tf_locoformer.model import TFLocoformerModel
 from src.experiments.runtime import PreparedModel, ProcessRuntime, StepResult
 from src.experiments.official.tf_gridnet.trainer import early_stop, rank_validation_loss
+from src.experiments.official.tf_locoformer.artifacts import write_selection
 from src.experiments.official.tf_locoformer.trainer import (
     RESEARCH_VALIDATION_PROFILE,
     TFLocoformerTrainer,
-    _write_selection,
     per_sample_si_snr,
     rank_validation_si_snr,
 )
@@ -588,17 +588,17 @@ class TFLocoformerConnectionTests(unittest.TestCase):
         second = {"separator.count": torch.tensor(4), "separator.weight": torch.ones(2) * 3}
         third = {"separator.count": torch.tensor(8), "separator.weight": torch.ones(2) * 9}
         rows = [{"epoch": 1, "loss": 2.0, "si_snr": 5.0}]
-        _write_selection(directory, first, 1, rank_validation_loss(rows, 2), rank_validation_si_snr(rows, 2), 2, 1, "scripted")
+        write_selection(directory, first, 1, rank_validation_loss(rows, 2), rank_validation_si_snr(rows, 2), 2, 1, "scripted")
         self.assertTrue((directory / "valid.loss.ave_1best.pt").is_symlink())
         self.assertEqual(os.readlink(directory / "valid.loss.ave.pt"), "valid.loss.ave_1best.pt")
         self.assertFalse((directory / "valid.loss.ave_2best.pt").exists())
         self.assertFalse((directory / "valid.si_snr.ave.pt").exists())
         rows.append({"epoch": 2, "loss": 2.0, "si_snr": 5.0})
-        _write_selection(directory, second, 2, rank_validation_loss(rows, 2), rank_validation_si_snr(rows, 2), 2, 2, "scripted")
+        write_selection(directory, second, 2, rank_validation_loss(rows, 2), rank_validation_si_snr(rows, 2), 2, 2, "scripted")
         self.assertEqual(_max_abs(torch.load(directory / "valid.loss.best.pt", map_location="cpu", weights_only=True), first), 0.0)
         self.assertEqual(_max_abs(torch.load(directory / "valid.si_snr.best.pt", map_location="cpu", weights_only=True), first), 0.0)
         rows.append({"epoch": 3, "loss": 0.1, "si_snr": 9.0})
-        _write_selection(directory, third, 3, rank_validation_loss(rows, 2), rank_validation_si_snr(rows, 2), 2, 3, "scripted")
+        write_selection(directory, third, 3, rank_validation_loss(rows, 2), rank_validation_si_snr(rows, 2), 2, 3, "scripted")
         averaged = torch.load(directory / "valid.loss.ave_2best.pt", map_location="cpu", weights_only=True)
         expected = average_state_dicts(
             [
@@ -629,7 +629,7 @@ class TFLocoformerConnectionTests(unittest.TestCase):
         rows: list[dict[str, float]] = []
         for epoch, (loss, state) in enumerate(zip((5.0, 1.0, 0.5), states), start=1):
             rows.append({"epoch": epoch, "loss": loss, "si_snr": float(epoch)})
-            _write_selection(
+            write_selection(
                 directory, state, epoch, rank_validation_loss(rows, 2), rank_validation_si_snr(rows, 2), 2, epoch, "scripted"
             )
             self.assertEqual(_dangling_links(directory), [], f"epoch {epoch}")
