@@ -5,6 +5,7 @@ from src.experiments.execution.runtime import (
     PreparedModel,
     ProcessRuntime,
     StepResult,
+    require_prepared,
 )
 
 __all__ = [
@@ -12,4 +13,5 @@ __all__ = [
     "PreparedModel",
     "ProcessRuntime",
     "StepResult",
+    "require_prepared",
 ]

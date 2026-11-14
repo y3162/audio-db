@@ -40,7 +40,7 @@ from src.experiments.official.mp_senet.models import (
 )
 from src.experiments.execution.journal import StepJournal
 from src.experiments.results import RunResult
-from src.experiments.runtime import PreparedModel, ProcessRuntime
+from src.experiments.runtime import PreparedModel, ProcessRuntime, require_prepared
 from src.experiments.selectors import scalar_metrics
 from src.experiments.trainers import (
     _close_epoch_view,
@@ -97,15 +97,15 @@ class MPSENetGANTrainer:
         evaluators: Any | None = None,
         model_selection: Any | None = None,
     ) -> None:
-        if not isinstance(generator, PreparedModel) or not isinstance(generator.state_module, MPSENetGANGenerator):
-            raise BuildError("generator must be a prepared MPSENetGANGenerator")
-        if not isinstance(discriminator, PreparedModel) or not isinstance(
-            discriminator.state_module, MPSENetMetricDiscriminator
-        ):
-            raise BuildError("discriminator must be a prepared MPSENetMetricDiscriminator")
-        if generator.state_module.architecture != discriminator.state_module.architecture:
+        require_prepared(generator, MPSENetGANGenerator, "generator must be a prepared MPSENetGANGenerator")
+        require_prepared(
+            discriminator,
+            MPSENetMetricDiscriminator,
+            "discriminator must be a prepared MPSENetMetricDiscriminator",
+        )
+        if generator.unwrapped().architecture != discriminator.unwrapped().architecture:
             raise BuildError("discriminator initialization architecture does not match the generator")
-        if generator.state_module.seed != discriminator.state_module.seed:
+        if generator.unwrapped().seed != discriminator.unwrapped().seed:
             raise BuildError("generator and discriminator seeds differ")
         if not isinstance(optim_g, torch.optim.AdamW) or not isinstance(optim_d, torch.optim.AdamW):
             raise BuildError("MP-SENet GAN optimizers must be AdamW")
@@ -118,7 +118,7 @@ class MPSENetGANTrainer:
             raise BuildError("data must provide train_epoch and validation_epoch")
         if experiment_claim not in _CLAIMS:
             raise BuildError("experiment_claim must be official_faithful, leakage_safe, or research")
-        require_official_architecture(generator.state_module.architecture, experiment_claim)
+        require_official_architecture(generator.unwrapped().architecture, experiment_claim)
         require_mp_senet(signal_objective, metric_objective, discriminator_objective, experiment_claim)
         optim_g_id = getattr(optim_g, "_experiment_component_id", None)
         optim_d_id = getattr(optim_d, "_experiment_component_id", None)
@@ -362,18 +362,18 @@ class MPSENetGANTrainer:
         self.optim_d.zero_grad(set_to_none=True)
         self.optim_g.zero_grad(set_to_none=True)
         clean, noisy = self._waveforms(batch, runtime)
-        if not _inputs_ready(clean, noisy, self.generator.state_module.n_fft):
+        if not _inputs_ready(clean, noisy, self.generator.unwrapped().n_fft):
             raise RuntimeFailure("a rank rejected its micro-batch before the generator forward")
         self._on_update_phase("before_generator_forward")
         try:
-            parts = pack_forward(self.generator.module(noisy, clean))
+            parts = pack_forward(self.generator(noisy, clean))
             _require_discriminator_resolution(parts["clean_mag"].shape[-2], parts["clean_mag"].shape[-1])
         except (TrainingError, RuntimeFailure, RuntimeError, ValueError) as exc:
             raise RuntimeFailure(f"generator forward failed: {type(exc).__name__}: {exc}") from exc
         pending = _schedule_metric_targets(
             clean,
             parts["audio"],
-            int(self.generator.state_module.architecture["sampling_rate"]),
+            int(self.generator.unwrapped().architecture["sampling_rate"]),
         )
         ones = torch.ones(clean.shape[0], device=clean.device)
         signal = call_objective(self.signal_objective, _signal_context(parts, clean))
@@ -381,8 +381,8 @@ class MPSENetGANTrainer:
         self._drain_mp_io()
         try:
             targets = pending.result()
-            real = self.discriminator.module(parts["clean_mag"], parts["clean_mag"])
-            fake = self.discriminator.module(parts["clean_mag"], parts["mag_hat"].detach())
+            real = self.discriminator(parts["clean_mag"], parts["clean_mag"])
+            fake = self.discriminator(parts["clean_mag"], parts["mag_hat"].detach())
             loss_d = call_objective(
                 self.discriminator_objective,
                 {"real_score": real, "fake_score": fake, "ones": ones, "pesq_target": targets},
@@ -392,7 +392,7 @@ class MPSENetGANTrainer:
         self._backward_if_finite(runtime, loss_d, "discriminator loss")
         discriminator_result = runtime.step(self.optim_d)
         self._on_update_phase("after_discriminator_step", [(clean, parts)])
-        raw = self.discriminator.state_module.discriminator
+        raw = self.discriminator.unwrapped().discriminator
         frozen = [parameter for parameter in raw.parameters() if parameter.requires_grad]
         try:
             for parameter in frozen:
@@ -407,7 +407,7 @@ class MPSENetGANTrainer:
             for parameter in frozen:
                 parameter.requires_grad_(True)
         self._average_calls += 1
-        runtime.average_gradients(self.generator.parameters)
+        runtime.average_gradients(self.generator)
         total = signal.total + metric_out.total
         logged = torch.stack(
             [
@@ -425,8 +425,8 @@ class MPSENetGANTrainer:
         host.copy_(logged.detach().float(), non_blocking=True)
         generator_result = runtime.step(self.optim_g)
         runtime.end_step()
-        runtime.broadcast_buffers(self.generator.state_module)
-        runtime.broadcast_buffers(self.discriminator.state_module)
+        runtime.broadcast_buffers(self.generator)
+        runtime.broadcast_buffers(self.discriminator)
         if not discriminator_result.applied or not generator_result.applied:
             raise RuntimeFailure("MP-SENet GAN requires both optimizers to apply in one logical step")
         complex_v, consistency_v, disc_v, total_v, magnitude_v, metric_v, phase_v, time_v = (
@@ -458,8 +458,8 @@ class MPSENetGANTrainer:
         counts = runtime.gather_objects(len(batches))
         if any(item != len(batches) for item in counts):
             raise RuntimeFailure("ranks disagree on the number of micro-batches")
-        self.generator.module.train()
-        self.discriminator.module.train()
+        self.generator.train()
+        self.discriminator.train()
         self._in_official_step = True
         try:
             if runtime.device.type == "cuda" and runtime.world_size == 1 and len(batches) == 1:
@@ -475,14 +475,14 @@ class MPSENetGANTrainer:
                     last = index == len(batches) - 1
                     clean, noisy = self._waveforms(batch, runtime)
                     sample_ids.append(batch.sample_id)
-                    ready = _inputs_ready(clean, noisy, self.generator.state_module.n_fft)
+                    ready = _inputs_ready(clean, noisy, self.generator.unwrapped().n_fft)
                     if not runtime.agree(ready, policy="all"):
                         raise RuntimeFailure("a rank rejected its micro-batch before the generator forward")
                     self._on_update_phase("before_generator_forward")
                     error: str | None = None
                     parts: dict[str, torch.Tensor] | None = None
                     try:
-                        parts = pack_forward(self.generator.module(noisy, clean))
+                        parts = pack_forward(self.generator(noisy, clean))
                         _require_discriminator_resolution(parts["clean_mag"].shape[-2], parts["clean_mag"].shape[-1])
                     except (TrainingError, RuntimeFailure, RuntimeError, ValueError) as exc:
                         error = f"{type(exc).__name__}: {exc}"
@@ -497,9 +497,9 @@ class MPSENetGANTrainer:
                         disc_error: str | None = None
                         loss: torch.Tensor | None = None
                         try:
-                            real = self.discriminator.module(parts["clean_mag"], parts["clean_mag"])
-                            fake = self.discriminator.module(parts["clean_mag"], parts["mag_hat"].detach())
-                            targets = _metric_targets(clean, parts["audio"], int(self.generator.state_module.architecture["sampling_rate"]))
+                            real = self.discriminator(parts["clean_mag"], parts["clean_mag"])
+                            fake = self.discriminator(parts["clean_mag"], parts["mag_hat"].detach())
+                            targets = _metric_targets(clean, parts["audio"], int(self.generator.unwrapped().architecture["sampling_rate"]))
                             loss = call_objective(
                                 self.discriminator_objective,
                                 {"real_score": real, "fake_score": fake, "ones": ones, "pesq_target": targets},
@@ -517,7 +517,7 @@ class MPSENetGANTrainer:
                         discriminator_total += float(loss.detach()) * self.accumulation
                 discriminator_result = runtime.step(self.optim_d)
                 self._on_update_phase("after_discriminator_step", stored)
-                raw = self.discriminator.state_module.discriminator
+                raw = self.discriminator.unwrapped().discriminator
                 frozen = [parameter for parameter in raw.parameters() if parameter.requires_grad]
                 component_totals = {name: 0.0 for name in _LOSS_NAMES}
                 try:
@@ -551,9 +551,9 @@ class MPSENetGANTrainer:
                             )
                         if total is None:
                             raise RuntimeFailure("generator loss is missing")
-                        module = self.generator.module
-                        if isinstance(module, torch.nn.parallel.DistributedDataParallel):
-                            self._generator_synced_during_backward = bool(module.require_backward_grad_sync)
+                        synced = self.generator.gradient_sync_enabled()
+                        if synced is not None:
+                            self._generator_synced_during_backward = synced
                         self._backward_if_finite(runtime, total, "generator loss")
                         for name in _LOSS_NAMES:
                             component_totals[name] += float(losses[name].detach())
@@ -561,11 +561,11 @@ class MPSENetGANTrainer:
                     for parameter in frozen:
                         parameter.requires_grad_(True)
                 self._average_calls += 1
-                runtime.average_gradients(self.generator.parameters)
+                runtime.average_gradients(self.generator)
             generator_result = runtime.step(self.optim_g)
             runtime.end_step()
-            runtime.broadcast_buffers(self.generator.state_module)
-            runtime.broadcast_buffers(self.discriminator.state_module)
+            runtime.broadcast_buffers(self.generator)
+            runtime.broadcast_buffers(self.discriminator)
             if not discriminator_result.applied or not generator_result.applied:
                 raise RuntimeFailure("MP-SENet GAN requires both optimizers to apply in one logical step")
             count = len(batches)
@@ -757,22 +757,22 @@ class MPSENetGANTrainer:
             self._shadow = validation_model(
                 {
                     "loss": "official",
-                    "model": dict(self.generator.state_module.architecture),
+                    "model": dict(self.generator.unwrapped().architecture),
                     "optimizer": {
                         "betas": [float(betas[0]), float(betas[1])],
                         "lr": float(group["lr"]),
                         "weight_decay": float(group["weight_decay"]),
                     },
                     "scheduler": {"gamma": float(self.scheduler_g.gamma)},
-                    "seed": int(self.generator.state_module.seed),
+                    "seed": int(self.generator.unwrapped().seed),
                 },
                 runtime.device,
             )
         task = self._shadow
         if task.discriminator is None:
             raise RuntimeFailure("shadow MP-SENet task has no discriminator")
-        task.generator.load_state_dict(self.generator.state_module.generator.state_dict(), strict=True)
-        task.discriminator.load_state_dict(self.discriminator.state_module.discriminator.state_dict(), strict=True)
+        task.generator.load_state_dict(self.generator.unwrapped().generator.state_dict(), strict=True)
+        task.discriminator.load_state_dict(self.discriminator.unwrapped().discriminator.state_dict(), strict=True)
         task.eval_mode()
         return task
 
@@ -818,7 +818,7 @@ class MPSENetGANTrainer:
             try:
                 _write_best_files(
                     directory,
-                    self.generator.state_module.export_for_inference(),
+                    self.generator.unwrapped().export_for_inference(),
                     decision,
                     self.experiment_claim,
                 )

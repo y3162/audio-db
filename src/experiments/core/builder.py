@@ -352,11 +352,13 @@ class ExperimentBuilder:
         states = StateRegistry()
         for component_id in sorted(config.components):
             spec = config.components[component_id]
-            if spec.ref is not None or spec.role is None:
-                continue
-            if not _should_save(spec):
+            if spec.ref is not None or spec.role is None or spec.save_state is False:
                 continue
             target = control if spec.role == "stopping" else registry.get(component_id)
+            if spec.save_state is True and not _has_state_methods(target):
+                raise BuildError(f"component {component_id} sets state.save but has no state_dict")
+            if not _should_save(spec, target):
+                continue
             states.register(ComponentState(component_id, spec.role, target))
         states.register(RuntimeState(runtime))
         return states
@@ -423,9 +425,18 @@ def _supported_sources(trainer: object) -> tuple[str, ...]:
     return tuple(sources) + tuple(extra)
 
 
-def _should_save(spec: ComponentConfig) -> bool:
-    if spec.save_state is not None:
-        return spec.save_state
+def _has_state_methods(target: object) -> bool:
+    owner = target.state_module if isinstance(target, PreparedModel) else target
+    return callable(getattr(owner, "state_dict", None)) and callable(getattr(owner, "load_state_dict", None))
+
+
+def _should_save(spec: ComponentConfig, target: object) -> bool:
+    if spec.save_state is False:
+        return False
+    if spec.save_state is True:
+        return True
+    if spec.role == "trainer" and not _has_state_methods(target):
+        return False
     return spec.role in _SAVE_ROLES
 
 

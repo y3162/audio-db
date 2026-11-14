@@ -277,6 +277,29 @@ class BuilderTests(unittest.TestCase):
             experiment.run()
         self.assertFalse(experiment._built)
 
+    def test_a_stateless_trainer_is_omitted_unless_save_is_explicit(self) -> None:
+        path = write_config(
+            self._tmp(),
+            {"trainer": {"role": "trainer", "class": "tests.experiments.support.CaptureTrainer"}},
+        )
+        experiment = build_experiment(load_experiment(path))
+        assert experiment._graph is not None
+        self.assertNotIn("trainer", experiment._graph.states.ids())
+        explicit = write_config(
+            self._tmp(),
+            {
+                "trainer": {
+                    "role": "trainer",
+                    "class": "tests.experiments.support.CaptureTrainer",
+                    "state": {"save": True},
+                }
+            },
+            filename="explicit.yaml",
+        )
+        with self.assertRaises(BuildError) as caught:
+            build_experiment(load_experiment(explicit))
+        self.assertIn("state.save", str(caught.exception))
+
     def _tmp(self) -> Path:
         return Path(self.enterContext(self._tempdir()))
 

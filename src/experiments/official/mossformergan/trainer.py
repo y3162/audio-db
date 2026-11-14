@@ -39,7 +39,7 @@ from src.experiments.official.mossformergan.models import (
 )
 from src.experiments.execution.journal import StepJournal
 from src.experiments.results import RunResult
-from src.experiments.runtime import PreparedModel, ProcessRuntime
+from src.experiments.runtime import PreparedModel, ProcessRuntime, require_prepared
 from src.experiments.selectors import scalar_metrics
 from src.experiments.trainers import _close_epoch_view
 from src.experiments.calc.errors import TrainingError
@@ -101,22 +101,22 @@ class MossFormerGANTrainer:
         evaluators: Any | None = None,
         model_selection: Any | None = None,
     ) -> None:
-        if not isinstance(generator, PreparedModel) or not isinstance(generator.state_module, MossFormerGANGenerator):
-            raise BuildError("generator must be a prepared MossFormerGANGenerator")
-        if not isinstance(discriminator, PreparedModel) or not isinstance(
-            discriminator.state_module, MossFormerGANDiscriminator
-        ):
-            raise BuildError("discriminator must be a prepared MossFormerGANDiscriminator")
-        if generator.state_module.architecture != discriminator.state_module.architecture:
+        require_prepared(generator, MossFormerGANGenerator, "generator must be a prepared MossFormerGANGenerator")
+        require_prepared(
+            discriminator,
+            MossFormerGANDiscriminator,
+            "discriminator must be a prepared MossFormerGANDiscriminator",
+        )
+        if generator.unwrapped().architecture != discriminator.unwrapped().architecture:
             raise BuildError("discriminator initialization architecture does not match the generator")
-        if generator.state_module.seed != discriminator.state_module.seed:
+        if generator.unwrapped().seed != discriminator.unwrapped().seed:
             raise BuildError("generator and discriminator seeds differ")
         _require_adamw(optim_g, "optim_g", lr=OFFICIAL_LEARNING_RATE)
         _require_adamw(optim_d, "optim_d", lr=OFFICIAL_DISCRIMINATOR_LEARNING_RATE)
         _require_disjoint(optim_g, optim_d)
         if experiment_claim not in _CLAIMS:
             raise BuildError("experiment_claim must be official_faithful, leakage_safe, or research")
-        require_official_architecture(generator.state_module.architecture, experiment_claim)
+        require_official_architecture(generator.unwrapped().architecture, experiment_claim)
         require_mossformer(generator_objective, discriminator_objective, experiment_claim)
         if not hasattr(data, "train_epoch") or not hasattr(data, "validation_epoch"):
             raise BuildError("data must provide train_epoch and validation_epoch")
@@ -144,10 +144,10 @@ class MossFormerGANTrainer:
         if stop_after_logical_steps is not None:
             stop_after_logical_steps = _positive_int("stop_after_logical_steps", stop_after_logical_steps)
         self.stop_after_logical_steps = stop_after_logical_steps
-        self.n_fft = int(generator.state_module.n_fft)
-        self.win = int(generator.state_module.win)
-        self.hop = int(generator.state_module.hop)
-        self.sample_rate = int(generator.state_module.sampling_rate)
+        self.n_fft = int(generator.unwrapped().n_fft)
+        self.win = int(generator.unwrapped().win)
+        self.hop = int(generator.unwrapped().hop)
+        self.sample_rate = int(generator.unwrapped().sampling_rate)
         self.audio_sample_rate = self.sample_rate
         self.audio_teachers = ("dry_clean",)
         self.logical_step = 0
@@ -343,8 +343,8 @@ class MossFormerGANTrainer:
         clean, noisy = self._waveforms(batch, runtime)
         self.counters["micro_batches_processed"] += 1
         self.counters["official_step"] += 1
-        generator_module = self.generator.module
-        discriminator_module = self.discriminator.module
+        generator_module = self.generator.execution()
+        discriminator_module = self.discriminator.execution()
         with runtime.sync_gradients([self.generator, self.discriminator], enabled=False):
             parts = generator_parts(self._terms_view(), generator_module, discriminator_module, clean, noisy)
             result = call_objective(
@@ -399,11 +399,11 @@ class MossFormerGANTrainer:
             for name, value in result.terms.items():
                 self.last_components[name] = float(value.detach())
             self._on_update_phase("before_generator_backward")
-            self._backward_average_and_clip(runtime, generator_loss / self.accumulation, self.generator.parameters)
+            self._backward_average_and_clip(runtime, generator_loss / self.accumulation, self.generator)
             self._on_update_phase("after_generator_clip")
             self._on_update_phase("before_discriminator_backward")
             self._backward_average_and_clip(
-                runtime, discriminator_loss / self.accumulation, self.discriminator.parameters
+                runtime, discriminator_loss / self.accumulation, self.discriminator
             )
             self._on_update_phase("after_discriminator_clip")
         self._window_generator.append(float(generator_loss.detach()))
@@ -555,9 +555,9 @@ class MossFormerGANTrainer:
         self,
         runtime: ProcessRuntime,
         loss: torch.Tensor,
-        clip_parameters: tuple[torch.nn.Parameter, ...],
+        clip_parameters: Any,
     ) -> None:
-        modules = (self.generator.state_module, self.discriminator.state_module)
+        modules = (self.generator.unwrapped(), self.discriminator.unwrapped())
         baselines: dict[int, torch.Tensor | None] = {}
         parameters: list[torch.nn.Parameter] = []
         for module in modules:
@@ -701,8 +701,8 @@ class MossFormerGANTrainer:
         finally:
             runtime.restore_rng(rng)
             self._train_mode()
-        runtime.broadcast_buffers(self.generator.state_module)
-        runtime.broadcast_buffers(self.discriminator.state_module)
+        runtime.broadcast_buffers(self.generator)
+        runtime.broadcast_buffers(self.discriminator)
         moved = (int(self.data.epoch), int(self.data.update_index))
         if moved != cursor:
             raise RuntimeFailure("validation advanced the training cursor")
@@ -772,10 +772,10 @@ class MossFormerGANTrainer:
         return {
             "discriminator": {
                 key: value.detach().cpu().clone()
-                for key, value in self.discriminator.state_module.state_dict().items()
+                for key, value in self.discriminator.unwrapped().state_dict().items()
             },
             "generator": {
-                key: value.detach().cpu().clone() for key, value in self.generator.state_module.state_dict().items()
+                key: value.detach().cpu().clone() for key, value in self.generator.unwrapped().state_dict().items()
             },
             "optim_d": copy.deepcopy(self.optim_d.state_dict()),
             "optim_g": copy.deepcopy(self.optim_g.state_dict()),
@@ -784,8 +784,8 @@ class MossFormerGANTrainer:
     def _restore_best_and_halve_generator(self) -> None:
         snapshot = self._best_snapshot
         if snapshot is not None:
-            self.generator.state_module.load_state_dict(snapshot["generator"], strict=True)
-            self.discriminator.state_module.load_state_dict(snapshot["discriminator"], strict=True)
+            self.generator.unwrapped().load_state_dict(snapshot["generator"], strict=True)
+            self.discriminator.unwrapped().load_state_dict(snapshot["discriminator"], strict=True)
             self.optim_g.load_state_dict(snapshot["optim_g"])
             self.optim_d.load_state_dict(snapshot["optim_d"])
         self.optim_g.param_groups[0]["lr"] *= 0.5
@@ -800,7 +800,7 @@ class MossFormerGANTrainer:
 
     def _grad_state(self, prepared: PreparedModel) -> dict[str, torch.Tensor]:
         grads = {}
-        for name, parameter in prepared.state_module.named_parameters():
+        for name, parameter in prepared.unwrapped().named_parameters():
             if parameter.grad is not None:
                 grads[name] = parameter.grad.detach().cpu().clone()
         return grads
@@ -808,7 +808,7 @@ class MossFormerGANTrainer:
     def _restore_grads(self, prepared: PreparedModel, grads: object) -> None:
         if not isinstance(grads, dict):
             raise RuntimeFailure("checkpoint gradients are not a mapping")
-        named = dict(prepared.state_module.named_parameters())
+        named = dict(prepared.unwrapped().named_parameters())
         for parameter in named.values():
             parameter.grad = None
         for name, value in grads.items():
@@ -825,8 +825,8 @@ class MossFormerGANTrainer:
             hop=self.hop,
             win=self.win,
             sample_rate=self.sample_rate,
-            generator=self.generator.module,
-            discriminator=self.discriminator.module,
+            generator=self.generator.execution(),
+            discriminator=self.discriminator.execution(),
             device=runtime.device,
             validation_requires_all_ranks=self._syncbn_active(),
         )
@@ -859,11 +859,11 @@ class MossFormerGANTrainer:
         return clean, noisy
 
     def _train_mode(self) -> None:
-        self.generator.module.train()
-        self.discriminator.module.train()
+        self.generator.train()
+        self.discriminator.train()
 
     def _syncbn_active(self) -> bool:
-        return any(isinstance(module, torch.nn.SyncBatchNorm) for module in self.discriminator.state_module.modules())
+        return any(isinstance(module, torch.nn.SyncBatchNorm) for module in self.discriminator.unwrapped().modules())
 
     def _clear_window_log(self) -> None:
         self._window_generator = []
@@ -937,8 +937,8 @@ class MossFormerGANTrainer:
         # BatchNorm stats diverge after a local forward. The next DDP forward
         # would copy rank 0's buffers. Doing it before the save keeps the
         # checkpoint identical across ranks. World size 1 does not change them.
-        runtime.broadcast_buffers(self.generator.state_module)
-        runtime.broadcast_buffers(self.discriminator.state_module)
+        runtime.broadcast_buffers(self.generator)
+        runtime.broadcast_buffers(self.discriminator)
         if runtime.world_size > 1:
             # Each rank's accumulation window holds that rank's micro-batch loss.
             # The gradient is already averaged. The lists are logs, so rank 0's

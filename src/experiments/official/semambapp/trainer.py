@@ -35,7 +35,7 @@ from src.experiments.official.semambapp.models import (
 )
 from src.experiments.execution.journal import StepJournal
 from src.experiments.results import RunResult
-from src.experiments.runtime import PreparedModel, ProcessRuntime
+from src.experiments.runtime import PreparedModel, ProcessRuntime, require_prepared
 from src.experiments.selectors import scalar_metrics
 from src.experiments.trainers import _close_epoch_view
 from src.experiments.calc.metrics import _aggregate_validation
@@ -83,17 +83,14 @@ class SEMambaPPTrainer:
         evaluators: Any | None = None,
         model_selection: Any | None = None,
     ) -> None:
-        if not isinstance(generator, PreparedModel) or not isinstance(generator.state_module, SEMambaPPGenerator):
-            raise BuildError("generator must be a prepared SEMambaPPGenerator")
-        if not isinstance(mrd, PreparedModel) or not isinstance(mrd.state_module, SEMambaPPMRD):
-            raise BuildError("mrd must be a prepared SEMambaPPMRD")
-        if not isinstance(cqt, PreparedModel) or not isinstance(cqt.state_module, SEMambaPPCQTDiscriminator):
-            raise BuildError("cqt must be a prepared SEMambaPPCQTDiscriminator")
-        if generator.state_module.architecture != mrd.state_module.architecture:
+        require_prepared(generator, SEMambaPPGenerator, "generator must be a prepared SEMambaPPGenerator")
+        require_prepared(mrd, SEMambaPPMRD, "mrd must be a prepared SEMambaPPMRD")
+        require_prepared(cqt, SEMambaPPCQTDiscriminator, "cqt must be a prepared SEMambaPPCQTDiscriminator")
+        if generator.unwrapped().architecture != mrd.unwrapped().architecture:
             raise BuildError("MRD initialization architecture does not match the generator")
-        if generator.state_module.architecture != cqt.state_module.architecture:
+        if generator.unwrapped().architecture != cqt.unwrapped().architecture:
             raise BuildError("CQT initialization architecture does not match the generator")
-        if generator.state_module.seed != mrd.state_module.seed or generator.state_module.seed != cqt.state_module.seed:
+        if generator.unwrapped().seed != mrd.unwrapped().seed or generator.unwrapped().seed != cqt.unwrapped().seed:
             raise BuildError("generator, MRD, and CQT seeds differ")
         _require_adamw(optim_g, "optim_g")
         _require_adamw(optim_d, "optim_d")
@@ -125,7 +122,7 @@ class SEMambaPPTrainer:
         self.optim_g_id = optim_g_id
         self.optim_d_id = optim_d_id
         self.claim_label = claim_label
-        self.audio_sample_rate = int(generator.state_module.sampling_rate)
+        self.audio_sample_rate = int(generator.unwrapped().sampling_rate)
         self.audio_teachers = ("dry_clean",)
         self.max_logical_steps = _positive_int("max_logical_steps", max_logical_steps)
         self.accumulation = _positive_int("accumulation", accumulation)
@@ -335,9 +332,9 @@ class SEMambaPPTrainer:
         counts = runtime.gather_objects(len(batches))
         if any(item != len(batches) for item in counts):
             raise RuntimeFailure("ranks disagree on the number of micro-batches")
-        self.generator.module.train()
-        self.mrd.module.train()
-        self.cqt.module.train()
+        self.generator.train()
+        self.mrd.train()
+        self.cqt.train()
         self._in_official_step = True
         graph_before = self.generator_graph_forwards
         preview_before = self.generator_preview_forwards
@@ -381,19 +378,19 @@ class SEMambaPPTrainer:
                 self.mrd_forwards += 1
                 self.cqt_forwards += 1
             if self.grad_clip is not None:
-                runtime.clip(self.mrd.parameters, self.grad_clip)
-                runtime.clip(self.cqt.parameters, self.grad_clip)
-            disc_norm = _grad_norm(self.mrd.state_module.discriminator, self.cqt.state_module.discriminator)
+                runtime.clip(self.mrd, self.grad_clip)
+                runtime.clip(self.cqt, self.grad_clip)
+            disc_norm = _grad_norm(self.mrd.unwrapped().discriminator, self.cqt.unwrapped().discriminator)
             if self.capture_gradients:
                 self.last_discriminator_grads = _clone_grads(
-                    self.mrd.state_module.discriminator, self.cqt.state_module.discriminator
+                    self.mrd.unwrapped().discriminator, self.cqt.unwrapped().discriminator
                 )
             self._on_update_phase("before_discriminator_step")
             discriminator_result = runtime.step(self.optim_d)
             self._on_update_phase("after_discriminator_step")
             frozen = [
                 parameter
-                for module in (self.mrd.state_module, self.cqt.state_module)
+                for module in (self.mrd.unwrapped(), self.cqt.unwrapped())
                 for parameter in module.parameters()
                 if parameter.requires_grad
             ]
@@ -421,7 +418,7 @@ class SEMambaPPTrainer:
                     parameter.requires_grad_(True)
                 self.frozen_during_generator = False
             if self.grad_clip is not None:
-                runtime.clip(self.generator.parameters, self.grad_clip)
+                runtime.clip(self.generator, self.grad_clip)
             log_terms = torch.stack(
                 [value.detach() if isinstance(value, torch.Tensor) else torch.tensor(float(value), device=runtime.device) for value in component_totals.values()]
             )
@@ -436,15 +433,15 @@ class SEMambaPPTrainer:
             else:
                 host_terms = log_terms.detach().float().cpu()
                 host_pair = log_pair.detach().float().cpu()
-            gen_norm = _grad_norm(self.generator.state_module.generator)
+            gen_norm = _grad_norm(self.generator.unwrapped().generator)
             if self.capture_gradients:
-                self.last_generator_grads = _clone_grads(self.generator.state_module.generator)
+                self.last_generator_grads = _clone_grads(self.generator.unwrapped().generator)
             self._on_update_phase("before_generator_step")
             generator_result = runtime.step(self.optim_g)
             runtime.end_step()
-            runtime.broadcast_buffers(self.generator.state_module)
-            runtime.broadcast_buffers(self.mrd.state_module)
-            runtime.broadcast_buffers(self.cqt.state_module)
+            runtime.broadcast_buffers(self.generator)
+            runtime.broadcast_buffers(self.mrd)
+            runtime.broadcast_buffers(self.cqt)
             if not discriminator_result.applied or not generator_result.applied:
                 raise RuntimeFailure("SEMamba++ requires both optimizers to apply in one logical step")
             count = len(batches)
@@ -649,7 +646,7 @@ class SEMambaPPTrainer:
 
     def _shadow_task(self, runtime: ProcessRuntime):
         if self._shadow is None:
-            architecture = dict(self.generator.state_module.architecture)
+            architecture = dict(self.generator.unwrapped().architecture)
             hop = int(architecture.pop("hop"))
             win = int(architecture.pop("win"))
             sampling_rate = int(architecture.pop("sampling_rate"))
@@ -673,14 +670,14 @@ class SEMambaPPTrainer:
                         "weight_decay": float(group["weight_decay"]),
                     },
                     "scheduler": {"gamma": float(self.scheduler_g.gamma), "name": "exponential"},
-                    "seed": int(self.generator.state_module.seed),
+                    "seed": int(self.generator.unwrapped().seed),
                 },
                 runtime.device,
             )
         task = self._shadow
-        task.generator.load_state_dict(self.generator.state_module.generator.state_dict(), strict=True)
-        task.discriminator_mrd.load_state_dict(self.mrd.state_module.discriminator.state_dict(), strict=True)
-        task.discriminator_band.load_state_dict(self.cqt.state_module.discriminator.state_dict(), strict=True)
+        task.generator.load_state_dict(self.generator.unwrapped().generator.state_dict(), strict=True)
+        task.discriminator_mrd.load_state_dict(self.mrd.unwrapped().discriminator.state_dict(), strict=True)
+        task.discriminator_band.load_state_dict(self.cqt.unwrapped().discriminator.state_dict(), strict=True)
         task.eval_mode()
         return task
 
@@ -692,7 +689,7 @@ class SEMambaPPTrainer:
         *,
         preview: bool,
     ) -> dict[str, torch.Tensor]:
-        module = self.generator.state_module if preview else self.generator.module
+        module = self.generator.unwrapped() if preview else self.generator.execution()
         error: str | None = None
         parts: dict[str, torch.Tensor] | None = None
         try:
@@ -710,8 +707,8 @@ class SEMambaPPTrainer:
         error: str | None = None
         loss: torch.Tensor | None = None
         try:
-            real_q, fake_q, _real_qf, _fake_qf = self.cqt.module(clean, audio)
-            real_r, fake_r, _real_rf, _fake_rf = self.mrd.module(clean, audio)
+            real_q, fake_q, _real_qf, _fake_qf = self.cqt(clean, audio)
+            real_r, fake_r, _real_rf, _fake_rf = self.mrd(clean, audio)
             loss = call_objective(
                 self.discriminator_objective,
                 {
@@ -741,8 +738,8 @@ class SEMambaPPTrainer:
         total: torch.Tensor | None = None
         terms: dict[str, torch.Tensor] | None = None
         try:
-            band = self.cqt.state_module.discriminator
-            mrd = self.mrd.state_module.discriminator
+            band = self.cqt.unwrapped().discriminator
+            mrd = self.mrd.unwrapped().discriminator
             _real_q, fake_q, real_qf, fake_qf = band(clean, parts["audio"])
             _real_r, fake_r, real_rf, fake_rf = mrd(clean, parts["audio"])
             result = call_objective(
@@ -763,7 +760,7 @@ class SEMambaPPTrainer:
                     "real_mrd_features": real_rf,
                     "recomputed_complex": parts["recomputed"],
                     "reference": clean,
-                    "sample_rate": int(self.generator.state_module.sampling_rate),
+                    "sample_rate": int(self.generator.unwrapped().sampling_rate),
                 },
             )
             total = result.total
@@ -806,7 +803,7 @@ class SEMambaPPTrainer:
 
     def _require_scan(self, runtime: ProcessRuntime) -> None:
         if self.scan_report is None:
-            self.scan_report = scan_execution(self.generator.state_module.generator, runtime.device)
+            self.scan_report = scan_execution(self.generator.unwrapped().generator, runtime.device)
         report = self.scan_report
         if report["configured"] == "fused" and report["executed"] == "unavailable":
             raise RuntimeFailure(
@@ -851,9 +848,9 @@ class SEMambaPPTrainer:
         self.lifecycle.save_if_needed(event, logical_step=self.logical_step, metrics=metrics)
 
     def _sync_ranks(self, runtime: ProcessRuntime) -> None:
-        runtime.broadcast_buffers(self.generator.state_module)
-        runtime.broadcast_buffers(self.mrd.state_module)
-        runtime.broadcast_buffers(self.cqt.state_module)
+        runtime.broadcast_buffers(self.generator)
+        runtime.broadcast_buffers(self.mrd)
+        runtime.broadcast_buffers(self.cqt)
 
     def _stop_requested(self, runtime: object | None = None) -> bool:
         from src.experiments.signals import ranks_should_stop

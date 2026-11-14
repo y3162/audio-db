@@ -25,6 +25,16 @@ class RuntimeApiTests(unittest.TestCase):
         self.assertEqual(before, {id(parameter) for parameter in prepared.parameters})
         self.assertEqual(before, {id(parameter) for parameter in prepared.module.parameters()})
         self.assertIs(prepared.module, prepared.state_module)
+        self.assertIs(prepared.unwrapped(), prepared.state_module)
+        self.assertIs(prepared.execution(), prepared.module)
+        prepared.eval()
+        self.assertFalse(prepared.training)
+        self.assertFalse(prepared.module.training)
+        prepared.train()
+        self.assertTrue(prepared.training)
+        inferred = prepared.inference(inputs)
+        self.assertTrue(torch.equal(inferred, called))
+        runtime.clip(prepared, 1.0)
 
     def test_move_keeps_batch_metadata_and_tensor_identity_on_device(self) -> None:
         runtime = ProcessRuntime(device="cpu", precision="fp32")

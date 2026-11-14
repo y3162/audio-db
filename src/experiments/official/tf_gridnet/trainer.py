@@ -42,7 +42,7 @@ from src.experiments.errors import BuildError, RuntimeFailure
 from src.experiments.training.objectives import call_objective, coerce_spectral_objective, term_floats
 from src.experiments.execution.journal import StepJournal
 from src.experiments.results import RunResult
-from src.experiments.runtime import PreparedModel, ProcessRuntime
+from src.experiments.runtime import PreparedModel, ProcessRuntime, require_prepared
 from src.experiments.trainers import (
     _close_epoch_view,
     _rank,
@@ -128,8 +128,7 @@ class TFGridNetTrainer:
         evaluators: Any | None = None,
         model_selection: Any | None = None,
     ) -> None:
-        if not isinstance(model, PreparedModel):
-            raise BuildError("model must be a prepared module handle")
+        require_prepared(model)
         objective = coerce_spectral_objective(objective, label="MS-SNSD")
         if not hasattr(data, "train_epoch") or not hasattr(data, "validation_epoch"):
             raise BuildError("data must provide train_epoch and validation_epoch")
@@ -266,7 +265,7 @@ class TFGridNetTrainer:
                 for offset in range(self.accumulation):
                     planned.append(view.batch(index + offset))
                 self._drain_step_io(checkpoint)
-                self.model.module.train()
+                self.model.train()
                 self.optimizer.zero_grad(set_to_none=True)
                 total: torch.Tensor | None = None
                 sample_ids: list[str] = []
@@ -284,7 +283,7 @@ class TFGridNetTrainer:
                     for name, value in terms.items():
                         term_acc[name] = term_acc.get(name, 0.0) + value / self.accumulation
                 if self.grad_clip is not None:
-                    runtime.clip(self.model.parameters, self.grad_clip, optimizer=self.optimizer)
+                    runtime.clip(self.model, self.grad_clip, optimizer=self.optimizer)
                 if total is None:
                     raise RuntimeFailure(f"component {component_id}: loss is not finite")
                 host_loss = runtime.host_scalar(total)
@@ -454,7 +453,7 @@ class TFGridNetTrainer:
         )
 
     def _validate(self, runtime: ProcessRuntime, trainer_epoch: int, component_id: str) -> dict[str, float | int]:
-        module = self.model.module
+        module = self.model
         was_training = bool(module.training)
         cursor = (int(self.data.epoch), int(self.data.update_index))
         rng = capture_rank_rng(cuda=runtime.device.type == "cuda")
@@ -467,7 +466,7 @@ class TFGridNetTrainer:
                     if not isinstance(batch, Batch):
                         raise RuntimeFailure(f"component {component_id}: validation did not return a batch")
                     batch = runtime.move(batch)
-                    prediction = self.model.state_module(batch.inputs)
+                    prediction = self.model.inference(batch.inputs)
                     value = self._objective_total(prediction, batch.targets)
                     if not isinstance(value, torch.Tensor) or value.numel() != 1:
                         raise RuntimeFailure(f"component {component_id}: validation loss is not a scalar")
@@ -508,7 +507,7 @@ class TFGridNetTrainer:
             try:
                 _write_nbest(
                     directory,
-                    self.model.state_module.export_for_inference(),
+                    self.model.unwrapped().export_for_inference(),
                     espnet_epoch,
                     ranked,
                     self.keep_nbest,
@@ -537,7 +536,7 @@ class TFGridNetTrainer:
         for batch in batches:
             batch = runtime.move(batch)
             try:
-                prediction = self.model.module(batch.inputs)
+                prediction = self.model(batch.inputs)
                 result = call_objective(self.objective, {"estimate": prediction, "target": batch.targets})
             except ValueError as exc:
                 raise RuntimeFailure(str(exc)) from exc

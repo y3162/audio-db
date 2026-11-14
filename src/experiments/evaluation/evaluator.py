@@ -136,7 +136,7 @@ class AudioPairEvaluator:
     ) -> list[MetricResult]:
         """Score the split. Rank-local statistics are summed before the result is built."""
 
-        module = self.model.state_module if isinstance(self.model, PreparedModel) else self.model
+        module = self.model.unwrapped() if isinstance(self.model, PreparedModel) else self.model
         if not isinstance(module, torch.nn.Module):
             raise RuntimeFailure("evaluator model is not a module")
         cursor = _cursor(self.data)

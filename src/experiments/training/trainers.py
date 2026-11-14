@@ -21,7 +21,7 @@ from src.experiments.execution.journal import append_jsonl as _append_jsonl  # n
 from src.experiments.execution.journal import rewind_metrics as _rewind_metrics  # noqa: F401
 from src.experiments.execution.journal import sample_path as _sample_path  # noqa: F401
 from src.experiments.execution.results import RunResult
-from src.experiments.execution.runtime import PreparedModel, ProcessRuntime
+from src.experiments.execution.runtime import PreparedModel, ProcessRuntime, require_prepared
 from src.experiments.stopping import MetricEvent, should_stop
 
 
@@ -46,8 +46,7 @@ class StandardTrainer:
         scheduler: Any | None = None,
         stop_after_logical_steps: int | None = None,
     ) -> None:
-        if not isinstance(model, PreparedModel):
-            raise BuildError("model must be a prepared module handle")
+        require_prepared(model)
         if not callable(loss):
             raise BuildError("loss must be callable")
         if not hasattr(data, "train_epoch"):
@@ -162,7 +161,7 @@ class StandardTrainer:
                     total = detached if total is None else total + detached
                 self._before_optimizer_step(runtime)
                 if self.grad_clip is not None:
-                    runtime.clip(self.model.parameters, self.grad_clip, optimizer=self.optimizer)
+                    runtime.clip(self.model, self.grad_clip, optimizer=self.optimizer)
                 result = runtime.step(self.optimizer)
                 runtime.end_step()
                 if result.applied:
@@ -280,7 +279,7 @@ class StandardTrainer:
         total: torch.Tensor | None = None
         for batch in batches:
             batch = _batch_on_device(batch, runtime.device)
-            prediction = self.model.module(batch.inputs)
+            prediction = self.model(batch.inputs)
             value = self.loss(prediction, batch.targets)
             if not isinstance(value, torch.Tensor):
                 raise RuntimeFailure(f"component {component_id}: loss did not return a tensor")

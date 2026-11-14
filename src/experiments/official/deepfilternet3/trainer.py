@@ -36,7 +36,7 @@ from src.experiments.errors import BuildError, RuntimeFailure
 from src.experiments.official.deepfilternet3.model import DeepFilterNet3Model
 from src.experiments.execution.journal import StepJournal
 from src.experiments.results import RunResult
-from src.experiments.runtime import PreparedModel, ProcessRuntime
+from src.experiments.runtime import PreparedModel, ProcessRuntime, require_prepared
 from src.experiments.trainers import (
     _close_epoch_view,
     _rank,
@@ -206,10 +206,7 @@ class DeepFilterNet3Trainer:
         evaluators: Any | None = None,
         model_selection: Any | None = None,
     ) -> None:
-        if not isinstance(model, PreparedModel):
-            raise BuildError("model must be a prepared module handle")
-        if not isinstance(model.state_module, DeepFilterNet3Model):
-            raise BuildError("model must be DeepFilterNet3Model")
+        require_prepared(model, DeepFilterNet3Model, "model must be a prepared DeepFilterNet3Model")
         if not isinstance(objective, torch.nn.Module):
             raise BuildError("objective must be a loss module")
         self.objective = objective
@@ -222,7 +219,7 @@ class DeepFilterNet3Trainer:
         self.data = data
         self.optimizer = optimizer
         self.optimizer_id = str(getattr(optimizer, "_experiment_component_id"))
-        self.audio_sample_rate = int(model.state_module.generator.params.sr)
+        self.audio_sample_rate = int(model.unwrapped().generator.params.sr)
         self.audio_teachers = ("official_mixed_target",)
         self.max_logical_steps = _positive_int("max_logical_steps", max_logical_steps)
         self.accumulation = _positive_int("accumulation", accumulation)
@@ -309,7 +306,7 @@ class DeepFilterNet3Trainer:
             self.data.update_index = 0
         bind_trainer_data(self)
         self._require_group_size(component_id)
-        self._stream = _stream_for(self.model.state_module, runtime.device)
+        self._stream = _stream_for(self.model.unwrapped(), runtime.device)
         self._record_rfft(runtime, checkpoint)
         runtime.barrier()
         if should_stop(self):
@@ -350,7 +347,7 @@ class DeepFilterNet3Trainer:
                     raise RuntimeFailure(
                         f"component {component_id}: epoch {epoch} is exhausted without a pending boundary"
                     )
-                self.model.module.train()
+                self.model.train()
                 position = schedule_index(epoch, index // self.accumulation, steps)
                 learning_rate, decay = self._apply_cosine(position)
                 self.optimizer.zero_grad(set_to_none=True)
@@ -366,7 +363,7 @@ class DeepFilterNet3Trainer:
                         runtime.backward(micro / self.accumulation)
                     detached = (micro / self.accumulation).detach()
                     total = detached if total is None else total + detached
-                runtime.clip(self.model.parameters, self.grad_clip, optimizer=self.optimizer)
+                runtime.clip(self.model, self.grad_clip, optimizer=self.optimizer)
                 result = runtime.step(self.optimizer)
                 runtime.end_step()
                 if total is None or not bool(torch.isfinite(total).all()):
@@ -494,7 +491,7 @@ class DeepFilterNet3Trainer:
 
         if self._stream is None:
             raise RuntimeFailure("DeepFilterNet3 research predict has no DF stream")
-        parts = component_losses(self._stream, self.model.state_module, targets, inputs, self.objective)
+        parts = component_losses(self._stream, self.model.unwrapped(), targets, inputs, self.objective)
         wave = parts.get("enhanced_wave")
         if not isinstance(wave, torch.Tensor):
             raise RuntimeFailure("DeepFilterNet3 research predict did not return a waveform")
@@ -567,10 +564,10 @@ class DeepFilterNet3Trainer:
         not SyncBatchNorm and does not average the two batches.
         """
 
-        runtime.broadcast_buffers(self.model.state_module)
+        runtime.broadcast_buffers(self.model)
 
     def _validate(self, runtime: ProcessRuntime, trainer_epoch: int, component_id: str) -> float:
-        module = self.model.module
+        module = self.model
         was_training = bool(module.training)
         cursor = (int(self.data.epoch), int(self.data.update_index))
         rng = capture_rank_rng(cuda=runtime.device.type == "cuda")
@@ -588,7 +585,7 @@ class DeepFilterNet3Trainer:
                             value = self._loss_tensor(
                                 clean[row : row + 1],
                                 noisy[row : row + 1],
-                                self.model.state_module,
+                                self.model.unwrapped(),
                             )
                             if not bool(torch.isfinite(value).all()):
                                 raise RuntimeFailure(f"component {component_id}: validation loss is not finite")
@@ -612,7 +609,7 @@ class DeepFilterNet3Trainer:
             return
         payload = {
             "epoch": self.best_epoch,
-            "generator": self.model.state_module.export_for_inference(),
+            "generator": self.model.unwrapped().export_for_inference(),
             "logical_step": self.logical_step,
             "loss": self.best_loss,
         }
@@ -633,7 +630,7 @@ class DeepFilterNet3Trainer:
         for batch in batches:
             batch = runtime.move(batch)
             clean, noisy = _clean_noisy(batch)
-            value = self._loss_tensor(clean, noisy, self.model.module)
+            value = self._loss_tensor(clean, noisy, self.model.execution())
             total = value if total is None else total + value
         assert total is not None
         return total / len(batches)

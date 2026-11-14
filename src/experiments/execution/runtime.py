@@ -26,7 +26,7 @@ import torch
 import torch.distributed as dist
 from torch.nn.parallel import DistributedDataParallel
 
-from src.experiments.errors import PrepareError, RuntimeFailure
+from src.experiments.errors import BuildError, PrepareError, RuntimeFailure
 from src.experiments.calc.rng import capture_rank_rng, restore_rank_rng
 
 _SCALER_KEYS = frozenset(
@@ -71,6 +71,50 @@ class PreparedModel:
         """
 
         return self.module(*args, **kwargs)
+
+    def train(self, mode: bool = True) -> PreparedModel:
+        """Set train or eval mode on the execution module, including a DDP wrapper."""
+
+        self.module.train(mode)
+        return self
+
+    def eval(self) -> PreparedModel:
+        return self.train(False)
+
+    @property
+    def training(self) -> bool:
+        return bool(self.module.training)
+
+    def gradient_sync_enabled(self) -> bool | None:
+        """DDP's current backward sync flag, or ``None`` when this model is not wrapped."""
+
+        module = self.module
+        if isinstance(module, torch.nn.parallel.DistributedDataParallel):
+            return bool(module.require_backward_grad_sync)
+        return None
+
+    def execution(self) -> torch.nn.Module:
+        """The module that runs forward, including a DDP wrapper when one exists.
+
+        Official helpers that must receive an ``nn.Module`` use this. A normal
+        training step calls the prepared model itself.
+        """
+
+        return self.module
+
+    def unwrapped(self) -> torch.nn.Module:
+        """The module a checkpoint stores. Official helpers read architecture here.
+
+        Training forward uses :meth:`__call__`. This object has no DDP wrapper,
+        so its parameter names stay the original keys.
+        """
+
+        return self.state_module
+
+    def inference(self, *args: Any, **kwargs: Any) -> Any:
+        """Forward the unwrapped module. Validation uses this and does not sync DDP."""
+
+        return self.state_module(*args, **kwargs)
 
 
 @dataclass(frozen=True)
@@ -319,10 +363,10 @@ class ProcessRuntime:
 
         AMP unscales ``optimizer`` first and refuses a second unscale of that
         optimizer. FP32 ignores ``optimizer``. The returned norm is the
-        unscaled norm.
+        unscaled norm. A :class:`PreparedModel` contributes its optimizer parameters.
         """
 
-        params = [parameter for parameter in parameters if parameter.requires_grad]
+        params = [parameter for parameter in _as_parameters(parameters) if parameter.requires_grad]
         if self.precision == "amp_fp16":
             if optimizer is None:
                 raise RuntimeFailure("amp clip requires the optimizer that owns these parameters")
@@ -346,11 +390,12 @@ class ProcessRuntime:
         accumulation window clips the same parameters more than once.
         This method does not record a clip and does not unscale. It refuses
         ``amp_fp16`` rather than weakening that one-unscale rule.
+        A :class:`PreparedModel` contributes its optimizer parameters.
         """
 
         if self.precision == "amp_fp16":
             raise RuntimeFailure("clip_repeated refuses amp_fp16; clip once per step after unscale")
-        params = [parameter for parameter in parameters if parameter.requires_grad]
+        params = [parameter for parameter in _as_parameters(parameters) if parameter.requires_grad]
         if not params:
             raise RuntimeFailure("clip_repeated received no trainable parameters")
         if (
@@ -514,9 +559,10 @@ class ProcessRuntime:
         tensors. World size 1 does nothing. DDP's own all-reduce is separate;
         callers that already synchronized through :meth:`sync_context` must
         not call this again. NCCL reduces CUDA tensors on this rank's device.
+        A :class:`PreparedModel` contributes its optimizer parameters.
         """
 
-        params = [parameter for parameter in parameters if parameter.requires_grad]
+        params = [parameter for parameter in _as_parameters(parameters) if parameter.requires_grad]
         if self.world_size == 1:
             return
         self._require_group()
@@ -588,6 +634,8 @@ class ProcessRuntime:
         Broadcasting after the optimizer step does not change parameters.
         """
 
+        if isinstance(module, PreparedModel):
+            module = module.unwrapped()
         if not isinstance(module, torch.nn.Module):
             raise RuntimeFailure("broadcast_buffers requires a module")
         if isinstance(src, bool) or not isinstance(src, int) or src < 0 or src >= self.world_size:
@@ -814,6 +862,26 @@ class ProcessRuntime:
         finally:
             optimizer.step = original  # type: ignore[method-assign]
         return called
+
+
+def require_prepared(
+    handle: object,
+    expected: type | None = None,
+    message: str = "model must be a prepared module handle",
+) -> PreparedModel:
+    """Reject a raw module. Official trainers use this instead of reading handle fields."""
+
+    if not isinstance(handle, PreparedModel):
+        raise BuildError(message)
+    if expected is not None and not isinstance(handle.unwrapped(), expected):
+        raise BuildError(message)
+    return handle
+
+
+def _as_parameters(value: Any) -> Any:
+    if isinstance(value, PreparedModel):
+        return value.parameters
+    return value
 
 
 def _execution_module(item: Any) -> torch.nn.Module:

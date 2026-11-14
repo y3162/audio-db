@@ -74,7 +74,7 @@ def export_best(
 
 def _inference_module(module: Any) -> torch.nn.Module:
     if isinstance(module, PreparedModel):
-        return module.state_module
+        return module.unwrapped()
     if isinstance(module, torch.nn.Module):
         return module
     raise RuntimeFailure("research export needs an inference module")

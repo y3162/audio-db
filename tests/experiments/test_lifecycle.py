@@ -55,7 +55,7 @@ class LifecycleTests(unittest.TestCase):
         )
         self.assertIn("model", experiment._graph.states.ids())
         self.assertIn("runtime", experiment._graph.states.ids())
-        self.assertIn("trainer", experiment._graph.states.ids())
+        self.assertNotIn("trainer", experiment._graph.states.ids())
 
     def test_linear_parameters_match_and_frozen_parameters_are_refused(self) -> None:
         built_dir = self.enterContext(self._directory())
