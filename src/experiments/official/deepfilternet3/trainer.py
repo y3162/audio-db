@@ -38,7 +38,6 @@ from src.experiments.results import RunResult
 from src.experiments.runtime import PreparedModel, ProcessRuntime
 from src.experiments.trainers import (
     _append_jsonl,
-    _batch_on_device,
     _close_epoch_view,
     _rank,
     _rewind_metrics,
@@ -266,6 +265,20 @@ class DeepFilterNet3Trainer:
         self._stream: DFStream | None = None
 
     def run(self, runtime: ProcessRuntime, checkpoint: CheckpointManager) -> RunResult:
+        """Bind a direct caller and train. Experiment calls :meth:`fit`."""
+
+        self.runtime = runtime
+        current = getattr(self, "lifecycle", None)
+        if current is None or getattr(current, "checkpoint", None) is not checkpoint:
+            from src.experiments.training.trainers import _DirectLifecycle
+
+            self.lifecycle = _DirectLifecycle(checkpoint)
+        return self.fit()
+
+    def fit(self) -> RunResult:
+
+        runtime = self.runtime
+        checkpoint = self.lifecycle.checkpoint
         from src.experiments.evaluation.boundary import research_attached, rewind_on_resume
 
         if research_attached(self):
@@ -356,7 +369,7 @@ class DeepFilterNet3Trainer:
                     sync = offset == self.accumulation - 1
                     batches = view.batch(index + offset)
                     sample_ids.extend(batch.sample_id for batch in batches)
-                    with runtime.sync_context([self.model], sync=sync):
+                    with runtime.sync_gradients([self.model], enabled=sync):
                         with runtime.autocast():
                             micro = self._forward_loss(batches, component_id, runtime)
                         runtime.backward(micro / self.accumulation)
@@ -532,10 +545,10 @@ class DeepFilterNet3Trainer:
         """
 
         if event == "step":
-            checkpoint.offer(event, logical_step=self.logical_step, metrics=metrics, prepare=self._sync_ranks)
+            self.lifecycle.save_if_needed(event, logical_step=self.logical_step, metrics=metrics, prepare=self._sync_ranks)
             return
         self._sync_ranks(runtime)
-        checkpoint.offer(event, logical_step=self.logical_step, metrics=metrics)
+        self.lifecycle.save_if_needed(event, logical_step=self.logical_step, metrics=metrics)
 
     def _sync_ranks(self, runtime: ProcessRuntime) -> None:
         """Broadcast BatchNorm buffers so every rank holds the state that is saved.
@@ -560,7 +573,7 @@ class DeepFilterNet3Trainer:
                     for batch in self.data.validation_epoch(trainer_epoch):
                         if not isinstance(batch, Batch):
                             raise RuntimeFailure(f"component {component_id}: validation did not return a batch")
-                        batch = _batch_on_device(batch, runtime.device)
+                        batch = runtime.move(batch)
                         clean, noisy = _clean_noisy(batch)
                         for row in range(int(clean.shape[0])):
                             value = self._loss_tensor(
@@ -609,7 +622,7 @@ class DeepFilterNet3Trainer:
             raise RuntimeFailure(f"component {component_id}: empty micro-batch")
         total: torch.Tensor | None = None
         for batch in batches:
-            batch = _batch_on_device(batch, runtime.device)
+            batch = runtime.move(batch)
             clean, noisy = _clean_noisy(batch)
             value = self._loss_tensor(clean, noisy, self.model.module)
             total = value if total is None else total + value
@@ -722,9 +735,9 @@ class DeepFilterNet3Trainer:
 
             extra = final_research_metrics(self, checkpoint)
             if extra:
-                checkpoint.offer("final", logical_step=self.logical_step, metrics=extra, prepare=self._sync_ranks)
+                self.lifecycle.save_if_needed("final", logical_step=self.logical_step, metrics=extra, prepare=self._sync_ranks)
             else:
-                checkpoint.offer("final", logical_step=self.logical_step, prepare=self._sync_ranks)
+                self.lifecycle.save_if_needed("final", logical_step=self.logical_step, prepare=self._sync_ranks)
         self.stop_reason = reason
         if reason == "completed" and should_stop(self):
             reason = "early_stopping"
