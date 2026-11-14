@@ -42,7 +42,6 @@ from src.experiments.runtime import PreparedModel, ProcessRuntime
 from src.experiments.selectors import scalar_metrics
 from src.experiments.trainers import (
     _append_jsonl,
-    _batch_on_device,
     _close_epoch_view,
     _rank,
     _rewind_metrics,
@@ -189,7 +188,21 @@ class MossFormerGANTrainer:
         self.last_components: dict[str, float] | None = None
 
     def run(self, runtime: ProcessRuntime, checkpoint: CheckpointManager) -> RunResult:
+        """Bind a direct caller and train. Experiment calls :meth:`fit`."""
+
+        self.runtime = runtime
+        current = getattr(self, "lifecycle", None)
+        if current is None or getattr(current, "checkpoint", None) is not checkpoint:
+            from src.experiments.training.trainers import _DirectLifecycle
+
+            self.lifecycle = _DirectLifecycle(checkpoint)
+        return self.fit()
+
+    def fit(self) -> RunResult:
         """Train until the step budget, the plateau stop, or a finite all-skip epoch."""
+
+        runtime = self.runtime
+        checkpoint = self.lifecycle.checkpoint
 
         from src.experiments.evaluation.boundary import research_attached, rewind_on_resume
 
@@ -338,7 +351,7 @@ class MossFormerGANTrainer:
         self.counters["official_step"] += 1
         generator_module = self.generator.module
         discriminator_module = self.discriminator.module
-        with runtime.sync_context([self.generator, self.discriminator], sync=False):
+        with runtime.sync_gradients([self.generator, self.discriminator], enabled=False):
             parts = generator_parts(self._terms_view(), generator_module, discriminator_module, clean, noisy)
             result = call_objective(
                 self.generator_objective,
@@ -671,7 +684,7 @@ class MossFormerGANTrainer:
             for batch, alignment in aligned:
                 if not isinstance(batch, Batch):
                     raise RuntimeFailure("validation did not return a batch")
-                moved = _batch_on_device(batch, runtime.device)
+                moved = runtime.move(batch)
                 payload = {
                     "clean": moved.targets,
                     "noisy": moved.inputs,
@@ -833,7 +846,7 @@ class MossFormerGANTrainer:
         )
 
     def _waveforms(self, batch: Batch, runtime: ProcessRuntime) -> tuple[torch.Tensor, torch.Tensor]:
-        moved = _batch_on_device(batch, runtime.device)
+        moved = runtime.move(batch)
         clean = moved.targets
         noisy = moved.inputs
         if not isinstance(clean, torch.Tensor) or not isinstance(noisy, torch.Tensor):
@@ -912,7 +925,7 @@ class MossFormerGANTrainer:
         if self._in_optimizer_pair:
             raise RuntimeFailure("refusing to checkpoint between the generator step and the discriminator step")
         if event in ("step", "partial"):
-            checkpoint.offer(
+            self.lifecycle.save_if_needed(
                 event,
                 logical_step=self.logical_step,
                 metrics=metrics if event == "step" else None,
@@ -920,7 +933,7 @@ class MossFormerGANTrainer:
             )
             return
         self._sync_ranks(runtime)
-        checkpoint.offer(event, logical_step=self.logical_step, metrics=metrics)
+        self.lifecycle.save_if_needed(event, logical_step=self.logical_step, metrics=metrics)
 
     def _sync_ranks(self, runtime: ProcessRuntime) -> None:
         # BatchNorm stats diverge after a local forward. The next DDP forward
@@ -956,9 +969,9 @@ class MossFormerGANTrainer:
 
             extra = final_research_metrics(self, checkpoint)
             if extra:
-                checkpoint.offer("final", logical_step=self.logical_step, metrics=extra, prepare=self._sync_ranks)
+                self.lifecycle.save_if_needed("final", logical_step=self.logical_step, metrics=extra, prepare=self._sync_ranks)
             else:
-                checkpoint.offer("final", logical_step=self.logical_step, prepare=self._sync_ranks)
+                self.lifecycle.save_if_needed("final", logical_step=self.logical_step, prepare=self._sync_ranks)
         if self.halt_reason in {"initialized", "running"}:
             self.halt_reason = reason
         if reason == "completed" and should_stop(self):
