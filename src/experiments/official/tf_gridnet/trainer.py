@@ -26,10 +26,7 @@ from __future__ import annotations
 
 from src.experiments.stopping import observe_validation, should_stop
 
-import json
 import math
-import os
-import re
 from pathlib import Path
 from typing import Any
 
@@ -39,6 +36,7 @@ from src.experiments.checkpoint import CheckpointManager
 from src.experiments.data import Batch
 from src.experiments.data.pair import bind_trainer_data
 from src.experiments.errors import BuildError, RuntimeFailure
+from src.experiments.official.tf_gridnet.artifacts import write_nbest
 from src.experiments.training.objectives import call_objective, coerce_spectral_objective, term_floats
 from src.experiments.execution.journal import StepJournal
 from src.experiments.results import RunResult
@@ -47,10 +45,8 @@ from src.experiments.trainers import (
     _close_epoch_view,
     _rank,
 )
-from src.experiments.calc.average import average_checkpoint_files, remove_symlink, replace_symlink
 from src.experiments.calc.rng import capture_rank_rng, restore_rank_rng
 
-_EPOCH_FILE = re.compile(r"^(\d+)epoch\.pt$")
 _PENDING = "pending_validation"
 _IN_EPOCH = "in_epoch"
 
@@ -162,7 +158,7 @@ class TFGridNetTrainer:
         if stop_after_logical_steps is not None:
             stop_after_logical_steps = _positive_int("stop_after_logical_steps", stop_after_logical_steps)
         self.stop_after_logical_steps = stop_after_logical_steps
-        self._step_io: tuple[Any, ...] | None = None
+        self._step_io: dict[str, Any] | None = None
         self.logical_step = 0
         self.optimizer_updates = {optimizer_id: 0}
         self.losses: list[float] = []
@@ -193,34 +189,7 @@ class TFGridNetTrainer:
         self.lifecycle.start()
         runtime = self.runtime
         checkpoint = self.lifecycle.checkpoint
-
-        self.research.rewind(
-            checkpoint.directory,
-            restored=self._restored,
-            phase=self.phase,
-            progress={"logical_step": int(self.logical_step)},
-        )
-        component_id = getattr(self, "_experiment_component_id", "trainer")
-        self.journal = StepJournal(checkpoint.directory, runtime)
-        if self._restored and (not hasattr(self.data, "epoch") or not hasattr(self.data, "update_index")):
-            raise RuntimeFailure("resumed data has no epoch position")
-        self.losses = self.journal.begin(restored=self._restored, logical_step=self.logical_step)
-        if not self._restored:
-            self.logical_step = 0
-            self.optimizer_updates = {self.optimizer_id: 0}
-            self.losses = []
-            self.learning_rates = []
-            self.history = []
-            self.completed_boundaries = []
-            self.boundary = None
-            self.phase = _IN_EPOCH
-            self.finished_epoch = None
-            self.early_stopped = False
-            self.data.epoch = 0
-            self.data.update_index = 0
-        bind_trainer_data(self)
-        self._require_group_size(component_id)
-        runtime.barrier()
+        component_id = self._prepare_run(runtime, checkpoint)
         if should_stop(self):
             return self._result(checkpoint, "completed")
         if self._restored and len(self.learning_rates) != self.logical_step:
@@ -242,28 +211,8 @@ class TFGridNetTrainer:
             if self._epoch_cap_reached():
                 self._drain_step_io(checkpoint)
                 return self._result(checkpoint, "completed")
-            epoch = int(self.data.epoch)
-            index = int(self.data.update_index)
-            view = self.data.train_epoch(epoch, start_update=index)
+            epoch, index, view, planned = self._open_window(component_id)
             try:
-                if view.updates < 1:
-                    raise RuntimeFailure(f"component {component_id}: epoch {epoch} has no micro-batches")
-                if index > view.updates:
-                    raise RuntimeFailure(
-                        f"component {component_id}: update {index} is past epoch {epoch}"
-                    )
-                if index == view.updates:
-                    raise RuntimeFailure(
-                        f"component {component_id}: epoch {epoch} is exhausted without a pending boundary"
-                    )
-                if index + self.accumulation > view.updates:
-                    raise RuntimeFailure(
-                        f"component {component_id}: accumulation {self.accumulation} "
-                        f"does not fit at update {index}"
-                    )
-                planned: list[list[Batch]] = []
-                for offset in range(self.accumulation):
-                    planned.append(view.batch(index + offset))
                 self._drain_step_io(checkpoint)
                 self.model.train()
                 self.optimizer.zero_grad(set_to_none=True)
@@ -313,16 +262,16 @@ class TFGridNetTrainer:
                         logical_step=self.logical_step,
                         stopping=getattr(self, "training_control", None),
                     )
-                self._step_io = (
-                    loss_value,
-                    result.applied,
-                    sample_id,
-                    learning_rate,
-                    epoch,
-                    self.logical_step,
-                    not epoch_done,
-                    term_acc,
-                    step_metrics,
+                self._queue_step(
+                    loss=loss_value,
+                    applied=result.applied,
+                    sample_id=sample_id,
+                    learning_rate=learning_rate,
+                    epoch=epoch,
+                    logical_step=self.logical_step,
+                    offer_step=not epoch_done,
+                    terms=term_acc,
+                    step_metrics=step_metrics,
                 )
                 if not epoch_done:
                     continue
@@ -505,7 +454,7 @@ class TFGridNetTrainer:
         error: str | None = None
         if _rank(runtime) == 0:
             try:
-                _write_nbest(
+                write_nbest(
                     directory,
                     self.model.unwrapped().export_for_inference(),
                     espnet_epoch,
@@ -598,6 +547,70 @@ class TFGridNetTrainer:
             )
         )
 
+    def _prepare_run(self, runtime: ProcessRuntime, checkpoint: CheckpointManager) -> str:
+        """Rewind logs and counters. Does not run an optimizer update."""
+
+        self.research.rewind(
+            checkpoint.directory,
+            restored=self._restored,
+            phase=self.phase,
+            progress={"logical_step": int(self.logical_step)},
+        )
+        component_id = getattr(self, "_experiment_component_id", "trainer")
+        self.journal = StepJournal(checkpoint.directory, runtime)
+        if self._restored and (not hasattr(self.data, "epoch") or not hasattr(self.data, "update_index")):
+            raise RuntimeFailure("resumed data has no epoch position")
+        self.losses = self.journal.begin(restored=self._restored, logical_step=self.logical_step)
+        if not self._restored:
+            self.logical_step = 0
+            self.optimizer_updates = {self.optimizer_id: 0}
+            self.losses = []
+            self.learning_rates = []
+            self.history = []
+            self.completed_boundaries = []
+            self.boundary = None
+            self.phase = _IN_EPOCH
+            self.finished_epoch = None
+            self.early_stopped = False
+            self.data.epoch = 0
+            self.data.update_index = 0
+        bind_trainer_data(self)
+        self._require_group_size(component_id)
+        runtime.barrier()
+        return str(component_id)
+
+    def _open_window(
+        self,
+        component_id: str,
+    ) -> tuple[int, int, Any, list[list[Batch]]]:
+        """Check the epoch cursor and take the next accumulation window."""
+
+        epoch = int(self.data.epoch)
+        index = int(self.data.update_index)
+        view = self.data.train_epoch(epoch, start_update=index)
+        try:
+            if view.updates < 1:
+                raise RuntimeFailure(f"component {component_id}: epoch {epoch} has no micro-batches")
+            if index > view.updates:
+                raise RuntimeFailure(f"component {component_id}: update {index} is past epoch {epoch}")
+            if index == view.updates:
+                raise RuntimeFailure(
+                    f"component {component_id}: epoch {epoch} is exhausted without a pending boundary"
+                )
+            if index + self.accumulation > view.updates:
+                raise RuntimeFailure(
+                    f"component {component_id}: accumulation {self.accumulation} "
+                    f"does not fit at update {index}"
+                )
+            planned = [view.batch(index + offset) for offset in range(self.accumulation)]
+        except Exception:
+            _close_epoch_view(view)
+            raise
+        return epoch, index, view, planned
+
+    def _queue_step(self, **record: Any) -> None:
+        self._step_io = record
+
     def _drain_step_io(self, checkpoint: CheckpointManager) -> None:
         """Write the previous step while the next forward is already queued."""
 
@@ -605,7 +618,15 @@ class TFGridNetTrainer:
         if item is None:
             return
         self._step_io = None
-        loss_value, applied, sample_id, learning_rate, epoch, logical_step, offer_step, terms, step_metrics = item
+        loss_value = item["loss"]
+        applied = item["applied"]
+        sample_id = item["sample_id"]
+        learning_rate = item["learning_rate"]
+        epoch = item["epoch"]
+        logical_step = item["logical_step"]
+        offer_step = item["offer_step"]
+        terms = item["terms"]
+        step_metrics = item["step_metrics"]
         self.journal.write_metrics(
             {
                 "applied": applied,
@@ -646,77 +667,6 @@ def _open_boundary(trainer_epoch: int) -> dict[str, Any]:
         "validation_loss": None,
         "validation_weight": None,
     }
-
-
-def _write_nbest(
-    directory: Path,
-    exported: dict[str, torch.Tensor],
-    espnet_epoch: int,
-    ranked: list[dict[str, Any]],
-    keep: int,
-    logical_step: int,
-) -> None:
-    """Write the epoch export and the valid.loss n-best files. Rank 0 only."""
-
-    if not ranked:
-        raise RuntimeFailure("n-best selection received an empty history")
-    _save_state(directory / f"{espnet_epoch}epoch.pt", exported)
-    best = ranked[0]
-    if int(best["epoch"]) == int(espnet_epoch):
-        _save_state(directory / "valid.loss.best.pt", exported)
-        _write_json(
-            directory / "valid.loss.best.pt.json",
-            {
-                "epoch": int(espnet_epoch),
-                "global_step": int(logical_step),
-                "metric": "loss",
-                "value": float(best["loss"]),
-            },
-        )
-    kept = {int(row["epoch"]) for row in ranked}
-    for path in directory.glob("*epoch.pt"):
-        match = _EPOCH_FILE.match(path.name)
-        if match and int(match.group(1)) not in kept:
-            path.unlink()
-    best_name = f"{int(best['epoch'])}epoch.pt"
-    if keep > 1 and len(ranked) >= keep:
-        epochs = [int(row["epoch"]) for row in ranked]
-        averaged = average_checkpoint_files([directory / f"{epoch}epoch.pt" for epoch in epochs])
-        average_name = f"valid.loss.ave_{keep}best.pt"
-        average_path = directory / average_name
-        _save_state(average_path, averaged)
-        _write_json(
-            directory / f"{average_name}.json",
-            {
-                "average": "espnet_nbest_float_mean_int_sum",
-                "criterion": "valid.loss.min",
-                "epochs": epochs,
-                "files": [f"{epoch}epoch.pt" for epoch in epochs],
-                "global_step": int(logical_step),
-                "metric": "loss",
-                "values": [float(row["loss"]) for row in ranked],
-            },
-        )
-        replace_symlink(directory / "valid.loss.ave.pt", average_name)
-        # Left from the epochs before n-best existed. Its epoch file may be gone by now.
-        remove_symlink(directory / "valid.loss.ave_1best.pt")
-        return
-    replace_symlink(directory / "valid.loss.ave_1best.pt", best_name)
-    replace_symlink(directory / "valid.loss.ave.pt", "valid.loss.ave_1best.pt")
-
-
-def _save_state(path: Path, state: dict[str, torch.Tensor]) -> None:
-    temporary = path.with_name(f".{path.name}.tmp")
-    try:
-        torch.save(state, temporary)
-        os.replace(temporary, path)
-    except Exception:
-        temporary.unlink(missing_ok=True)
-        raise
-
-
-def _write_json(path: Path, payload: dict[str, Any]) -> None:
-    path.write_text(json.dumps(payload, sort_keys=True) + "\n", encoding="utf-8")
 
 
 def _positive_int(name: str, value: object) -> int:

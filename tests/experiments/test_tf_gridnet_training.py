@@ -29,9 +29,9 @@ from src.experiments.errors import BuildError, RuntimeFailure
 from src.experiments.losses import OFFICIAL_WINDOWS, MultiResolutionL1Loss
 from src.experiments.official.tf_gridnet.model import TFGridNetModel
 from src.experiments.runtime import PreparedModel, ProcessRuntime
+from src.experiments.official.tf_gridnet.artifacts import write_nbest
 from src.experiments.official.tf_gridnet.trainer import (
     TFGridNetTrainer,
-    _write_nbest,
     early_stop,
     rank_validation_loss,
     weighted_validation_loss,
@@ -319,11 +319,11 @@ class TFGridNetConnectionTests(unittest.TestCase):
         directory.mkdir()
         first = {"separator.count": torch.tensor(3), "separator.weight": torch.ones(2)}
         second = {"separator.count": torch.tensor(4), "separator.weight": torch.ones(2) * 3}
-        _write_nbest(directory, first, 1, [{"epoch": 1, "loss": 2.0}], 2, 1)
+        write_nbest(directory, first, 1, [{"epoch": 1, "loss": 2.0}], 2, 1)
         self.assertTrue((directory / "valid.loss.ave_1best.pt").is_symlink())
         self.assertEqual(os.readlink(directory / "valid.loss.ave.pt"), "valid.loss.ave_1best.pt")
         self.assertFalse((directory / "valid.loss.ave_2best.pt").exists())
-        _write_nbest(
+        write_nbest(
             directory,
             second,
             2,
@@ -342,7 +342,7 @@ class TFGridNetConnectionTests(unittest.TestCase):
         # The link from epoch 1 is not left pointing at an epoch that is no longer the best.
         self.assertFalse((directory / "valid.loss.ave_1best.pt").is_symlink())
         third = {"separator.count": torch.tensor(5), "separator.weight": torch.ones(2) * 5}
-        _write_nbest(
+        write_nbest(
             directory,
             third,
             3,
