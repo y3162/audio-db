@@ -14,6 +14,7 @@
 - 保存前に rank 間の parameter、buffer、optimizer、scheduler、trainer、data、Selector の決定と状態を比べる。不一致なら書かない。
 - 保存点は完了した logical step の境界と、Trainer が安全と宣言した点だけ。GAN の optimizer 対の途中では書かない。
 - 停止ポリシーは Selector と独立し、指標を評価しない。Trainer は境界処理後に指標を配送し、停止状態を更新してから保存点を offer する。停止設定は実験同一性に含み、状態を全 rank で照合して再開する。
+- 研究用の評価とモデル選択は、公式の検証・scheduler・公式の推論用重みのあとで動く。指標の計算、集約、選択判定は Python が行い、YAML は指標、データ、タイミング、選択基準を宣言する。公式の検証式と推論用ファイルは置き換えない。`official_faithful` と `official_reproduction` は研究用の metric、evaluator、selection を拒否する。仕様は `docs/experiments/EVALUATION.md`。
 - 再開は同じ実験の厳密な続きである。`config_sha256` は `output`、`checkpoint`、`stop_after_logical_steps` を除いた設定の SHA-256 で、違う設定、違う出力ディレクトリ、違う world size を拒否する。`initialize` と `publication` は書かれているときだけハッシュに入る。無い文書は以前と同じハッシュになる。Latest より前の Archive から続けることも拒否する。古い状態から始めるのは、`initialize` を使う別の実験である。
 - `initialize` は module、optimizer、scheduler の状態だけを読み、元の実験のファイルを変更しない。データ位置、Trainer の履歴、RNG は引き継がない。
 - 再開は現行の設定ハッシュだけを受ける。Selector のクラス ID と設定はハッシュとは別に照合し、停止ポリシーもクラス ID と状態を照合する。旧設定世代のハッシュを再開時に受け入れない。

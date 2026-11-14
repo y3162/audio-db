@@ -69,6 +69,8 @@ Selector は、引数、復元した状態、差し出された点だけから�
 | `PeriodicArchiveSelector` | Latest の規則は同じ。加えて `archive_every` step ごとの Archive。`latest_every` を省くと 1 のまま | `archive_every`、`keep_last`（省略は全部残す）、`name`（既定 `step_{step:08d}.pt`）、`latest_every`（既定 1） |
 | `TopKSelector` | Latest の規則は同じ。加えて境界の指標が良い順に `k` 個の Archive。`latest_every` を省くと 1 のまま | `metric`、`mode`（`min` / `max`）、`k`、`name`（既定 `best_{step:08d}.pt`）、`latest_every`（既定 1） |
 
+`TopKSelector` の `metric` が `loss` や `pesq` のように名前空間を持たないときは、順位付けは境界だけである。`validation.wer` のように `.` を含む名前は、そのキーが付いた step と final も順位付けする。研究用の `research_selection/best.pt` は checkpoint ではなく、Latest や Archive からの再開には使わない。
+
 YAML は Selector とその設定だけを書く。Trainer に `checkpoint_interval` は無い。
 
 ```yaml

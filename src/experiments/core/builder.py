@@ -30,9 +30,16 @@ _STAGE = {
     "stopping": 0,
     "optimizer": 1,
     "scheduler": 1,
+    "evaluator": 1,
     "trainer": 2,
 }
-_SAVE_ROLES = frozenset({"module", "optimizer", "scheduler", "trainer", "data", "stopping"})
+_SAVE_ROLES = frozenset({"module", "optimizer", "scheduler", "trainer", "data", "stopping", "evaluator"})
+_RESEARCH_ROLES = frozenset({"evaluator"})
+_RESEARCH_PREFIXES = (
+    "src.experiments.evaluation.",
+    "src.experiments.metrics.",
+    "src.experiments.selection.",
+)
 
 
 @dataclass
@@ -82,6 +89,7 @@ class ExperimentBuilder:
             bind_trainer_data(trainer)
         except (DataError, RuntimeFailure) as exc:
             raise BuildError(f"component {config.entry}: {exc}") from exc
+        _reject_research_claim(config, registry, trainer)
         stops = [i for i, spec in config.components.items() if spec.role == "stopping" and spec.ref is None]
         if stops:
             from src.experiments.stopping import TrainingControl
@@ -103,7 +111,7 @@ class ExperimentBuilder:
             if policy_identity(policy) != config.components[stops[0]].class_path:
                 raise BuildError("stopping checkpoint_class_id must equal its public class path")
             try:
-                sources = getattr(trainer, "training_metric_sources", ("validation",))
+                sources = _supported_sources(trainer)
                 names = getattr(trainer, "training_metric_names", None)
                 metric = getattr(policy, "metric", None)
                 if names is not None and isinstance(metric, str) and metric not in names:
@@ -115,6 +123,11 @@ class ExperimentBuilder:
         return BuiltGraph(components=registry, states=states, trainer=trainer, runtime=runtime)
 
     def _validate(self, config: ExperimentConfig) -> None:
+        for component_id, spec in config.components.items():
+            if spec.ref is None and spec.role == "metric" and spec.save_state is True:
+                raise BuildError(f"component {component_id}: a metric does not save state")
+        if _research_ids(config) and config.components[config.entry].kwargs.get("experiment_claim") == "official_faithful":
+            raise BuildError("research evaluation and model selection are incompatible with official_faithful")
         stops = [spec for spec in config.components.values() if spec.role == "stopping" and spec.ref is None]
         if len(stops) > 1:
             raise BuildError("only one stopping policy is supported")
@@ -347,6 +360,67 @@ class ExperimentBuilder:
             states.register(ComponentState(component_id, spec.role, target))
         states.register(RuntimeState(runtime))
         return states
+
+
+def _research_ids(config: ExperimentConfig) -> list[str]:
+    found: list[str] = []
+    for component_id, spec in config.components.items():
+        if spec.ref is not None or spec.role is None:
+            continue
+        path = spec.class_path or ""
+        if spec.role in _RESEARCH_ROLES or path.startswith(_RESEARCH_PREFIXES):
+            found.append(component_id)
+    return found
+
+
+def _reject_research_claim(config: ExperimentConfig, registry: ComponentRegistry, trainer: object) -> None:
+    """Refuse to present a research metric, evaluator, or selection as official reproduction."""
+
+    research = _research_ids(config)
+    attached = bool(getattr(trainer, "evaluators", None)) or getattr(trainer, "model_selection", None) is not None
+    if not research and not attached:
+        return
+    if getattr(trainer, "experiment_claim", None) == "official_faithful":
+        raise BuildError("research evaluation and model selection are incompatible with official_faithful")
+    for component_id, spec in config.components.items():
+        if spec.role != "data" or spec.ref is not None:
+            continue
+        lineage = getattr(registry.get(component_id), "lineage", None)
+        if not callable(lineage):
+            continue
+        details = lineage()
+        if isinstance(details, dict) and details.get("claim_label") == "official_reproduction":
+            raise BuildError("research evaluation and model selection are incompatible with official_reproduction")
+    selection = getattr(trainer, "model_selection", None)
+    if selection is None:
+        return
+    from src.experiments.core.identity import policy_identity
+
+    matched = False
+    for component_id, spec in config.components.items():
+        if spec.ref is not None or registry.get(component_id) is not selection:
+            continue
+        matched = True
+        if spec.save_state is not True:
+            raise BuildError(f"component {component_id}: model selection must set state.save: true")
+        if policy_identity(selection) != spec.class_path:
+            raise BuildError("model selection checkpoint_class_id must equal its public class path")
+    if not matched:
+        raise BuildError("model selection is not a registered component")
+
+
+def _supported_sources(trainer: object) -> tuple[str, ...]:
+    sources = getattr(trainer, "training_metric_sources", ("validation",))
+    if isinstance(sources, str) or not isinstance(sources, tuple):
+        sources = tuple(sources)
+    extra: list[str] = []
+    for evaluator in getattr(trainer, "evaluators", ()) or ():
+        source = getattr(evaluator, "source", None)
+        if source in {"train", "train_eval", "validation"} and source not in sources and source not in extra:
+            extra.append(source)
+    if not extra:
+        return tuple(sources)
+    return tuple(sources) + tuple(extra)
 
 
 def _should_save(spec: ComponentConfig) -> bool:

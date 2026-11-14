@@ -116,6 +116,8 @@ class TFLocoformerTrainer:
         early_stopping_patience: int | None = None,
         stop_after_logical_steps: int | None = None,
         validation_profile: str = RESEARCH_VALIDATION_PROFILE,
+        evaluators: Any | None = None,
+        model_selection: Any | None = None,
     ) -> None:
         if not isinstance(model, PreparedModel):
             raise BuildError("model must be a prepared module handle")
@@ -167,12 +169,20 @@ class TFLocoformerTrainer:
         self.finished_epoch: int | None = None
         self.early_stopped = False
         self.stop_reason = "initialized"
+        from src.experiments.evaluation.boundary import attach_research
+
+        attach_research(self, evaluators, model_selection)
         self._restored = False
         self._step_io: tuple[Any, ...] | None = None
 
     def run(self, runtime: ProcessRuntime, checkpoint: CheckpointManager) -> RunResult:
         """Train until the step budget, an epoch cap, or early stopping."""
 
+        from src.experiments.evaluation.boundary import research_attached, rewind_on_resume
+
+        if research_attached(self):
+            self._research_runtime = runtime
+        rewind_on_resume(self, checkpoint.directory)
         component_id = getattr(self, "_experiment_component_id", "trainer")
         rank = _rank(runtime)
         metrics_path = Path(checkpoint.directory) / "metrics.jsonl"
@@ -303,6 +313,11 @@ class TFLocoformerTrainer:
                 self.data.update_index = index
                 sample_id = ",".join(sample_ids)
                 epoch_done = index == view.updates
+                step_metrics: dict[str, float] = {}
+                if not epoch_done and research_attached(self):
+                    from src.experiments.evaluation.boundary import research_metrics
+
+                    step_metrics = research_metrics(self, runtime, checkpoint, kind="step", epoch=epoch)
                 self._step_io = (
                     loss_value,
                     result.applied,
@@ -314,6 +329,7 @@ class TFLocoformerTrainer:
                     self.logical_step,
                     not epoch_done,
                     term_acc,
+                    step_metrics,
                 )
                 if not epoch_done:
                     continue
@@ -442,11 +458,17 @@ class TFLocoformerTrainer:
             and early_stop(self.history, espnet_epoch, self.early_stopping_patience)
         ):
             self.early_stopped = True
-        observe_validation(self, runtime, {"loss": float(summary["loss"]), "si_snr": float(summary["si_snr"])})
+        official = {"loss": float(summary["loss"]), "si_snr": float(summary["si_snr"])}
+        observe_validation(self, runtime, official)
+        from src.experiments.evaluation.boundary import research_metrics
+
+        extra = research_metrics(
+            self, runtime, checkpoint, kind="boundary", epoch=trainer_epoch, official=official
+        )
         checkpoint.offer(
             "boundary",
             logical_step=self.logical_step,
-            metrics={"loss": float(summary["loss"]), "si_snr": float(summary["si_snr"])},
+            metrics={**official, **extra} if extra else official,
         )
 
     def _validate(self, runtime: ProcessRuntime, trainer_epoch: int, component_id: str) -> dict[str, float | int]:
@@ -605,7 +627,13 @@ class TFLocoformerTrainer:
 
     def _result(self, checkpoint: CheckpointManager, reason: str) -> RunResult:
         if reason == "completed":
-            checkpoint.offer("final", logical_step=self.logical_step)
+            from src.experiments.evaluation.boundary import final_research_metrics
+
+            extra = final_research_metrics(self, checkpoint)
+            if extra:
+                checkpoint.offer("final", logical_step=self.logical_step, metrics=extra)
+            else:
+                checkpoint.offer("final", logical_step=self.logical_step)
         self.stop_reason = reason
         if reason == "completed" and should_stop(self):
             reason = "early_stopping"
@@ -640,6 +668,7 @@ class TFLocoformerTrainer:
             logical_step,
             offer_step,
             terms,
+            step_metrics,
         ) = item
         if rank == 0:
             record = {
@@ -671,7 +700,10 @@ class TFLocoformerTrainer:
                 },
             )
         if offer_step:
-            checkpoint.offer("step", logical_step=logical_step)
+            if step_metrics:
+                checkpoint.offer("step", logical_step=logical_step, metrics=step_metrics)
+            else:
+                checkpoint.offer("step", logical_step=logical_step)
 
 
 def _open_boundary(trainer_epoch: int, *, warmup_updated: bool) -> dict[str, Any]:

@@ -7,7 +7,7 @@
 | 種類 | 置き場 | 書くこと |
 |---|---|---|
 | エージェントが守る不変条件 | このファイルと `.agents/` | 変えてはいけない条件と、読む先。仕様の本文、状態、履歴は書かない |
-| 現行の仕様 | `docs/`（`experiments/CHECKPOINT.md`、`experiments/LAUNCHER.md`、`evaluation/PIPELINE.md`、`db/RECIPE.md`、`db/REPRODUCTION_DB_DESIGN.md` など） | いまのコードの振る舞い。未実装は未実装と書く |
+| 現行の仕様 | `docs/`（`experiments/CHECKPOINT.md`、`experiments/EVALUATION.md`、`experiments/LAUNCHER.md`、`evaluation/PIPELINE.md`、`db/RECIPE.md`、`db/REPRODUCTION_DB_DESIGN.md` など） | いまのコードの振る舞い。未実装は未実装と書く |
 | 運用手順 | `README.md`、`docs/experiments/RUN.md`、`docs/TESTING.md`、`docs/envs/`、`docs/db/SETUP.md`、`docs/CHEATSHEET.md` | コマンドと手順 |
 | 日付つきの記録 | `docs/db/INVENTORY.md`、`docs/se/VALIDATION.md` | 測定値、ファイルの配置、構築の記録 |
 
@@ -44,6 +44,7 @@
 | 依存方向、損失の順序、checkpoint | `.agents/ARCHITECTURE.md` |
 | DB、コーパス、評価セット、欠損の扱い | `.agents/DATA.md` |
 | 環境、GPU、学習の起動、テスト、公式コード | `.agents/OPERATIONS.md` |
+| 学習中の研究評価とモデル選択 | `.agents/ARCHITECTURE.md`、`docs/experiments/EVALUATION.md` |
 
 DB・評価・音声生成・データ形式に触れる前は `.agents/DATA.md` を読む。学習の式、checkpoint、Trainer を変える前は `.agents/ARCHITECTURE.md` を読む。仕様の本文は、各ファイルが指す `docs/` を読む。
 

@@ -192,8 +192,15 @@ class TrainingControl:
 
 def observe_validation(trainer: object, runtime: object, metrics: Mapping[str, float]) -> None:
     control = getattr(trainer, "training_control", None)
-    if control is not None:
-        control.observe(MetricEvent("validation", trainer.logical_step, metrics))
+    if control is None:
+        return
+    # Research events carry their own expected names. Scope the official event
+    # the same way so a policy watching only a research metric does not reject
+    # this payload, and a policy watching the official metric still counts it.
+    expected = None
+    if getattr(trainer, "evaluators", None) or getattr(trainer, "model_selection", None) is not None:
+        expected = frozenset(str(key) for key in metrics)
+    control.observe(MetricEvent("validation", trainer.logical_step, metrics, expected_metrics=expected))
 
 
 def should_stop(trainer: object) -> bool:

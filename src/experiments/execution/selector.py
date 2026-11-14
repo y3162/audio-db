@@ -197,7 +197,11 @@ class TopKSelector(StandardSelector):
 
     def decide(self, point: SavePoint) -> Decision:
         latest = self.wants_latest(point)
-        if point.event != "boundary" or self.metric not in point.metrics:
+        # A bare name such as ``loss`` stays on the official boundary. A
+        # namespaced name such as ``validation.wer`` is also ranked when the
+        # research evaluator attached it to a finished step or to completion.
+        ranked = point.event == "boundary" or ("." in self.metric and point.event in {"step", "final"})
+        if not ranked or self.metric not in point.metrics:
             return Decision(latest=latest)
         value = float(point.metrics[self.metric])
         if not math.isfinite(value):

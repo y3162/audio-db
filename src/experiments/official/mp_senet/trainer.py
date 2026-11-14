@@ -96,6 +96,8 @@ class MPSENetGANTrainer:
         best_checkpoint_start_epoch: int = BEST_CHECKPOINT_START_EPOCH,
         max_epochs: int | None = None,
         stop_after_logical_steps: int | None = None,
+        evaluators: Any | None = None,
+        model_selection: Any | None = None,
     ) -> None:
         if not isinstance(generator, PreparedModel) or not isinstance(generator.state_module, MPSENetGANGenerator):
             raise BuildError("generator must be a prepared MPSENetGANGenerator")
@@ -162,6 +164,9 @@ class MPSENetGANTrainer:
         self.best_epoch: int | None = None
         self.best_logical_step: int | None = None
         self.stop_reason = "initialized"
+        from src.experiments.evaluation.boundary import attach_research
+
+        attach_research(self, evaluators, model_selection)
         self._restored = False
         self._in_official_step = False
         self._shadow = None
@@ -171,6 +176,11 @@ class MPSENetGANTrainer:
     def run(self, runtime: ProcessRuntime, checkpoint: CheckpointManager) -> RunResult:
         """Train until the step budget, an epoch cap, or an interrupt."""
 
+        from src.experiments.evaluation.boundary import research_attached, rewind_on_resume
+
+        if research_attached(self):
+            self._research_runtime = runtime
+        rewind_on_resume(self, checkpoint.directory)
         self._refuse_amp(runtime)
         component_id = getattr(self, "_experiment_component_id", "trainer")
         rank = _rank(runtime)
@@ -279,8 +289,13 @@ class MPSENetGANTrainer:
                 epoch_done = index == view.updates
                 will_validate = self.validation_interval > 0 and self.logical_step % self.validation_interval == 0
                 offer_step = not will_validate and not epoch_done
+                step_metrics: dict[str, float] = {}
+                if offer_step and research_attached(self):
+                    from src.experiments.evaluation.boundary import research_metrics
+
+                    step_metrics = research_metrics(self, runtime, checkpoint, kind="step", epoch=epoch)
                 if runtime.device.type == "cuda" and runtime.world_size == 1:
-                    self._mp_io = (entry, local, metrics_path, sample_path, rank, offer_step, checkpoint)
+                    self._mp_io = (entry, local, metrics_path, sample_path, rank, offer_step, checkpoint, step_metrics)
                     if offer_step:
                         continue
                     self._drain_mp_io()
@@ -290,7 +305,10 @@ class MPSENetGANTrainer:
                     if sample_path is not None:
                         _append_jsonl(sample_path, {**local, "logical_step": self.logical_step, "loss": local["generator"]})
                     if offer_step:
-                        self._offer(checkpoint, "step")
+                        if step_metrics:
+                            self._offer(checkpoint, "step", metrics=step_metrics)
+                        else:
+                            self._offer(checkpoint, "step")
                         continue
                 self.phase = _PENDING
                 self.boundary = _open_boundary(epoch, validate=will_validate, epoch_done=epoch_done)
@@ -315,13 +333,16 @@ class MPSENetGANTrainer:
         if item is None:
             return
         self._mp_io = None
-        entry, local, metrics_path, sample_path, rank, offer_step, checkpoint = item
+        entry, local, metrics_path, sample_path, rank, offer_step, checkpoint, step_metrics = item
         if rank == 0:
             _append_jsonl(metrics_path, entry)
         if sample_path is not None:
             _append_jsonl(sample_path, {**local, "logical_step": entry["logical_step"], "loss": local["generator"]})
         if offer_step:
-            self._offer(checkpoint, "step")
+            if step_metrics:
+                self._offer(checkpoint, "step", metrics=step_metrics)
+            else:
+                self._offer(checkpoint, "step")
 
     def _cuda_overlapped_step(self, batch: Batch, runtime: ProcessRuntime) -> dict[str, float]:
         """PESQ runs while the signal backward uses the same generator graph.
@@ -668,7 +689,17 @@ class MPSENetGANTrainer:
         self._on_boundary_phase(self.phase)
         if boundary["validate"]:
             observe_validation(self, runtime, metrics)
-        self._offer(checkpoint, "boundary", metrics=metrics)
+        from src.experiments.evaluation.boundary import research_metrics
+
+        extra = research_metrics(
+            self,
+            runtime,
+            checkpoint,
+            kind="boundary",
+            epoch=trainer_epoch,
+            official=metrics if boundary["validate"] else {},
+        )
+        self._offer(checkpoint, "boundary", metrics={**metrics, **extra} if extra else metrics)
 
     def _validate(self, runtime: ProcessRuntime, trainer_epoch: int, component_id: str) -> dict[str, Any]:
         cursor = (int(self.data.epoch), int(self.data.update_index))
@@ -851,7 +882,13 @@ class MPSENetGANTrainer:
 
     def _result(self, checkpoint: CheckpointManager, reason: str) -> RunResult:
         if reason == "completed":
-            checkpoint.offer("final", logical_step=self.logical_step)
+            from src.experiments.evaluation.boundary import final_research_metrics
+
+            extra = final_research_metrics(self, checkpoint)
+            if extra:
+                checkpoint.offer("final", logical_step=self.logical_step, metrics=extra)
+            else:
+                checkpoint.offer("final", logical_step=self.logical_step)
         self.stop_reason = reason
         if reason == "completed" and should_stop(self):
             reason = "early_stopping"

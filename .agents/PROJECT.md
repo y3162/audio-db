@@ -15,6 +15,9 @@
 | `src/experiments/execution/` | CPU/GPU/DDP、checkpoint（Latest / Archive）、Selector、再開、中断、来歴、実行状態、プロファイリング | `runtime` と `checkpoint` |
 | `src/experiments/training/` | 共通の Trainer、Loss Term、加重 Objective。モデル固有の公式 Trainer は持たない | YAML の `class` |
 | `src/experiments/stopping.py` | 指標イベント、独立した停止判定、Trainer と rank 間の制御 | YAML の `stopping` component |
+| `src/experiments/metrics/` | 研究用の指標。Loss、SI-SDR、PESQ、STOI、ESTOI、WER。計算だけを行い、停止も保存もしない | YAML の `metric` |
+| `src/experiments/evaluation/` | 研究用の波形評価。学習カーソル、重み、Optimizer を動かさない | YAML の `evaluator` |
+| `src/experiments/selection/` | 研究用の best 判定。推論重みの書き出しは判定の外 | YAML の `other` と `state.save: true` |
 | `src/experiments/data/` | 再現用 DB、スナップショット、サンプリング、オンデマンド描画。学習ループは持たない | `python -m src.experiments.data.cli` |
 | `src/experiments/official/` | 6 モデルの公式 Model、Trainer、参照ステップ。他の実験から個別に import する | YAML の `class` |
 | `src/experiments/calc/` | 手法を共有する STFT、スペクトル損失、scheduler、RNG。CLI ではない | テストと Trainer が呼ぶ |

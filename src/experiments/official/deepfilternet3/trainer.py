@@ -109,7 +109,12 @@ def component_losses(
                 f"local SNR length {predicted.shape[-1]} does not match the 20 ms target {target.shape[-1]}"
             )
         local = F.mse_loss(predicted, target) * _LSNR
-        return {"local_snr": local, "spectral": spectral, "total": spectral + local}
+        return {
+            "enhanced_wave": enhanced_wave.detach(),
+            "local_snr": local,
+            "spectral": spectral,
+            "total": spectral + local,
+        }
     from src.experiments.training.objectives import ObjectiveOutput, call_objective
 
     try:
@@ -132,7 +137,7 @@ def component_losses(
         raise
     except ValueError as exc:
         raise TrainingError(str(exc)) from exc
-    reported = {"total": result.total}
+    reported = {"enhanced_wave": enhanced_wave.detach(), "total": result.total}
     for name, value, weight in result.records:
         reported[name] = apply_weight(value, weight)
     return reported
@@ -200,6 +205,8 @@ class DeepFilterNet3Trainer:
         batch_schedule: list[list[int]] | None = None,
         batch_size_limit: int = 64,
         stop_after_logical_steps: int | None = None,
+        evaluators: Any | None = None,
+        model_selection: Any | None = None,
     ) -> None:
         if not isinstance(model, PreparedModel):
             raise BuildError("model must be a prepared module handle")
@@ -251,10 +258,18 @@ class DeepFilterNet3Trainer:
         self.finished_epoch: int | None = None
         self.boundary: dict[str, Any] | None = None
         self.stop_reason = "initialized"
+        from src.experiments.evaluation.boundary import attach_research
+
+        attach_research(self, evaluators, model_selection)
         self._restored = False
         self._stream: DFStream | None = None
 
     def run(self, runtime: ProcessRuntime, checkpoint: CheckpointManager) -> RunResult:
+        from src.experiments.evaluation.boundary import research_attached, rewind_on_resume
+
+        if research_attached(self):
+            self._research_runtime = runtime
+        rewind_on_resume(self, checkpoint.directory)
         component_id = getattr(self, "_experiment_component_id", "trainer")
         rank = _rank(runtime)
         metrics_path = Path(checkpoint.directory) / "metrics.jsonl"
@@ -380,7 +395,15 @@ class DeepFilterNet3Trainer:
                         },
                     )
                 if index != view.updates:
-                    self._offer(runtime, checkpoint, "step")
+                    step_metrics: dict[str, float] = {}
+                    if research_attached(self):
+                        from src.experiments.evaluation.boundary import research_metrics
+
+                        step_metrics = research_metrics(self, runtime, checkpoint, kind="step", epoch=epoch)
+                    if step_metrics:
+                        self._offer(runtime, checkpoint, "step", metrics=step_metrics)
+                    else:
+                        self._offer(runtime, checkpoint, "step")
                     continue
                 self.phase = _PENDING
                 self.finished_epoch = epoch
@@ -452,6 +475,17 @@ class DeepFilterNet3Trainer:
             self.stop_reason = stop_reason
         self._restored = True
 
+    def research_predict(self, inputs: torch.Tensor, targets: torch.Tensor) -> torch.Tensor:
+        """Enhanced waveform for research metrics. Official validation does not call this."""
+
+        if self._stream is None:
+            raise RuntimeFailure("DeepFilterNet3 research predict has no DF stream")
+        parts = component_losses(self._stream, self.model.state_module, targets, inputs, self.objective)
+        wave = parts.get("enhanced_wave")
+        if not isinstance(wave, torch.Tensor):
+            raise RuntimeFailure("DeepFilterNet3 research predict did not return a waveform")
+        return wave
+
     def _finish_boundary(self, runtime: ProcessRuntime, checkpoint: CheckpointManager, component_id: str) -> None:
         if self.phase != _PENDING or self.finished_epoch is None:
             raise RuntimeFailure(f"component {component_id}: there is no pending epoch boundary")
@@ -473,8 +507,14 @@ class DeepFilterNet3Trainer:
         self.data.update_index = 0
         if stop:
             self.early_stopped = True
-        observe_validation(self, runtime, {"loss": float(loss)})
-        self._offer(runtime, checkpoint, "boundary", metrics={"loss": float(loss)})
+        official = {"loss": float(loss)}
+        observe_validation(self, runtime, official)
+        from src.experiments.evaluation.boundary import research_metrics
+
+        extra = research_metrics(
+            self, runtime, checkpoint, kind="boundary", epoch=trainer_epoch, official=official
+        )
+        self._offer(runtime, checkpoint, "boundary", metrics={**official, **extra} if extra else official)
 
     def _offer(
         self,
@@ -491,7 +531,7 @@ class DeepFilterNet3Trainer:
         """
 
         if event == "step":
-            checkpoint.offer(event, logical_step=self.logical_step, prepare=self._sync_ranks)
+            checkpoint.offer(event, logical_step=self.logical_step, metrics=metrics, prepare=self._sync_ranks)
             return
         self._sync_ranks(runtime)
         checkpoint.offer(event, logical_step=self.logical_step, metrics=metrics)
@@ -677,7 +717,13 @@ class DeepFilterNet3Trainer:
 
     def _result(self, checkpoint: CheckpointManager, reason: str) -> RunResult:
         if reason == "completed":
-            checkpoint.offer("final", logical_step=self.logical_step, prepare=self._sync_ranks)
+            from src.experiments.evaluation.boundary import final_research_metrics
+
+            extra = final_research_metrics(self, checkpoint)
+            if extra:
+                checkpoint.offer("final", logical_step=self.logical_step, metrics=extra, prepare=self._sync_ranks)
+            else:
+                checkpoint.offer("final", logical_step=self.logical_step, prepare=self._sync_ranks)
         self.stop_reason = reason
         if reason == "completed" and should_stop(self):
             reason = "early_stopping"

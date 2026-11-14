@@ -103,6 +103,8 @@ class MossFormerGANTrainer:
         validate_on_epoch_end: bool = True,
         max_epochs: int | None = None,
         stop_after_logical_steps: int | None = None,
+        evaluators: Any | None = None,
+        model_selection: Any | None = None,
     ) -> None:
         if not isinstance(generator, PreparedModel) or not isinstance(generator.state_module, MossFormerGANGenerator):
             raise BuildError("generator must be a prepared MossFormerGANGenerator")
@@ -179,12 +181,20 @@ class MossFormerGANTrainer:
         self._in_optimizer_pair = False
         self._skip_path: Path | None = None
         self.fail_phase: str | None = None
+        from src.experiments.evaluation.boundary import attach_research
+
+        attach_research(self, evaluators, model_selection)
         self._average_calls = 0
         self.last_components: dict[str, float] | None = None
 
     def run(self, runtime: ProcessRuntime, checkpoint: CheckpointManager) -> RunResult:
         """Train until the step budget, the plateau stop, or a finite all-skip epoch."""
 
+        from src.experiments.evaluation.boundary import research_attached, rewind_on_resume
+
+        if research_attached(self):
+            self._research_runtime = runtime
+        rewind_on_resume(self, checkpoint.directory)
         self._refuse_amp(runtime)
         component_id = getattr(self, "_experiment_component_id", "trainer")
         rank = _rank(runtime)
@@ -294,7 +304,15 @@ class MossFormerGANTrainer:
                                 "sample_id": stepped["sample_id"],
                             },
                         )
-                    self._offer(runtime, checkpoint, "step")
+                    step_metrics: dict[str, float] = {}
+                    if research_attached(self):
+                        from src.experiments.evaluation.boundary import research_metrics
+
+                        step_metrics = research_metrics(self, runtime, checkpoint, kind="step", epoch=epoch)
+                    if step_metrics:
+                        self._offer(runtime, checkpoint, "step", metrics=step_metrics)
+                    else:
+                        self._offer(runtime, checkpoint, "step")
                 else:
                     self._offer(runtime, checkpoint, "partial")
                 if index == updates:
@@ -626,6 +644,18 @@ class MossFormerGANTrainer:
             self.stop_training = True
         if boundary["validate"]:
             observe_validation(self, runtime, metrics)
+            from src.experiments.evaluation.boundary import research_metrics
+
+            extra = research_metrics(
+                self,
+                runtime,
+                checkpoint,
+                kind="boundary",
+                epoch=int(boundary["trainer_epoch"]),
+                official=metrics,
+            )
+            if extra:
+                metrics = {**metrics, **extra}
         self._offer(runtime, checkpoint, "boundary", metrics=metrics)
 
     def _validate(self, runtime: ProcessRuntime, trainer_epoch: int) -> dict[str, Any]:
@@ -881,7 +911,12 @@ class MossFormerGANTrainer:
         if self._in_optimizer_pair:
             raise RuntimeFailure("refusing to checkpoint between the generator step and the discriminator step")
         if event in ("step", "partial"):
-            checkpoint.offer(event, logical_step=self.logical_step, prepare=self._sync_ranks)
+            checkpoint.offer(
+                event,
+                logical_step=self.logical_step,
+                metrics=metrics if event == "step" else None,
+                prepare=self._sync_ranks,
+            )
             return
         self._sync_ranks(runtime)
         checkpoint.offer(event, logical_step=self.logical_step, metrics=metrics)
@@ -916,7 +951,13 @@ class MossFormerGANTrainer:
 
     def _result(self, checkpoint: CheckpointManager, reason: str) -> RunResult:
         if reason == "completed":
-            checkpoint.offer("final", logical_step=self.logical_step, prepare=self._sync_ranks)
+            from src.experiments.evaluation.boundary import final_research_metrics
+
+            extra = final_research_metrics(self, checkpoint)
+            if extra:
+                checkpoint.offer("final", logical_step=self.logical_step, metrics=extra, prepare=self._sync_ranks)
+            else:
+                checkpoint.offer("final", logical_step=self.logical_step, prepare=self._sync_ranks)
         if self.halt_reason in {"initialized", "running"}:
             self.halt_reason = reason
         if reason == "completed" and should_stop(self):

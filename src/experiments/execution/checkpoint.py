@@ -97,7 +97,7 @@ _PAYLOAD_KEYS = frozenset(
     }
 )
 _CODE_KEYS = frozenset({"dirty", "git_commit"})
-_LOAD_ORDER = ("module", "optimizer", "scheduler", "data", "trainer", "stopping", "runtime")
+_LOAD_ORDER = ("module", "optimizer", "scheduler", "data", "trainer", "stopping", "evaluator", "other", "runtime")
 # Data position, trainer history, RNG, and runtime state belong to the source
 # experiment. Loading them continues that experiment, which is resume.
 _INITIALIZE_KINDS = ("module", "optimizer", "scheduler")
