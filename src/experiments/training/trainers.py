@@ -1,9 +1,8 @@
 """Trainers constructed by the component factory.
 
 ``StandardTrainer`` performs forward, loss, backward, and one optimizer
-update per logical step. ``GanTrainer`` and ``MixtureTrainer`` only hold the
-objects required to build the Phase 1 graphs. Their training loops are later
-phases.
+update per logical step. Official speech-enhancement loops live under
+``src/experiments/official/``.
 """
 
 from __future__ import annotations
@@ -14,7 +13,7 @@ from typing import Any
 import torch
 
 from src.experiments.data import Batch
-from src.experiments.errors import BuildError, CheckpointError, ExperimentError, RuntimeFailure
+from src.experiments.errors import BuildError, CheckpointError, RuntimeFailure
 from src.experiments.execution.journal import StepJournal
 from src.experiments.execution.results import RunResult
 from src.experiments.execution.runtime import PreparedModel, ProcessRuntime, require_prepared
@@ -315,69 +314,3 @@ def _batch_on_device(batch: Batch, device: torch.device) -> Batch:
 
 def _rank(runtime: ProcessRuntime) -> int:
     return int(getattr(runtime, "rank", 0))
-
-
-class GanTrainer:
-    """Holds a two-optimizer graph. The GAN update order is not implemented."""
-
-    def __init__(
-        self,
-        generator: PreparedModel,
-        discriminator: PreparedModel,
-        data: Any,
-        optim_g: torch.optim.Optimizer,
-        optim_d: torch.optim.Optimizer,
-        max_logical_steps: int = 1,
-    ) -> None:
-        self.generator = generator
-        self.discriminator = discriminator
-        self.data = data
-        self.optim_g = optim_g
-        self.optim_d = optim_d
-        self.max_logical_steps = max_logical_steps
-
-    def fit(self) -> RunResult:
-        lifecycle = getattr(self, "lifecycle", None)
-        if lifecycle is not None:
-            lifecycle.start()
-        raise ExperimentError("GanTrainer training is not implemented in Phase 1")
-
-    def state_dict(self) -> dict[str, Any]:
-        return {"max_logical_steps": self.max_logical_steps}
-
-    def load_state_dict(self, state: dict[str, Any]) -> None:
-        del state
-        raise ExperimentError("GanTrainer restore is not implemented in Phase 1")
-
-
-class MixtureTrainer:
-    """Holds expert modules in the inject list order. Mixture training is not implemented."""
-
-    def __init__(
-        self,
-        experts: list[PreparedModel],
-        router: PreparedModel,
-        data: Any,
-        optim_experts: torch.optim.Optimizer,
-        optim_router: torch.optim.Optimizer,
-        max_logical_steps: int = 1,
-    ) -> None:
-        self.experts = list(experts)
-        self.router = router
-        self.data = data
-        self.optim_experts = optim_experts
-        self.optim_router = optim_router
-        self.max_logical_steps = max_logical_steps
-
-    def fit(self) -> RunResult:
-        lifecycle = getattr(self, "lifecycle", None)
-        if lifecycle is not None:
-            lifecycle.start()
-        raise ExperimentError("MixtureTrainer training is not implemented in Phase 1")
-
-    def state_dict(self) -> dict[str, Any]:
-        return {"max_logical_steps": self.max_logical_steps, "experts": len(self.experts)}
-
-    def load_state_dict(self, state: dict[str, Any]) -> None:
-        del state
-        raise ExperimentError("MixtureTrainer restore is not implemented in Phase 1")

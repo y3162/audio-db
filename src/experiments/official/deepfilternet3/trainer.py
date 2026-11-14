@@ -46,6 +46,7 @@ from src.experiments.official.deepfilternet3.reference import deepfilter_cosine_
 from src.experiments.official.deepfilternet3.schedule import schedule_index
 from src.experiments.official.deepfilternet3.selection import note_early_stop
 from src.experiments.official.deepfilternet3.training_step import component_losses
+from src.experiments.training.control import finish_training_run, stop_requested
 
 _PENDING = "pending_validation"
 _IN_EPOCH = "in_epoch"
@@ -651,43 +652,17 @@ class DeepFilterNet3Trainer:
             raise RuntimeFailure(f"DeepFilterNet3 realfft kernel: {problem}")
 
     def _stop_requested(self, runtime: object | None = None) -> bool:
-        from src.experiments.signals import ranks_should_stop
+        """Agree a logical-step cap with a rank interrupt."""
 
-        capped = self.stop_after_logical_steps is not None and self.logical_step >= self.stop_after_logical_steps
-        return ranks_should_stop(runtime, extra=capped)
+        return stop_requested(self, runtime)
 
     def _epoch_cap_reached(self) -> bool:
         return int(self.data.epoch) >= self.max_epochs
 
     def _result(self, reason: str) -> RunResult:
-        if reason == "completed":
-            epoch = getattr(self.data, "epoch", None)
-            if isinstance(epoch, bool) or not isinstance(epoch, int):
-                epoch = None
-            extra = self.research.score(
-                self.runtime,
-                output_directory=self.lifecycle.output_directory,
-                config_identity=self.lifecycle.config_identity,
-                kind="end",
-                epoch=epoch,
-                logical_step=self.logical_step,
-                stopping=getattr(self, "training_control", None),
-            )
-            if extra:
-                self.lifecycle.save_if_needed("final", logical_step=self.logical_step, metrics=extra, prepare=self._sync_ranks)
-            else:
-                self.lifecycle.save_if_needed("final", logical_step=self.logical_step, prepare=self._sync_ranks)
-        self.stop_reason = reason
-        if reason == "completed" and should_stop(self):
-            reason = "early_stopping"
-        return self.lifecycle.finish(
-            RunResult(
-                stop_reason=reason,
-                logical_step=self.logical_step,
-                optimizer_updates=dict(self.optimizer_updates),
-                output_dir=self.lifecycle.output_directory,
-            )
-        )
+        """Score the research end and finish. A final save broadcasts rank buffers first."""
+
+        return finish_training_run(self, reason, prepare=self._sync_ranks)
 
 def _stream_for(model: DeepFilterNet3Model, device: torch.device) -> DFStream:
     """Open a DFStream from the model's own sample rate and FFT sizes."""

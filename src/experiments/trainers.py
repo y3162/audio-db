@@ -1,8 +1,6 @@
 """Public API; implementation: ``src.experiments.training.trainers``."""
 
 from src.experiments.training.trainers import (
-    GanTrainer,
-    MixtureTrainer,
     StandardTrainer,
     _batch_on_device,
     _close_epoch_view,
@@ -10,7 +8,5 @@ from src.experiments.training.trainers import (
 )
 
 __all__ = [
-    "GanTrainer",
-    "MixtureTrainer",
     "StandardTrainer",
 ]

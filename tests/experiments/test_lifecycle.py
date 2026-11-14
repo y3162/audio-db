@@ -9,13 +9,73 @@ import torch
 
 from src.experiments.api import build_experiment
 from src.experiments.config import load_experiment
-from src.experiments.errors import BuildError, ConfigError, PrepareError, StateError
+from src.experiments.errors import BuildError, ConfigError, ExperimentError, PrepareError, StateError
 from src.experiments.runtime import PreparedModel, ProcessRuntime
 from tests.experiments.support import Timeline, null_trainer, write_config
 
 
 def _parameter_ids(optimizer: torch.optim.Optimizer) -> set[int]:
     return {id(parameter) for group in optimizer.param_groups for parameter in group["params"]}
+
+
+class BoundGeneratorPair:
+    """Hold two modules so a test can bind two optimizers. This does not train."""
+
+    def __init__(
+        self,
+        generator: PreparedModel,
+        discriminator: PreparedModel,
+        data: object,
+        optim_g: torch.optim.Optimizer,
+        optim_d: torch.optim.Optimizer,
+        max_logical_steps: int = 1,
+    ) -> None:
+        self.generator = generator
+        self.discriminator = discriminator
+        self.data = data
+        self.optim_g = optim_g
+        self.optim_d = optim_d
+        self.max_logical_steps = max_logical_steps
+
+    def fit(self) -> None:
+        raise ExperimentError("BoundGeneratorPair does not train")
+
+    def state_dict(self) -> dict[str, int]:
+        return {"max_logical_steps": self.max_logical_steps}
+
+    def load_state_dict(self, state: dict[str, object]) -> None:
+        del state
+        raise ExperimentError("BoundGeneratorPair does not restore")
+
+
+class BoundExperts:
+    """Hold injected experts in list order. This does not train."""
+
+    def __init__(
+        self,
+        experts: list[PreparedModel],
+        router: PreparedModel,
+        data: object,
+        optim_experts: torch.optim.Optimizer,
+        optim_router: torch.optim.Optimizer,
+        max_logical_steps: int = 1,
+    ) -> None:
+        self.experts = list(experts)
+        self.router = router
+        self.data = data
+        self.optim_experts = optim_experts
+        self.optim_router = optim_router
+        self.max_logical_steps = max_logical_steps
+
+    def fit(self) -> None:
+        raise ExperimentError("BoundExperts does not train")
+
+    def state_dict(self) -> dict[str, int]:
+        return {"max_logical_steps": self.max_logical_steps, "experts": len(self.experts)}
+
+    def load_state_dict(self, state: dict[str, object]) -> None:
+        del state
+        raise ExperimentError("BoundExperts does not restore")
 
 
 class LifecycleTests(unittest.TestCase):
@@ -140,7 +200,7 @@ class LifecycleTests(unittest.TestCase):
                 },
                 "trainer": {
                     "role": "trainer",
-                    "class": "src.experiments.trainers.GanTrainer",
+                    "class": "tests.experiments.test_lifecycle.BoundGeneratorPair",
                     "kwargs": {"max_logical_steps": 2},
                     "inject": {
                         "generator": {"ref": "generator"},
@@ -201,7 +261,7 @@ class LifecycleTests(unittest.TestCase):
                 },
                 "trainer": {
                     "role": "trainer",
-                    "class": "src.experiments.trainers.MixtureTrainer",
+                    "class": "tests.experiments.test_lifecycle.BoundExperts",
                     "kwargs": {"max_logical_steps": 2},
                     "inject": {
                         "experts": [{"ref": "expert_a"}, {"ref": "expert_b"}],

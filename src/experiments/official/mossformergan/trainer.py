@@ -41,6 +41,7 @@ from src.experiments.results import RunResult
 from src.experiments.runtime import PreparedModel, ProcessRuntime, require_prepared
 from src.experiments.selectors import scalar_metrics
 from src.experiments.trainers import _close_epoch_view
+from src.experiments.training.control import stop_requested
 from src.experiments.calc.errors import TrainingError
 from src.experiments.official.mossformergan import reference as mossformer_lib
 from src.experiments.official.mossformergan.reference import (
@@ -996,10 +997,9 @@ class MossFormerGANTrainer:
             self._window_samples = [str(item) for item in chosen["samples"]]
 
     def _stop_requested(self, runtime: object | None = None) -> bool:
-        from src.experiments.signals import ranks_should_stop
+        """Agree a logical-step cap with a rank interrupt."""
 
-        capped = self.stop_after_logical_steps is not None and self.logical_step >= self.stop_after_logical_steps
-        return ranks_should_stop(runtime, extra=capped)
+        return stop_requested(self, runtime)
 
     def _result(self, reason: str) -> RunResult:
         if reason == "completed":

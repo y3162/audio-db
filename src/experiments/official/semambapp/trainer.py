@@ -37,6 +37,7 @@ from src.experiments.results import RunResult
 from src.experiments.runtime import PreparedModel, ProcessRuntime, require_prepared
 from src.experiments.selectors import scalar_metrics
 from src.experiments.trainers import _close_epoch_view
+from src.experiments.training.control import finish_training_run, open_flat_window, stop_requested
 from src.experiments.calc.metrics import _aggregate_validation
 from src.experiments.calc.errors import TrainingError
 from src.experiments.official.semambapp.reference import validation_model
@@ -261,34 +262,9 @@ class SEMambaPPTrainer:
         return str(component_id)
 
     def _open_window(self, component_id: str) -> tuple[int, int, Any, list[Batch]]:
-        epoch = int(self.data.epoch)
-        index = int(self.data.update_index)
-        view = self.data.train_epoch(epoch, start_update=index)
-        try:
-            if view.updates < 1:
-                raise RuntimeFailure(f"component {component_id}: epoch {epoch} has no micro-batches")
-            if view.updates % self.accumulation != 0:
-                raise RuntimeFailure(
-                    f"component {component_id}: epoch micro-batches {view.updates} "
-                    f"are not divisible by accumulation {self.accumulation}"
-                )
-            if index > view.updates:
-                raise RuntimeFailure(f"component {component_id}: update {index} is past epoch {epoch}")
-            if index == view.updates:
-                raise RuntimeFailure(
-                    f"component {component_id}: epoch {epoch} is exhausted without a pending boundary"
-                )
-            if index + self.accumulation > view.updates:
-                raise RuntimeFailure(
-                    f"component {component_id}: accumulation {self.accumulation} does not fit at update {index}"
-                )
-            batches: list[Batch] = []
-            for offset in range(self.accumulation):
-                batches.extend(view.batch(index + offset))
-        except Exception:
-            _close_epoch_view(view)
-            raise
-        return epoch, index, view, batches
+        """Take the next flat micro-batch window. The epoch length must divide evenly."""
+
+        return open_flat_window(self, component_id)
 
     def _record_step(
         self,
@@ -890,43 +866,17 @@ class SEMambaPPTrainer:
         runtime.broadcast_buffers(self.cqt)
 
     def _stop_requested(self, runtime: object | None = None) -> bool:
-        from src.experiments.signals import ranks_should_stop
+        """Agree a logical-step cap with a rank interrupt."""
 
-        capped = self.stop_after_logical_steps is not None and self.logical_step >= self.stop_after_logical_steps
-        return ranks_should_stop(runtime, extra=capped)
+        return stop_requested(self, runtime)
 
     def _epoch_cap_reached(self) -> bool:
         return self.max_epochs is not None and int(self.data.epoch) >= self.max_epochs
 
     def _result(self, reason: str) -> RunResult:
-        if reason == "completed":
-            epoch = getattr(self.data, "epoch", None)
-            if isinstance(epoch, bool) or not isinstance(epoch, int):
-                epoch = None
-            extra = self.research.score(
-                self.runtime,
-                output_directory=self.lifecycle.output_directory,
-                config_identity=self.lifecycle.config_identity,
-                kind="end",
-                epoch=epoch,
-                logical_step=self.logical_step,
-                stopping=getattr(self, "training_control", None),
-            )
-            if extra:
-                self.lifecycle.save_if_needed("final", logical_step=self.logical_step, metrics=extra, prepare=self._sync_ranks)
-            else:
-                self.lifecycle.save_if_needed("final", logical_step=self.logical_step, prepare=self._sync_ranks)
-        self.stop_reason = reason
-        if reason == "completed" and should_stop(self):
-            reason = "early_stopping"
-        return self.lifecycle.finish(
-            RunResult(
-                stop_reason=reason,
-                logical_step=self.logical_step,
-                optimizer_updates=dict(self.optimizer_updates),
-                output_dir=self.lifecycle.output_directory,
-            )
-        )
+        """Score the research end and finish. A final save broadcasts rank buffers first."""
+
+        return finish_training_run(self, reason, prepare=self._sync_ranks)
 
 
 def _grad_norm(*modules: torch.nn.Module) -> float:
