@@ -31,8 +31,9 @@ _RESAMPLE = {
 }
 
 # Fields the official experiment YAML must declare, and that the opened
-# snapshot identity must match. ``order_policy`` is omitted: MP-SENet resolves
-# it from the world size, and both resolutions belong to the same protocol.
+# snapshot identity must match. ``order_policy`` is not one of them: MP-SENet
+# resolves it from the world size, so one string cannot describe the condition.
+# ``require_official_sampling`` checks that resolution without extending schema v1.
 PUBLICATION_KEYS = (
     "algorithm",
     "claim_label",
@@ -91,6 +92,14 @@ OFFICIAL_CONDITIONS = {
     ),
 }
 
+# Configured sampler order, not the world-size resolution. A permutation of the
+# MP-SENet pair is the same configuration ``resolve_order_policy`` accepts.
+OFFICIAL_ORDERS: dict[str, tuple[str, ...]] = {
+    MP_TRAINER: ("fixed_single_shuffle_v1", "torch_distributed_sampler_v1"),
+    MOSS_TRAINER: ("rank_mod_fixed_v1",),
+}
+_UNSET = object()
+
 
 def trainer_path(trainer: object) -> str:
     kind = type(trainer)
@@ -144,6 +153,62 @@ def require_official_identity(trainer: object, identity: dict[str, Any]) -> None
             )
 
 
+def require_official_sampling(trainer: object, data: object, identity: dict[str, Any]) -> None:
+    """Refuse an official run whose sampler order or sample cap is not the official one.
+
+    The publication block stays schema v1. MP-SENet's resolved policy depends on
+    the world size, so the configured order and the policy reported by
+    ``sampler.policy(world_size)`` and ``identity()["order_policy"]`` are both
+    required. ``max_epoch_samples`` and ``max_validation_batches`` must be unset.
+    ``research`` does not call this function.
+    """
+
+    from src.experiments.data.errors import ReproductionError
+    from src.experiments.data.sampling.order import resolve_order_policy
+    from src.experiments.errors import DataError
+
+    path = trainer_path(trainer)
+    official = OFFICIAL_ORDERS.get(path)
+    if official is None:
+        raise RuntimeFailure(f"official_faithful has no sampler condition for {path}")
+    sampler = getattr(data, "sampler", None)
+    configured = getattr(sampler, "order", None)
+    policy = getattr(sampler, "policy", None)
+    if not _same_order(configured, official):
+        raise RuntimeFailure(
+            f"official_faithful sampler order {configured!r} does not match the official condition"
+        )
+    if not callable(policy):
+        raise RuntimeFailure("official_faithful sampler order is missing")
+    world_size = getattr(data, "world_size", None)
+    if isinstance(world_size, bool) or not isinstance(world_size, int) or world_size < 1:
+        raise RuntimeFailure("official_faithful world_size is missing")
+    try:
+        expected = resolve_order_policy(_rule_order(official), world_size)
+        resolved = policy(world_size)
+    except (ReproductionError, DataError, TypeError, ValueError) as exc:
+        raise RuntimeFailure(f"official_faithful order_policy is not valid: {exc}") from exc
+    if resolved != expected:
+        raise RuntimeFailure(
+            f"official_faithful order_policy {resolved!r} does not match "
+            f"the official condition for world_size {world_size}"
+        )
+    reported = identity.get("order_policy")
+    if "order_policy" not in identity or reported != expected:
+        raise RuntimeFailure(
+            f"official_faithful order_policy {reported!r} does not match "
+            f"the official condition for world_size {world_size}"
+        )
+    epoch_cap = getattr(sampler, "max_epoch_samples", _UNSET)
+    if epoch_cap is _UNSET or epoch_cap is not None:
+        shown = "missing" if epoch_cap is _UNSET else epoch_cap
+        raise RuntimeFailure(f"official_faithful max_epoch_samples {shown!r} must be unset")
+    valid_cap = getattr(data, "max_validation_batches", _UNSET)
+    if valid_cap is _UNSET or valid_cap is not None:
+        shown = "missing" if valid_cap is _UNSET else valid_cap
+        raise RuntimeFailure(f"official_faithful max_validation_batches {shown!r} must be unset")
+
+
 def require_leakage_identity(identity: dict[str, Any]) -> None:
     """Refuse a leakage-safe claim whose test use cannot be shown to be false.
 
@@ -162,6 +227,29 @@ def require_leakage_identity(identity: dict[str, Any]) -> None:
     claim = identity.get("claim_label")
     if claim is not None and claim != "leakage_safe_comparison":
         raise RuntimeFailure(f"leakage_safe claim_label {claim} does not match the snapshot declaration")
+
+
+def _policy_names(order: object) -> tuple[str, ...] | None:
+    if isinstance(order, str) and order:
+        return (order,)
+    if isinstance(order, list) and order and all(isinstance(item, str) and item for item in order):
+        return tuple(order)
+    return None
+
+
+def _same_order(configured: object, official: tuple[str, ...]) -> bool:
+    names = _policy_names(configured)
+    if names is None:
+        return False
+    if len(official) == 1:
+        return names == official
+    return len(names) == len(official) and set(names) == set(official) and len(set(names)) == len(names)
+
+
+def _rule_order(official: tuple[str, ...]) -> str | list[str]:
+    if len(official) == 1:
+        return official[0]
+    return list(official)
 
 
 def _equal(left: object, right: object) -> bool:

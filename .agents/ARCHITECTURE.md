@@ -24,6 +24,7 @@
 ## 公式再現と研究
 
 - `official_faithful` は、その Trainer の公式条件として設定に書いた Dataset ID、Protocol ID、snapshot hash、profile、claim、`selection_uses_test`、sample rate、teacher、pipeline が、開いたスナップショットの identity と一致するときだけ許す。`selection_uses_test` は true。profile や identity が欠けたもの、`WavePairData`、別の snapshot は拒否する。独立な最終評価とは呼ばない。
+- `official_faithful` の Sampler は、設定した order とその world size で解決した `order_policy` の両方が公式であるときだけ許す。MP-SENet の order は `fixed_single_shuffle_v1` と `torch_distributed_sampler_v1` の組で、world size 1 の解決は `fixed_single_shuffle_v1`、2 以上は `torch_distributed_sampler_v1` である。MossFormerGAN は `rank_mod_fixed_v1` である。`max_epoch_samples` と `max_validation_batches` は未設定だけを許す。`research` はこの制限を受けない。publication のスキーマには足さない。
 - `leakage_safe` は profile が `leakage_safe` で `selection_uses_test` が false のときだけ許す。不明な値は適合にしない。snapshot の train / valid / test の重なり検査はデータモジュールが開くときに行う。
 - `research` は適合する音声ペアを使え、公式再現としては記録しない。
 - 公式再現設定は `configs/reproduction/experiments/official/`（`official_faithful`）。1 step の宣言は `tests/fixtures/configs/experiments/`。Dataset と Protocol の定義は `configs/data/`。評価 DB の登録は `configs/db/init.yaml`。

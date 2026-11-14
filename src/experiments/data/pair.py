@@ -98,8 +98,10 @@ def check_publication(trainer: object) -> None:
 
     ``research`` trains on a compatible pair and is not recorded as the paper's
     reproduction. ``official_faithful`` requires the trainer's known dataset,
-    protocol, snapshot, profile, test use, and pipeline. A missing value is not
-    a match. ``leakage_safe`` requires an explicit false ``selection_uses_test``.
+    protocol, snapshot, profile, test use, and pipeline, the official sampler
+    order for this world size, and unset ``max_epoch_samples`` and
+    ``max_validation_batches``. A missing value is not a match.
+    ``leakage_safe`` requires an explicit false ``selection_uses_test``.
     """
 
     claim = getattr(trainer, "experiment_claim", None)
@@ -108,7 +110,11 @@ def check_publication(trainer: object) -> None:
         return
     if claim == "research" or label == "research":
         return
-    from src.experiments.data.publication import require_leakage_identity, require_official_identity
+    from src.experiments.data.publication import (
+        require_leakage_identity,
+        require_official_identity,
+        require_official_sampling,
+    )
 
     data = getattr(trainer, "data", None)
     identity_fn = getattr(data, "identity", None)
@@ -119,6 +125,7 @@ def check_publication(trainer: object) -> None:
         raise RuntimeFailure("data identity is not a mapping")
     if claim == "official_faithful":
         require_official_identity(trainer, identity)
+        require_official_sampling(trainer, data, identity)
     elif claim == "leakage_safe":
         require_leakage_identity(identity)
     if isinstance(label, str) and label:
