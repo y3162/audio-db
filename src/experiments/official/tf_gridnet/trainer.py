@@ -111,6 +111,7 @@ class TFGridNetTrainer:
     """Single-optimizer MS-SNSD loop. The scheduler steps at epoch end."""
 
     supports_training_control = True
+    progress_keys = ("logical_step", "epoch")
 
     def __init__(
         self,

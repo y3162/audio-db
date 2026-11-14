@@ -99,6 +99,7 @@ class TFLocoformerTrainer:
     """Single-optimizer DNS loop with warmup per step and plateau per epoch."""
 
     supports_training_control = True
+    progress_keys = ("logical_step", "epoch")
 
     def __init__(
         self,

@@ -20,7 +20,6 @@ from src.experiments.execution.checkpoint import (
     acquire_directory_lock,
     assert_output_allowed,
     used_directory_marker,
-    write_complete,
     write_status,
 )
 from src.experiments.execution.status import record_failure
@@ -59,6 +58,7 @@ class Experiment:
         self._directory: Path | None = None
         self._lock: DirectoryLock | None = None
         self._checkpoint: CheckpointManager | None = None
+        self._lifecycle: object | None = None
         self._runtime: object | None = None
         self._running = False
         self._partial_components: object | None = None
@@ -112,17 +112,11 @@ class Experiment:
                 self.build()
             if self._graph is None or self._checkpoint is None or self._directory is None:
                 raise BuildError("experiment is not built")
-            if resume is not None and (self._directory / "complete.json").is_file():
-                raise CheckpointError("resume refused because complete.json exists")
-            if resume is not None:
-                restored = self._checkpoint.restore(Path(resume), mode="resume")
-                self._checkpoint.refuse_rewind(restored.logical_step)
-            elif self.config.initialize is not None:
-                self._checkpoint.restore(
-                    self.config.initialize.checkpoint,
-                    mode="initialize",
-                    states=self.config.initialize.states,
-                )
+            from src.experiments.execution.lifecycle import Lifecycle
+
+            lifecycle = Lifecycle(self._checkpoint, self._graph.runtime, self.config)
+            self._lifecycle = lifecycle
+            lifecycle.start(resume=resume)
             control = getattr(self._graph.trainer, "training_control", None)
             if control is not None:
                 control.synchronize()
@@ -149,23 +143,8 @@ class Experiment:
             result = self._graph.trainer.run(self._graph.runtime, self._checkpoint)  # type: ignore[attr-defined]
             if not isinstance(result, RunResult):
                 raise BuildError(f"component {self.config.entry}: trainer did not return RunResult")
-            if result.stop_reason not in {"completed", "interrupted", "early_stopping"}:
-                raise BuildError(f"component {self.config.entry}: unknown stop reason {result.stop_reason}")
             control = getattr(self._graph.trainer, "training_control", None)
-            details = {}
-            if result.stop_reason == "early_stopping":
-                if control is None or not control.stopped or not self._checkpoint.latest_is_current:
-                    raise BuildError("early stopping requires a saved current Latest")
-                details = {"reason": "early_stopping", "stopping": control.state_dict()}
-            if self._is_primary():
-                if launch_id() is not None:
-                    # The launcher finalizes after it has seen every rank exit.
-                    self._write_status("RUNNING", outcome=result.stop_reason, logical_step=result.logical_step, **details)
-                elif result.stop_reason in {"completed", "early_stopping"}:
-                    write_complete(self._directory, result.logical_step, **details)
-                    self._write_status("COMPLETED", logical_step=result.logical_step, **details)
-                else:
-                    self._write_status("INTERRUPTED", logical_step=result.logical_step)
+            lifecycle.finish(result, primary=self._is_primary(), control=control)
             self._barrier()
             self._ran = True
             return result

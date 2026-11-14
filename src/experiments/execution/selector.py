@@ -36,13 +36,36 @@ DEFAULT_LATEST_EVERY = 1000
 
 @dataclass(frozen=True)
 class SavePoint:
-    """One point where the trainer state may be saved."""
+    """One point where the trainer state may be saved.
+
+    ``progress`` holds the counters the trainer actually has. ``logical_step``
+    stays for selectors and checkpoints that name that counter. A point whose
+    ``progress`` omits it is an event-based point.
+    """
 
     event: str
     logical_step: int
     metrics: Mapping[str, float] = field(default_factory=dict)
     # True on ``stop`` and ``final`` when Latest already holds exactly this state.
     latest_is_current: bool = False
+    progress: Mapping[str, int] = field(default_factory=dict)
+    progress_explicit: bool = False
+
+    def __post_init__(self) -> None:
+        if not self.progress and not self.progress_explicit:
+            progress = {"logical_step": int(self.logical_step)}
+        else:
+            progress = dict(self.progress)
+        cleaned: dict[str, int] = {}
+        for key, value in progress.items():
+            if not isinstance(key, str) or not key:
+                raise CheckpointError("progress keys must be non-empty strings")
+            if isinstance(value, bool) or not isinstance(value, int) or value < 0:
+                raise CheckpointError(f"progress {key} must be an integer >= 0")
+            cleaned[key] = int(value)
+        if "logical_step" in cleaned and cleaned["logical_step"] != int(self.logical_step):
+            raise CheckpointError("logical_step does not match progress")
+        object.__setattr__(self, "progress", cleaned)
 
 
 @dataclass(frozen=True)
@@ -89,18 +112,33 @@ class StandardSelector(Selector):
 
     checkpoint_class_id = "src.experiments.selectors.StandardSelector"
 
-    def __init__(self, latest_every: int = DEFAULT_LATEST_EVERY, partial: bool = False) -> None:
+    def __init__(
+        self,
+        latest_every: int = DEFAULT_LATEST_EVERY,
+        partial: bool = False,
+        progress_key: str = "logical_step",
+    ) -> None:
         self.latest_every = _positive_int("latest_every", latest_every)
         if not isinstance(partial, bool):
             raise BuildError("partial must be a bool")
+        if not isinstance(progress_key, str) or not progress_key:
+            raise BuildError("progress_key must be a non-empty string")
         self.partial = partial
+        self.progress_key = progress_key
 
     def decide(self, point: SavePoint) -> Decision:
         return Decision(latest=self.wants_latest(point))
 
+    def counter(self, point: SavePoint) -> int:
+        """Read the configured progress key. A missing key is an error."""
+
+        if self.progress_key not in point.progress:
+            raise CheckpointError(f"save point is missing progress {self.progress_key}")
+        return int(point.progress[self.progress_key])
+
     def wants_latest(self, point: SavePoint) -> bool:
         if point.event == "step":
-            return point.logical_step % self.latest_every == 0
+            return self.counter(point) % self.latest_every == 0
         if point.event in ("boundary_pending", "boundary"):
             return True
         if point.event in ("stop", "final"):
@@ -128,10 +166,11 @@ class PeriodicArchiveSelector(StandardSelector):
         keep_last: int | None = None,
         name: str = "step_{step:08d}.pt",
         partial: bool = False,
+        progress_key: str = "logical_step",
     ) -> None:
         # ``latest_every`` stays 1 when omitted. This class is not the standard
         # policy, and existing configs rely on that interval.
-        super().__init__(latest_every=latest_every, partial=partial)
+        super().__init__(latest_every=latest_every, partial=partial, progress_key=progress_key)
         self.archive_every = _positive_int("archive_every", archive_every)
         self.keep_last = None if keep_last is None else _positive_int("keep_last", keep_last)
         self.name = _name_pattern(name)
@@ -142,9 +181,12 @@ class PeriodicArchiveSelector(StandardSelector):
         archived = point.event in ("step", "boundary_pending", "boundary") or (
             point.event == "partial" and self.partial
         )
-        if not archived or point.logical_step % self.archive_every != 0:
+        if not archived:
             return Decision(latest=latest)
-        name = self.name.format(step=point.logical_step)
+        step = self.counter(point)
+        if step % self.archive_every != 0:
+            return Decision(latest=latest)
+        name = self.name.format(step=step)
         if name in self._kept:
             self._kept.remove(name)
         self._kept.append(name)
@@ -182,9 +224,10 @@ class TopKSelector(StandardSelector):
         latest_every: int = 1,
         name: str = "best_{step:08d}.pt",
         partial: bool = False,
+        progress_key: str = "logical_step",
     ) -> None:
         # Same as PeriodicArchiveSelector: an omitted interval stays every step.
-        super().__init__(latest_every=latest_every, partial=partial)
+        super().__init__(latest_every=latest_every, partial=partial, progress_key=progress_key)
         if not isinstance(metric, str) or not metric:
             raise BuildError("metric must be a non-empty string")
         if mode not in {"min", "max"}:
@@ -206,9 +249,10 @@ class TopKSelector(StandardSelector):
         value = float(point.metrics[self.metric])
         if not math.isfinite(value):
             return Decision(latest=latest)
-        name = self.name.format(step=point.logical_step)
+        step = self.counter(point)
+        name = self.name.format(step=step)
         entries = [entry for entry in self._entries if entry["name"] != name]
-        entries.append({"name": name, "step": int(point.logical_step), "value": value})
+        entries.append({"name": name, "step": int(step), "value": value})
         sign = 1.0 if self.mode == "min" else -1.0
         entries.sort(key=lambda entry: (sign * entry["value"], entry["step"]))
         kept, dropped = entries[: self.k], entries[self.k :]

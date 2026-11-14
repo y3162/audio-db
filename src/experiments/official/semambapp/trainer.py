@@ -64,6 +64,7 @@ class SEMambaPPTrainer:
     """Discriminator-then-generator update for the official SEMamba++ loss."""
 
     supports_training_control = True
+    progress_keys = ("logical_step", "epoch")
 
     def __init__(
         self,

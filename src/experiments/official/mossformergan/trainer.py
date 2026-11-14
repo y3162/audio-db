@@ -85,6 +85,7 @@ class MossFormerGANTrainer:
     """Generator-then-discriminator step after both backwards of a full window."""
 
     supports_training_control = True
+    progress_keys = ("logical_step", "epoch")
 
     def __init__(
         self,

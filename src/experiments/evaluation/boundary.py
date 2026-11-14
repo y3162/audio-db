@@ -48,7 +48,10 @@ def rewind_on_resume(trainer: Any, directory: Path) -> None:
         return
     phase = str(getattr(trainer, "phase", ""))
     drop_current = phase.startswith("pending")
-    _rewind(directory / LOG_NAME, int(trainer.logical_step), drop_current=drop_current)
+    step = _progress(trainer, None).get("logical_step")
+    if step is None:
+        return
+    _rewind(directory / LOG_NAME, int(step), drop_current=drop_current)
 
 
 def final_research_metrics(trainer: Any, checkpoint: Any) -> dict[str, float]:
@@ -80,11 +83,12 @@ def research_metrics(
 
     if not research_attached(trainer):
         return {}
-    logical_step = int(trainer.logical_step)
+    progress = _progress(trainer, epoch)
+    logical_step = int(progress["logical_step"]) if "logical_step" in progress else 0
     due = [
         evaluator
         for evaluator in trainer.evaluators
-        if evaluator.due(logical_step=logical_step, epoch=epoch, kind=kind)
+        if evaluator.due(logical_step=progress.get("logical_step"), epoch=epoch, kind=kind, progress=progress)
     ]
     if kind != "boundary" and not due:
         return {}
@@ -101,7 +105,13 @@ def research_metrics(
     results: list[tuple[AudioPairEvaluator, list[MetricResult]]] = []
     predict = _predict(trainer)
     for evaluator in due:
-        outcome = evaluator.evaluate(runtime, logical_step=logical_step, epoch=epoch, predict=predict)
+        outcome = evaluator.evaluate(
+            runtime,
+            logical_step=logical_step,
+            epoch=epoch,
+            predict=predict,
+            progress=progress,
+        )
         results.append((evaluator, outcome))
         for result in outcome:
             namespaced = f"{evaluator.source}.{result.name}"
@@ -182,6 +192,28 @@ def _deliver_stopping(trainer: Any, source: str, result: MetricResult, logical_s
             expected_metrics=frozenset({result.name}),
         )
     )
+
+
+def _progress(trainer: Any, epoch: int | None) -> dict[str, int]:
+    """Counters the trainer publishes. ``logical_step`` is read only when present."""
+
+    method = getattr(trainer, "progress_state", None)
+    progress: dict[str, int] = {}
+    if callable(method):
+        raw = method()
+        if not isinstance(raw, Mapping):
+            raise RuntimeFailure("progress_state must return a mapping")
+        for key, value in raw.items():
+            if isinstance(value, bool) or not isinstance(value, int) or value < 0:
+                raise RuntimeFailure(f"progress {key} must be an integer >= 0")
+            progress[str(key)] = int(value)
+    else:
+        step = getattr(trainer, "logical_step", None)
+        if isinstance(step, int) and not isinstance(step, bool):
+            progress["logical_step"] = int(step)
+    if epoch is not None and "epoch" not in progress:
+        progress["epoch"] = int(epoch)
+    return progress
 
 
 def _predict(trainer: Any):

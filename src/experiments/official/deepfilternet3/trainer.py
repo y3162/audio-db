@@ -183,6 +183,7 @@ class DeepFilterNet3Trainer:
     """Official DeepFilterNet3 loop on one AdamW and a per-step cosine."""
 
     supports_training_control = True
+    progress_keys = ("logical_step", "epoch")
 
     def __init__(
         self,

@@ -42,7 +42,7 @@ import torch
 
 from src.experiments.config import ExperimentConfig, config_sha256
 from src.experiments.data.identity import comparable_identity
-from src.experiments.errors import CheckpointError, ExperimentError, StateError
+from src.experiments.errors import BuildError, CheckpointError, ExperimentError, StateError
 from src.experiments.calc.errors import TrainingError
 from src.experiments.core.registry import StateRegistry
 from src.experiments.execution.selector import (
@@ -83,6 +83,7 @@ _PAYLOAD_KEYS = frozenset(
         "label",
         "logical_step",
         "optimizer_updates",
+        "progress",
         "output_directory",
         "parameter_ranks_agree",
         "provenance_sha256",
@@ -108,7 +109,7 @@ class RestoreReport:
     """What one restore call applied."""
 
     mode: Literal["resume", "initialize"]
-    logical_step: int
+    logical_step: int | None
     state_ids: tuple[str, ...]
     initialized_states: tuple[str, ...]
 
@@ -259,6 +260,7 @@ class CheckpointManager:
             raise CheckpointError("selector class does not match the configured class")
         if selector_identity(self._selector) != config.selector_class:
             raise CheckpointError("selector checkpoint_class_id must equal its public class path")
+        _require_declared_progress(graph.trainer, self._selector)
         self._config = config
         self._states = graph.states
         self._components = graph.components
@@ -268,9 +270,10 @@ class CheckpointManager:
         self,
         event: str,
         *,
-        logical_step: int,
+        logical_step: int | None = None,
         metrics: Mapping[str, float] | None = None,
         prepare: Callable[[Any], None] | None = None,
+        progress: Mapping[str, int] | None = None,
     ) -> SaveReport:
         """Offer one safe point to the selector and carry out its decision.
 
@@ -279,19 +282,23 @@ class CheckpointManager:
         replicated state equal across ranks, for example by broadcasting
         buffers. ``stop`` and ``final`` describe the state of the previous
         offer, so Latest is reported as current when that offer replaced it.
+        ``progress`` is the trainer's named counters. ``logical_step`` is that
+        map's ``logical_step`` when the trainer has one.
         """
 
         config, states, runtime = self._bound()
         if event not in EVENTS:
             raise CheckpointError(f"unknown save point event {event!r}")
-        if isinstance(logical_step, bool) or not isinstance(logical_step, int) or logical_step < 0:
-            raise CheckpointError("logical_step must be an integer >= 0")
+        progress_map = _offer_progress(logical_step, progress)
+        step = int(progress_map["logical_step"]) if "logical_step" in progress_map else 0
         current = self._latest_current and event in ("stop", "final")
         point = SavePoint(
             event=event,
-            logical_step=logical_step,
+            logical_step=step,
             metrics=_metrics(metrics),
             latest_is_current=current,
+            progress=progress_map,
+            progress_explicit=True,
         )
         decision = self._decide(point, runtime)
         report = SaveReport()
@@ -349,7 +356,7 @@ class CheckpointManager:
             self._latest_current = source.resolve() == self.latest_path.resolve()
         return report
 
-    def refuse_rewind(self, logical_step: int) -> None:
+    def refuse_rewind(self, logical_step: int | None) -> None:
         """Refuse to continue from a restored state that is behind Latest.
 
         A continued run drops metric rows past the restored step and its
@@ -363,12 +370,14 @@ class CheckpointManager:
         if self._latest_current or not latest.is_file():
             return
         try:
-            newest = int(_read_payload(latest)["logical_step"])
+            newest = _read_payload(latest)["logical_step"]
         except CheckpointError as exc:
             raise CheckpointError(
                 f"{LATEST_NAME} is unreadable ({exc}); move it aside before resuming from another checkpoint"
             ) from exc
-        if logical_step < newest:
+        if newest is None or logical_step is None:
+            return
+        if int(logical_step) < int(newest):
             raise CheckpointError(
                 f"the checkpoint is at logical step {logical_step}, behind {LATEST_NAME} at {newest}. "
                 "Resume continues the newest state. To start from an older checkpoint, "
@@ -437,7 +446,8 @@ class CheckpointManager:
                             runtime=runtime,
                             selector=self.selector,
                             directory=self.directory,
-                            logical_step=point.logical_step,
+                            logical_step=point.progress.get("logical_step"),
+                            progress=point.progress,
                             label="validation_pending" if point.event == "boundary_pending" else "step",
                             rngs=rngs,
                             provenance_sha256=provenance,
@@ -533,7 +543,7 @@ class CheckpointManager:
         payload = _read_finished(source)
         _validate_resume(payload, states, runtime, config, self._components, source, self.directory, self.selector)
         _apply_resume(payload, states, runtime, self.selector)
-        return RestoreReport("resume", int(payload["logical_step"]), states.ids(), ())
+        return RestoreReport("resume", _stored_step(payload), states.ids(), ())
 
     def _initialize_local(
         self,
@@ -548,7 +558,7 @@ class CheckpointManager:
         applied = _apply_initialize(payload, states, requested)
         if int(runtime.rank) == 0:
             _record_initialization(self.directory, source, payload, requested)
-        return RestoreReport("initialize", int(payload["logical_step"]), states.ids(), tuple(applied))
+        return RestoreReport("initialize", _stored_step(payload), states.ids(), tuple(applied))
 
     def _bound(self) -> tuple[ExperimentConfig, StateRegistry, Any]:
         if self._config is None or self._states is None or self._runtime is None:
@@ -564,7 +574,8 @@ def _payload(
     runtime: Any,
     selector: Selector,
     directory: Path,
-    logical_step: int,
+    logical_step: int | None,
+    progress: Mapping[str, int],
     label: str,
     rngs: list[Any],
     provenance_sha256: str,
@@ -573,7 +584,7 @@ def _payload(
     for state_id in states.ids():
         blobs[state_id] = states.owner(state_id).state_dict()
     trainer_blob = _trainer_blob(states, blobs)
-    if trainer_blob is not None and trainer_blob.get("logical_step") != logical_step:
+    if trainer_blob is not None and "logical_step" in trainer_blob and trainer_blob.get("logical_step") != logical_step:
         raise CheckpointError("checkpoint logical_step does not match the trainer")
     updates = trainer_blob.get("optimizer_updates") if trainer_blob is not None else {}
     if not isinstance(updates, dict):
@@ -591,6 +602,7 @@ def _payload(
         "label": label,
         "logical_step": logical_step,
         "optimizer_updates": {str(key): int(value) for key, value in updates.items()},
+        "progress": {str(key): int(value) for key, value in progress.items()},
         "output_directory": str(directory.resolve()),
         "parameter_ranks_agree": True,
         "provenance_sha256": provenance_sha256,
@@ -814,7 +826,7 @@ def _record_initialization(
         "checkpoint": str(source.resolve()),
         "checkpoint_sha256": digest.hexdigest(),
         "config_sha256": payload.get("config_sha256"),
-        "logical_step": int(payload["logical_step"]),
+        "logical_step": None if payload["logical_step"] is None else int(payload["logical_step"]),
         "provenance_sha256": payload.get("provenance_sha256"),
         "states": list(requested),
     }
@@ -957,9 +969,20 @@ def _read_payload(path: Path) -> dict[str, Any]:
     label = payload.get("label")
     if label not in _LABELS:
         raise CheckpointError(f"unknown checkpoint label {label!r}")
+    progress = payload.get("progress")
+    if not isinstance(progress, dict):
+        raise CheckpointError("checkpoint progress is missing")
+    for key, value in progress.items():
+        if not isinstance(key, str) or not key or isinstance(value, bool) or not isinstance(value, int) or value < 0:
+            raise CheckpointError("checkpoint progress is invalid")
     logical_step = payload.get("logical_step")
-    if isinstance(logical_step, bool) or not isinstance(logical_step, int) or logical_step < 0:
-        raise CheckpointError("checkpoint logical_step is invalid")
+    if "logical_step" in progress:
+        if progress["logical_step"] != logical_step:
+            raise CheckpointError("checkpoint logical_step does not match progress")
+        if isinstance(logical_step, bool) or not isinstance(logical_step, int) or logical_step < 0:
+            raise CheckpointError("checkpoint logical_step is invalid")
+    elif logical_step is not None:
+        raise CheckpointError("checkpoint logical_step is set without that progress key")
     return payload
 
 
@@ -975,6 +998,50 @@ def _read_finished(source: Path) -> dict[str, Any]:
     if not source.is_file():
         raise CheckpointError(f"checkpoint not found: {source}")
     return _read_payload(source)
+
+
+def _offer_progress(logical_step: int | None, progress: Mapping[str, int] | None) -> dict[str, int]:
+    if progress is None:
+        progress = {}
+    elif not isinstance(progress, Mapping):
+        raise CheckpointError("progress must be a mapping")
+    merged: dict[str, int] = {}
+    for key, value in progress.items():
+        if not isinstance(key, str) or not key:
+            raise CheckpointError("progress keys must be non-empty strings")
+        if isinstance(value, bool) or not isinstance(value, int) or value < 0:
+            raise CheckpointError(f"progress {key} must be an integer >= 0")
+        merged[key] = int(value)
+    if logical_step is not None:
+        if isinstance(logical_step, bool) or not isinstance(logical_step, int) or logical_step < 0:
+            raise CheckpointError("logical_step must be an integer >= 0")
+        if "logical_step" in merged and merged["logical_step"] != int(logical_step):
+            raise CheckpointError("logical_step does not match progress")
+        merged["logical_step"] = int(logical_step)
+    return merged
+
+
+def _stored_step(payload: dict[str, Any]) -> int | None:
+    value = payload["logical_step"]
+    return None if value is None else int(value)
+
+
+def _require_declared_progress(trainer: object, selector: Selector) -> None:
+    """Reject a periodic selector or evaluator whose counter the trainer does not publish."""
+
+    declared = getattr(trainer, "progress_keys", None)
+    if declared is None:
+        return
+    if not isinstance(declared, tuple) or not all(isinstance(item, str) and item for item in declared):
+        raise BuildError("progress_keys must be a tuple of names")
+    key = getattr(selector, "progress_key", None)
+    if isinstance(key, str) and key not in declared:
+        published = ", ".join(declared) if declared else "no progress"
+        raise BuildError(f"selector requires progress {key}, but the trainer publishes {published}")
+    for evaluator in getattr(trainer, "evaluators", ()) or ():
+        unit = getattr(getattr(evaluator, "schedule", None), "unit", None)
+        if unit in {"logical_step", "epoch"} and unit not in declared:
+            raise BuildError(f"evaluator requires progress {unit}")
 
 
 def _metrics(metrics: Mapping[str, float] | None) -> dict[str, float]:

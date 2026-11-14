@@ -62,11 +62,23 @@ class AudioPairEvaluator:
         self.schedule = EvaluationSchedule(every)
         self._completed: list[tuple[str, str, int]] = []
 
-    def due(self, *, logical_step: int, epoch: int | None, kind: str) -> bool:
-        token = self.schedule.token(logical_step=logical_step, epoch=epoch, source=self.source)
+    def due(
+        self,
+        *,
+        logical_step: int | None = None,
+        epoch: int | None = None,
+        kind: str,
+        progress: Mapping[str, int] | None = None,
+    ) -> bool:
+        token = self.schedule.token(
+            logical_step=logical_step,
+            epoch=epoch,
+            source=self.source,
+            progress=progress,
+        )
         if token in self._completed:
             return False
-        return self.schedule.due(logical_step=logical_step, epoch=epoch, kind=kind)
+        return self.schedule.due(logical_step=logical_step, epoch=epoch, kind=kind, progress=progress)
 
     def state_dict(self) -> dict[str, Any]:
         return {
@@ -97,8 +109,19 @@ class AudioPairEvaluator:
             restored.append((item[0], item[1], int(item[2])))
         self._completed = restored
 
-    def mark(self, *, logical_step: int, epoch: int | None) -> None:
-        token = self.schedule.token(logical_step=logical_step, epoch=epoch, source=self.source)
+    def mark(
+        self,
+        *,
+        logical_step: int | None = None,
+        epoch: int | None = None,
+        progress: Mapping[str, int] | None = None,
+    ) -> None:
+        token = self.schedule.token(
+            logical_step=logical_step,
+            epoch=epoch,
+            source=self.source,
+            progress=progress,
+        )
         if token not in self._completed:
             self._completed.append(token)
 
@@ -106,9 +129,10 @@ class AudioPairEvaluator:
         self,
         runtime: Any,
         *,
-        logical_step: int,
-        epoch: int | None,
+        logical_step: int | None = None,
+        epoch: int | None = None,
         predict: Any | None = None,
+        progress: Mapping[str, int] | None = None,
     ) -> list[MetricResult]:
         """Score the split. Rank-local statistics are summed before the result is built."""
 
@@ -140,7 +164,7 @@ class AudioPairEvaluator:
             raise RuntimeFailure(f"research evaluation failed: {failure}")
         merged = _sum_stats([item["stats"] for item in gathered])
         results = [metric.result_from(_slice_stats(merged, metric.name)) for metric in self.metrics]
-        self.mark(logical_step=logical_step, epoch=epoch)
+        self.mark(logical_step=logical_step, epoch=epoch, progress=progress)
         return results
 
     def _local_stats(self, runtime: Any, module: torch.nn.Module, epoch: int | None, predict: Any) -> dict[str, float]:

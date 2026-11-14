@@ -75,6 +75,7 @@ class MPSENetGANTrainer:
     """Discriminator-then-generator update for the official MP-SENet loss."""
 
     supports_training_control = True
+    progress_keys = ("logical_step", "epoch")
 
     def __init__(
         self,

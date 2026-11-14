@@ -28,6 +28,7 @@ class StandardTrainer:
     """Single-model, single-optimizer loop on micro-batches."""
 
     supports_training_control = True
+    progress_keys = ("logical_step", "epoch")
     training_metric_sources = ("train",)
     training_metric_names = ("train.mean_rank_loss",)
 
