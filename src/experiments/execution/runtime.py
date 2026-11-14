@@ -7,8 +7,9 @@ size is an error; this runtime does not fall back to CPU or to one process.
 
 AMP owns one ``torch.amp.GradScaler`` per process. The trainer calls
 ``autocast``, ``backward``, ``clip``, ``step``, and ``end_step``. The scaler
-is updated once at ``end_step``, after every optimizer in that logical step
-has been unscaled and either stepped or skipped together on all ranks.
+is updated once at ``end_step``, after every optimizer the trainer grouped
+into that call has been unscaled and either stepped or skipped together on
+all ranks. ``end_step`` commits the scaler. It is not a training-unit counter.
 """
 
 from __future__ import annotations
@@ -17,7 +18,7 @@ import math
 import os
 from collections.abc import Iterable, Iterator, Mapping
 from contextlib import AbstractContextManager, ExitStack, contextmanager, nullcontext
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import timedelta
 from typing import Any, Literal
 
@@ -61,6 +62,15 @@ class PreparedModel:
     parameters: tuple[torch.nn.Parameter, ...]
     state_module: torch.nn.Module
     policy: PreparePolicy
+
+    def __call__(self, *args: Any, **kwargs: Any) -> Any:
+        """Forward through the execution module, including a DDP wrapper.
+
+        Parameter objects stay the ones ``prepare_model`` published. This
+        call does not rewrap the module or rebuild an optimizer.
+        """
+
+        return self.module(*args, **kwargs)
 
 
 @dataclass(frozen=True)
@@ -206,6 +216,36 @@ class ProcessRuntime:
             policy=policy,
         )
 
+    def prepare(self, module: torch.nn.Module, policy: PreparePolicy) -> PreparedModel:
+        """Place and maybe wrap one module. Same operation as :meth:`prepare_model`."""
+
+        return self.prepare_model(module, policy)
+
+    @contextmanager
+    def sync_gradients(
+        self,
+        models: Iterable[Any],
+        *,
+        enabled: bool,
+    ) -> Iterator[None]:
+        """Surround one forward and the backward that belongs to it.
+
+        DDP reads the sync flag during forward. The matching backward must
+        run inside this same scope. ``enabled=False`` enters ``no_sync`` for
+        each DDP wrapper. CPU and world size 1 do not change gradients.
+        Batch metadata is not touched here; use :meth:`move` for tensors.
+        """
+
+        if not isinstance(enabled, bool):
+            raise RuntimeFailure("enabled must be a bool")
+        with ExitStack() as stack:
+            if not enabled:
+                for item in models:
+                    module = _execution_module(item)
+                    if isinstance(module, DistributedDataParallel):
+                        stack.enter_context(module.no_sync())
+            yield
+
     @contextmanager
     def sync_context(
         self,
@@ -213,22 +253,26 @@ class ProcessRuntime:
         *,
         sync: bool,
     ) -> Iterator[None]:
-        """Enter a forward scope.
+        """Enter a forward scope. Prefer :meth:`sync_gradients`.
 
-        DDP reads the sync flag during forward. The matching backward must
-        run inside this same scope. Turning synchronization off after forward
-        does not cancel an all-reduce the forward already installed.
+        ``sync`` is the older name of ``enabled``. The matching backward must
+        still run inside this same scope.
         """
 
         if not isinstance(sync, bool):
             raise RuntimeFailure("sync must be a bool")
-        with ExitStack() as stack:
-            if not sync:
-                for prepared in modules:
-                    module = prepared.module
-                    if isinstance(module, DistributedDataParallel):
-                        stack.enter_context(module.no_sync())
+        with self.sync_gradients(modules, enabled=sync):
             yield
+
+    def move(self, value: Any) -> Any:
+        """Move tensors onto this rank's device and leave other values as they are.
+
+        A training ``Batch`` keeps its sample ids, teacher kind, and sample
+        rate. A tensor that is already on this device is returned unchanged.
+        Modules are refused: :meth:`prepare_model` owns their placement.
+        """
+
+        return _move_value(value, self.device)
 
     def autocast(self) -> AbstractContextManager[None]:
         """Return CUDA FP16 autocast, or a no-op context for FP32."""
@@ -376,7 +420,12 @@ class ProcessRuntime:
             raise RuntimeFailure("loss is not finite")
 
     def end_step(self) -> None:
-        """Finish one logical step. AMP updates the scaler once."""
+        """Commit the GradScaler and clear this bracket's bookkeeping.
+
+        Call this after the optimizer updates that share one scaler update.
+        The call does not advance a training counter. AMP with no preceding
+        :meth:`step` is an error. FP32 only clears the bracket.
+        """
 
         try:
             if self._scaler is not None:
@@ -765,6 +814,52 @@ class ProcessRuntime:
         finally:
             optimizer.step = original  # type: ignore[method-assign]
         return called
+
+
+def _execution_module(item: Any) -> torch.nn.Module:
+    if isinstance(item, PreparedModel):
+        return item.module
+    if isinstance(item, torch.nn.Module):
+        return item
+    module = getattr(item, "module", None)
+    if isinstance(module, torch.nn.Module):
+        return module
+    raise RuntimeFailure("sync_gradients requires a prepared model or nn.Module")
+
+
+def _move_value(value: Any, device: torch.device) -> Any:
+    if isinstance(value, torch.nn.Module):
+        raise RuntimeFailure("move() does not relocate modules; prepare_model does")
+    if isinstance(value, torch.Tensor):
+        if value.device == device:
+            return value
+        non_blocking = device.type == "cuda" and value.device.type == "cpu"
+        return value.to(device, non_blocking=non_blocking)
+    from src.experiments.data.sample import Batch
+
+    if isinstance(value, Batch):
+        inputs = _move_value(value.inputs, device)
+        targets = _move_value(value.targets, device)
+        lengths = None if value.lengths is None else _move_value(value.lengths, device)
+        if inputs is value.inputs and targets is value.targets and lengths is value.lengths:
+            return value
+        return replace(value, inputs=inputs, targets=targets, lengths=lengths)
+    if isinstance(value, dict):
+        moved = {key: _move_value(item, device) for key, item in value.items()}
+        if all(new is old for new, old in zip(moved.values(), value.values(), strict=True)):
+            return value
+        return moved
+    if isinstance(value, tuple):
+        moved_tuple = tuple(_move_value(item, device) for item in value)
+        if all(new is old for new, old in zip(moved_tuple, value, strict=True)):
+            return value
+        return moved_tuple
+    if isinstance(value, list):
+        moved_list = [_move_value(item, device) for item in value]
+        if all(new is old for new, old in zip(moved_list, value, strict=True)):
+            return value
+        return moved_list
+    return value
 
 
 def _check_scaler_config(
