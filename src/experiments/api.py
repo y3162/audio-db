@@ -11,8 +11,6 @@ import os
 import sys
 from pathlib import Path
 
-import torch
-
 from src.experiments.core.builder import BuiltGraph, ExperimentBuilder
 from src.experiments.execution.checkpoint import (
     CheckpointManager,
@@ -91,14 +89,15 @@ class Experiment:
         ``resume`` continues this experiment from one of its own checkpoints
         or, given the experiment directory, from its Latest. Without it, a
         directory that already holds checkpoints or a finished run is refused
-        before anything is built or written, and the states listed under
-        ``initialize`` in the YAML are loaded from that checkpoint. A failed
-        restore does not start the trainer. CPU restore writes into the
-        prepared module in place, so the optimizer keeps those parameters.
+        before anything is built or written. The request is injected into
+        Lifecycle. The trainer's ``fit`` restores it, trains, and finishes.
+        A failed restore does not train. CPU restore writes into the prepared
+        module in place, so the optimizer keeps those parameters.
 
-        Under the launcher this process reports the trainer's outcome and the
-        launcher confirms it after every rank has exited. Run directly, this
-        process writes the final status itself.
+        Under the launcher the trainer reports the outcome and the launcher
+        confirms it after every rank has exited. Run directly, Lifecycle writes
+        the final status itself. This method prepares the directory and the
+        runtime, calls ``fit`` once, and releases resources.
         """
 
         if self._closed:
@@ -114,43 +113,26 @@ class Experiment:
                 raise BuildError("experiment is not built")
             from src.experiments.execution.lifecycle import Lifecycle
 
-            lifecycle = Lifecycle(self._checkpoint, self._graph.runtime, self.config)
-            self._lifecycle = lifecycle
-            lifecycle.start(resume=resume)
-            control = getattr(self._graph.trainer, "training_control", None)
-            if control is not None:
-                control.synchronize()
-            self._graph.states.seal()
-            self._running = True
-            from src.experiments.execution.signals import clear_interrupt, install_interrupt_handler
-
-            clear_interrupt()
-            install_interrupt_handler()
-            # After this barrier every rank handles SIGTERM as a stop request. RUNNING tells the launcher so.
-            self._barrier()
-            if self._is_primary():
-                self._write_status("RUNNING")
-            self._barrier()
-            from src.experiments.execution.profile import enabled as profile_enabled
-            from src.experiments.execution.profile import reset as reset_profile
-
-            if profile_enabled():
-                reset_profile()
-                runtime = self._graph.runtime
-                device = getattr(runtime, "device", None)
-                if device is not None and getattr(device, "type", None) == "cuda" and torch.cuda.is_available():
-                    torch.cuda.reset_peak_memory_stats(int(device.index or 0))
             trainer = self._graph.trainer
-            if callable(getattr(type(trainer), "fit", None)):
-                trainer.runtime = self._graph.runtime  # type: ignore[attr-defined]
-                trainer.lifecycle = lifecycle  # type: ignore[attr-defined]
-                result = trainer.fit()  # type: ignore[attr-defined]
-            else:
-                result = trainer.run(self._graph.runtime, self._checkpoint)  # type: ignore[attr-defined]
+            if not callable(getattr(type(trainer), "fit", None)):
+                raise BuildError(f"component {self.config.entry}: trainer has no fit()")
+            lifecycle = Lifecycle(
+                self._checkpoint,
+                self._graph.runtime,
+                self.config,
+                resume_request=resume,
+                states=self._graph.states,
+                control=getattr(trainer, "training_control", None),
+                session=True,
+            )
+            self._lifecycle = lifecycle
+            trainer.runtime = self._graph.runtime  # type: ignore[attr-defined]
+            trainer.lifecycle = lifecycle  # type: ignore[attr-defined]
+            result = trainer.fit()  # type: ignore[attr-defined]
             if not isinstance(result, RunResult):
                 raise BuildError(f"component {self.config.entry}: trainer did not return RunResult")
-            control = getattr(self._graph.trainer, "training_control", None)
-            lifecycle.finish(result, primary=self._is_primary(), control=control)
+            if not lifecycle.finished:
+                raise BuildError(f"component {self.config.entry}: fit did not finish the lifecycle")
             self._barrier()
             self._ran = True
             return result
@@ -258,9 +240,10 @@ class Experiment:
         if self._directory is not None and error is not None and launch_id() is not None:
             # The launcher collects what each rank raised. Rank 0 alone owns status.json.
             record_failure(self._directory, self._rank(), error)
+        engaged = bool(getattr(self._lifecycle, "engaged", False))
         if self._directory is not None and self._is_primary():
             status_path = self._directory / "status.json"
-            if self._running or not status_path.is_file():
+            if self._running or engaged or not status_path.is_file():
                 details = {} if error is None else {"error": f"{type(error).__name__}: {error}"[:2000]}
                 try:
                     self._write_status("FAILED", **details)

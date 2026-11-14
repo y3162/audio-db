@@ -236,7 +236,9 @@ def main() -> None:
     checkpoint = NoCheckpoints(OUT / "mossformer-trainer")
     checkpoint.directory.mkdir(parents=True, exist_ok=True)
     _seed()
-    result = trainer.run(runtime, checkpoint)
+    from src.experiments.execution.direct import run_direct
+
+    result = run_direct(trainer, runtime, checkpoint)
     report = {
         "device": str(device),
         "official_function": "solver.Solver._run_one_epoch_mossformergan_se_16k",

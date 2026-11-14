@@ -16,16 +16,30 @@ from src.experiments.execution.checkpoint import CheckpointManager, SaveReport
 from src.experiments.execution.results import RunResult
 
 _REASONS = frozenset({"completed", "interrupted", "early_stopping"})
+_UNSET = object()
 
 
 class Lifecycle:
     """One start and one finish around a trainer run.
 
-    ``start`` restores a resume or an initialization. ``finish`` publishes the
-    process outcome once. Training calls ``save_if_needed`` in between.
+    ``start`` restores a resume or an initialization. When Experiment constructed
+    this object with ``session=True``, ``start`` also seals state, installs the
+    stop signal, and publishes ``RUNNING``. ``finish`` publishes the process
+    outcome once. The trainer calls both. Training calls ``save_if_needed`` in
+    between. This class does not choose the training order.
     """
 
-    def __init__(self, checkpoint: CheckpointManager, runtime: Any, config: ExperimentConfig) -> None:
+    def __init__(
+        self,
+        checkpoint: CheckpointManager,
+        runtime: Any,
+        config: ExperimentConfig,
+        *,
+        resume_request: str | Path | None = None,
+        states: Any = None,
+        control: Any = None,
+        session: bool = False,
+    ) -> None:
         if not isinstance(checkpoint, CheckpointManager):
             raise CheckpointError("lifecycle requires a checkpoint manager")
         if not isinstance(config, ExperimentConfig):
@@ -33,8 +47,13 @@ class Lifecycle:
         self.checkpoint = checkpoint
         self.runtime = runtime
         self.config = config
+        self.resume_request = resume_request
+        self.states = states
+        self.control = control
+        self.session = bool(session)
         self.restore_report: Any = None
         self.reason: str | None = None
+        self.engaged = False
         self._started = False
         self._finished = False
 
@@ -46,18 +65,24 @@ class Lifecycle:
     def finished(self) -> bool:
         return self._finished
 
-    def start(self, *, resume: str | Path | None = None) -> Any:
-        """Restore once. A second call is an error, including after a failure."""
+    def start(self, *, resume: str | Path | None | object = _UNSET) -> Any:
+        """Restore once, then open the session when Experiment asked for one.
+
+        A second call is an error, including after a failure. Omit ``resume``
+        to use the request Experiment injected. Pass ``None`` to start without
+        a resume even when a request was injected.
+        """
 
         if self._started:
             raise CheckpointError("lifecycle has already started")
         if self._finished:
             raise CheckpointError("lifecycle has finished")
+        chosen = self.resume_request if resume is _UNSET else resume
         directory = self.checkpoint.directory
-        if resume is not None:
+        if chosen is not None:
             if (directory / "complete.json").is_file():
                 raise CheckpointError("resume refused because complete.json exists")
-            restored = self.checkpoint.restore(Path(resume), mode="resume")
+            restored = self.checkpoint.restore(Path(chosen), mode="resume")
             self.checkpoint.refuse_rewind(restored.logical_step)
             self.restore_report = restored
         elif self.config.initialize is not None:
@@ -67,6 +92,17 @@ class Lifecycle:
                 states=self.config.initialize.states,
             )
         self._started = True
+        if self.control is not None:
+            synchronize = getattr(self.control, "synchronize", None)
+            if callable(synchronize):
+                synchronize()
+        if self.states is not None:
+            self.states.seal()
+        if self.session:
+            # Matches the old Experiment flag: a failure while opening the
+            # session replaces status, a failure during restore does not.
+            self.engaged = True
+            self._open_session()
         return self.restore_report
 
     def save_if_needed(
@@ -98,11 +134,13 @@ class Lifecycle:
             prepare=prepare,
         )
 
-    def finish(self, result: RunResult, *, primary: bool, control: Any = None) -> None:
-        """Record the outcome once. The launcher still writes the final verdict.
+    def finish(self, result: RunResult, *, primary: bool | None = None, control: Any = None) -> RunResult:
+        """Record the outcome once and return it. The launcher still writes the final verdict.
 
         A direct run writes ``complete.json`` for a normal completion. Under
         the launcher this only reports the outcome on the still-running status.
+        ``primary`` defaults to rank 0. ``control`` defaults to the stopping
+        control Experiment injected.
         """
 
         if not self._started:
@@ -113,6 +151,10 @@ class Lifecycle:
             raise BuildError("trainer did not return RunResult")
         if result.stop_reason not in _REASONS:
             raise BuildError(f"unknown stop reason {result.stop_reason}")
+        if control is None:
+            control = self.control
+        if primary is None:
+            primary = self._rank() == 0
         details: dict[str, Any] = {}
         if result.stop_reason == "early_stopping":
             if control is None or not getattr(control, "stopped", False) or not self.checkpoint.latest_is_current:
@@ -121,7 +163,7 @@ class Lifecycle:
         self._finished = True
         self.reason = result.stop_reason
         if not primary:
-            return
+            return result
         from src.experiments.api import launch_id
         from src.experiments.execution.status import write_complete, write_status
 
@@ -135,12 +177,50 @@ class Lifecycle:
                 launch_id=launch_id(),
                 **details,
             )
-            return
+            return result
         if result.stop_reason in {"completed", "early_stopping"}:
             write_complete(directory, result.logical_step, **details)
             write_status(directory, "COMPLETED", logical_step=result.logical_step, **details)
-            return
+            return result
         write_status(directory, "INTERRUPTED", logical_step=result.logical_step)
+        return result
+
+    def _rank(self) -> int:
+        return int(getattr(self.runtime, "rank", 0))
+
+    def _barrier(self) -> None:
+        barrier = getattr(self.runtime, "barrier", None)
+        if callable(barrier):
+            barrier()
+
+    def _open_session(self) -> None:
+        """Publish RUNNING after every rank can see a stop request."""
+
+        from src.experiments.api import launch_id
+        from src.experiments.execution.checkpoint import write_status
+        from src.experiments.execution.signals import clear_interrupt, install_interrupt_handler
+
+        clear_interrupt()
+        install_interrupt_handler()
+        self._barrier()
+        if self._rank() == 0:
+            details: dict[str, Any] = {}
+            supervisor = launch_id()
+            if supervisor is not None:
+                details["launch_id"] = supervisor
+            write_status(self.checkpoint.directory, "RUNNING", **details)
+        self._barrier()
+        from src.experiments.execution.profile import enabled as profile_enabled
+        from src.experiments.execution.profile import reset as reset_profile
+
+        if profile_enabled():
+            reset_profile()
+            device = getattr(self.runtime, "device", None)
+            if device is not None and getattr(device, "type", None) == "cuda":
+                import torch
+
+                if torch.cuda.is_available():
+                    torch.cuda.reset_peak_memory_stats(int(device.index or 0))
 
 
 def _merge_progress(logical_step: int | None, progress: Mapping[str, int] | None) -> dict[str, int]:

@@ -133,7 +133,9 @@ def _trainer_steps(device, initial, clean, noisy) -> dict:
     directory = OUT / "gridnet-trainer-48000-b4"
     checkpoint = NoCheckpoints(directory)
     checkpoint.directory.mkdir(parents=True, exist_ok=True)
-    result = trainer.run(runtime, checkpoint)
+    from src.experiments.execution.direct import run_direct
+
+    result = run_direct(trainer, runtime, checkpoint)
     state = _cpu_state(model.state_module.generator)
     losses = list(trainer.losses)
     runtime.shutdown()

@@ -173,20 +173,10 @@ class MPSENetGANTrainer:
         self._average_calls = 0
         self._generator_synced_during_backward = False
 
-    def run(self, runtime: ProcessRuntime, checkpoint: CheckpointManager) -> RunResult:
-        """Bind a direct caller and train. Experiment calls :meth:`fit`."""
-
-        self.runtime = runtime
-        current = getattr(self, "lifecycle", None)
-        if current is None or getattr(current, "checkpoint", None) is not checkpoint:
-            from src.experiments.training.trainers import _DirectLifecycle
-
-            self.lifecycle = _DirectLifecycle(checkpoint)
-        return self.fit()
-
     def fit(self) -> RunResult:
         """Train until the step budget, an epoch cap, or an interrupt."""
 
+        self.lifecycle.start()
         runtime = self.runtime
         checkpoint = self.lifecycle.checkpoint
 
@@ -906,11 +896,13 @@ class MPSENetGANTrainer:
         self.stop_reason = reason
         if reason == "completed" and should_stop(self):
             reason = "early_stopping"
-        return RunResult(
-            stop_reason=reason,
-            logical_step=self.logical_step,
-            optimizer_updates=dict(self.optimizer_updates),
-            output_dir=checkpoint.directory,
+        return self.lifecycle.finish(
+            RunResult(
+                stop_reason=reason,
+                logical_step=self.logical_step,
+                optimizer_updates=dict(self.optimizer_updates),
+                output_dir=checkpoint.directory,
+            )
         )
 
 

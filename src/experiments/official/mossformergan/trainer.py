@@ -187,20 +187,10 @@ class MossFormerGANTrainer:
         self._average_calls = 0
         self.last_components: dict[str, float] | None = None
 
-    def run(self, runtime: ProcessRuntime, checkpoint: CheckpointManager) -> RunResult:
-        """Bind a direct caller and train. Experiment calls :meth:`fit`."""
-
-        self.runtime = runtime
-        current = getattr(self, "lifecycle", None)
-        if current is None or getattr(current, "checkpoint", None) is not checkpoint:
-            from src.experiments.training.trainers import _DirectLifecycle
-
-            self.lifecycle = _DirectLifecycle(checkpoint)
-        return self.fit()
-
     def fit(self) -> RunResult:
         """Train until the step budget, the plateau stop, or a finite all-skip epoch."""
 
+        self.lifecycle.start()
         runtime = self.runtime
         checkpoint = self.lifecycle.checkpoint
 
@@ -976,11 +966,13 @@ class MossFormerGANTrainer:
             self.halt_reason = reason
         if reason == "completed" and should_stop(self):
             reason = "early_stopping"
-        return RunResult(
-            stop_reason=reason,
-            logical_step=self.logical_step,
-            optimizer_updates=dict(self.optimizer_updates),
-            output_dir=checkpoint.directory,
+        return self.lifecycle.finish(
+            RunResult(
+                stop_reason=reason,
+                logical_step=self.logical_step,
+                optimizer_updates=dict(self.optimizer_updates),
+                output_dir=checkpoint.directory,
+            )
         )
 
 

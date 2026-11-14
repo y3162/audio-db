@@ -5,6 +5,7 @@ from __future__ import annotations
 import time
 from pathlib import Path
 
+from src.experiments.execution.direct import run_direct
 from src.experiments.results import RunResult
 from src.experiments.signals import interrupt_requested, ranks_should_stop
 from src.experiments.trainers import _append_jsonl, _rewind_metrics
@@ -41,7 +42,13 @@ class InterruptProbe:
         self._restored = True
 
     def run(self, runtime: object, checkpoint: object):  # type: ignore[no-untyped-def]
-        path = Path(checkpoint.directory) / "metrics.jsonl"  # type: ignore[attr-defined]
+        return run_direct(self, runtime, checkpoint)
+
+    def fit(self):  # type: ignore[no-untyped-def]
+        self.lifecycle.start()
+        checkpoint = self.lifecycle.checkpoint
+        runtime = self.runtime
+        path = Path(checkpoint.directory) / "metrics.jsonl"
         rank = int(getattr(runtime, "rank", 0))
         if self._restored:
             if rank == 0:
@@ -55,12 +62,14 @@ class InterruptProbe:
             if ranks_should_stop(runtime):
                 self.stop_reason = "interrupted"
                 if self.logical_step > 0:
-                    checkpoint.offer("stop", logical_step=self.logical_step)  # type: ignore[attr-defined]
-                return RunResult(
-                    stop_reason="interrupted",
-                    logical_step=self.logical_step,
-                    optimizer_updates=dict(self.optimizer_updates),
-                    output_dir=checkpoint.directory,  # type: ignore[attr-defined]
+                    self.lifecycle.save_if_needed("stop", logical_step=self.logical_step)
+                return self.lifecycle.finish(
+                    RunResult(
+                        stop_reason="interrupted",
+                        logical_step=self.logical_step,
+                        optimizer_updates=dict(self.optimizer_updates),
+                        output_dir=checkpoint.directory,
+                    )
                 )
             _pause(0.2)
             self.logical_step += 1
@@ -75,14 +84,16 @@ class InterruptProbe:
                         "sample_id": f"probe-{self.logical_step}",
                     },
                 )
-            checkpoint.offer("step", logical_step=self.logical_step)  # type: ignore[attr-defined]
+            self.lifecycle.save_if_needed("step", logical_step=self.logical_step)
         self.stop_reason = "completed"
-        checkpoint.offer("final", logical_step=self.logical_step)  # type: ignore[attr-defined]
-        return RunResult(
-            stop_reason="completed",
-            logical_step=self.logical_step,
-            optimizer_updates=dict(self.optimizer_updates),
-            output_dir=checkpoint.directory,  # type: ignore[attr-defined]
+        self.lifecycle.save_if_needed("final", logical_step=self.logical_step)
+        return self.lifecycle.finish(
+            RunResult(
+                stop_reason="completed",
+                logical_step=self.logical_step,
+                optimizer_updates=dict(self.optimizer_updates),
+                output_dir=checkpoint.directory,
+            )
         )
 
 

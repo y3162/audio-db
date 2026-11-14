@@ -84,23 +84,17 @@ class StandardTrainer:
         self.stop_reason = "initialized"
         self._restored = False
 
-    def run(self, runtime: ProcessRuntime, checkpoint: CheckpointManager) -> RunResult:
-        """Bind a direct caller and train. Experiment calls :meth:`fit` itself."""
-
-        self.runtime = runtime
-        current = getattr(self, "lifecycle", None)
-        if current is None or getattr(current, "checkpoint", None) is not checkpoint:
-            self.lifecycle = _DirectLifecycle(checkpoint)
-        return self.fit()
-
     def fit(self) -> RunResult:
         """Run until ``max_logical_steps``. A restored trainer continues.
 
-        The loss is divided by accumulation. A new run clears ``metrics.jsonl``.
+        ``lifecycle.start`` restores when Experiment asked for a resume. The
+        loss is divided by accumulation. A new run clears ``metrics.jsonl``.
         Resume keeps rows at or before the restored logical step and drops
-        anything written past that commit.
+        anything written past that commit. ``lifecycle.finish`` publishes the
+        outcome once.
         """
 
+        self.lifecycle.start()
         runtime = self.runtime
         checkpoint = self.lifecycle.checkpoint
         component_id = getattr(self, "_experiment_component_id", "trainer")
@@ -141,11 +135,13 @@ class StandardTrainer:
                 if self.logical_step > 0:
                     self._offer(checkpoint, "stop")
                 self.stop_reason = "interrupted"
-                return RunResult(
-                    stop_reason="interrupted",
-                    logical_step=self.logical_step,
-                    optimizer_updates=dict(self.optimizer_updates),
-                    output_dir=checkpoint.directory,
+                return self.lifecycle.finish(
+                    RunResult(
+                        stop_reason="interrupted",
+                        logical_step=self.logical_step,
+                        optimizer_updates=dict(self.optimizer_updates),
+                        output_dir=checkpoint.directory,
+                    )
                 )
             self._before_logical_step(runtime)
             view = self.data.train_epoch(epoch, start_update=index)
@@ -215,11 +211,13 @@ class StandardTrainer:
                 _close_epoch_view(view)
         self._offer(checkpoint, "final")
         self.stop_reason = "early_stopping" if should_stop(self) else "completed"
-        return RunResult(
-            stop_reason=self.stop_reason,
-            logical_step=self.logical_step,
-            optimizer_updates=dict(self.optimizer_updates),
-            output_dir=checkpoint.directory,
+        return self.lifecycle.finish(
+            RunResult(
+                stop_reason=self.stop_reason,
+                logical_step=self.logical_step,
+                optimizer_updates=dict(self.optimizer_updates),
+                output_dir=checkpoint.directory,
+            )
         )
 
     def state_dict(self) -> dict[str, Any]:
@@ -306,22 +304,6 @@ class StandardTrainer:
         }
         with path.open("a", encoding="utf-8") as handle:
             handle.write(json.dumps(record, sort_keys=True) + "\n")
-
-
-class _DirectLifecycle:
-    """Save adapter for callers that still pass a checkpoint into ``run``."""
-
-    def __init__(self, checkpoint: CheckpointManager) -> None:
-        self.checkpoint = checkpoint
-
-    def save_if_needed(self, event: str, **kwargs: Any) -> Any:
-        return self.checkpoint.offer(
-            event,
-            logical_step=kwargs.get("logical_step"),
-            metrics=kwargs.get("metrics"),
-            prepare=kwargs.get("prepare"),
-            progress=kwargs.get("progress"),
-        )
 
 
 def _close_epoch_view(view: object) -> None:
@@ -420,10 +402,9 @@ class GanTrainer:
         self.max_logical_steps = max_logical_steps
 
     def fit(self) -> RunResult:
-        return self.run(getattr(self, "runtime", None), getattr(getattr(self, "lifecycle", None), "checkpoint", None))
-
-    def run(self, runtime: ProcessRuntime, checkpoint: CheckpointManager) -> RunResult:
-        del runtime, checkpoint
+        lifecycle = getattr(self, "lifecycle", None)
+        if lifecycle is not None:
+            lifecycle.start()
         raise ExperimentError("GanTrainer training is not implemented in Phase 1")
 
     def state_dict(self) -> dict[str, Any]:
@@ -454,10 +435,9 @@ class MixtureTrainer:
         self.max_logical_steps = max_logical_steps
 
     def fit(self) -> RunResult:
-        return self.run(getattr(self, "runtime", None), getattr(getattr(self, "lifecycle", None), "checkpoint", None))
-
-    def run(self, runtime: ProcessRuntime, checkpoint: CheckpointManager) -> RunResult:
-        del runtime, checkpoint
+        lifecycle = getattr(self, "lifecycle", None)
+        if lifecycle is not None:
+            lifecycle.start()
         raise ExperimentError("MixtureTrainer training is not implemented in Phase 1")
 
     def state_dict(self) -> dict[str, Any]:

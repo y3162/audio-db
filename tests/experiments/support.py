@@ -12,6 +12,7 @@ from torch import nn
 
 from src.experiments.data.fixed_pair import SnapshotDataModule
 from src.experiments.errors import DataError
+from src.experiments.execution.direct import run_direct
 from src.experiments.runtime import PreparePolicy, PreparedModel, ProcessRuntime
 from src.experiments.selectors import Decision, SavePoint, StandardSelector
 from src.experiments.trainers import StandardTrainer
@@ -88,6 +89,11 @@ class NullTrainer:
     def __init__(self) -> None:
         Timeline.events.append("trainer")
 
+    def fit(self) -> None:
+        if getattr(self, "lifecycle", None) is not None:
+            self.lifecycle.start()
+        raise RuntimeError("NullTrainer cannot train")
+
     def run(self, runtime: object, checkpoint: object) -> None:
         del runtime, checkpoint
         raise RuntimeError("NullTrainer cannot train")
@@ -116,6 +122,11 @@ class CaptureTrainer:
         self.data = data
         self.optimizer = optimizer
         self.max_logical_steps = max_logical_steps
+
+    def fit(self) -> None:
+        if getattr(self, "lifecycle", None) is not None:
+            self.lifecycle.start()
+        raise RuntimeError("CaptureTrainer cannot train")
 
     def run(self, runtime: object, checkpoint: object) -> None:
         del runtime, checkpoint
@@ -209,6 +220,11 @@ class InspectTrainer:
 
         self._trainer = StandardTrainer(*args, **kwargs)  # type: ignore[arg-type]
 
+    def fit(self):  # type: ignore[no-untyped-def]
+        self._trainer.runtime = self.runtime
+        self._trainer.lifecycle = self.lifecycle
+        return self.run(self.runtime, self.lifecycle.checkpoint)
+
     def run(self, runtime: object, checkpoint: object):  # type: ignore[no-untyped-def]
         from torch.nn.parallel import DistributedDataParallel
 
@@ -232,7 +248,7 @@ class InspectTrainer:
         expected = "nccl" if getattr(device, "type", "cpu") == "cuda" else "gloo"
         if getattr(runtime, "backend", None) != expected:
             raise RuntimeError(f"backend is {getattr(runtime, 'backend', None)}")
-        return self._trainer.run(runtime, checkpoint)  # type: ignore[arg-type]
+        return run_direct(self._trainer, runtime, checkpoint)
 
     def state_dict(self) -> dict[str, object]:
         return self._trainer.state_dict()
@@ -255,9 +271,14 @@ class TamperTrainer:
         self._trainer = StandardTrainer(*args, **kwargs)  # type: ignore[arg-type]
         self.tamper = tamper
 
+    def fit(self):  # type: ignore[no-untyped-def]
+        self._trainer.runtime = self.runtime
+        self._trainer.lifecycle = self.lifecycle
+        return self.run(self.runtime, self.lifecycle.checkpoint)
+
     def run(self, runtime: object, checkpoint: object):  # type: ignore[no-untyped-def]
         self._trainer._before_checkpoint = self._before_checkpoint  # type: ignore[method-assign]
-        return self._trainer.run(runtime, checkpoint)  # type: ignore[arg-type]
+        return run_direct(self._trainer, runtime, checkpoint)
 
     def _before_checkpoint(self, runtime: object, checkpoint: object) -> None:
         import hashlib
@@ -337,8 +358,13 @@ class KillDuringSaveTrainer:
         self.kill_step = int(kill_step)
         self.marker = str(marker)
 
+    def fit(self):  # type: ignore[no-untyped-def]
+        self._trainer.runtime = self.runtime
+        self._trainer.lifecycle = self.lifecycle
+        return self.run(self.runtime, self.lifecycle.checkpoint)
+
     def run(self, runtime: object, checkpoint: object):  # type: ignore[no-untyped-def]
-        return self._trainer.run(runtime, checkpoint)  # type: ignore[arg-type]
+        return run_direct(self._trainer, runtime, checkpoint)
 
     def state_dict(self) -> dict[str, object]:
         state = self._trainer.state_dict()
@@ -397,6 +423,11 @@ class FaultTrainer:
         self.marker = Path(marker)
         self.delay = float(delay)
 
+    def fit(self):  # type: ignore[no-untyped-def]
+        self._trainer.runtime = self.runtime
+        self._trainer.lifecycle = self.lifecycle
+        return self.run(self.runtime, self.lifecycle.checkpoint)
+
     def run(self, runtime: object, checkpoint: object):  # type: ignore[no-untyped-def]
         import time
 
@@ -427,7 +458,7 @@ class FaultTrainer:
                 time.sleep(3600)
 
         trainer._before_logical_step = before  # type: ignore[method-assign]
-        result = trainer.run(runtime, checkpoint)  # type: ignore[arg-type]
+        result = run_direct(trainer, runtime, checkpoint)
         if self.fault == "exit_late" and armed:
             import atexit
 
@@ -464,6 +495,12 @@ class DisagreeTrainer:
 
     def __init__(self, max_logical_steps: int = 1) -> None:
         self.max_logical_steps = max_logical_steps
+
+    def fit(self) -> None:
+        self.lifecycle.start()
+        flag = int(getattr(self.runtime, "rank", 0)) == 0
+        self.runtime.agree(flag, policy="identical")  # type: ignore[attr-defined]
+        raise RuntimeError("agree returned despite a disagreement")
 
     def run(self, runtime: object, checkpoint: object) -> None:
         del checkpoint
@@ -533,6 +570,11 @@ class ScaleBumpTrainer:
         self.restore_step = None if restore_step is None else int(restore_step)
         self.restore_scale = None if restore_scale is None else float(restore_scale)
 
+    def fit(self):  # type: ignore[no-untyped-def]
+        self._trainer.runtime = self.runtime
+        self._trainer.lifecycle = self.lifecycle
+        return self.run(self.runtime, self.lifecycle.checkpoint)
+
     def run(self, runtime: object, checkpoint: object):  # type: ignore[no-untyped-def]
         trainer = self._trainer
 
@@ -543,7 +585,7 @@ class ScaleBumpTrainer:
                 runtime_arg.set_grad_scale(self.restore_scale)  # type: ignore[attr-defined]
 
         trainer._before_logical_step = before  # type: ignore[method-assign]
-        return trainer.run(runtime, checkpoint)  # type: ignore[arg-type]
+        return run_direct(trainer, runtime, checkpoint)
 
     def state_dict(self) -> dict[str, object]:
         return self._trainer.state_dict()
@@ -568,6 +610,11 @@ class RankOverflowTrainer:
         self._trainer = StandardTrainer(*args, **kwargs)  # type: ignore[arg-type]
         self.overflow_step = int(overflow_step)
 
+    def fit(self):  # type: ignore[no-untyped-def]
+        self._trainer.runtime = self.runtime
+        self._trainer.lifecycle = self.lifecycle
+        return self.run(self.runtime, self.lifecycle.checkpoint)
+
     def run(self, runtime: object, checkpoint: object):  # type: ignore[no-untyped-def]
         trainer = self._trainer
 
@@ -578,7 +625,7 @@ class RankOverflowTrainer:
             parameter.grad = torch.full_like(parameter, float("inf"))
 
         trainer._before_optimizer_step = before  # type: ignore[method-assign]
-        return trainer.run(runtime, checkpoint)  # type: ignore[arg-type]
+        return run_direct(trainer, runtime, checkpoint)
 
     def state_dict(self) -> dict[str, object]:
         return self._trainer.state_dict()
@@ -598,6 +645,11 @@ class CudaConsumeTrainer:
 
         self._trainer = StandardTrainer(*args, **kwargs)  # type: ignore[arg-type]
 
+    def fit(self):  # type: ignore[no-untyped-def]
+        self._trainer.runtime = self.runtime
+        self._trainer.lifecycle = self.lifecycle
+        return self.run(self.runtime, self.lifecycle.checkpoint)
+
     def run(self, runtime: object, checkpoint: object):  # type: ignore[no-untyped-def]
         trainer = self._trainer
         original = trainer._before_checkpoint
@@ -609,7 +661,7 @@ class CudaConsumeTrainer:
             original(runtime_arg, checkpoint_arg)  # type: ignore[arg-type]
 
         trainer._before_checkpoint = before  # type: ignore[method-assign]
-        return trainer.run(runtime, checkpoint)  # type: ignore[arg-type]
+        return run_direct(trainer, runtime, checkpoint)
 
     def state_dict(self) -> dict[str, object]:
         return self._trainer.state_dict()

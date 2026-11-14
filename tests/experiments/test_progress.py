@@ -24,6 +24,9 @@ class NoCounterTrainer:
     def __init__(self, **kwargs: object) -> None:
         del kwargs
 
+    def fit(self) -> None:
+        raise AssertionError("this trainer is not run")
+
     def run(self, runtime: object, checkpoint: object) -> None:
         del runtime, checkpoint
         raise AssertionError("this trainer is not run")

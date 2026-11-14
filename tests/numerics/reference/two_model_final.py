@@ -1079,7 +1079,9 @@ def _semamba_trainer_once(sem, device, trainer_cls, gen_cls, mrd_cls, cqt_cls, p
         opt_g.state.clear()
         opt_d.state.clear()
         trainer.sync_trace.clear()
-        result = trainer.run(runtime, checkpoint_cls(directory))
+        from src.experiments.execution.direct import run_direct
+
+        result = run_direct(trainer, runtime, checkpoint_cls(directory))
         run_trace = list(trainer.sync_trace)
         graph = _retained(same_trace) and _retained(run_trace)
         return {
@@ -1274,7 +1276,9 @@ def _mp_trainer_once(cmp, h, device, trainer_cls, gen_cls, disc_cls, policy_cls,
         _load_state(prepared_d.state_module.discriminator, init_state["d"])
         opt_g.state.clear()
         opt_d.state.clear()
-        result = trainer.run(runtime, checkpoint_cls(directory))
+        from src.experiments.execution.direct import run_direct
+
+        result = run_direct(trainer, runtime, checkpoint_cls(directory))
         return {
             "flags": _flags(),
             "init_gap": init_gap,

@@ -102,7 +102,9 @@ def main() -> None:
     directory = OUT / "df-trainer"
     checkpoint = NoCheckpoints(directory)
     checkpoint.directory.mkdir(parents=True, exist_ok=True)
-    result = trainer.run(runtime, checkpoint)
+    from src.experiments.execution.direct import run_direct
+
+    result = run_direct(trainer, runtime, checkpoint)
     valid_batch = batches[0]
     trainer.data._valid = [valid_batch]
 
