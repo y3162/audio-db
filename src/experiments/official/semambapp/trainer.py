@@ -39,7 +39,6 @@ from src.experiments.runtime import PreparedModel, ProcessRuntime
 from src.experiments.selectors import scalar_metrics
 from src.experiments.trainers import (
     _append_jsonl,
-    _batch_on_device,
     _close_epoch_view,
     _rank,
     _rewind_metrics,
@@ -173,7 +172,21 @@ class SEMambaPPTrainer:
         self._shadow = None
 
     def run(self, runtime: ProcessRuntime, checkpoint: CheckpointManager) -> RunResult:
+        """Bind a direct caller and train. Experiment calls :meth:`fit`."""
+
+        self.runtime = runtime
+        current = getattr(self, "lifecycle", None)
+        if current is None or getattr(current, "checkpoint", None) is not checkpoint:
+            from src.experiments.training.trainers import _DirectLifecycle
+
+            self.lifecycle = _DirectLifecycle(checkpoint)
+        return self.fit()
+
+    def fit(self) -> RunResult:
         """Train until the step budget, an epoch cap, or an interrupt."""
+
+        runtime = self.runtime
+        checkpoint = self.lifecycle.checkpoint
 
         from src.experiments.evaluation.boundary import research_attached, rewind_on_resume
 
@@ -364,7 +377,7 @@ class SEMambaPPTrainer:
                     raise RuntimeFailure("a rank rejected its micro-batch before the generator forward")
                 if reuse_graph:
                     self.sync_trace.append("generator_forward_sync")
-                    with runtime.sync_context([self.generator], sync=True):
+                    with runtime.sync_gradients([self.generator], enabled=True):
                         parts = self._generator_forward(runtime, clean, noisy, preview=False)
                     self.generator_graph_forwards += 1
                     audio = parts["audio"]
@@ -377,7 +390,7 @@ class SEMambaPPTrainer:
                     audio = preview["audio"]
                     cached.append((clean, noisy, None))
                 self.sync_trace.append("discriminator_sync" if last else "discriminator_nosync")
-                with runtime.sync_context([self.mrd, self.cqt], sync=last):
+                with runtime.sync_gradients([self.mrd, self.cqt], enabled=last):
                     loss = self._discriminator_loss(runtime, clean, audio.detach())
                     self._backward_if_finite(runtime, loss / self.accumulation, "discriminator loss")
                 term = loss.detach()
@@ -413,7 +426,7 @@ class SEMambaPPTrainer:
                     last = index == len(cached) - 1
                     if parts is None:
                         self.sync_trace.append("generator_reforward_sync" if last else "generator_reforward_nosync")
-                        with runtime.sync_context([self.generator], sync=last):
+                        with runtime.sync_gradients([self.generator], enabled=last):
                             parts = self._generator_forward(runtime, clean, _noisy, preview=False)
                             self.generator_reforward_forwards += 1
                             generator_total += self._generator_backward(runtime, clean, parts, component_totals)
@@ -628,7 +641,7 @@ class SEMambaPPTrainer:
         for batch in self.data.validation_epoch(trainer_epoch):
             if not isinstance(batch, Batch):
                 raise RuntimeFailure(f"component {component_id}: validation did not return a batch")
-            batch = _batch_on_device(batch, runtime.device)
+            batch = runtime.move(batch)
             report = task.validation_report({"clean": batch.targets, "noisy": batch.inputs})
             reports.append(report)
         if not reports:
@@ -782,7 +795,7 @@ class SEMambaPPTrainer:
         return total.detach()
 
     def _waveforms(self, batch: Batch, runtime: ProcessRuntime) -> tuple[torch.Tensor, torch.Tensor]:
-        batch = _batch_on_device(batch, runtime.device)
+        batch = runtime.move(batch)
         clean = batch.targets
         noisy = batch.inputs
         if clean.ndim != 2 or clean.shape != noisy.shape:
@@ -845,10 +858,10 @@ class SEMambaPPTrainer:
         if self._in_official_step:
             raise RuntimeFailure("refusing to checkpoint between the discriminator step and the generator step")
         if event == "step":
-            checkpoint.offer(event, logical_step=self.logical_step, metrics=metrics, prepare=self._sync_ranks)
+            self.lifecycle.save_if_needed(event, logical_step=self.logical_step, metrics=metrics, prepare=self._sync_ranks)
             return
         self._sync_ranks(runtime)
-        checkpoint.offer(event, logical_step=self.logical_step, metrics=metrics)
+        self.lifecycle.save_if_needed(event, logical_step=self.logical_step, metrics=metrics)
 
     def _sync_ranks(self, runtime: ProcessRuntime) -> None:
         runtime.broadcast_buffers(self.generator.state_module)
@@ -870,9 +883,9 @@ class SEMambaPPTrainer:
 
             extra = final_research_metrics(self, checkpoint)
             if extra:
-                checkpoint.offer("final", logical_step=self.logical_step, metrics=extra, prepare=self._sync_ranks)
+                self.lifecycle.save_if_needed("final", logical_step=self.logical_step, metrics=extra, prepare=self._sync_ranks)
             else:
-                checkpoint.offer("final", logical_step=self.logical_step, prepare=self._sync_ranks)
+                self.lifecycle.save_if_needed("final", logical_step=self.logical_step, prepare=self._sync_ranks)
         self.stop_reason = reason
         if reason == "completed" and should_stop(self):
             reason = "early_stopping"
