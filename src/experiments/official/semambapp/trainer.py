@@ -176,6 +176,59 @@ class SEMambaPPTrainer:
         self.lifecycle.start()
         runtime = self.runtime
         checkpoint = self.lifecycle.checkpoint
+        component_id = self._prepare_run(runtime, checkpoint)
+        if should_stop(self):
+            return self._result(checkpoint, "completed")
+        if self.phase == _PENDING:
+            self._finish_boundary(runtime, checkpoint, component_id)
+            if should_stop(self):
+                return self._result(checkpoint, "completed")
+            if self._epoch_cap_reached():
+                return self._result(checkpoint, "completed")
+        while self.logical_step < self.max_logical_steps:
+            if self._stop_requested(runtime):
+                if self.logical_step > 0 and not self._in_official_step:
+                    self._offer(runtime, checkpoint, "stop")
+                return self._result(checkpoint, "interrupted")
+            if self._epoch_cap_reached():
+                return self._result(checkpoint, "completed")
+            epoch, index, view, batches = self._open_window(component_id)
+            try:
+                local = self.official_step(batches, runtime)
+                self.logical_step += 1
+                index += self.accumulation
+                self.optimizer_updates[self.optim_g_id] += 1
+                self.optimizer_updates[self.optim_d_id] += 1
+                self.data.epoch = epoch
+                self.data.update_index = index
+                epoch_done = index == view.updates
+                will_validate = self.validation_interval > 0 and self.logical_step % self.validation_interval == 0
+                if self._record_step(
+                    runtime,
+                    checkpoint,
+                    local,
+                    epoch=epoch,
+                    epoch_done=epoch_done,
+                    will_validate=will_validate,
+                ):
+                    continue
+                self.phase = _PENDING
+                self.boundary = _open_boundary(epoch, validate=will_validate, epoch_done=epoch_done)
+                self._on_boundary_phase(self.phase)
+                self._offer(runtime, checkpoint, "boundary_pending")
+                if self._stop_requested(runtime):
+                    return self._result(checkpoint, "interrupted")
+                self._finish_boundary(runtime, checkpoint, component_id)
+                if should_stop(self):
+                    return self._result(checkpoint, "completed")
+                if self._epoch_cap_reached():
+                    return self._result(checkpoint, "completed")
+            finally:
+                _close_epoch_view(view)
+        return self._result(checkpoint, "completed")
+
+    def _prepare_run(self, runtime: ProcessRuntime, checkpoint: CheckpointManager) -> str:
+        """Rewind logs. Does not run a discriminator or generator update."""
 
         self.research.rewind(
             checkpoint.directory,
@@ -208,117 +261,100 @@ class SEMambaPPTrainer:
         bind_trainer_data(self)
         self._require_group_size(component_id)
         runtime.barrier()
-        if should_stop(self):
-            return self._result(checkpoint, "completed")
-        if self.phase == _PENDING:
-            self._finish_boundary(runtime, checkpoint, component_id)
-            if should_stop(self):
-                return self._result(checkpoint, "completed")
-            if self._epoch_cap_reached():
-                return self._result(checkpoint, "completed")
-        while self.logical_step < self.max_logical_steps:
-            if self._stop_requested(runtime):
-                if self.logical_step > 0 and not self._in_official_step:
-                    self._offer(runtime, checkpoint, "stop")
-                return self._result(checkpoint, "interrupted")
-            if self._epoch_cap_reached():
-                return self._result(checkpoint, "completed")
-            epoch = int(self.data.epoch)
-            index = int(self.data.update_index)
-            view = self.data.train_epoch(epoch, start_update=index)
-            try:
-                if view.updates < 1:
-                    raise RuntimeFailure(f"component {component_id}: epoch {epoch} has no micro-batches")
-                if view.updates % self.accumulation != 0:
-                    raise RuntimeFailure(
-                        f"component {component_id}: epoch micro-batches {view.updates} "
-                        f"are not divisible by accumulation {self.accumulation}"
-                    )
-                if index > view.updates:
-                    raise RuntimeFailure(f"component {component_id}: update {index} is past epoch {epoch}")
-                if index == view.updates:
-                    raise RuntimeFailure(
-                        f"component {component_id}: epoch {epoch} is exhausted without a pending boundary"
-                    )
-                if index + self.accumulation > view.updates:
-                    raise RuntimeFailure(
-                        f"component {component_id}: accumulation {self.accumulation} does not fit at update {index}"
-                    )
-                batches: list[Batch] = []
-                for offset in range(self.accumulation):
-                    batches.extend(view.batch(index + offset))
-                local = self.official_step(batches, runtime)
-                shared = _shared_log(runtime, local)
-                self.logical_step += 1
-                index += self.accumulation
-                self.optimizer_updates[self.optim_g_id] += 1
-                self.optimizer_updates[self.optim_d_id] += 1
-                self.data.epoch = epoch
-                self.data.update_index = index
-                entry = {
-                    "adversarial": shared["adversarial"],
-                    "applied_d": True,
-                    "applied_g": True,
-                    "complex": shared["complex"],
-                    "consistency": shared["consistency"],
-                    "discriminator": shared["discriminator"],
-                    "epoch": epoch,
-                    "generator": shared["generator"],
-                    "generator_forwards": shared["generator_forwards"],
-                    "generator_previews": shared["generator_previews"],
-                    "generator_reforwards": shared["generator_reforwards"],
-                    "logical_step": self.logical_step,
-                    "loss": shared["generator"],
-                    "lr_d": shared["lr_d"],
-                    "lr_g": shared["lr_g"],
-                    "magnitude": shared["magnitude"],
-                    "matching": shared["matching"],
-                    "mel": shared["mel"],
-                    "phase": shared["phase"],
-                    "sample_id": shared["sample_id"],
-                    "scan_configured": shared["scan_configured"],
-                    "scan_executed": shared["scan_executed"],
-                }
-                self.step_log.append(entry)
-                self.journal.write_metrics(entry)
-                self.journal.write_sample(
-                    {
-                        "logical_step": self.logical_step,
-                        "loss": local["generator"],
-                        "realization_id": local["realization_id"],
-                        "sample_id": local["sample_id"],
-                    }
+        return str(component_id)
+
+    def _open_window(self, component_id: str) -> tuple[int, int, Any, list[Batch]]:
+        epoch = int(self.data.epoch)
+        index = int(self.data.update_index)
+        view = self.data.train_epoch(epoch, start_update=index)
+        try:
+            if view.updates < 1:
+                raise RuntimeFailure(f"component {component_id}: epoch {epoch} has no micro-batches")
+            if view.updates % self.accumulation != 0:
+                raise RuntimeFailure(
+                    f"component {component_id}: epoch micro-batches {view.updates} "
+                    f"are not divisible by accumulation {self.accumulation}"
                 )
-                epoch_done = index == view.updates
-                will_validate = self.validation_interval > 0 and self.logical_step % self.validation_interval == 0
-                if not will_validate and not epoch_done:
-                    step_metrics = self.research.score(
-                        runtime,
-                        checkpoint,
-                        kind="step",
-                        epoch=epoch,
-                        logical_step=self.logical_step,
-                        stopping=getattr(self, "training_control", None),
-                    )
-                    if step_metrics:
-                        self._offer(runtime, checkpoint, "step", metrics=step_metrics)
-                    else:
-                        self._offer(runtime, checkpoint, "step")
-                    continue
-                self.phase = _PENDING
-                self.boundary = _open_boundary(epoch, validate=will_validate, epoch_done=epoch_done)
-                self._on_boundary_phase(self.phase)
-                self._offer(runtime, checkpoint, "boundary_pending")
-                if self._stop_requested(runtime):
-                    return self._result(checkpoint, "interrupted")
-                self._finish_boundary(runtime, checkpoint, component_id)
-                if should_stop(self):
-                    return self._result(checkpoint, "completed")
-                if self._epoch_cap_reached():
-                    return self._result(checkpoint, "completed")
-            finally:
-                _close_epoch_view(view)
-        return self._result(checkpoint, "completed")
+            if index > view.updates:
+                raise RuntimeFailure(f"component {component_id}: update {index} is past epoch {epoch}")
+            if index == view.updates:
+                raise RuntimeFailure(
+                    f"component {component_id}: epoch {epoch} is exhausted without a pending boundary"
+                )
+            if index + self.accumulation > view.updates:
+                raise RuntimeFailure(
+                    f"component {component_id}: accumulation {self.accumulation} does not fit at update {index}"
+                )
+            batches: list[Batch] = []
+            for offset in range(self.accumulation):
+                batches.extend(view.batch(index + offset))
+        except Exception:
+            _close_epoch_view(view)
+            raise
+        return epoch, index, view, batches
+
+    def _record_step(
+        self,
+        runtime: ProcessRuntime,
+        checkpoint: CheckpointManager,
+        local: dict[str, Any],
+        *,
+        epoch: int,
+        epoch_done: bool,
+        will_validate: bool,
+    ) -> bool:
+        """Write the step log. Return True when the epoch continues."""
+
+        shared = _shared_log(runtime, local)
+        entry = {
+            "adversarial": shared["adversarial"],
+            "applied_d": True,
+            "applied_g": True,
+            "complex": shared["complex"],
+            "consistency": shared["consistency"],
+            "discriminator": shared["discriminator"],
+            "epoch": epoch,
+            "generator": shared["generator"],
+            "generator_forwards": shared["generator_forwards"],
+            "generator_previews": shared["generator_previews"],
+            "generator_reforwards": shared["generator_reforwards"],
+            "logical_step": self.logical_step,
+            "loss": shared["generator"],
+            "lr_d": shared["lr_d"],
+            "lr_g": shared["lr_g"],
+            "magnitude": shared["magnitude"],
+            "matching": shared["matching"],
+            "mel": shared["mel"],
+            "phase": shared["phase"],
+            "sample_id": shared["sample_id"],
+            "scan_configured": shared["scan_configured"],
+            "scan_executed": shared["scan_executed"],
+        }
+        self.step_log.append(entry)
+        self.journal.write_metrics(entry)
+        self.journal.write_sample(
+            {
+                "logical_step": self.logical_step,
+                "loss": local["generator"],
+                "realization_id": local["realization_id"],
+                "sample_id": local["sample_id"],
+            }
+        )
+        if will_validate or epoch_done:
+            return False
+        step_metrics = self.research.score(
+            runtime,
+            checkpoint,
+            kind="step",
+            epoch=epoch,
+            logical_step=self.logical_step,
+            stopping=getattr(self, "training_control", None),
+        )
+        if step_metrics:
+            self._offer(runtime, checkpoint, "step", metrics=step_metrics)
+        else:
+            self._offer(runtime, checkpoint, "step")
+        return True
 
     def official_step(self, batches: list[Batch], runtime: ProcessRuntime) -> dict[str, float | str]:
         """Run one official GAN update. Both optimizers step, or neither is checkpointed."""
