@@ -12,7 +12,7 @@
 | `src/data/` | コーパス走査、レシピ、ステージング、評価用 DuckDB | `make db-init`、`make db-ingest` |
 | `src/experiments/` | 唯一の学習基盤。YAML から組み立て、`audio-db-experiment-v1` を保存して再開する | `python -m src.experiments.launcher`（起動と監視）、`python -m src.experiments.cli`（学習プロセス、preflight） |
 | `src/experiments/core/` | コンポーネントの生成、依存の解決、状態の登録 | `builder` が使う |
-| `src/experiments/execution/` | CPU/GPU/DDP、checkpoint（Latest / Archive）、Selector、再開、中断、来歴、実行状態、プロファイリング | `runtime` と `checkpoint` |
+| `src/experiments/execution/` | CPU/GPU/DDP、checkpoint（Latest / Archive）、Selector、Lifecycle、再開、中断、来歴、実行状態、プロファイリング | `runtime`、`checkpoint`、`lifecycle` |
 | `src/experiments/training/` | 共通の Trainer、Loss Term、加重 Objective。モデル固有の公式 Trainer は持たない | YAML の `class` |
 | `src/experiments/stopping.py` | 指標イベント、独立した停止判定、Trainer と rank 間の制御 | YAML の `stopping` component |
 | `src/experiments/metrics/` | 研究用の指標。Loss、SI-SDR、PESQ、STOI、ESTOI、WER。計算だけを行い、停止も保存もしない | YAML の `metric` |
@@ -22,7 +22,7 @@
 | `src/experiments/official/` | 6 モデルの公式 Model、Trainer、参照ステップ。他の実験から個別に import する | YAML の `class` |
 | `src/experiments/calc/` | 手法を共有する STFT、スペクトル損失、scheduler、RNG。CLI ではない | テストと Trainer が呼ぶ |
 
-`api.py`、`cli.py`、`launcher.py`、`config.py`、`errors.py` は `src/experiments/` 直下の入口である。`launcher.py` は学習プロセスを起動して終了状態を記録するだけで、ジョブの投入、GPU の選択、再試行はしない。`builder.py`、`factory.py`、`registry.py`、`state.py`、`runtime.py`、`checkpoint.py`、`selectors.py`、`provenance.py`、`signals.py`、`profile.py`、`results.py`、`trainers.py`、`losses.py` は公開 import パスで、実装は上の3ディレクトリにある。YAML の `class` はこの公開パスのままである。公開モジュールは実装と同じオブジェクトを返す。クラスの identity は同じである。公開モジュール上の関数名を差し替えても、実装モジュールのグローバルは変わらない。
+`api.py`、`cli.py`、`launcher.py`、`config.py`、`errors.py` は `src/experiments/` 直下の入口である。`launcher.py` は学習プロセスを起動して終了状態を記録するだけで、ジョブの投入、GPU の選択、再試行はしない。`builder.py`、`factory.py`、`registry.py`、`state.py`、`runtime.py`、`checkpoint.py`、`lifecycle.py`、`selectors.py`、`provenance.py`、`signals.py`、`profile.py`、`results.py`、`trainers.py`、`losses.py` は公開 import パスで、実装は上の3ディレクトリにある。Experiment はディレクトリ、信号、最初の RUNNING を持ち、`Lifecycle.start` のあとクラス自身に `fit` がある Trainer の `fit()` を呼ぶ。`fit` が無い Trainer は `run(runtime, checkpoint)` を使う。公式 Trainer の `run` は直接呼び出す側のための接続で、学習順は `fit` にある。YAML の `class` はこの公開パスのままである。公開モジュールは実装と同じオブジェクトを返す。クラスの identity は同じである。公開モジュール上の関数名を差し替えても、実装モジュールのグローバルは変わらない。
 
 YAML から参照する公式モデル・Trainer の `official/<model>/model(s).py`・`trainer.py` と共有 scheduler の `calc/optim.py` は直接の公開モジュールである。公開名と checkpoint の識別規則は `docs/experiments/CHECKPOINT.md` を参照する。
 

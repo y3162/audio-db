@@ -30,10 +30,12 @@
 
 | unit | 動くとき |
 |---|---|
-| `epoch` | 公式の境界で、epoch が interval の倍数のとき。epoch 0 を含む |
-| `logical_step` | 完了した step または境界で、logical step が interval の倍数のとき |
-| `boundary` | 公式の検証境界。interval は 1 |
-| `end` | 学習完了時。interval は 1 |
+| `epoch` | 公式の境界で、epoch が interval の倍数のとき。epoch 0 を含む。Trainer がその progress キーを出すときだけ使える |
+| `logical_step` | 完了した step または境界で、logical step が interval の倍数のとき。Trainer がその progress キーを出すときだけ使える |
+| `boundary` | 公式の検証境界。interval は 1。カウンタは要らない |
+| `end` | 学習完了時。interval は 1。カウンタは要らない |
+
+`logical_step` または `epoch` を、そのキーを出さない Trainer で使うと、評価の時点で拒否する。6 つの公式 Trainer は両方を出す。
 
 完了した token は再開後に再実行しない。`boundary_pending` で再開した境界は 1 回だけ実行する。評価は `torch.inference_mode()` で行い、終了時に train/eval、RNG、データカーソルを戻す。GAN の更新途中では実行しない。全 rank が同じ評価に参加する。rank 0 だけが `research_metrics.jsonl` と研究用の推論ファイルを書く。
 

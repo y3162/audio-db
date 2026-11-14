@@ -7,13 +7,14 @@
 仕様は `docs/experiments/CHECKPOINT.md`、プロセスの監視は `docs/experiments/LAUNCHER.md`。ここは変えてはいけない条件だけを書く。
 
 - 形式は `audio-db-experiment-v1`。実装は `src/experiments/execution/checkpoint.py`。`audio-db-training-v1` は読まない。
-- 保存の方針は Selector（`src/experiments/selectors.py`）だけが持つ。Trainer は整合した点を `checkpoint.offer(...)` で差し出すだけで、いつ保存するかを決めない。Trainer に保存間隔の引数を足さない。YAML は `checkpoint.selector` だけを書く。標準 Selector は、間隔を省くと毎 step では保存しない。間隔の既定値は `docs/experiments/CHECKPOINT.md`。
+- 保存の方針は Selector（`src/experiments/selectors.py`）だけが持つ。Trainer は整合した点で `lifecycle.save_if_needed(...)` を呼ぶだけで、いつ保存するかを決めない。Lifecycle（`src/experiments/lifecycle.py`）が `start` と `finish` を一度ずつ行い、書く点では `CheckpointManager.offer` を呼ぶ。Selector が断った点は何も書かない。Trainer に保存間隔の引数を足さない。YAML は `checkpoint.selector` だけを書く。標準 Selector は、間隔を省くと毎 step では保存しない。間隔の既定値は `docs/experiments/CHECKPOINT.md`。
 - Latest は `latest.pt` の 1 つだけ。共通基盤が一時ファイルに書き、検証してから `os.replace` する。失敗した保存が以前の Latest を壊す経路を作らない。Selector は Latest の名前、形式、削除に触れない。
 - Archive は `archive/` の中だけ。Selector の削除は `archive/` の外に届かない。Latest と Archive はどちらも完全な checkpoint で、どちらからも再開できる。
 - 公式の推論用の重み（`best_generator.pt`、`valid.loss.best.pt` など）は公式 Trainer の成果物で、checkpoint ではない。Selector に移さない。
 - 保存前に rank 間の parameter、buffer、optimizer、scheduler、trainer、data、Selector の決定と状態を比べる。不一致なら書かない。
-- 保存点は完了した logical step の境界と、Trainer が安全と宣言した点だけ。GAN の optimizer 対の途中では書かない。
-- 停止ポリシーは Selector と独立し、指標を評価しない。Trainer は境界処理後に指標を配送し、停止状態を更新してから保存点を offer する。停止設定は実験同一性に含み、状態を全 rank で照合して再開する。
+- 保存点は、Trainer が安全と宣言した点だけである。logical step を持つ Trainer では、完了した logical step の境界がそれである。GAN の optimizer 対の途中では書かない。Core は安全地点を推定しない。
+- payload は `progress` を必須にする。欠けるファイルは再開を拒否し、`logical_step` だけから progress を作らない。`progress` に `logical_step` があるとき、payload の `logical_step` はその値と一致する。キーが無い保存点では `logical_step` は null である。Core は学習単位のカウンタを Trainer に強制しない。`progress_keys` を宣言した Trainer は、Selector が要するキーを attach 時に検査する。宣言が無い Trainer は検査しない。間隔がキーを数える点でそのキーが無いときは拒否する。`boundary`、`stop`、`final` はカウンタが無くても Latest を選べる。
+- 停止ポリシーは Selector と独立し、指標を評価しない。Trainer は境界処理後に指標を配送し、停止状態を更新してから保存点を `save_if_needed` する。停止設定は実験同一性に含み、状態を全 rank で照合して再開する。
 - 研究用の評価とモデル選択は、公式の検証・scheduler・公式の推論用重みのあとで動く。指標の計算、集約、選択判定は Python が行い、YAML は指標、データ、タイミング、選択基準を宣言する。公式の検証式と推論用ファイルは置き換えない。`official_faithful` と `official_reproduction` は研究用の metric、evaluator、selection を拒否する。仕様は `docs/experiments/EVALUATION.md`。
 - 再開は同じ実験の厳密な続きである。`config_sha256` は `output`、`checkpoint`、`stop_after_logical_steps` を除いた設定の SHA-256 で、違う設定、違う出力ディレクトリ、違う world size を拒否する。`initialize` と `publication` は書かれているときだけハッシュに入る。無い文書は以前と同じハッシュになる。Latest より前の Archive から続けることも拒否する。古い状態から始めるのは、`initialize` を使う別の実験である。
 - `initialize` は module、optimizer、scheduler の状態だけを読み、元の実験のファイルを変更しない。データ位置、Trainer の履歴、RNG は引き継がない。

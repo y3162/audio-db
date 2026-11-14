@@ -25,7 +25,11 @@
 
 ## 保存点
 
-Trainer は、状態が整合している点をすべて `checkpoint.offer(event, logical_step=..., metrics=...)` で差し出す。保存するかどうかは決めない。
+Trainer は、状態が整合している点で `lifecycle.save_if_needed(event, logical_step=..., metrics=..., progress=...)` を呼ぶ。保存するかどうかは決めない。Lifecycle が `CheckpointManager.offer` を呼び、Selector が断った点は何も書かない。Core は安全地点を推定しない。
+
+`progress` は名前付きの非負整数である。6 つの公式 Trainer と `StandardTrainer` は `logical_step` と `epoch` を出す。出さない Trainer は、カウンタを要らない `final`、`stop`、`boundary` で Latest を残せる。`latest_every` や Archive の間隔は、既定のキー `logical_step` をその点から読む。キーが無いとその点を拒否する。`progress_key` で数える名前を変えられる。`progress_keys` を宣言した Trainer は、その Selector が要するキーを構築後の attach で検査する。宣言が無い Trainer は検査しない。
+
+payload は `progress` を必須にする。同じ形式名でも `progress` が無いファイルは再開を拒否し、`logical_step` だけから progress を作らない。`progress` に `logical_step` があるとき、payload の `logical_step` はその値と一致する。キーが無い保存点では `logical_step` は null である。
 
 | event | 意味 |
 |---|---|
@@ -65,9 +69,9 @@ Selector は、引数、復元した状態、差し出された点だけから�
 
 | クラス（`src.experiments.selectors.`） | 残すもの | 引数 |
 |---|---|---|
-| `StandardSelector` | Latest だけ。`latest_every` step ごと、各境界、安全な停止、完了で置き換える | `latest_every`（既定 1000）、`partial`（既定 false。true なら蓄積途中の点でも置き換える） |
-| `PeriodicArchiveSelector` | Latest の規則は同じ。加えて `archive_every` step ごとの Archive。`latest_every` を省くと 1 のまま | `archive_every`、`keep_last`（省略は全部残す）、`name`（既定 `step_{step:08d}.pt`）、`latest_every`（既定 1） |
-| `TopKSelector` | Latest の規則は同じ。加えて境界の指標が良い順に `k` 個の Archive。`latest_every` を省くと 1 のまま | `metric`、`mode`（`min` / `max`）、`k`、`name`（既定 `best_{step:08d}.pt`）、`latest_every`（既定 1） |
+| `StandardSelector` | Latest だけ。`latest_every` step ごと、各境界、安全な停止、完了で置き換える | `latest_every`（既定 1000）、`partial`（既定 false。true なら蓄積途中の点でも置き換える）、`progress_key`（既定 `logical_step`） |
+| `PeriodicArchiveSelector` | Latest の規則は同じ。加えて `archive_every` step ごとの Archive。`latest_every` を省くと 1 のまま | `archive_every`、`keep_last`（省略は全部残す）、`name`（既定 `step_{step:08d}.pt`）、`latest_every`（既定 1）、`progress_key`（既定 `logical_step`） |
+| `TopKSelector` | Latest の規則は同じ。加えて境界の指標が良い順に `k` 個の Archive。`latest_every` を省くと 1 のまま | `metric`、`mode`（`min` / `max`）、`k`、`name`（既定 `best_{step:08d}.pt`）、`latest_every`（既定 1）、`progress_key`（既定 `logical_step`） |
 
 `TopKSelector` の `metric` が `loss` や `pesq` のように名前空間を持たないときは、順位付けは境界だけである。`validation.wer` のように `.` を含む名前は、そのキーが付いた step と final も順位付けする。研究用の `research_selection/best.pt` は checkpoint ではなく、Latest や Archive からの再開には使わない。
 
