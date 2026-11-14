@@ -48,7 +48,6 @@ from src.experiments.runtime import PreparedModel, ProcessRuntime
 from src.experiments.official.tf_gridnet.trainer import early_stop, rank_validation_loss
 from src.experiments.trainers import (
     _append_jsonl,
-    _batch_on_device,
     _close_epoch_view,
     _rank,
     _rewind_metrics,
@@ -177,7 +176,21 @@ class TFLocoformerTrainer:
         self._step_io: tuple[Any, ...] | None = None
 
     def run(self, runtime: ProcessRuntime, checkpoint: CheckpointManager) -> RunResult:
+        """Bind a direct caller and train. Experiment calls :meth:`fit`."""
+
+        self.runtime = runtime
+        current = getattr(self, "lifecycle", None)
+        if current is None or getattr(current, "checkpoint", None) is not checkpoint:
+            from src.experiments.training.trainers import _DirectLifecycle
+
+            self.lifecycle = _DirectLifecycle(checkpoint)
+        return self.fit()
+
+    def fit(self) -> RunResult:
         """Train until the step budget, an epoch cap, or early stopping."""
+
+        runtime = self.runtime
+        checkpoint = self.lifecycle.checkpoint
 
         from src.experiments.evaluation.boundary import research_attached, rewind_on_resume
 
@@ -236,7 +249,7 @@ class TFLocoformerTrainer:
             if self._stop_requested(runtime):
                 self._drain_step_io(metrics_path, sample_path, rank, checkpoint)
                 if self.logical_step > 0:
-                    checkpoint.offer("stop", logical_step=self.logical_step)
+                    self.lifecycle.save_if_needed("stop", logical_step=self.logical_step)
                 return self._result(checkpoint, "interrupted")
             if self._epoch_cap_reached():
                 self._drain_step_io(metrics_path, sample_path, rank, checkpoint)
@@ -274,7 +287,7 @@ class TFLocoformerTrainer:
                 for offset, batches in enumerate(planned):
                     sync = offset == self.accumulation - 1
                     sample_ids.extend(batch.sample_id for batch in batches)
-                    with runtime.sync_context([self.model], sync=sync):
+                    with runtime.sync_gradients([self.model], enabled=sync):
                         with runtime.autocast():
                             micro, monitor, count, terms = self._forward_loss(batches, component_id, runtime)
                         micro = micro / self.accumulation
@@ -339,7 +352,7 @@ class TFLocoformerTrainer:
                 self.finished_epoch = epoch
                 self.boundary = _open_boundary(epoch, warmup_updated=bool(result.applied))
                 self._on_boundary_phase(_PENDING)
-                checkpoint.offer("boundary_pending", logical_step=self.logical_step)
+                self.lifecycle.save_if_needed("boundary_pending", logical_step=self.logical_step)
                 if self._stop_requested(runtime):
                     return self._result(checkpoint, "interrupted")
                 self._finish_boundary(runtime, checkpoint, component_id)
@@ -466,7 +479,7 @@ class TFLocoformerTrainer:
         extra = research_metrics(
             self, runtime, checkpoint, kind="boundary", epoch=trainer_epoch, official=official
         )
-        checkpoint.offer(
+        self.lifecycle.save_if_needed(
             "boundary",
             logical_step=self.logical_step,
             metrics={**official, **extra} if extra else official,
@@ -487,7 +500,7 @@ class TFLocoformerTrainer:
                 for batch in self.data.validation_epoch(trainer_epoch):
                     if not isinstance(batch, Batch):
                         raise RuntimeFailure(f"component {component_id}: validation did not return a batch")
-                    batch = _batch_on_device(batch, runtime.device)
+                    batch = runtime.move(batch)
                     try:
                         prediction = self.model.state_module(batch.inputs)
                     except ValueError as exc:
@@ -588,7 +601,7 @@ class TFLocoformerTrainer:
         monitor: torch.Tensor | None = None
         term_sums: dict[str, float] = {}
         for batch in batches:
-            batch = _batch_on_device(batch, runtime.device)
+            batch = runtime.move(batch)
             try:
                 prediction = self.model.module(batch.inputs)
                 result = call_objective(self.objective, {"estimate": prediction, "target": batch.targets})
@@ -632,9 +645,9 @@ class TFLocoformerTrainer:
 
             extra = final_research_metrics(self, checkpoint)
             if extra:
-                checkpoint.offer("final", logical_step=self.logical_step, metrics=extra)
+                self.lifecycle.save_if_needed("final", logical_step=self.logical_step, metrics=extra)
             else:
-                checkpoint.offer("final", logical_step=self.logical_step)
+                self.lifecycle.save_if_needed("final", logical_step=self.logical_step)
         self.stop_reason = reason
         if reason == "completed" and should_stop(self):
             reason = "early_stopping"
@@ -702,9 +715,9 @@ class TFLocoformerTrainer:
             )
         if offer_step:
             if step_metrics:
-                checkpoint.offer("step", logical_step=logical_step, metrics=step_metrics)
+                self.lifecycle.save_if_needed("step", logical_step=logical_step, metrics=step_metrics)
             else:
-                checkpoint.offer("step", logical_step=logical_step)
+                self.lifecycle.save_if_needed("step", logical_step=logical_step)
 
 
 def _open_boundary(trainer_epoch: int, *, warmup_updated: bool) -> dict[str, Any]:
