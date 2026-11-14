@@ -21,8 +21,6 @@ from __future__ import annotations
 
 from src.experiments.stopping import observe_validation, should_stop
 
-import json
-import os
 from pathlib import Path
 from typing import Any
 
@@ -33,6 +31,7 @@ from src.experiments.checkpoint import CheckpointManager
 from src.experiments.data import Batch
 from src.experiments.data.pair import bind_trainer_data
 from src.experiments.errors import BuildError, RuntimeFailure
+from src.experiments.official.deepfilternet3.artifacts import write_best, write_rfft
 from src.experiments.official.deepfilternet3.model import DeepFilterNet3Model
 from src.experiments.execution.journal import StepJournal
 from src.experiments.results import RunResult
@@ -272,43 +271,7 @@ class DeepFilterNet3Trainer:
         self.lifecycle.start()
         runtime = self.runtime
         checkpoint = self.lifecycle.checkpoint
-        self.research.rewind(
-            checkpoint.directory,
-            restored=self._restored,
-            phase=self.phase,
-            progress={"logical_step": int(self.logical_step)},
-        )
-        component_id = getattr(self, "_experiment_component_id", "trainer")
-        self.journal = StepJournal(checkpoint.directory, runtime)
-        if self.batch_schedule is not None and runtime.world_size != 1:
-            raise RuntimeFailure("batch_schedule is implemented for one process")
-        self.losses = self.journal.begin(
-            restored=self._restored,
-            logical_step=self.logical_step,
-            rewind_samples_on_rank0=False,
-        )
-        if not self._restored:
-            self.logical_step = 0
-            self.optimizer_updates = {self.optimizer_id: 0}
-            self.losses = []
-            self.learning_rates = []
-            self.weight_decays = []
-            self.history = []
-            self.best_loss = None
-            self.best_epoch = None
-            self.plateau_metric = None
-            self.plateau_count = 0
-            self.early_stopped = False
-            self.phase = _IN_EPOCH
-            self.finished_epoch = None
-            self.boundary = None
-            self.data.epoch = 0
-            self.data.update_index = 0
-        bind_trainer_data(self)
-        self._require_group_size(component_id)
-        self._stream = _stream_for(self.model.unwrapped(), runtime.device)
-        self._record_rfft(runtime, checkpoint)
-        runtime.barrier()
+        component_id = self._prepare_run(runtime, checkpoint)
         if should_stop(self):
             return self._result(checkpoint, "completed")
         if self.phase == _PENDING:
@@ -328,25 +291,8 @@ class DeepFilterNet3Trainer:
             index = int(self.data.update_index)
             if index == 0:
                 self._apply_batch_schedule(epoch)
-            view = self.data.train_epoch(epoch, start_update=index)
+            epoch, index, view, steps = self._open_window(component_id, epoch, index)
             try:
-                if view.updates < 1:
-                    raise RuntimeFailure(f"component {component_id}: epoch {epoch} has no micro-batches")
-                if view.updates % self.accumulation != 0:
-                    raise RuntimeFailure(
-                        f"component {component_id}: epoch {epoch} has {view.updates} micro-batches, "
-                        f"which is not divisible by accumulation {self.accumulation}"
-                    )
-                steps = view.updates // self.accumulation
-                self._retarget(steps)
-                if index > view.updates or index % self.accumulation != 0:
-                    raise RuntimeFailure(
-                        f"component {component_id}: update {index} is not an optimizer boundary"
-                    )
-                if index == view.updates:
-                    raise RuntimeFailure(
-                        f"component {component_id}: epoch {epoch} is exhausted without a pending boundary"
-                    )
                 self.model.train()
                 position = schedule_index(epoch, index // self.accumulation, steps)
                 learning_rate, decay = self._apply_cosine(position)
@@ -378,29 +324,14 @@ class DeepFilterNet3Trainer:
                 self.weight_decays.append(decay)
                 self.data.epoch = epoch
                 self.data.update_index = index
-                sample_id = ",".join(sample_ids)
-                self.journal.write_metrics(
-                    {
-                        "applied": result.applied,
-                        "epoch": epoch,
-                        "logical_step": self.logical_step,
-                        "loss": loss_value,
-                        "lr": learning_rate,
-                        "optimizer_updates": dict(self.optimizer_updates),
-                        "sample_id": sample_id,
-                        "weight_decay": decay,
-                    }
-                )
-                self.journal.write_sample(
-                    {
-                        "epoch": epoch,
-                        "logical_step": self.logical_step,
-                        "loss": loss_value,
-                        "lr": learning_rate,
-                        "sample_id": sample_id,
-                        "schedule_index": position,
-                        "weight_decay": decay,
-                    }
+                self._note_step(
+                    applied=result.applied,
+                    epoch=epoch,
+                    loss=loss_value,
+                    learning_rate=learning_rate,
+                    sample_id=",".join(sample_ids),
+                    weight_decay=decay,
+                    schedule_index=position,
                 )
                 if index != view.updates:
                     step_metrics = self.research.score(
@@ -613,14 +544,7 @@ class DeepFilterNet3Trainer:
             "logical_step": self.logical_step,
             "loss": self.best_loss,
         }
-        target = directory / "valid.loss.best.pt"
-        temporary = directory / ".valid.loss.best.pt.tmp"
-        try:
-            torch.save(payload, temporary)
-            os.replace(temporary, target)
-        except Exception as exc:
-            temporary.unlink(missing_ok=True)
-            raise RuntimeFailure(f"best checkpoint failed: {exc}") from exc
+        write_best(directory, payload)
         runtime.barrier()
 
     def _forward_loss(self, batches: list[Batch], component_id: str, runtime: ProcessRuntime) -> torch.Tensor:
@@ -697,6 +621,115 @@ class DeepFilterNet3Trainer:
         except TrainingError as exc:
             raise BuildError(str(exc)) from exc
 
+    def _prepare_run(self, runtime: ProcessRuntime, checkpoint: CheckpointManager) -> str:
+        """Rewind logs, build the DF stream, and record the FFT kernel."""
+
+        self.research.rewind(
+            checkpoint.directory,
+            restored=self._restored,
+            phase=self.phase,
+            progress={"logical_step": int(self.logical_step)},
+        )
+        component_id = getattr(self, "_experiment_component_id", "trainer")
+        self.journal = StepJournal(checkpoint.directory, runtime)
+        if self.batch_schedule is not None and runtime.world_size != 1:
+            raise RuntimeFailure("batch_schedule is implemented for one process")
+        self.losses = self.journal.begin(
+            restored=self._restored,
+            logical_step=self.logical_step,
+            rewind_samples_on_rank0=False,
+        )
+        if not self._restored:
+            self.logical_step = 0
+            self.optimizer_updates = {self.optimizer_id: 0}
+            self.losses = []
+            self.learning_rates = []
+            self.weight_decays = []
+            self.history = []
+            self.best_loss = None
+            self.best_epoch = None
+            self.plateau_metric = None
+            self.plateau_count = 0
+            self.early_stopped = False
+            self.phase = _IN_EPOCH
+            self.finished_epoch = None
+            self.boundary = None
+            self.data.epoch = 0
+            self.data.update_index = 0
+        bind_trainer_data(self)
+        self._require_group_size(component_id)
+        self._stream = _stream_for(self.model.unwrapped(), runtime.device)
+        self._record_rfft(runtime, checkpoint)
+        runtime.barrier()
+        return str(component_id)
+
+    def _open_window(
+        self,
+        component_id: str,
+        epoch: int,
+        index: int,
+    ) -> tuple[int, int, Any, int]:
+        """Check the cosine epoch and rebuild the table for its length."""
+
+        view = self.data.train_epoch(epoch, start_update=index)
+        try:
+            if view.updates < 1:
+                raise RuntimeFailure(f"component {component_id}: epoch {epoch} has no micro-batches")
+            if view.updates % self.accumulation != 0:
+                raise RuntimeFailure(
+                    f"component {component_id}: epoch {epoch} has {view.updates} micro-batches, "
+                    f"which is not divisible by accumulation {self.accumulation}"
+                )
+            steps = view.updates // self.accumulation
+            self._retarget(steps)
+            if index > view.updates or index % self.accumulation != 0:
+                raise RuntimeFailure(
+                    f"component {component_id}: update {index} is not an optimizer boundary"
+                )
+            if index == view.updates:
+                raise RuntimeFailure(
+                    f"component {component_id}: epoch {epoch} is exhausted without a pending boundary"
+                )
+        except Exception:
+            _close_epoch_view(view)
+            raise
+        return epoch, index, view, steps
+
+    def _note_step(
+        self,
+        *,
+        applied: bool,
+        epoch: int,
+        loss: float,
+        learning_rate: float,
+        sample_id: str,
+        weight_decay: float,
+        schedule_index: int,
+    ) -> None:
+        self.journal.write_metrics(
+            {
+                "applied": applied,
+                "epoch": epoch,
+                "logical_step": self.logical_step,
+                "loss": loss,
+                "lr": learning_rate,
+                "optimizer_updates": dict(self.optimizer_updates),
+                "sample_id": sample_id,
+                "weight_decay": weight_decay,
+            }
+        )
+        self.journal.write_sample(
+            {
+                "epoch": epoch,
+                "logical_step": self.logical_step,
+                "loss": loss,
+                "lr": learning_rate,
+                "sample_id": sample_id,
+                "schedule_index": schedule_index,
+                "weight_decay": weight_decay,
+            }
+        )
+
     def _require_group_size(self, component_id: str) -> None:
         group_size = getattr(self.data, "group_size", None)
         if group_size is not None and group_size != self.accumulation:
@@ -713,11 +746,7 @@ class DeepFilterNet3Trainer:
             try:
                 from src.se.models.deepfilternet3.dsp import rfft_runtime_record
 
-                record = rfft_runtime_record()
-                path = Path(checkpoint.directory) / "rfft.json"
-                temporary = path.with_name(".rfft.json.tmp")
-                temporary.write_text(json.dumps(record, sort_keys=True) + "\n", encoding="utf-8")
-                os.replace(temporary, path)
+                write_rfft(Path(checkpoint.directory), rfft_runtime_record())
             except Exception as exc:
                 problem = f"{type(exc).__name__}: {exc}"
         if runtime.world_size > 1:
