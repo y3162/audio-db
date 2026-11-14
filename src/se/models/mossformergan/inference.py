@@ -21,7 +21,11 @@ def build(config, variant=None):
     if variant not in (None, 'se_16k'):
         raise ValueError(f'unsupported MossFormerGAN variant: {variant!r}')
     values = load_config(config)
-    unknown = set(values) - {'n_fft', 'win_len', 'hop', 'num_channel'}
+    allowed = {
+        'n_fft', 'win_len', 'hop', 'num_channel', 'n_layers', 'n_head',
+        'approx_qk_dim', 'dense_depth', 'dropout', 'query_key_dim', 'expansion_factor',
+    }
+    unknown = set(values) - allowed
     if unknown:
         raise ValueError(f'unknown MossFormerGAN config keys: {sorted(unknown)}')
     # enhance() always frames with these. Another value would be accepted and then ignored.
@@ -30,7 +34,17 @@ def build(config, variant=None):
             raise ValueError(f'MossFormerGAN {key} must be {fixed}, got {values[key]!r}')
     n_fft = int(values.get('n_fft', N_FFT))
     channels = int(values.get('num_channel', 64))
-    model = SyncANet(num_channel=channels, num_features=n_fft // 2 + 1)
+    structural = {}
+    for key in ('n_layers', 'n_head', 'approx_qk_dim', 'dense_depth', 'query_key_dim'):
+        if key in values:
+            if isinstance(values[key], bool):
+                raise ValueError(f'MossFormerGAN {key} must be an integer')
+            structural[key] = int(values[key])
+    if 'dropout' in values:
+        structural['dropout'] = float(values['dropout'])
+    if 'expansion_factor' in values:
+        structural['expansion_factor'] = float(values['expansion_factor'])
+    model = SyncANet(num_channel=channels, num_features=n_fft // 2 + 1, **structural)
     model.n_fft = n_fft
     return model
 

@@ -19,8 +19,7 @@ from src.se import build_model
 from src.se.models.mp_senet.model import MPNet
 from src.experiments.calc.errors import TrainingError
 from src.experiments.calc.stft import mag_pha_istft, mag_pha_stft
-
-_SAMPLE_RATE = 16000
+from src.experiments.official.mp_senet.models import architecture_config, network_config
 
 
 class MPSENetWaveformAdapter(torch.nn.Module):
@@ -37,47 +36,42 @@ class MPSENetWaveformAdapter(torch.nn.Module):
         compress_factor: float,
         beta: float,
         sampling_rate: int,
+        n_heads: int = 4,
+        dense_depth: int = 4,
+        ts_dropout: float = 0.0,
     ) -> None:
         super().__init__()
-        dense_channel = _positive_int("dense_channel", dense_channel)
-        num_tsconformers = _positive_int("num_tsconformers", num_tsconformers)
-        n_fft = _positive_int("n_fft", n_fft)
-        hop_size = _positive_int("hop_size", hop_size)
-        win_size = _positive_int("win_size", win_size)
-        sampling_rate = _positive_int("sampling_rate", sampling_rate)
-        compress_factor = _positive_float("compress_factor", compress_factor)
-        beta = _positive_float("beta", beta)
-        if dense_channel % 4 != 0:
-            raise BuildError("dense_channel must be divisible by the 4 attention heads")
-        if win_size > n_fft:
-            raise BuildError(f"win_size {win_size} is larger than n_fft {n_fft}")
-        if sampling_rate != _SAMPLE_RATE:
-            raise BuildError(f"mp_senet sampling_rate must be {_SAMPLE_RATE}, got {sampling_rate}")
-        config = {
-            "beta": beta,
-            "compress_factor": compress_factor,
-            "dense_channel": dense_channel,
-            "hop_size": hop_size,
-            "n_fft": n_fft,
-            "num_tsconformers": num_tsconformers,
-            "sampling_rate": sampling_rate,
-            "win_size": win_size,
-        }
+        config = architecture_config(
+            dense_channel=dense_channel,
+            num_tsconformers=num_tsconformers,
+            n_fft=n_fft,
+            hop_size=hop_size,
+            win_size=win_size,
+            compress_factor=compress_factor,
+            beta=beta,
+            sampling_rate=sampling_rate,
+            n_heads=n_heads,
+            dense_depth=dense_depth,
+            ts_dropout=ts_dropout,
+        )
         try:
-            generator = build_model("mp_senet", config)
+            generator = build_model("mp_senet", network_config(config))
         except (TypeError, ValueError) as exc:
             raise BuildError(f"failed to build mp_senet: {exc}") from exc
         if not isinstance(generator, MPNet):
             raise BuildError(f"mp_senet builder returned {type(generator).__name__}, expected MPNet")
         self.generator = generator
-        self.dense_channel = dense_channel
-        self.num_tsconformers = num_tsconformers
-        self.n_fft = n_fft
-        self.hop_size = hop_size
-        self.win_size = win_size
-        self.compress_factor = compress_factor
-        self.beta = beta
-        self.sampling_rate = sampling_rate
+        self.dense_channel = int(config["dense_channel"])
+        self.num_tsconformers = int(config["num_tsconformers"])
+        self.n_fft = int(config["n_fft"])
+        self.hop_size = int(config["hop_size"])
+        self.win_size = int(config["win_size"])
+        self.compress_factor = float(config["compress_factor"])
+        self.beta = float(config["beta"])
+        self.sampling_rate = int(config["sampling_rate"])
+        self.n_heads = int(config["n_heads"])
+        self.dense_depth = int(config["dense_depth"])
+        self.ts_dropout = float(config["ts_dropout"])
 
     def forward(self, waveform: torch.Tensor) -> torch.Tensor:
         """Return an enhanced waveform with the same shape as ``waveform``."""
@@ -118,15 +112,3 @@ class MPSENetWaveformAdapter(torch.nn.Module):
         if not bool(torch.isfinite(audio).all()):
             raise RuntimeFailure("MP-SENet waveform is not finite")
         return audio
-
-
-def _positive_int(name: str, value: object) -> int:
-    if isinstance(value, bool) or not isinstance(value, int) or value < 1:
-        raise BuildError(f"{name} must be a positive integer")
-    return value
-
-
-def _positive_float(name: str, value: object) -> float:
-    if isinstance(value, bool) or not isinstance(value, (int, float)) or float(value) <= 0:
-        raise BuildError(f"{name} must be a positive number")
-    return float(value)

@@ -81,6 +81,10 @@ GPU レーンは、親プロセスの `CUDA_VISIBLE_DEVICES` の範囲で、使�
 
 これらを混ぜて「検証済み」と書かない。未計測の条件での一致や、論文スコアの再現とは書かない。
 
+## モデル構造
+
+仕様は [モデル](experiments/MODELS.md)。`tests/experiments/test_model_architecture.py` が、6 モデルの公式 YAML の構築、研究用の層数・幅・Discriminator 解像度の反映、未知キーと矛盾の拒否、`config_sha256` の変化、小さいネットの forward と backward を見る。公式初期化と 1 step の数値は各モデルの既存テストが既存の許容差で比べる。
+
 ## 損失グラフ
 
 仕様は [損失](experiments/LOSS.md)。`tests/experiments/test_loss_objectives.py` が、6 モデルの YAML の係数と加算順、拒否、`config_sha256`、MP-SENet の項と勾配の `torch.equal`、DeepFilterNet3 の既存 oracle との一致、TF-GridNet の Trainer を通した研究用項の追加を見る。公式 Trainer の 1 step、蓄積、Gloo、再開は各 `tests/experiments/test_<model>.py` が、注入した Objective のまま既存の許容差で比べる。GPU を隠した成功は GPU の成功ではない。

@@ -28,6 +28,20 @@ from src.experiments.calc.stft import semamba_mag_phase_istft, semamba_mag_phase
 
 _SAMPLE_RATE = 16000
 _COMPRESS = 0.3
+_MRD_RESOLUTIONS = ((1024, 120, 600), (2048, 240, 1200), (512, 50, 240))
+_CQT_HOPS = (512, 256, 256)
+_CQT_OCTAVES = (8, 8, 8)
+_CQT_BINS = (12, 24, 36)
+_DISCRIMINATOR_KEYS = frozenset(
+    {
+        "cqt_bins_per_octave",
+        "cqt_channels",
+        "cqt_hops",
+        "cqt_octaves",
+        "mrd_channels",
+        "mrd_resolutions",
+    }
+)
 _FORWARD_FIELDS = (
     "clean_mag",
     "clean_phase",
@@ -55,6 +69,12 @@ def architecture_config(
     hop: int,
     win: int,
     sampling_rate: int,
+    mrd_channels: int = 32,
+    mrd_resolutions: tuple[tuple[int, int, int], ...] | list[list[int]] = _MRD_RESOLUTIONS,
+    cqt_channels: int = 128,
+    cqt_hops: tuple[int, ...] | list[int] = _CQT_HOPS,
+    cqt_octaves: tuple[int, ...] | list[int] = _CQT_OCTAVES,
+    cqt_bins_per_octave: tuple[int, ...] | list[int] = _CQT_BINS,
 ) -> dict[str, Any]:
     """Return the shared build config after the checks the three modules must share."""
 
@@ -75,13 +95,25 @@ def architecture_config(
     if input_channel != 2 or output_channel != 1:
         raise BuildError("SEMamba++ channels must be input 2 and output 1")
     norm_epsilon = _positive_float("norm_epsilon", norm_epsilon)
+    resolutions = _resolution_rows(mrd_resolutions)
+    hops = _int_row("cqt_hops", cqt_hops)
+    octaves = _int_row("cqt_octaves", cqt_octaves)
+    bins = _int_row("cqt_bins_per_octave", cqt_bins_per_octave)
+    if not hops or len(hops) != len(octaves) or len(hops) != len(bins):
+        raise BuildError("CQT hop, octave, and bins lists must have the same non-zero length")
     return {
+        "cqt_bins_per_octave": bins,
+        "cqt_channels": _positive_int("cqt_channels", cqt_channels),
+        "cqt_hops": hops,
+        "cqt_octaves": octaves,
         "d_conv": _positive_int("d_conv", d_conv),
         "d_state": _positive_int("d_state", d_state),
         "expand": _positive_int("expand", expand),
         "hid_feature": _positive_int("hid_feature", hid_feature),
         "hop": hop,
         "input_channel": input_channel,
+        "mrd_channels": _positive_int("mrd_channels", mrd_channels),
+        "mrd_resolutions": resolutions,
         "n_fft": n_fft,
         "norm_epsilon": norm_epsilon,
         "num_tfmamba": _positive_int("num_tfmamba", num_tfmamba),
@@ -93,9 +125,10 @@ def architecture_config(
 
 
 def network_config(architecture: dict[str, Any]) -> dict[str, Any]:
-    """Config passed to ``build_model``. STFT hop and win are not network keys."""
+    """Config passed to ``build_model``. STFT and discriminator fields are not network keys."""
 
-    return {key: value for key, value in architecture.items() if key not in {"hop", "sampling_rate", "win"}}
+    skipped = {"hop", "sampling_rate", "win"} | _DISCRIMINATOR_KEYS
+    return {key: value for key, value in architecture.items() if key not in skipped}
 
 
 def pack_forward(values: tuple[torch.Tensor, ...] | list[torch.Tensor]) -> dict[str, torch.Tensor]:
@@ -172,6 +205,12 @@ class SEMambaPPGenerator(torch.nn.Module):
         hop: int = 100,
         win: int = 400,
         sampling_rate: int = _SAMPLE_RATE,
+        mrd_channels: int = 32,
+        mrd_resolutions: tuple[tuple[int, int, int], ...] | list[list[int]] = _MRD_RESOLUTIONS,
+        cqt_channels: int = 128,
+        cqt_hops: tuple[int, ...] | list[int] = _CQT_HOPS,
+        cqt_octaves: tuple[int, ...] | list[int] = _CQT_OCTAVES,
+        cqt_bins_per_octave: tuple[int, ...] | list[int] = _CQT_BINS,
     ) -> None:
         super().__init__()
         self.seed = _seed(seed)
@@ -189,6 +228,12 @@ class SEMambaPPGenerator(torch.nn.Module):
             hop=hop,
             win=win,
             sampling_rate=sampling_rate,
+            mrd_channels=mrd_channels,
+            mrd_resolutions=mrd_resolutions,
+            cqt_channels=cqt_channels,
+            cqt_hops=cqt_hops,
+            cqt_octaves=cqt_octaves,
+            cqt_bins_per_octave=cqt_bins_per_octave,
         )
         with seed_model_init(self.seed):
             generator = _build_generator(self.architecture)
@@ -269,6 +314,12 @@ class SEMambaPPMRD(torch.nn.Module):
         hop: int = 100,
         win: int = 400,
         sampling_rate: int = _SAMPLE_RATE,
+        mrd_channels: int = 32,
+        mrd_resolutions: tuple[tuple[int, int, int], ...] | list[list[int]] = _MRD_RESOLUTIONS,
+        cqt_channels: int = 128,
+        cqt_hops: tuple[int, ...] | list[int] = _CQT_HOPS,
+        cqt_octaves: tuple[int, ...] | list[int] = _CQT_OCTAVES,
+        cqt_bins_per_octave: tuple[int, ...] | list[int] = _CQT_BINS,
     ) -> None:
         super().__init__()
         self.seed = _seed(seed)
@@ -286,10 +337,19 @@ class SEMambaPPMRD(torch.nn.Module):
             hop=hop,
             win=win,
             sampling_rate=sampling_rate,
+            mrd_channels=mrd_channels,
+            mrd_resolutions=mrd_resolutions,
+            cqt_channels=cqt_channels,
+            cqt_hops=cqt_hops,
+            cqt_octaves=cqt_octaves,
+            cqt_bins_per_octave=cqt_bins_per_octave,
         )
         with seed_model_init(self.seed):
             _discard(_build_generator(self.architecture))
-            discriminator = MultiResolutionDiscriminator()
+            discriminator = MultiResolutionDiscriminator(
+                self.architecture["mrd_resolutions"],
+                int(self.architecture["mrd_channels"]),
+            )
         self.discriminator = discriminator
 
     def forward(
@@ -320,6 +380,12 @@ class SEMambaPPCQTDiscriminator(torch.nn.Module):
         hop: int = 100,
         win: int = 400,
         sampling_rate: int = _SAMPLE_RATE,
+        mrd_channels: int = 32,
+        mrd_resolutions: tuple[tuple[int, int, int], ...] | list[list[int]] = _MRD_RESOLUTIONS,
+        cqt_channels: int = 128,
+        cqt_hops: tuple[int, ...] | list[int] = _CQT_HOPS,
+        cqt_octaves: tuple[int, ...] | list[int] = _CQT_OCTAVES,
+        cqt_bins_per_octave: tuple[int, ...] | list[int] = _CQT_BINS,
     ) -> None:
         super().__init__()
         self.seed = _seed(seed)
@@ -337,11 +403,28 @@ class SEMambaPPCQTDiscriminator(torch.nn.Module):
             hop=hop,
             win=win,
             sampling_rate=sampling_rate,
+            mrd_channels=mrd_channels,
+            mrd_resolutions=mrd_resolutions,
+            cqt_channels=cqt_channels,
+            cqt_hops=cqt_hops,
+            cqt_octaves=cqt_octaves,
+            cqt_bins_per_octave=cqt_bins_per_octave,
         )
         with seed_model_init(self.seed):
             _discard(_build_generator(self.architecture))
-            _discard(MultiResolutionDiscriminator())
-            discriminator = MultiScaleSubbandCQTDiscriminator(int(self.architecture["sampling_rate"]))
+            _discard(
+                MultiResolutionDiscriminator(
+                    self.architecture["mrd_resolutions"],
+                    int(self.architecture["mrd_channels"]),
+                )
+            )
+            discriminator = MultiScaleSubbandCQTDiscriminator(
+                int(self.architecture["sampling_rate"]),
+                hops=self.architecture["cqt_hops"],
+                octaves=self.architecture["cqt_octaves"],
+                bins=self.architecture["cqt_bins_per_octave"],
+                channels=int(self.architecture["cqt_channels"]),
+            )
         self.discriminator = discriminator
 
     def forward(
@@ -387,6 +470,23 @@ def _seed(seed: object) -> int:
     if isinstance(seed, bool) or not isinstance(seed, int):
         raise BuildError("seed must be an integer")
     return seed
+
+
+def _resolution_rows(value: object) -> tuple[tuple[int, int, int], ...]:
+    if isinstance(value, (str, bytes)) or not isinstance(value, (list, tuple)) or not value:
+        raise BuildError("mrd_resolutions must be a non-empty list of [n_fft, hop, win]")
+    rows = []
+    for item in value:
+        if isinstance(item, (str, bytes)) or not isinstance(item, (list, tuple)) or len(item) != 3:
+            raise BuildError("each MRD resolution must be [n_fft, hop, win]")
+        rows.append(tuple(_positive_int("mrd resolution", part) for part in item))
+    return tuple(rows)
+
+
+def _int_row(name: str, value: object) -> tuple[int, ...]:
+    if isinstance(value, (str, bytes)) or not isinstance(value, (list, tuple)) or not value:
+        raise BuildError(f"{name} must be a non-empty list of positive integers")
+    return tuple(_positive_int(name, item) for item in value)
 
 
 def _positive_int(name: str, value: object) -> int:

@@ -55,7 +55,7 @@ class DenseEncoder(nn.Module):
             nn.InstanceNorm2d(h.dense_channel, affine=True),
             nn.PReLU(h.dense_channel))
 
-        self.dense_block = DenseBlock(h, depth=4)
+        self.dense_block = DenseBlock(h, depth=getattr(h, "dense_depth", 4))
 
         self.dense_conv_2 = nn.Sequential(
             nn.Conv2d(h.dense_channel, h.dense_channel, (1, 3), (1, 2), padding=(0, 1)),
@@ -72,7 +72,7 @@ class DenseEncoder(nn.Module):
 class MaskDecoder(nn.Module):
     def __init__(self, h, out_channel=1):
         super(MaskDecoder, self).__init__()
-        self.dense_block = DenseBlock(h, depth=4)
+        self.dense_block = DenseBlock(h, depth=getattr(h, "dense_depth", 4))
         self.mask_conv = nn.Sequential(
             SPConvTranspose2d(h.dense_channel, h.dense_channel, (1, 3), 2),
             nn.InstanceNorm2d(h.dense_channel, affine=True),
@@ -92,7 +92,7 @@ class MaskDecoder(nn.Module):
 class PhaseDecoder(nn.Module):
     def __init__(self, h, out_channel=1):
         super(PhaseDecoder, self).__init__()
-        self.dense_block = DenseBlock(h, depth=4)
+        self.dense_block = DenseBlock(h, depth=getattr(h, "dense_depth", 4))
         self.phase_conv = nn.Sequential(
             SPConvTranspose2d(h.dense_channel, h.dense_channel, (1, 3), 2),
             nn.InstanceNorm2d(h.dense_channel, affine=True),
@@ -115,8 +115,10 @@ class TSTransformerBlock(nn.Module):
     def __init__(self, h):
         super(TSTransformerBlock, self).__init__()
         self.h = h
-        self.time_transformer = TransformerBlock(d_model=h.dense_channel, n_heads=4)
-        self.freq_transformer = TransformerBlock(d_model=h.dense_channel, n_heads=4)
+        n_heads = getattr(h, "n_heads", 4)
+        dropout = getattr(h, "ts_dropout", 0)
+        self.time_transformer = TransformerBlock(d_model=h.dense_channel, n_heads=n_heads, dropout=dropout)
+        self.freq_transformer = TransformerBlock(d_model=h.dense_channel, n_heads=n_heads, dropout=dropout)
 
     def forward(self, x):
         b, c, t, f = x.size()

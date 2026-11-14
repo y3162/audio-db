@@ -30,6 +30,13 @@ components:
       hop: 100
       num_channel: 64
       sampling_rate: 16000
+      n_layers: 6
+      n_head: 4
+      approx_qk_dim: 512
+      dense_depth: 4
+      dropout: 0.1
+      query_key_dim: 128
+      expansion_factor: 4
     prepare:
       trainable: true
       distribute: none
@@ -47,6 +54,13 @@ components:
       hop: 100
       num_channel: 64
       sampling_rate: 16000
+      n_layers: 6
+      n_head: 4
+      approx_qk_dim: 512
+      dense_depth: 4
+      dropout: 0.1
+      query_key_dim: 128
+      expansion_factor: 4
     prepare:
       trainable: true
       distribute: none

@@ -15,7 +15,7 @@ import torch
 
 from src.experiments.errors import BuildError, RuntimeFailure
 from src.se import build_model
-from src.se.models.deepfilternet3.model import DfNet
+from src.se.models.deepfilternet3.model import DFN3Params, DfNet
 from src.experiments.calc.rng import seed_model_init
 
 
@@ -50,6 +50,7 @@ class DeepFilterNet3Model(torch.nn.Module):
         self.generator = generator
         self.variant = "deepfilternet3"
         self.seed = seed
+        self.architecture = published_architecture(generator.params)
 
     def forward(
         self,
@@ -73,3 +74,19 @@ class DeepFilterNet3Model(torch.nn.Module):
         if not any("df_fc_a" in name for name in exported):
             raise RuntimeFailure("export is missing df_fc_a")
         return exported
+
+
+def published_architecture(params: DFN3Params) -> dict[str, Any]:
+    """Effective ``DFN3Params`` after defaults and YAML overrides.
+
+    Kernel pairs are lists so they match YAML. Sample rate is whatever was
+    requested. The 48 kHz data protocol still refuses any other rate.
+    """
+
+    values: dict[str, Any] = {}
+    for name, value in params.__dict__.items():
+        if isinstance(value, tuple):
+            values[name] = [int(item) for item in value]
+        else:
+            values[name] = value
+    return values

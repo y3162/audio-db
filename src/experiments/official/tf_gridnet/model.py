@@ -41,18 +41,19 @@ class TFGridNetModel(torch.nn.Module):
         if isinstance(seed, bool) or not isinstance(seed, int) or seed < 0:
             raise BuildError("seed must be an integer >= 0")
         if architecture is None:
-            config: dict[str, Any] | None = None
+            provided: dict[str, Any] = {}
         elif isinstance(architecture, Mapping):
-            config = _numeric_architecture(dict(architecture))
+            provided = _numeric_architecture(dict(architecture))
         else:
             raise BuildError("architecture must be a mapping")
+        config = _effective_architecture(provided)
         try:
             with seed_model_init(seed):
                 generator = build_model("tf_gridnet", config, variant="ms-snsd")
                 apply_espnet_initialization(generator, init)
         except TrainingError as exc:
             raise BuildError(str(exc)) from exc
-        except (TypeError, ValueError) as exc:
+        except (TypeError, ValueError, AssertionError, AttributeError) as exc:
             raise BuildError(f"failed to build tf_gridnet: {exc}") from exc
         if not isinstance(generator, TFGridNet):
             raise BuildError(f"tf_gridnet builder returned {type(generator).__name__}, expected TFGridNet")
@@ -60,6 +61,7 @@ class TFGridNetModel(torch.nn.Module):
         self.variant = "ms-snsd"
         self.init = init
         self.seed = seed
+        self.architecture = config
         self.n_fft = int(generator.n_fft)
         self.stride = int(generator.stride)
 
@@ -90,6 +92,57 @@ class TFGridNetModel(torch.nn.Module):
                 raise RuntimeFailure(f"parameter {name} is not a tensor")
             exported["separator." + name] = value.detach().cpu().clone()
         return exported
+
+
+_GRID_DEFAULTS = {
+    "activation": "prelu",
+    "attn_approx_qk_dim": 512,
+    "attn_n_head": 4,
+    "emb_dim": 32,
+    "emb_hs": 4,
+    "emb_ks": 4,
+    "eps": 1e-5,
+    "lstm_hidden_units": 128,
+    "n_fft": 512,
+    "n_layers": 4,
+    "stride": 256,
+}
+_GRID_INTS = frozenset(
+    {
+        "attn_approx_qk_dim",
+        "attn_n_head",
+        "emb_dim",
+        "emb_hs",
+        "emb_ks",
+        "lstm_hidden_units",
+        "n_fft",
+        "n_layers",
+        "stride",
+    }
+)
+
+
+def _effective_architecture(config: Mapping[str, Any]) -> dict[str, Any]:
+    """Fill omitted MS-SNSD keys from the published constructor defaults."""
+
+    unknown = set(config) - set(_GRID_DEFAULTS)
+    if unknown:
+        raise BuildError(f"unknown tf_gridnet architecture keys: {sorted(unknown)}")
+    merged = dict(_GRID_DEFAULTS)
+    merged.update(config)
+    for key in _GRID_INTS:
+        value = merged[key]
+        if isinstance(value, bool) or not isinstance(value, int) or value < 1:
+            raise BuildError(f"{key} must be a positive integer")
+    if not isinstance(merged["activation"], str) or not merged["activation"]:
+        raise BuildError("activation must be a non-empty string")
+    eps = merged["eps"]
+    if isinstance(eps, bool) or not isinstance(eps, (int, float)) or not (float(eps) > 0):
+        raise BuildError("eps must be a positive number")
+    merged["eps"] = float(eps)
+    if merged["emb_dim"] % merged["attn_n_head"] != 0:
+        raise BuildError("emb_dim must be divisible by attn_n_head")
+    return merged
 
 
 _INTEGER_ARCHITECTURE = frozenset(

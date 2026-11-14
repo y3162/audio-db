@@ -57,6 +57,12 @@ class SEMambaTask:
         if config["loss"] != "official":
             raise TrainingError("SEMamba++ training uses loss official")
         architecture = dict(model.get("architecture") or {})
+        mrd_resolutions = architecture.pop("mrd_resolutions", None)
+        mrd_channels = architecture.pop("mrd_channels", None)
+        cqt_hops = architecture.pop("cqt_hops", None)
+        cqt_octaves = architecture.pop("cqt_octaves", None)
+        cqt_bins = architecture.pop("cqt_bins_per_octave", None)
+        cqt_channels = architecture.pop("cqt_channels", None)
         stft = model.get("stft") or {}
         self.n_fft = int(architecture.get("n_fft", stft.get("n_fft", 400)))
         self.hop = int(stft.get("hop", 100 if self.n_fft == 400 else max(self.n_fft // 4, 1)))
@@ -66,8 +72,23 @@ class SEMambaTask:
         self.grad_clip = config.get("grad_clip")
         with seed_model_init(config["seed"]):
             self.generator = build_model("semambapp", architecture or None, variant=model.get("variant")).to(device)
-            self.discriminator_mrd = MultiResolutionDiscriminator().to(device)
-            self.discriminator_band = MultiScaleSubbandCQTDiscriminator(self.sample_rate).to(device)
+            if mrd_resolutions is None and mrd_channels is None:
+                self.discriminator_mrd = MultiResolutionDiscriminator().to(device)
+            else:
+                self.discriminator_mrd = MultiResolutionDiscriminator(
+                    mrd_resolutions,
+                    32 if mrd_channels is None else int(mrd_channels),
+                ).to(device)
+            if cqt_hops is None and cqt_octaves is None and cqt_bins is None and cqt_channels is None:
+                self.discriminator_band = MultiScaleSubbandCQTDiscriminator(self.sample_rate).to(device)
+            else:
+                self.discriminator_band = MultiScaleSubbandCQTDiscriminator(
+                    self.sample_rate,
+                    hops=cqt_hops,
+                    octaves=cqt_octaves,
+                    bins=cqt_bins,
+                    channels=128 if cqt_channels is None else int(cqt_channels),
+                ).to(device)
         discriminator_parameters = list(self.discriminator_mrd.parameters()) + list(self.discriminator_band.parameters())
         self.optim_g = build_optimizer(self.generator.parameters(), config)
         self.optim_d = build_optimizer(discriminator_parameters, config)

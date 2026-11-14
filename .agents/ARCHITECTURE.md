@@ -28,6 +28,10 @@
 - `leakage_safe` は profile が `leakage_safe` で `selection_uses_test` が false のときだけ許す。不明な値は適合にしない。snapshot の train / valid / test の重なり検査はデータモジュールが開くときに行う。
 - `research` は適合する音声ペアを使え、公式再現としては記録しない。
 - 公式再現設定は `configs/reproduction/experiments/official/`（`official_faithful`）。1 step の宣言は `tests/fixtures/configs/experiments/`。Dataset と Protocol の定義は `configs/data/`。評価 DB の登録は `configs/db/init.yaml`。
+- 構造ハイパーパラメータは実験 YAML の `kwargs` または `kwargs.architecture` に書く。省略したキーは公開コンストラクタの既定値で埋め、YAML の値をその既定値で上書きしない。未知のキーは構築時に拒否する。仕様は `docs/experiments/MODELS.md`。
+- `official_faithful` の MP-SENet と MossFormerGAN は、公開構造定数と違う architecture を構築時に拒否する。比較相手はモデル自身の重みではない。`leakage_safe` と `research` はこの構造ロックを使わない。
+- DeepFilterNet3 の公式データは 48 kHz のままである。モデル、DFStream、損失は同じ `DFN3Params` を使う。`scan_backend` の fused と reference は構造の変更ではない。
+- 構造を変えた設定は `config_sha256` が変わり、変える前の checkpoint から再開できない。shape が違う state_dict の strict load は失敗する。
 - `dfn3.online.official@1` と `semambapp.gsr.official@1` は blocked。代替素材を公式データの再現と呼ばない。
 - 追跡中の `libdf_rfft.so` は置き換えない。ファイルが在るのに読めないときは、ABI が合うローカル再ビルドだけを使い、無ければエラーにする。PyTorch に戻るのは、ファイル自体が無く `DF_RFFT_REQUIRED=1` でもないときだけで、そのとき libdf とのビット一致は成り立たない（`src/se/models/deepfilternet3/dsp.py`）。
 

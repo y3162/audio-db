@@ -10,8 +10,12 @@ from .core.checkpoint import checkpoint_paths, load_state
 from .core.config import load_config
 from .core.registry import ModelSpec, registry
 
-_DEFAULTS = dict(dense_channel=64, n_fft=400, beta=2.0, num_tsconformers=4,
-                 sampling_rate=16000, hop_size=100, win_size=400, compress_factor=0.3)
+_DEFAULTS = dict(
+    dense_channel=64, n_fft=400, beta=2.0, num_tsconformers=4,
+    sampling_rate=16000, hop_size=100, win_size=400, compress_factor=0.3,
+    n_heads=4, dense_depth=4, ts_dropout=0.0,
+)
+_MP_KEYS = frozenset(_DEFAULTS)
 
 
 def available_enhancers():
@@ -25,8 +29,15 @@ def model_metadata(name):
 
 
 def _config(config):
+    """Structural fields only.
+
+    Published JSON files also carry optimizer and batch settings. Those stay
+    unread. Experiment YAML rejects unknown names at the module constructor.
+    """
+
+    raw = load_config(config)
     values = _DEFAULTS.copy()
-    values.update(load_config(config))
+    values.update({key: raw[key] for key in _MP_KEYS if key in raw})
     return SimpleNamespace(**values)
 
 

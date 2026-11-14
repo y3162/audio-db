@@ -62,6 +62,10 @@ components:
       compress_factor: 0.3
       beta: 2.0
       sampling_rate: 16000
+      n_heads: 4
+      dense_depth: 4
+      ts_dropout: 0.0
+      disc_dim: 16
     prepare: {trainable: true, distribute: none}
   metric_discriminator:
     role: module
@@ -76,6 +80,10 @@ components:
       compress_factor: 0.3
       beta: 2.0
       sampling_rate: 16000
+      n_heads: 4
+      dense_depth: 4
+      ts_dropout: 0.0
+      disc_dim: 16
     prepare: {trainable: true, distribute: none}
   source:
     role: other

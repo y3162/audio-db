@@ -164,7 +164,7 @@ class DenseEncoder(nn.Module):
         channels (int): Number of output channels for each convolutional layer (default is 64).
     """
 
-    def __init__(self, in_channel, channels=64):
+    def __init__(self, in_channel, channels=64, dense_depth=4):
         """Initializes the DenseEncoder with specified input channels and feature size."""
         super(DenseEncoder, self).__init__()
         self.conv_1 = nn.Sequential(
@@ -172,7 +172,7 @@ class DenseEncoder(nn.Module):
             nn.InstanceNorm2d(channels, affine=True),  # Normalization layer
             nn.PReLU(channels)  # Activation function
         )
-        self.dilated_dense = DilatedDenseNet(depth=4, in_channels=channels)  # Dilated Dense Network
+        self.dilated_dense = DilatedDenseNet(depth=dense_depth, in_channels=channels)  # Dilated Dense Network
         self.conv_2 = nn.Sequential(
             nn.Conv2d(channels, channels, (1, 3), (1, 2), padding=(0, 1)),  # Second convolution layer
             nn.InstanceNorm2d(channels, affine=True),  # Normalization layer
@@ -249,10 +249,10 @@ class MaskDecoder(nn.Module):
         out_channel (int): The number of output channels for the final output mask (default is 1).
     """
 
-    def __init__(self, num_features, num_channel=64, out_channel=1):
+    def __init__(self, num_features, num_channel=64, out_channel=1, dense_depth=4):
         """Initializes the MaskDecoder with specified parameters."""
         super(MaskDecoder, self).__init__()
-        self.dense_block = DilatedDenseNet(depth=4, in_channels=num_channel)  # Dense feature extraction
+        self.dense_block = DilatedDenseNet(depth=dense_depth, in_channels=num_channel)  # Dense feature extraction
         self.sub_pixel = SPConvTranspose2d(num_channel, num_channel, (1, 3), 2)  # Sub-pixel convolution for upsampling
         self.conv_1 = nn.Conv2d(num_channel, out_channel, (1, 2))  # Convolution layer to produce mask
         self.norm = nn.InstanceNorm2d(out_channel, affine=True)  # Normalization layer
@@ -290,10 +290,10 @@ class ComplexDecoder(nn.Module):
         num_channel (int): The number of channels in intermediate layers (default is 64).
     """
 
-    def __init__(self, num_channel=64):
+    def __init__(self, num_channel=64, dense_depth=4):
         """Initializes the ComplexDecoder with specified parameters."""
         super(ComplexDecoder, self).__init__()
-        self.dense_block = DilatedDenseNet(depth=4, in_channels=num_channel)  # Dense feature extraction
+        self.dense_block = DilatedDenseNet(depth=dense_depth, in_channels=num_channel)  # Dense feature extraction
         self.sub_pixel = SPConvTranspose2d(num_channel, num_channel, (1, 3), 2)  # Sub-pixel convolution for upsampling
         self.prelu = nn.PReLU(num_channel)  # Activation function
         self.norm = nn.InstanceNorm2d(num_channel, affine=True)  # Normalization layer
@@ -328,11 +328,24 @@ class SyncANet(nn.Module):
         num_features (int): The number of features for the mask decoder (default is 201).
     """
 
-    def __init__(self, num_channel=64, num_features=201):
+    def __init__(
+        self,
+        num_channel=64,
+        num_features=201,
+        n_layers=6,
+        n_head=4,
+        approx_qk_dim=512,
+        dense_depth=4,
+        dropout=0.1,
+        query_key_dim=128,
+        expansion_factor=4.0,
+    ):
         """Initializes the SyncANet with specified parameters."""
         super(SyncANet, self).__init__()
-        self.dense_encoder = DenseEncoder(in_channel=3, channels=num_channel)  # Dense encoder for input
-        self.n_layers = 6  # Number of synchronous attention layers
+        if int(num_channel) % int(n_head) != 0:
+            raise ValueError(f"num_channel must be divisible by n_head ({n_head})")
+        self.dense_encoder = DenseEncoder(in_channel=3, channels=num_channel, dense_depth=dense_depth)
+        self.n_layers = n_layers  # Number of synchronous attention layers
         self.blocks = nn.ModuleList([])  # List to hold attention blocks
         
         # Initialize attention blocks
@@ -344,15 +357,20 @@ class SyncANet(nn.Module):
                     emb_hs=1,
                     n_freqs=int(num_features//2)+1,
                     hidden_channels=num_channel*2,
-                    n_head=4,
-                    approx_qk_dim=512,
+                    n_head=n_head,
+                    approx_qk_dim=approx_qk_dim,
                     activation='prelu',
                     eps=1.0e-5,
+                    dropout=dropout,
+                    query_key_dim=query_key_dim,
+                    expansion_factor=expansion_factor,
                 )
             )
 
-        self.mask_decoder = MaskDecoder(num_features, num_channel=num_channel, out_channel=1)  # Mask decoder
-        self.complex_decoder = ComplexDecoder(num_channel=num_channel)  # Complex decoder
+        self.mask_decoder = MaskDecoder(
+            num_features, num_channel=num_channel, out_channel=1, dense_depth=dense_depth
+        )
+        self.complex_decoder = ComplexDecoder(num_channel=num_channel, dense_depth=dense_depth)
 
     def forward(self, x):
         """
@@ -476,6 +494,9 @@ class SyncANetBlock(nn.Module):
         approx_qk_dim=512,
         activation="prelu",
         eps=1e-5,
+        dropout=0.1,
+        query_key_dim=128,
+        expansion_factor=4.0,
     ):
         """
         Initializes the SyncANetBlock with the specified parameters.
@@ -502,16 +523,22 @@ class SyncANetBlock(nn.Module):
             dim_in=in_channels,
             dim_out=hidden_channels,
             norm_klass=nn.LayerNorm,
-            dropout=0.1,
+            dropout=dropout,
         )
         self.intra_to_v = FFConvM(
             dim_in=in_channels,
             dim_out=hidden_channels,
             norm_klass=nn.LayerNorm,
-            dropout=0.1,
+            dropout=dropout,
         )
         self.intra_rnn = self._build_repeats(in_channels, hidden_channels, 20, hidden_channels, repeats=1)  # FSMN layers
-        self.intra_mossformer = MossFormer(dim=emb_dim, group_size=n_freqs)  # MossFormer module
+        self.intra_mossformer = MossFormer(
+            dim=emb_dim,
+            group_size=n_freqs,
+            query_key_dim=query_key_dim,
+            expansion_factor=expansion_factor,
+            dropout=dropout,
+        )
 
         # Linear transformation for intra module output
         self.intra_linear = nn.ConvTranspose1d(
@@ -525,16 +552,22 @@ class SyncANetBlock(nn.Module):
             dim_in=in_channels,
             dim_out=hidden_channels,
             norm_klass=nn.LayerNorm,
-            dropout=0.1,
+            dropout=dropout,
         )
         self.inter_to_v = FFConvM(
             dim_in=in_channels,
             dim_out=hidden_channels,
             norm_klass=nn.LayerNorm,
-            dropout=0.1,
+            dropout=dropout,
         )
         self.inter_rnn = self._build_repeats(in_channels, hidden_channels, 20, hidden_channels, repeats=1)  # FSMN layers
-        self.inter_mossformer = MossFormer(dim=emb_dim, group_size=256)  # MossFormer module
+        self.inter_mossformer = MossFormer(
+            dim=emb_dim,
+            group_size=256,
+            query_key_dim=query_key_dim,
+            expansion_factor=expansion_factor,
+            dropout=dropout,
+        )
 
         # Linear transformation for inter module output
         self.inter_linear = nn.ConvTranspose1d(

@@ -15,6 +15,7 @@ registered owner of the training parameters.
 
 from __future__ import annotations
 
+from collections.abc import Mapping
 from typing import Any
 
 import torch
@@ -29,16 +30,22 @@ from src.experiments.official.mp_senet.reference import official_center_istft_le
 from src.experiments.calc.stft import mag_pha_istft, mag_pha_stft
 
 _SAMPLE_RATE = 16000
-_ARCHITECTURE_KEYS = (
-    "beta",
-    "compress_factor",
-    "dense_channel",
-    "hop_size",
-    "n_fft",
-    "num_tsconformers",
-    "sampling_rate",
-    "win_size",
-)
+# Published MPNet plus the metric discriminator. This is the official recipe,
+# not a copy of whatever weights happen to be loaded.
+OFFICIAL_ARCHITECTURE = {
+    "beta": 2.0,
+    "compress_factor": 0.3,
+    "dense_channel": 64,
+    "dense_depth": 4,
+    "disc_dim": 16,
+    "hop_size": 100,
+    "n_fft": 400,
+    "n_heads": 4,
+    "num_tsconformers": 4,
+    "sampling_rate": 16000,
+    "ts_dropout": 0.0,
+    "win_size": 400,
+}
 # Tuple order is the trainer's dict order. DDP forwards this tuple.
 _FORWARD_FIELDS = (
     "clean_mag",
@@ -66,8 +73,12 @@ def architecture_config(
     compress_factor: float,
     beta: float,
     sampling_rate: int,
+    n_heads: int = 4,
+    dense_depth: int = 4,
+    ts_dropout: float = 0.0,
+    disc_dim: int = 16,
 ) -> dict[str, Any]:
-    """Return the MPNet config after the same checks as the waveform adapter."""
+    """Return the shared generator and discriminator architecture."""
 
     dense_channel = _positive_int("dense_channel", dense_channel)
     num_tsconformers = _positive_int("num_tsconformers", num_tsconformers)
@@ -75,10 +86,14 @@ def architecture_config(
     hop_size = _positive_int("hop_size", hop_size)
     win_size = _positive_int("win_size", win_size)
     sampling_rate = _positive_int("sampling_rate", sampling_rate)
+    n_heads = _positive_int("n_heads", n_heads)
+    dense_depth = _positive_int("dense_depth", dense_depth)
+    disc_dim = _positive_int("disc_dim", disc_dim)
     compress_factor = _positive_float("compress_factor", compress_factor)
     beta = _positive_float("beta", beta)
-    if dense_channel % 4 != 0:
-        raise BuildError("dense_channel must be divisible by the 4 attention heads")
+    ts_dropout = _unit_interval("ts_dropout", ts_dropout)
+    if dense_channel % n_heads != 0:
+        raise BuildError(f"dense_channel must be divisible by n_heads ({n_heads})")
     if win_size > n_fft:
         raise BuildError(f"win_size {win_size} is larger than n_fft {n_fft}")
     if sampling_rate != _SAMPLE_RATE:
@@ -87,12 +102,33 @@ def architecture_config(
         "beta": beta,
         "compress_factor": compress_factor,
         "dense_channel": dense_channel,
+        "dense_depth": dense_depth,
+        "disc_dim": disc_dim,
         "hop_size": hop_size,
         "n_fft": n_fft,
+        "n_heads": n_heads,
         "num_tsconformers": num_tsconformers,
         "sampling_rate": sampling_rate,
+        "ts_dropout": ts_dropout,
         "win_size": win_size,
     }
+
+
+def network_config(architecture: Mapping[str, Any]) -> dict[str, Any]:
+    """Config for ``build_model``. ``disc_dim`` sizes only the discriminator."""
+
+    return {key: value for key, value in architecture.items() if key != "disc_dim"}
+
+
+def require_official_architecture(architecture: Mapping[str, Any], claim: str) -> None:
+    """Refuse a non-published structure on the official-faithful path."""
+
+    if claim != "official_faithful":
+        return
+    if dict(architecture) != OFFICIAL_ARCHITECTURE:
+        raise BuildError(
+            "official MP-SENet architecture does not match the published MPNet and metric discriminator"
+        )
 
 
 def pack_forward(values: tuple[torch.Tensor, ...] | list[torch.Tensor]) -> dict[str, torch.Tensor]:
@@ -129,6 +165,10 @@ class MPSENetGANGenerator(torch.nn.Module):
         compress_factor: float,
         beta: float,
         sampling_rate: int,
+        n_heads: int = 4,
+        dense_depth: int = 4,
+        ts_dropout: float = 0.0,
+        disc_dim: int = 16,
     ) -> None:
         super().__init__()
         self.seed = _seed(seed)
@@ -141,9 +181,13 @@ class MPSENetGANGenerator(torch.nn.Module):
             compress_factor=compress_factor,
             beta=beta,
             sampling_rate=sampling_rate,
+            n_heads=n_heads,
+            dense_depth=dense_depth,
+            ts_dropout=ts_dropout,
+            disc_dim=disc_dim,
         )
         with seed_model_init(self.seed):
-            generator = build_model("mp_senet", self.architecture)
+            generator = build_model("mp_senet", network_config(self.architecture))
         if not isinstance(generator, MPNet):
             raise BuildError(f"mp_senet builder returned {type(generator).__name__}, expected MPNet")
         self.generator = generator
@@ -239,6 +283,10 @@ class MPSENetMetricDiscriminator(torch.nn.Module):
         compress_factor: float,
         beta: float,
         sampling_rate: int,
+        n_heads: int = 4,
+        dense_depth: int = 4,
+        ts_dropout: float = 0.0,
+        disc_dim: int = 16,
     ) -> None:
         super().__init__()
         self.seed = _seed(seed)
@@ -251,10 +299,14 @@ class MPSENetMetricDiscriminator(torch.nn.Module):
             compress_factor=compress_factor,
             beta=beta,
             sampling_rate=sampling_rate,
+            n_heads=n_heads,
+            dense_depth=dense_depth,
+            ts_dropout=ts_dropout,
+            disc_dim=disc_dim,
         )
         with seed_model_init(self.seed):
-            build_model("mp_senet", self.architecture)
-            self.discriminator = MetricDiscriminator()
+            build_model("mp_senet", network_config(self.architecture))
+            self.discriminator = MetricDiscriminator(dim=int(self.architecture["disc_dim"]))
 
     def forward(self, reference_magnitude: torch.Tensor, estimate_magnitude: torch.Tensor) -> torch.Tensor:
         return self.discriminator(reference_magnitude, estimate_magnitude)
@@ -276,3 +328,12 @@ def _positive_float(name: str, value: object) -> float:
     if isinstance(value, bool) or not isinstance(value, (int, float)) or float(value) <= 0:
         raise BuildError(f"{name} must be a positive number")
     return float(value)
+
+
+def _unit_interval(name: str, value: object) -> float:
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        raise BuildError(f"{name} must be a number from 0 to 1")
+    number = float(value)
+    if number < 0.0 or number > 1.0 or number != number:
+        raise BuildError(f"{name} must be a number from 0 to 1")
+    return number

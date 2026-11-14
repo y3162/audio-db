@@ -35,6 +35,7 @@ from src.experiments.errors import BuildError, RuntimeFailure
 from src.experiments.official.mossformergan.models import (
     MossFormerGANDiscriminator,
     MossFormerGANGenerator,
+    require_official_architecture,
 )
 from src.experiments.results import RunResult
 from src.experiments.runtime import PreparedModel, ProcessRuntime
@@ -118,6 +119,7 @@ class MossFormerGANTrainer:
         _require_disjoint(optim_g, optim_d)
         if experiment_claim not in _CLAIMS:
             raise BuildError("experiment_claim must be official_faithful, leakage_safe, or research")
+        require_official_architecture(generator.state_module.architecture, experiment_claim)
         require_mossformer(generator_objective, discriminator_objective, experiment_claim)
         if not hasattr(data, "train_epoch") or not hasattr(data, "validation_epoch"):
             raise BuildError("data must provide train_epoch and validation_epoch")

@@ -40,11 +40,17 @@ class MPSENetTask:
         self.spec = model
         if self.loss_name not in ("official", "reconstruction"):
             raise TrainingError(f"unknown loss {self.loss_name!r}")
-        if int(model["dense_channel"]) % 4 != 0:
-            raise TrainingError("model.dense_channel must be divisible by the 4 attention heads")
+        heads = int(model.get("n_heads", 4))
+        if heads < 1 or int(model["dense_channel"]) % heads != 0:
+            raise TrainingError(f"model.dense_channel must be divisible by the {heads} attention heads")
         with seed_model_init(config["seed"]):
             self.generator = build_model("mp_senet", model).to(device)
-            self.discriminator = MetricDiscriminator().to(device) if self.loss_name == "official" else None
+            if self.loss_name != "official":
+                self.discriminator = None
+            elif "disc_dim" in model:
+                self.discriminator = MetricDiscriminator(dim=int(model["disc_dim"])).to(device)
+            else:
+                self.discriminator = MetricDiscriminator().to(device)
         optimizer = config["optimizer"]
         betas = (float(optimizer["betas"][0]), float(optimizer["betas"][1]))
         self.optim_g = torch.optim.AdamW(

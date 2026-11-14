@@ -36,6 +36,7 @@ from src.experiments.official.mp_senet.models import (
     MPSENetGANGenerator,
     MPSENetMetricDiscriminator,
     pack_forward,
+    require_official_architecture,
 )
 from src.experiments.results import RunResult
 from src.experiments.runtime import PreparedModel, ProcessRuntime
@@ -117,6 +118,7 @@ class MPSENetGANTrainer:
             raise BuildError("data must provide train_epoch and validation_epoch")
         if experiment_claim not in _CLAIMS:
             raise BuildError("experiment_claim must be official_faithful, leakage_safe, or research")
+        require_official_architecture(generator.state_module.architecture, experiment_claim)
         require_mp_senet(signal_objective, metric_objective, discriminator_objective, experiment_claim)
         optim_g_id = getattr(optim_g, "_experiment_component_id", None)
         optim_d_id = getattr(optim_d, "_experiment_component_id", None)

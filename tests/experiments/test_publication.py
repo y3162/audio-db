@@ -250,6 +250,9 @@ class PublicationTests(unittest.TestCase):
             "experiment_claim: research",
             "experiment_claim: official_faithful",
         )
+        text = text.replace("dense_channel: 4", "dense_channel: 64").replace(
+            "num_tsconformers: 1", "num_tsconformers: 4"
+        )
         path = directory / "experiment.yaml"
         path.write_text(text, encoding="utf-8")
         with self.assertRaisesRegex(BuildError, "publication"):

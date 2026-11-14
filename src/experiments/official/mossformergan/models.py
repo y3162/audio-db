@@ -13,6 +13,7 @@ The classes wrap ``src.se.build_model("mossformergan")`` and the existing
 
 from __future__ import annotations
 
+from collections.abc import Mapping
 from typing import Any
 
 import torch
@@ -23,7 +24,36 @@ from src.se.models.mossformergan.generator import SyncANet
 from src.experiments.calc.rng import seed_model_init
 from src.experiments.official.mossformergan.discriminator import Discriminator
 
-_BUILD_KEYS = ("hop", "n_fft", "num_channel", "win_len")
+_BUILD_KEYS = (
+    "approx_qk_dim",
+    "dense_depth",
+    "dropout",
+    "expansion_factor",
+    "hop",
+    "n_fft",
+    "n_head",
+    "n_layers",
+    "num_channel",
+    "query_key_dim",
+    "win_len",
+)
+# Published SyncANet. The discriminator graph is separate and stays at the
+# released NISQA layout; these fields are the ones both constructors share.
+OFFICIAL_ARCHITECTURE = {
+    "approx_qk_dim": 512,
+    "dense_depth": 4,
+    "dropout": 0.1,
+    "expansion_factor": 4.0,
+    "hop": 100,
+    "n_fft": 400,
+    "n_head": 4,
+    "n_layers": 6,
+    "num_channel": 64,
+    "query_key_dim": 128,
+    "sampling_rate": 16000,
+    "variant": "se_16k",
+    "win_len": 400,
+}
 
 
 def architecture_config(
@@ -34,6 +64,13 @@ def architecture_config(
     hop: int,
     num_channel: int,
     sampling_rate: int,
+    n_layers: int = 6,
+    n_head: int = 4,
+    approx_qk_dim: int = 512,
+    dense_depth: int = 4,
+    dropout: float = 0.1,
+    query_key_dim: int = 128,
+    expansion_factor: float = 4.0,
 ) -> dict[str, Any]:
     """Return the architecture both modules must share."""
 
@@ -44,18 +81,43 @@ def architecture_config(
     hop = _positive_int("hop", hop)
     num_channel = _positive_int("num_channel", num_channel)
     sampling_rate = _positive_int("sampling_rate", sampling_rate)
+    n_layers = _positive_int("n_layers", n_layers)
+    n_head = _positive_int("n_head", n_head)
+    approx_qk_dim = _positive_int("approx_qk_dim", approx_qk_dim)
+    dense_depth = _positive_int("dense_depth", dense_depth)
+    query_key_dim = _positive_int("query_key_dim", query_key_dim)
     if sampling_rate != 16000:
         raise BuildError(f"MossFormerGAN se_16k requires 16000 Hz, got {sampling_rate}")
     if win_len != n_fft:
         raise BuildError(f"MossFormerGAN win_len {win_len} must equal n_fft {n_fft}")
+    if num_channel % n_head != 0:
+        raise BuildError(f"num_channel must be divisible by n_head ({n_head})")
+    dropout = _unit_interval("dropout", dropout)
+    expansion_factor = _even_expansion(expansion_factor)
     return {
+        "approx_qk_dim": approx_qk_dim,
+        "dense_depth": dense_depth,
+        "dropout": dropout,
+        "expansion_factor": expansion_factor,
         "hop": hop,
         "n_fft": n_fft,
+        "n_head": n_head,
+        "n_layers": n_layers,
         "num_channel": num_channel,
+        "query_key_dim": query_key_dim,
         "sampling_rate": sampling_rate,
         "variant": variant,
         "win_len": win_len,
     }
+
+
+def require_official_architecture(architecture: Mapping[str, Any], claim: str) -> None:
+    """Refuse a non-published generator structure on the official-faithful path."""
+
+    if claim != "official_faithful":
+        return
+    if dict(architecture) != OFFICIAL_ARCHITECTURE:
+        raise BuildError("official MossFormerGAN architecture does not match the published SyncANet")
 
 
 class MossFormerGANGenerator(torch.nn.Module):
@@ -71,6 +133,13 @@ class MossFormerGANGenerator(torch.nn.Module):
         hop: int = 100,
         num_channel: int = 64,
         sampling_rate: int = 16000,
+        n_layers: int = 6,
+        n_head: int = 4,
+        approx_qk_dim: int = 512,
+        dense_depth: int = 4,
+        dropout: float = 0.1,
+        query_key_dim: int = 128,
+        expansion_factor: float = 4.0,
     ) -> None:
         super().__init__()
         self.seed = _seed(seed)
@@ -81,6 +150,13 @@ class MossFormerGANGenerator(torch.nn.Module):
             hop=hop,
             num_channel=num_channel,
             sampling_rate=sampling_rate,
+            n_layers=n_layers,
+            n_head=n_head,
+            approx_qk_dim=approx_qk_dim,
+            dense_depth=dense_depth,
+            dropout=dropout,
+            query_key_dim=query_key_dim,
+            expansion_factor=expansion_factor,
         )
         with seed_model_init(self.seed):
             generator = _build_generator(self.architecture)
@@ -116,6 +192,13 @@ class MossFormerGANDiscriminator(torch.nn.Module):
         hop: int = 100,
         num_channel: int = 64,
         sampling_rate: int = 16000,
+        n_layers: int = 6,
+        n_head: int = 4,
+        approx_qk_dim: int = 512,
+        dense_depth: int = 4,
+        dropout: float = 0.1,
+        query_key_dim: int = 128,
+        expansion_factor: float = 4.0,
     ) -> None:
         super().__init__()
         self.seed = _seed(seed)
@@ -126,6 +209,13 @@ class MossFormerGANDiscriminator(torch.nn.Module):
             hop=hop,
             num_channel=num_channel,
             sampling_rate=sampling_rate,
+            n_layers=n_layers,
+            n_head=n_head,
+            approx_qk_dim=approx_qk_dim,
+            dense_depth=dense_depth,
+            dropout=dropout,
+            query_key_dim=query_key_dim,
+            expansion_factor=expansion_factor,
         )
         # ``MossFormerGANTask`` moves G1 onto the device between D2 and G3.
         # That move does not draw random numbers. It is not repeated here.
@@ -176,3 +266,21 @@ def _positive_int(name: str, value: object) -> int:
     if isinstance(value, bool) or not isinstance(value, int) or value < 1:
         raise BuildError(f"{name} must be a positive integer")
     return value
+
+
+def _unit_interval(name: str, value: object) -> float:
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        raise BuildError(f"{name} must be a number from 0 to 1")
+    number = float(value)
+    if number < 0.0 or number > 1.0 or number != number:
+        raise BuildError(f"{name} must be a number from 0 to 1")
+    return number
+
+
+def _even_expansion(value: object) -> float:
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        raise BuildError("expansion_factor must be a positive even integer")
+    number = float(value)
+    if number != int(number) or int(number) < 2 or int(number) % 2 != 0:
+        raise BuildError("expansion_factor must be a positive even integer")
+    return float(int(number))

@@ -66,6 +66,19 @@ def params_from(config):
     params.conv_kernel = _pair(params.conv_kernel)
     params.convt_kernel = _pair(params.convt_kernel)
     params.conv_kernel_inp = _pair(params.conv_kernel_inp)
+    # These dataclass fields are parsed by the published ini and are not read
+    # by DfNet. A non-default value would be stored and ignored.
+    if params.emb_gru_skip != 'none' or params.emb_gru_skip_enc != 'none' or bool(params.lsnr_dropout):
+        raise ValueError(
+            'emb_gru_skip, emb_gru_skip_enc, and lsnr_dropout are not implemented; '
+            'only the unused defaults are accepted'
+        )
+    if int(params.df_n_iter) != 1:
+        raise ValueError('DeepFilterNet3 requires df_n_iter 1')
+    if int(params.emb_num_layers) < 2:
+        raise ValueError('emb_num_layers must be at least 2')
+    if int(params.nb_erb) % 8:
+        raise ValueError('nb_erb must be divisible by 8')
     return params
 
 

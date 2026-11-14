@@ -55,7 +55,14 @@ def _as_channel(waveform: torch.Tensor) -> torch.Tensor:
 class CQTSubbandDiscriminator(nn.Module):
     """One CQT scale: resample to 32 kHz, split octaves, then a conv stack."""
 
-    def __init__(self, hop_length: int, n_octaves: int, bins_per_octave: int, sample_rate: int = 16000) -> None:
+    def __init__(
+        self,
+        hop_length: int,
+        n_octaves: int,
+        bins_per_octave: int,
+        sample_rate: int = 16000,
+        channels: int = _FILTERS,
+    ) -> None:
         super().__init__()
         self.hop_length = hop_length
         self.n_octaves = n_octaves
@@ -74,16 +81,16 @@ class CQTSubbandDiscriminator(nn.Module):
         self.conv_pres = nn.ModuleList(
             nn.Conv2d(2, 2, kernel_size=_KERNEL, padding=_pad2d(_KERNEL)) for _ in range(n_octaves)
         )
-        # filters_scale is 1 and the cap is 1024, so every layer stays at 128.
+        # filters_scale is 1 and the cap is 1024, so the published stack stays at 128.
         layers: list[nn.Module] = [
-            nn.Conv2d(2, _FILTERS, kernel_size=_KERNEL, padding=_pad2d(_KERNEL))
+            nn.Conv2d(2, channels, kernel_size=_KERNEL, padding=_pad2d(_KERNEL))
         ]
         for dilation in _DILATIONS:
             layers.append(
                 weight_norm(
                     nn.Conv2d(
-                        _FILTERS,
-                        _FILTERS,
+                        channels,
+                        channels,
                         kernel_size=_KERNEL,
                         stride=(1, 2),
                         dilation=(dilation, 1),
@@ -91,9 +98,9 @@ class CQTSubbandDiscriminator(nn.Module):
                     )
                 )
             )
-        layers.append(weight_norm(nn.Conv2d(_FILTERS, _FILTERS, kernel_size=(3, 3), padding=_pad2d((3, 3)))))
+        layers.append(weight_norm(nn.Conv2d(channels, channels, kernel_size=(3, 3), padding=_pad2d((3, 3)))))
         self.convs = nn.ModuleList(layers)
-        self.conv_post = weight_norm(nn.Conv2d(_FILTERS, 1, kernel_size=(3, 3), padding=_pad2d((3, 3))))
+        self.conv_post = weight_norm(nn.Conv2d(channels, 1, kernel_size=(3, 3), padding=_pad2d((3, 3))))
         self.activation = nn.LeakyReLU(0.1)
 
     def forward(self, waveform: torch.Tensor) -> tuple[torch.Tensor, list[torch.Tensor]]:
@@ -116,11 +123,23 @@ class CQTSubbandDiscriminator(nn.Module):
 
 
 class MultiScaleSubbandCQTDiscriminator(nn.Module):
-    def __init__(self, sample_rate: int = 16000) -> None:
+    def __init__(
+        self,
+        sample_rate: int = 16000,
+        hops: tuple[int, ...] | None = None,
+        octaves: tuple[int, ...] | None = None,
+        bins: tuple[int, ...] | None = None,
+        channels: int = _FILTERS,
+    ) -> None:
         super().__init__()
+        hop_values = _CQT_HOPS if hops is None else tuple(int(item) for item in hops)
+        octave_values = _CQT_OCTAVES if octaves is None else tuple(int(item) for item in octaves)
+        bin_values = _CQT_BINS if bins is None else tuple(int(item) for item in bins)
+        if not hop_values or len(hop_values) != len(octave_values) or len(hop_values) != len(bin_values):
+            raise TrainingError("CQT hop, octave, and bins lists must have the same non-zero length")
         self.discriminators = nn.ModuleList(
-            CQTSubbandDiscriminator(hop, octaves, bins, sample_rate)
-            for hop, octaves, bins in zip(_CQT_HOPS, _CQT_OCTAVES, _CQT_BINS, strict=True)
+            CQTSubbandDiscriminator(hop, octave, bins_per, sample_rate, channels)
+            for hop, octave, bins_per in zip(hop_values, octave_values, bin_values, strict=True)
         )
 
     def forward(self, waveform: torch.Tensor, paired: torch.Tensor | None = None):
@@ -142,12 +161,12 @@ class MultiScaleSubbandCQTDiscriminator(nn.Module):
 
 
 class ResolutionDiscriminator(nn.Module):
-    def __init__(self, resolution: tuple[int, int, int]) -> None:
+    def __init__(self, resolution: tuple[int, int, int], channels: int = 32) -> None:
         super().__init__()
         if len(resolution) != 3:
             raise TrainingError(f"resolution must be n_fft, hop, window, got {resolution}")
         self.resolution = tuple(int(item) for item in resolution)
-        width = 32
+        width = int(channels)
         self.convs = nn.ModuleList(
             [
                 weight_norm(nn.Conv2d(1, width, (3, 9), padding=(1, 4))),
@@ -191,10 +210,22 @@ class ResolutionDiscriminator(nn.Module):
 
 
 class MultiResolutionDiscriminator(nn.Module):
-    def __init__(self) -> None:
+    def __init__(
+        self,
+        resolutions: tuple[tuple[int, int, int], ...] | None = None,
+        channels: int = 32,
+    ) -> None:
         super().__init__()
-        self.resolutions = _RESOLUTIONS
-        self.discriminators = nn.ModuleList(ResolutionDiscriminator(resolution) for resolution in _RESOLUTIONS)
+        if resolutions is None:
+            chosen = _RESOLUTIONS
+        else:
+            chosen = tuple(tuple(int(part) for part in item) for item in resolutions)
+        if not chosen:
+            raise TrainingError("MRD resolutions must be non-empty")
+        self.resolutions = chosen
+        self.discriminators = nn.ModuleList(
+            ResolutionDiscriminator(resolution, channels) for resolution in chosen
+        )
 
     def forward(self, waveform: torch.Tensor, paired: torch.Tensor | None = None):
         scores = []

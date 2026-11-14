@@ -47,6 +47,15 @@ components:
       hop: 100
       win: 400
       sampling_rate: 16000
+      mrd_channels: 32
+      mrd_resolutions:
+        - [1024, 120, 600]
+        - [2048, 240, 1200]
+        - [512, 50, 240]
+      cqt_channels: 128
+      cqt_hops: [512, 256, 256]
+      cqt_octaves: [8, 8, 8]
+      cqt_bins_per_octave: [12, 24, 36]
     prepare:
       trainable: true
       distribute: ddp
@@ -68,6 +77,15 @@ components:
       hop: 100
       win: 400
       sampling_rate: 16000
+      mrd_channels: 32
+      mrd_resolutions:
+        - [1024, 120, 600]
+        - [2048, 240, 1200]
+        - [512, 50, 240]
+      cqt_channels: 128
+      cqt_hops: [512, 256, 256]
+      cqt_octaves: [8, 8, 8]
+      cqt_bins_per_octave: [12, 24, 36]
     prepare:
       trainable: true
       distribute: ddp
@@ -89,6 +107,15 @@ components:
       hop: 100
       win: 400
       sampling_rate: 16000
+      mrd_channels: 32
+      mrd_resolutions:
+        - [1024, 120, 600]
+        - [2048, 240, 1200]
+        - [512, 50, 240]
+      cqt_channels: 128
+      cqt_hops: [512, 256, 256]
+      cqt_octaves: [8, 8, 8]
+      cqt_bins_per_octave: [12, 24, 36]
     prepare:
       trainable: true
       distribute: ddp
