@@ -42,7 +42,9 @@ from src.experiments.training.objectives import call_objective, coerce_spectral_
 from src.experiments.execution.journal import StepJournal
 from src.experiments.results import RunResult
 from src.experiments.runtime import PreparedModel, ProcessRuntime, require_prepared
-from src.experiments.official.tf_gridnet.trainer import early_stop, rank_validation_loss
+from src.experiments.official.tf_gridnet.selection import early_stop, rank_validation_loss
+from src.experiments.official.tf_locoformer.metrics import per_sample_si_snr
+from src.experiments.official.tf_locoformer.selection import rank_validation_si_snr
 from src.experiments.official.tf_locoformer.artifacts import write_selection
 from src.experiments.trainers import (
     _close_epoch_view,
@@ -55,36 +57,6 @@ from src.experiments.calc.spectral import si_sdr_loss
 _PENDING = "pending_validation"
 _IN_EPOCH = "in_epoch"
 RESEARCH_VALIDATION_PROFILE = "tf_locoformer.dns.accept_recipe.research_valid_fixed@1"
-
-
-def per_sample_si_snr(estimate: torch.Tensor, reference: torch.Tensor, eps: float = 1e-8) -> torch.Tensor:
-    """SI-SDR in dB for each batch row.
-
-    The batch mean of this tensor is the negation of ``si_sdr_loss``. The
-    training log stores that loss. Validation stores this positive value.
-    """
-
-    reference = reference - reference.mean(dim=-1, keepdim=True)
-    estimate = estimate - estimate.mean(dim=-1, keepdim=True)
-    dot = torch.sum(estimate * reference, dim=-1, keepdim=True)
-    target_energy = torch.sum(reference.square(), dim=-1, keepdim=True).clamp_min(eps)
-    projection = dot * reference / target_energy
-    noise = estimate - projection
-    ratio = torch.sum(projection.square(), dim=-1) / torch.sum(noise.square(), dim=-1).clamp_min(eps)
-    return 10.0 * torch.log10(ratio.clamp_min(eps))
-
-
-def rank_validation_si_snr(history: list[dict[str, Any]], keep: int) -> list[dict[str, Any]]:
-    """Highest ``si_snr`` first. Equal scores keep the earlier epoch.
-
-    Rows without ``si_snr`` are omitted. The value is SI-SDR in dB.
-    """
-
-    if isinstance(keep, bool) or not isinstance(keep, int) or keep < 1:
-        raise RuntimeFailure("keep_nbest must be a positive integer")
-    ranked = [row for row in history if row.get("si_snr") is not None]
-    ordered = sorted(ranked, key=lambda row: (-float(row["si_snr"]), int(row["epoch"])))
-    return ordered[:keep]
 
 
 class TFLocoformerTrainer:
@@ -367,6 +339,7 @@ class TFLocoformerTrainer:
         runtime: ProcessRuntime,
         component_id: str,
     ) -> None:
+        """Validate, step the plateau side of the warmup scheduler, write both rankings, then run research evaluation."""
         if self.phase != _PENDING or self.finished_epoch is None or self.boundary is None:
             raise RuntimeFailure(f"component {component_id}: there is no pending epoch boundary")
         trainer_epoch = int(self.finished_epoch)
@@ -431,6 +404,7 @@ class TFLocoformerTrainer:
         )
 
     def _validate(self, runtime: ProcessRuntime, trainer_epoch: int, component_id: str) -> dict[str, float | int]:
+        """Evaluate the injected objective and the SI-SDR monitor without moving the training cursor."""
         module = self.model
         was_training = bool(module.training)
         cursor = (int(self.data.epoch), int(self.data.update_index))
@@ -503,6 +477,7 @@ class TFLocoformerTrainer:
         loss: float,
         si_snr: float,
     ) -> None:
+        """Rank valid.loss and valid.si_snr, then write the official selection files."""
         self.history.append({"epoch": int(espnet_epoch), "loss": float(loss), "si_snr": float(si_snr)})
         by_loss = rank_validation_loss(self.history, self.keep_nbest)
         by_si = rank_validation_si_snr(self.history, self.keep_nbest)
@@ -528,6 +503,8 @@ class TFLocoformerTrainer:
         runtime.barrier()
 
     def _objective_total(self, prediction: torch.Tensor, target: torch.Tensor) -> torch.Tensor:
+        """Return the total of the injected objective. SI-SDR is not added here."""
+
         try:
             result = call_objective(self.objective, {"estimate": prediction, "target": target})
         except ValueError as exc:
@@ -540,6 +517,7 @@ class TFLocoformerTrainer:
         component_id: str,
         runtime: ProcessRuntime,
     ) -> tuple[torch.Tensor, torch.Tensor, int, dict[str, float]]:
+        """Average the injected objective and keep SI-SDR as a detached monitor."""
         if not batches:
             raise RuntimeFailure(f"component {component_id}: empty micro-batch")
         total: torch.Tensor | None = None
@@ -731,6 +709,7 @@ class TFLocoformerTrainer:
 
 
 def _open_boundary(trainer_epoch: int, *, warmup_updated: bool) -> dict[str, Any]:
+    """Record that validation, the plateau update, and selection have not run yet."""
     return {
         "espnet_epoch": trainer_epoch + 1,
         "learning_rate": None,
@@ -747,12 +726,14 @@ def _open_boundary(trainer_epoch: int, *, warmup_updated: bool) -> dict[str, Any
 
 
 def _positive_int(name: str, value: object) -> int:
+    """Require a positive integer."""
     if isinstance(value, bool) or not isinstance(value, int) or value < 1:
         raise BuildError(f"{name} must be a positive integer")
     return value
 
 
 def _positive_float(name: str, value: object) -> float:
+    """Require a positive number."""
     if isinstance(value, bool) or not isinstance(value, (int, float)) or float(value) <= 0:
         raise BuildError(f"{name} must be a positive number")
     return float(value)

@@ -325,6 +325,8 @@ class MossFormerGANTrainer:
         stepped: dict[str, Any] | None,
         epoch: int,
     ) -> None:
+        """Record a finished pair, or request a partial save when the window did not step."""
+
         if stepped is None:
             self._offer(runtime, "partial")
             return
@@ -542,6 +544,8 @@ class MossFormerGANTrainer:
             raise RuntimeFailure(f"injected failure at {phase}")
 
     def _step_pair(self, runtime: ProcessRuntime) -> dict[str, Any]:
+        """Step generator AdamW, then discriminator AdamW, then close the AMP step."""
+
         self._in_optimizer_pair = True
         try:
             self._on_update_phase("before_generator_step")
@@ -644,6 +648,7 @@ class MossFormerGANTrainer:
         self._offer(runtime, "boundary_pending")
 
     def _finish_boundary(self, runtime: ProcessRuntime, component_id: str) -> None:
+        """Validate, apply the plateau decision, then run research evaluation."""
         if self.phase != _PENDING or self.boundary is None:
             raise RuntimeFailure(f"component {component_id}: there is no pending MossFormerGAN boundary")
         boundary = self.boundary
@@ -704,6 +709,7 @@ class MossFormerGANTrainer:
         self._offer(runtime, "boundary", metrics=metrics)
 
     def _validate(self, runtime: ProcessRuntime, trainer_epoch: int) -> dict[str, Any]:
+        """Run the official validation report and keep failed PESQ batches in the denominator."""
         cursor = (int(self.data.epoch), int(self.data.update_index))
         rng = runtime.capture_rng()
         summary: dict[str, Any] | None = None
@@ -802,6 +808,7 @@ class MossFormerGANTrainer:
         return action
 
     def _capture_training_state(self) -> dict[str, Any]:
+        """Copy both networks and both AdamW states for a later plateau restore."""
         return {
             "discriminator": {
                 key: value.detach().cpu().clone()
@@ -815,6 +822,7 @@ class MossFormerGANTrainer:
         }
 
     def _restore_best_and_halve_generator(self) -> None:
+        """Reload the stored best pair and halve the generator learning rate."""
         snapshot = self._best_snapshot
         if snapshot is not None:
             self.generator.unwrapped().load_state_dict(snapshot["generator"], strict=True)
@@ -1061,16 +1069,19 @@ class _OfficialCall:
 
 
 def _empty_counters() -> dict[str, int]:
+    """Start the official micro-batch counters at zero."""
     return {key: 0 for key in _COUNTER_KEYS}
 
 
 def _case_ids(batch: Batch) -> list[str]:
+    """Read the sample ids carried by one micro-batch."""
     if batch.sample_ids:
         return [str(item) for item in batch.sample_ids]
     return [str(batch.sample_id)]
 
 
 def _require_adamw(optimizer: torch.optim.Optimizer, name: str, *, lr: float) -> None:
+    """Refuse an optimizer that is not AdamW."""
     if not isinstance(optimizer, torch.optim.AdamW):
         raise BuildError(f"{name} must be AdamW")
     if len(optimizer.param_groups) != 1:
@@ -1090,6 +1101,7 @@ def _require_adamw(optimizer: torch.optim.Optimizer, name: str, *, lr: float) ->
 
 
 def _require_disjoint(generator: torch.optim.Optimizer, discriminator: torch.optim.Optimizer) -> None:
+    """Refuse an optimizer pair that shares a parameter."""
     left = {id(parameter) for group in generator.param_groups for parameter in group["params"]}
     right = {id(parameter) for group in discriminator.param_groups for parameter in group["params"]}
     if not left or not right:
@@ -1099,12 +1111,14 @@ def _require_disjoint(generator: torch.optim.Optimizer, discriminator: torch.opt
 
 
 def _positive_int(name: str, value: object) -> int:
+    """Require a positive integer."""
     if isinstance(value, bool) or not isinstance(value, int) or value < 1:
         raise BuildError(f"{name} must be a positive integer")
     return value
 
 
 def _positive_float(name: str, value: object) -> float:
+    """Require a positive number."""
     if isinstance(value, bool) or not isinstance(value, (int, float)) or float(value) <= 0:
         raise BuildError(f"{name} must be a positive number")
     return float(value)

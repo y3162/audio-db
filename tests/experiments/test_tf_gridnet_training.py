@@ -30,12 +30,9 @@ from src.experiments.losses import OFFICIAL_WINDOWS, MultiResolutionL1Loss
 from src.experiments.official.tf_gridnet.model import TFGridNetModel
 from src.experiments.runtime import PreparedModel, ProcessRuntime
 from src.experiments.official.tf_gridnet.artifacts import write_nbest
-from src.experiments.official.tf_gridnet.trainer import (
-    TFGridNetTrainer,
-    early_stop,
-    rank_validation_loss,
-    weighted_validation_loss,
-)
+from src.experiments.official.tf_gridnet.metrics import weighted_validation_loss
+from src.experiments.official.tf_gridnet.selection import early_stop, rank_validation_loss
+from src.experiments.official.tf_gridnet.trainer import TFGridNetTrainer
 from src.se.models.tf_gridnet.model import TFGridNet
 from src.experiments.calc.average import average_state_dicts
 from src.experiments.calc.optim import clip_gradients

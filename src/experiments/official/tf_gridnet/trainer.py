@@ -36,6 +36,7 @@ from src.experiments.data import Batch
 from src.experiments.data.pair import bind_trainer_data
 from src.experiments.errors import BuildError, RuntimeFailure
 from src.experiments.official.tf_gridnet.artifacts import write_nbest
+from src.experiments.official.tf_gridnet.selection import early_stop, rank_validation_loss
 from src.experiments.training.objectives import call_objective, coerce_spectral_objective, term_floats
 from src.experiments.execution.journal import StepJournal
 from src.experiments.results import RunResult
@@ -48,55 +49,6 @@ from src.experiments.calc.rng import capture_rank_rng, restore_rank_rng
 
 _PENDING = "pending_validation"
 _IN_EPOCH = "in_epoch"
-
-
-def weighted_validation_loss(parts: list[tuple[float, int]]) -> tuple[float, int]:
-    """Mean of batch-mean losses weighted by sample count.
-
-    A rank mean of means is a different number when the ranks do not hold
-    the same number of samples. The weight is the number of waveforms in
-    the batch, which is the count ``_reduce_weighted_reports`` multiplies
-    by ``len(case_id)``.
-    """
-
-    if not parts:
-        raise RuntimeFailure("validation produced no batches")
-    total = 0.0
-    count = 0
-    for loss, weight in parts:
-        if isinstance(weight, bool) or not isinstance(weight, int) or weight < 1:
-            raise RuntimeFailure("validation weight must be a positive integer")
-        if isinstance(loss, bool) or not isinstance(loss, (int, float)):
-            raise RuntimeFailure("validation loss must be a number")
-        total += float(loss) * weight
-        count += weight
-    if count < 1:
-        raise RuntimeFailure("validation produced no batches")
-    return total / count, count
-
-
-def rank_validation_loss(history: list[dict[str, Any]], keep: int) -> list[dict[str, Any]]:
-    """Lowest ``valid.loss`` first. Equal losses keep the earlier epoch."""
-
-    if isinstance(keep, bool) or not isinstance(keep, int) or keep < 1:
-        raise RuntimeFailure("keep_nbest must be a positive integer")
-    ordered = sorted(history, key=lambda row: (float(row["loss"]), int(row["epoch"])))
-    return ordered[:keep]
-
-
-def early_stop(history: list[dict[str, Any]], espnet_epoch: int, patience: int) -> bool:
-    """Stop when the best epoch is more than ``patience`` epochs behind.
-
-    The best row is the lowest loss, then the earlier epoch. This is the
-    chunk early-stopping rule. It does not read ``valid.si_snr``.
-    """
-
-    if not history:
-        return False
-    if isinstance(patience, bool) or not isinstance(patience, int) or patience < 0:
-        raise RuntimeFailure("early_stopping_patience must be an integer >= 0")
-    best = min(history, key=lambda row: (float(row["loss"]), int(row["epoch"])))
-    return int(espnet_epoch) - int(best["epoch"]) > patience
 
 
 class TFGridNetTrainer:
@@ -347,6 +299,7 @@ class TFGridNetTrainer:
         runtime: ProcessRuntime,
         component_id: str,
     ) -> None:
+        """Validate, step ReduceLROnPlateau, write n-best, then run research evaluation."""
         if self.phase != _PENDING or self.finished_epoch is None or self.boundary is None:
             raise RuntimeFailure(f"component {component_id}: there is no pending epoch boundary")
         trainer_epoch = int(self.finished_epoch)
@@ -401,6 +354,7 @@ class TFGridNetTrainer:
         )
 
     def _validate(self, runtime: ProcessRuntime, trainer_epoch: int, component_id: str) -> dict[str, float | int]:
+        """Evaluate the injected objective without moving the training cursor."""
         module = self.model
         was_training = bool(module.training)
         cursor = (int(self.data.epoch), int(self.data.update_index))
@@ -448,6 +402,7 @@ class TFGridNetTrainer:
         espnet_epoch: int,
         loss: float,
     ) -> None:
+        """Rank valid.loss and write the official n-best files."""
         self.history.append({"epoch": int(espnet_epoch), "loss": float(loss)})
         ranked = rank_validation_loss(self.history, self.keep_nbest)
         error: str | None = None
@@ -470,6 +425,8 @@ class TFGridNetTrainer:
         runtime.barrier()
 
     def _objective_total(self, prediction: torch.Tensor, target: torch.Tensor) -> torch.Tensor:
+        """Return the total of the injected objective. The formula stays in that objective."""
+
         try:
             result = call_objective(self.objective, {"estimate": prediction, "target": target})
         except ValueError as exc:
@@ -477,6 +434,7 @@ class TFGridNetTrainer:
         return result.total
 
     def _forward_loss(self, batches: list[Batch], component_id: str, runtime: ProcessRuntime) -> tuple[torch.Tensor, dict[str, float]]:
+        """Average the injected spectral objective over one accumulation window."""
         if not batches:
             raise RuntimeFailure(f"component {component_id}: empty micro-batch")
         total: torch.Tensor | None = None
@@ -656,6 +614,7 @@ class TFGridNetTrainer:
 
 
 def _open_boundary(trainer_epoch: int) -> dict[str, Any]:
+    """Record that validation, the scheduler, and n-best selection have not run yet."""
     return {
         "espnet_epoch": trainer_epoch + 1,
         "learning_rate": None,
@@ -670,12 +629,14 @@ def _open_boundary(trainer_epoch: int) -> dict[str, Any]:
 
 
 def _positive_int(name: str, value: object) -> int:
+    """Require a positive integer."""
     if isinstance(value, bool) or not isinstance(value, int) or value < 1:
         raise BuildError(f"{name} must be a positive integer")
     return value
 
 
 def _positive_float(name: str, value: object) -> float:
+    """Require a positive number."""
     if isinstance(value, bool) or not isinstance(value, (int, float)) or float(value) <= 0:
         raise BuildError(f"{name} must be a positive number")
     return float(value)

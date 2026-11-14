@@ -30,13 +30,10 @@ from src.experiments.data.fixed_pair import MicroBatcher, SnapshotDataModule, Sn
 from src.experiments.data.online import Dfn3IndexSampler, Dfn3Protocol
 from src.experiments.data.sample import Batch
 from src.experiments.official.deepfilternet3.losses import official_deepfilternet_objective
-from src.experiments.official.deepfilternet3.trainer import (
-    DeepFilterNet3Trainer,
-    _clean_noisy,
-    component_losses,
-    note_early_stop,
-    schedule_index,
-)
+from src.experiments.official.deepfilternet3.schedule import schedule_index
+from src.experiments.official.deepfilternet3.selection import note_early_stop
+from src.experiments.official.deepfilternet3.trainer import DeepFilterNet3Trainer, _clean_noisy
+from src.experiments.official.deepfilternet3.training_step import component_losses
 from src.experiments.official.deepfilternet3.model import DeepFilterNet3Model
 from src.experiments.runtime import PreparePolicy, ProcessRuntime
 from tests.experiments.official_loss_yaml import DFN_COMPONENTS, DFN_INJECT

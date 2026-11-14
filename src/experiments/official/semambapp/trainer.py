@@ -570,6 +570,7 @@ class SEMambaPPTrainer:
         runtime: ProcessRuntime,
         component_id: str,
     ) -> None:
+        """Validate with the reference waveform L1, step the schedulers, then run research evaluation."""
         if self.phase != _PENDING or self.boundary is None:
             raise RuntimeFailure(f"component {component_id}: there is no pending GAN boundary")
         boundary = self.boundary
@@ -627,6 +628,7 @@ class SEMambaPPTrainer:
         self._offer(runtime, "boundary", metrics={**metrics, **extra} if extra else metrics)
 
     def _validate(self, runtime: ProcessRuntime, trainer_epoch: int, component_id: str) -> dict[str, Any]:
+        """Run the official validation report on rank 0 and share that summary."""
         cursor = (int(self.data.epoch), int(self.data.update_index))
         rng = runtime.capture_rng()
         error: str | None = None
@@ -722,6 +724,7 @@ class SEMambaPPTrainer:
         *,
         preview: bool,
     ) -> dict[str, torch.Tensor]:
+        """Run the generator. A preview uses the unwrapped module; training uses the execution handle."""
         module = self.generator.unwrapped() if preview else self.generator.execution()
         error: str | None = None
         parts: dict[str, torch.Tensor] | None = None
@@ -737,6 +740,7 @@ class SEMambaPPTrainer:
         return parts
 
     def _discriminator_loss(self, runtime: ProcessRuntime, clean: torch.Tensor, audio: torch.Tensor) -> torch.Tensor:
+        """Return the CQT and MRD discriminator objective for the given waveform."""
         error: str | None = None
         loss: torch.Tensor | None = None
         try:
@@ -767,6 +771,7 @@ class SEMambaPPTrainer:
         parts: dict[str, torch.Tensor],
         components: dict[str, float],
     ) -> float:
+        """Backpropagate the generator objective, including its adversarial terms."""
         error: str | None = None
         total: torch.Tensor | None = None
         terms: dict[str, torch.Tensor] | None = None
@@ -925,6 +930,7 @@ class SEMambaPPTrainer:
 
 
 def _grad_norm(*modules: torch.nn.Module) -> float:
+    """Return the detached L2 norm of the current gradients."""
     pieces = [
         parameter.grad.detach().square().sum()
         for module in modules
@@ -938,6 +944,7 @@ def _grad_norm(*modules: torch.nn.Module) -> float:
 
 
 def _clone_grads(*modules: torch.nn.Module) -> dict[str, torch.Tensor]:
+    """Copy the named gradients to CPU."""
     cloned: dict[str, torch.Tensor] = {}
     for module in modules:
         prefix = module.__class__.__name__
@@ -949,6 +956,7 @@ def _clone_grads(*modules: torch.nn.Module) -> dict[str, torch.Tensor]:
 
 
 def _inputs_ready(clean: torch.Tensor, noisy: torch.Tensor) -> bool:
+    """Accept a matching pair longer than 1024 samples. CPU also requires finite values."""
     if clean.ndim != 2 or clean.shape != noisy.shape:
         return False
     if int(clean.shape[-1]) <= 1024:
@@ -969,6 +977,7 @@ def _shared_log(runtime: ProcessRuntime, local: dict[str, float | str]) -> dict[
 
 
 def _require_adamw(optimizer: torch.optim.Optimizer, name: str) -> None:
+    """Refuse an optimizer that is not AdamW."""
     if not isinstance(optimizer, torch.optim.AdamW):
         raise BuildError(f"{name} must be AdamW")
     if not optimizer.param_groups:
@@ -988,6 +997,7 @@ def _require_adamw(optimizer: torch.optim.Optimizer, name: str) -> None:
 
 
 def _require_scheduler(scheduler: torch.optim.lr_scheduler.ExponentialLR, name: str) -> None:
+    """Refuse a scheduler that is not ExponentialLR."""
     if not isinstance(scheduler, torch.optim.lr_scheduler.ExponentialLR):
         raise BuildError(f"{name} must be ExponentialLR")
     if float(scheduler.gamma) != _OFFICIAL_GAMMA:
@@ -995,6 +1005,7 @@ def _require_scheduler(scheduler: torch.optim.lr_scheduler.ExponentialLR, name: 
 
 
 def _require_disjoint(optim_g: torch.optim.Optimizer, optim_d: torch.optim.Optimizer) -> None:
+    """Refuse optimizer groups that share a parameter."""
     generator_ids = {id(parameter) for group in optim_g.param_groups for parameter in group["params"]}
     discriminator_ids = {id(parameter) for group in optim_d.param_groups for parameter in group["params"]}
     if generator_ids & discriminator_ids:
@@ -1004,6 +1015,7 @@ def _require_disjoint(optim_g: torch.optim.Optimizer, optim_d: torch.optim.Optim
 
 
 def _open_boundary(trainer_epoch: int, *, validate: bool, epoch_done: bool) -> dict[str, Any]:
+    """Record whether this safe point still owes validation or a scheduler step."""
     return {
         "closed": False,
         "epoch_done": bool(epoch_done),
@@ -1020,18 +1032,21 @@ def _open_boundary(trainer_epoch: int, *, validate: bool, epoch_done: bool) -> d
 
 
 def _positive_int(name: str, value: object) -> int:
+    """Require a positive integer."""
     if isinstance(value, bool) or not isinstance(value, int) or value < 1:
         raise BuildError(f"{name} must be a positive integer")
     return value
 
 
 def _non_negative_int(name: str, value: object) -> int:
+    """Require an integer that is zero or greater."""
     if isinstance(value, bool) or not isinstance(value, int) or value < 0:
         raise BuildError(f"{name} must be a non-negative integer")
     return value
 
 
 def _positive_float(name: str, value: object) -> float:
+    """Require a positive number."""
     if isinstance(value, bool) or not isinstance(value, (int, float)):
         raise BuildError(f"{name} must be a positive number")
     number = float(value)

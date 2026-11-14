@@ -29,13 +29,13 @@ from src.experiments.errors import BuildError, RuntimeFailure
 from src.experiments.losses import OFFICIAL_WINDOWS, MultiResolutionL1Loss
 from src.experiments.official.tf_locoformer.model import TFLocoformerModel
 from src.experiments.runtime import PreparedModel, ProcessRuntime, StepResult
-from src.experiments.official.tf_gridnet.trainer import early_stop, rank_validation_loss
+from src.experiments.official.tf_gridnet.selection import early_stop, rank_validation_loss
 from src.experiments.official.tf_locoformer.artifacts import write_selection
+from src.experiments.official.tf_locoformer.metrics import per_sample_si_snr
+from src.experiments.official.tf_locoformer.selection import rank_validation_si_snr
 from src.experiments.official.tf_locoformer.trainer import (
     RESEARCH_VALIDATION_PROFILE,
     TFLocoformerTrainer,
-    per_sample_si_snr,
-    rank_validation_si_snr,
 )
 from src.se.models.tf_locoformer.inference import load as load_enhancer_checkpoint
 from src.se.models.tf_locoformer.model import TFLocoformer

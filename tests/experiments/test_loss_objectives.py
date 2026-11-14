@@ -29,7 +29,7 @@ from src.experiments.losses import (
 )
 from src.experiments.official.deepfilternet3.losses import official_deepfilternet_objective
 from src.experiments.official.deepfilternet3.model import DeepFilterNet3Model
-from src.experiments.official.deepfilternet3.trainer import component_losses
+from src.experiments.official.deepfilternet3.training_step import component_losses
 from src.experiments.training.official_objectives import (
     MP_METRIC,
     MP_SIGNAL,

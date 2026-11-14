@@ -25,7 +25,6 @@ from pathlib import Path
 from typing import Any
 
 import torch
-import torch.nn.functional as F
 
 from src.experiments.data import Batch
 from src.experiments.data.pair import bind_trainer_data
@@ -39,126 +38,17 @@ from src.experiments.trainers import (
     _close_epoch_view,
     _rank,
 )
-from src.se.models.deepfilternet3.dsp import DFStream, vorbis_window
+from src.se.models.deepfilternet3.dsp import DFStream
 from src.experiments.calc.batch_schedule import scheduled_batch_size
-from src.experiments.calc.distributed import unwrap
 from src.experiments.calc.rng import capture_rank_rng, restore_rank_rng
 from src.experiments.calc.errors import TrainingError
-from src.experiments.official.deepfilternet3.reference import (
-    _local_snr_db,
-    _multi_resolution_spectral,
-    _vorbis_istft,
-    deepfilter_cosine_schedules,
-)
-from src.experiments.training.objectives import apply_weight, call_objective
+from src.experiments.official.deepfilternet3.reference import deepfilter_cosine_schedules
+from src.experiments.official.deepfilternet3.schedule import schedule_index
+from src.experiments.official.deepfilternet3.selection import note_early_stop
+from src.experiments.official.deepfilternet3.training_step import component_losses
 
 _PENDING = "pending_validation"
 _IN_EPOCH = "in_epoch"
-_LSNR = 1e-3
-
-
-def component_losses(
-    stream: DFStream,
-    module: torch.nn.Module,
-    clean: torch.Tensor,
-    noisy: torch.Tensor,
-    objective: torch.nn.Module | None = None,
-) -> dict[str, torch.Tensor]:
-    """Spectral, local-SNR, and total loss for one batch.
-
-    The call order matches ``DeepFilterNetTask._loss``. ``module`` may be a
-    DDP wrapper; parameters are read from the unwrapped generator.
-    """
-
-    network = unwrap(module)
-    generator = network.generator if isinstance(network, DeepFilterNet3Model) else network
-    stream.reset()
-    _spec, _erb, _feat, clean_complex = _analyze(stream, generator, clean)
-    stream.reset()
-    noisy_spec, noisy_erb, noisy_feat, noisy_complex = _analyze(stream, generator, noisy)
-    enhanced, _mask, lsnr, _coefs = module(noisy_spec, noisy_erb, noisy_feat)
-    enhanced_complex = torch.view_as_complex(enhanced.squeeze(1))
-    frames = min(enhanced_complex.shape[-2], clean_complex.shape[-2], noisy_complex.shape[-2])
-    bins = min(enhanced_complex.shape[-1], clean_complex.shape[-1], noisy_complex.shape[-1])
-    enhanced_complex = enhanced_complex[..., :frames, :bins]
-    clean_complex = clean_complex[..., :frames, :bins]
-    noisy_complex = noisy_complex[..., :frames, :bins]
-    params = generator.params
-    window = vorbis_window(params.fft_size).to(device=enhanced_complex.device, dtype=enhanced_complex.real.dtype)
-    enhanced_wave = _vorbis_istft(enhanced_complex, params.fft_size, params.hop_size, window)
-    clean_wave = _vorbis_istft(clean_complex, params.fft_size, params.hop_size, window)
-    if objective is None:
-        spectral = _multi_resolution_spectral(enhanced_wave, clean_wave)
-        target = _local_snr_db(
-            clean_complex,
-            noisy_complex - clean_complex,
-            sample_rate=params.sr,
-            n_fft=params.fft_size,
-            hop=params.hop_size,
-            low=params.lsnr_min - 1,
-            high=params.lsnr_max + 1,
-        )
-        predicted = lsnr.reshape(target.shape[0], -1)
-        if predicted.shape[-1] != target.shape[-1]:
-            raise RuntimeFailure(
-                f"local SNR length {predicted.shape[-1]} does not match the 20 ms target {target.shape[-1]}"
-            )
-        local = F.mse_loss(predicted, target) * _LSNR
-        return {
-            "enhanced_wave": enhanced_wave.detach(),
-            "local_snr": local,
-            "spectral": spectral,
-            "total": spectral + local,
-        }
-    from src.experiments.training.objectives import ObjectiveOutput, call_objective
-
-    try:
-        result = call_objective(
-            objective,
-            {
-                "estimate": enhanced_wave,
-                "target": clean_wave,
-                "predicted_lsnr": lsnr,
-                "clean_complex": clean_complex,
-                "noise_complex": noisy_complex - clean_complex,
-                "sample_rate": int(params.sr),
-                "n_fft": int(params.fft_size),
-                "hop": int(params.hop_size),
-                "lsnr_low": float(params.lsnr_min - 1),
-                "lsnr_high": float(params.lsnr_max + 1),
-            },
-        )
-    except TrainingError:
-        raise
-    except ValueError as exc:
-        raise TrainingError(str(exc)) from exc
-    reported = {"enhanced_wave": enhanced_wave.detach(), "total": result.total}
-    for name, value, weight in result.records:
-        reported[name] = apply_weight(value, weight)
-    return reported
-
-
-def schedule_index(epoch: int, index_in_epoch: int, steps_per_epoch: int) -> int:
-    """DeepFilterNet's table index. Past epochs are not summed."""
-
-    if epoch < 0 or index_in_epoch < 0 or steps_per_epoch < 1:
-        raise RuntimeFailure("schedule position is invalid")
-    if index_in_epoch >= steps_per_epoch:
-        raise RuntimeFailure(
-            f"index {index_in_epoch} is outside an epoch of {steps_per_epoch} updates"
-        )
-    return epoch * steps_per_epoch + index_in_epoch
-
-
-def note_early_stop(metric: float | None, count: int, loss: float, patience: int) -> tuple[float, int, bool]:
-    """Reset the counter on a strict improvement. Stop at ``patience`` misses."""
-
-    if patience < 1:
-        raise RuntimeFailure("early_stopping_patience must be >= 1")
-    if metric is None or loss < metric:
-        return loss, 0, False
-    count += 1
-    return metric, count, count >= patience
 
 
 def _clean_noisy(batch: Batch) -> tuple[torch.Tensor, torch.Tensor]:
@@ -267,6 +157,7 @@ class DeepFilterNet3Trainer:
 
     def fit(self) -> RunResult:
 
+        """Train until the step budget, the epoch cap, or early stopping. The cosine step runs before the optimizer."""
         self.lifecycle.start()
         runtime = self.runtime
         component_id = self._prepare_run(runtime)
@@ -428,6 +319,7 @@ class DeepFilterNet3Trainer:
         return wave
 
     def _finish_boundary(self, runtime: ProcessRuntime, component_id: str) -> None:
+        """Validate, record the official best loss, then run research evaluation."""
         if self.phase != _PENDING or self.finished_epoch is None:
             raise RuntimeFailure(f"component {component_id}: there is no pending epoch boundary")
         trainer_epoch = int(self.finished_epoch)
@@ -497,6 +389,7 @@ class DeepFilterNet3Trainer:
         runtime.broadcast_buffers(self.model)
 
     def _validate(self, runtime: ProcessRuntime, trainer_epoch: int, component_id: str) -> float:
+        """Score each validation utterance with the injected objective and average them with equal weight."""
         module = self.model
         was_training = bool(module.training)
         cursor = (int(self.data.epoch), int(self.data.update_index))
@@ -547,6 +440,7 @@ class DeepFilterNet3Trainer:
         runtime.barrier()
 
     def _forward_loss(self, batches: list[Batch], component_id: str, runtime: ProcessRuntime) -> torch.Tensor:
+        """Average component_losses over one accumulation window."""
         if not batches:
             raise RuntimeFailure(f"component {component_id}: empty micro-batch")
         total: torch.Tensor | None = None
@@ -559,6 +453,7 @@ class DeepFilterNet3Trainer:
         return total / len(batches)
 
     def _loss_tensor(self, clean: torch.Tensor, noisy: torch.Tensor, module: torch.nn.Module) -> torch.Tensor:
+        """Return the scalar total from one component_losses call."""
         if self._stream is None:
             raise RuntimeFailure("DeepFilterNet3 stream is not ready")
         try:
@@ -589,6 +484,7 @@ class DeepFilterNet3Trainer:
         self._table_steps = steps_per_epoch
 
     def _apply_cosine(self, index: int) -> tuple[float, float]:
+        """Copy the cosine-table learning rate and weight decay onto the optimizer before it steps."""
         if index < 0 or index >= len(self._learning_rates):
             raise RuntimeFailure(
                 f"deepfilter cosine step {index} is outside the schedule of {len(self._learning_rates)}"
@@ -793,20 +689,8 @@ class DeepFilterNet3Trainer:
             )
         )
 
-def _analyze(stream: DFStream, generator: torch.nn.Module, waveform: torch.Tensor):
-    return _analyze_features(stream, generator, waveform)
-
-
-def _analyze_features(stream: DFStream, generator: torch.nn.Module, waveform: torch.Tensor):
-    params = generator.params
-    padded = F.pad(waveform, (0, params.fft_size))
-    stream.reset()
-    complex_spec = stream.analyze(padded)
-    spec, erb, feat = stream.features(complex_spec)
-    return spec, erb, feat, complex_spec
-
-
 def _stream_for(model: DeepFilterNet3Model, device: torch.device) -> DFStream:
+    """Open a DFStream from the model's own sample rate and FFT sizes."""
     params = model.generator.params
     return DFStream(
         params.sr,
@@ -821,6 +705,7 @@ def _stream_for(model: DeepFilterNet3Model, device: torch.device) -> DFStream:
 
 
 def _require_adamw(optimizer: torch.optim.Optimizer) -> None:
+    """Refuse an optimizer that is not the official AdamW."""
     if not isinstance(optimizer, torch.optim.AdamW):
         raise BuildError("DeepFilterNet3 optimizer must be AdamW")
     group = optimizer.param_groups[0]
@@ -838,6 +723,7 @@ def _require_adamw(optimizer: torch.optim.Optimizer) -> None:
 
 
 def _schedule(raw: list[list[int]] | None) -> list[tuple[int, int]] | None:
+    """Parse the optional world-size-1 batch-width schedule."""
     if raw is None:
         return None
     if not isinstance(raw, list) or not raw:
@@ -853,18 +739,21 @@ def _schedule(raw: list[list[int]] | None) -> list[tuple[int, int]] | None:
 
 
 def _positive_int(name: str, value: object) -> int:
+    """Require a positive integer."""
     if isinstance(value, bool) or not isinstance(value, int) or value < 1:
         raise BuildError(f"{name} must be an integer >= 1")
     return value
 
 
 def _non_negative_int(name: str, value: object) -> int:
+    """Require an integer that is zero or greater."""
     if isinstance(value, bool) or not isinstance(value, int) or value < 0:
         raise BuildError(f"{name} must be an integer >= 0")
     return value
 
 
 def _positive_float(name: str, value: object) -> float:
+    """Require a positive number."""
     if isinstance(value, bool) or not isinstance(value, (int, float)) or float(value) <= 0:
         raise BuildError(f"{name} must be a positive number")
     return float(value)

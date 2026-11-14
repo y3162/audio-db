@@ -19,7 +19,6 @@ from __future__ import annotations
 
 from src.experiments.stopping import observe_validation, should_stop
 
-import math
 import threading
 from pathlib import Path
 from typing import Any
@@ -30,6 +29,8 @@ from src.experiments.data import Batch
 from src.experiments.data.pair import bind_trainer_data
 from src.experiments.errors import BuildError, RuntimeFailure
 from src.experiments.official.mp_senet.artifacts import write_best
+from src.experiments.official.mp_senet.metrics import aggregate_reports
+from src.experiments.official.mp_senet.selection import consider_best_pesq
 from src.experiments.official.mp_senet.models import (
     MPSENetGANGenerator,
     MPSENetMetricDiscriminator,
@@ -688,6 +689,7 @@ class MPSENetGANTrainer:
         runtime: ProcessRuntime,
         component_id: str,
     ) -> None:
+        """Validate, select best PESQ, step both schedulers, then run research evaluation."""
         if self.phase != _PENDING or self.boundary is None:
             raise RuntimeFailure(f"component {component_id}: there is no pending GAN boundary")
         boundary = self.boundary
@@ -742,6 +744,7 @@ class MPSENetGANTrainer:
         self._offer("boundary", metrics={**metrics, **extra} if extra else metrics)
 
     def _validate(self, runtime: ProcessRuntime, trainer_epoch: int, component_id: str) -> dict[str, Any]:
+        """Run the official validation report on rank 0 and share that summary."""
         cursor = (int(self.data.epoch), int(self.data.update_index))
         rng = runtime.capture_rng()
         error: str | None = None
@@ -778,7 +781,7 @@ class MPSENetGANTrainer:
             reports.append(report)
         if not reports:
             raise RuntimeFailure(f"component {component_id}: rank 0 validation produced no batches")
-        return _aggregate_reports(reports)
+        return aggregate_reports(reports)
 
     def _shadow_task(self, runtime: ProcessRuntime):
         if self._shadow is None:
@@ -807,40 +810,20 @@ class MPSENetGANTrainer:
         return task
 
     def _consider_best(self, epoch: int, summary: dict[str, Any]) -> dict[str, Any]:
-        """Keep the earlier checkpoint unless PESQ is strictly higher after the start epoch."""
+        """Apply the official PESQ rule and remember a strict improvement."""
 
-        pesq = summary.get("pesq")
-        if not isinstance(pesq, dict):
-            pesq = {"status": "na", "value": None, "reason": "missing pesq"}
-        status = pesq.get("status")
-        value = pesq.get("value")
-        record: dict[str, Any] = {
-            "epoch": int(epoch),
-            "logical_step": int(self.logical_step),
-            "pesq": None if value is None else float(value),
-            "pesq_status": status,
-            "reason": None,
-            "selected": False,
-        }
-        if epoch < self.best_checkpoint_start_epoch:
-            record["reason"] = "before_start_epoch"
-            return record
-        if status != "ok" or value is None:
-            record["reason"] = "unavailable" if status == "unavailable" else "not_ok"
-            return record
-        score = float(value)
-        if not math.isfinite(score):
-            record["reason"] = "non_finite"
-            return record
-        if self.best_pesq is not None and score <= float(self.best_pesq):
-            record["reason"] = "not_higher"
-            return record
-        self.best_pesq = score
-        self.best_epoch = int(epoch)
-        self.best_logical_step = int(self.logical_step)
-        record["selected"] = True
-        record["reason"] = "improved"
-        return record
+        decision = consider_best_pesq(
+            epoch,
+            summary,
+            start_epoch=self.best_checkpoint_start_epoch,
+            best_pesq=self.best_pesq,
+            logical_step=self.logical_step,
+        )
+        if decision["selected"]:
+            self.best_pesq = float(decision["pesq"])
+            self.best_epoch = int(decision["epoch"])
+            self.best_logical_step = int(decision["logical_step"])
+        return decision
 
     def _write_best(self, runtime: ProcessRuntime, directory: Path, decision: dict[str, Any]) -> None:
         error: str | None = None
@@ -951,6 +934,7 @@ class MPSENetGANTrainer:
 
 
 def _signal_context(parts: dict[str, torch.Tensor], clean: torch.Tensor) -> dict[str, torch.Tensor]:
+    """Build the signal-term context from one generator forward."""
     return {
         "clean_audio": clean,
         "clean_complex": parts["clean_complex"],
@@ -1009,6 +993,7 @@ def _metric_targets(clean: torch.Tensor, enhanced: torch.Tensor, sample_rate: in
 
 
 def _inputs_ready(clean: torch.Tensor, noisy: torch.Tensor, n_fft: int) -> bool:
+    """Accept a matching pair long enough for the STFT. CPU also requires finite values."""
     if clean.ndim != 2 or clean.shape != noisy.shape:
         return False
     if int(clean.shape[-1]) <= n_fft // 2:
@@ -1030,6 +1015,7 @@ def _shared_log(runtime: ProcessRuntime, local: dict[str, float]) -> dict[str, f
 
 
 def _require_disjoint(optim_g: torch.optim.Optimizer, optim_d: torch.optim.Optimizer) -> None:
+    """Refuse an optimizer pair that shares a parameter."""
     generator_ids = {id(parameter) for group in optim_g.param_groups for parameter in group["params"]}
     discriminator_ids = {id(parameter) for group in optim_d.param_groups for parameter in group["params"]}
     if generator_ids & discriminator_ids:
@@ -1039,6 +1025,7 @@ def _require_disjoint(optim_g: torch.optim.Optimizer, optim_d: torch.optim.Optim
 
 
 def _open_boundary(trainer_epoch: int, *, validate: bool, epoch_done: bool) -> dict[str, Any]:
+    """Record whether this safe point still owes validation or a scheduler step."""
     return {
         "closed": False,
         "epoch_done": bool(epoch_done),
@@ -1056,53 +1043,15 @@ def _open_boundary(trainer_epoch: int, *, validate: bool, epoch_done: bool) -> d
     }
 
 
-def _aggregate_reports(reports: list[dict[str, Any]]) -> dict[str, Any]:
-    """Mean of batch-level official reports. Unavailable stays unavailable."""
-
-    names: list[str] = []
-    for report in reports:
-        for name in report["losses"]:
-            if name not in names:
-                names.append(name)
-    losses = {
-        name: _combine_metric([report["losses"][name] for report in reports if name in report["losses"]])
-        for name in names
-    }
-    pesq = _combine_metric([report["pesq"] for report in reports])
-    policy = next((report["pesq"].get("pesq_policy") for report in reports if isinstance(report.get("pesq"), dict)), None)
-    if policy is not None:
-        pesq["pesq_policy"] = policy
-    lengths: list[dict[str, int]] = []
-    for report in reports:
-        rows = report.get("audio_lengths")
-        if isinstance(rows, list):
-            lengths.extend(rows)
-    return {
-        "audio_lengths": lengths,
-        "losses": losses,
-        "pesq": pesq,
-        "stoi": _combine_metric([report["stoi"] for report in reports]),
-    }
-
-
-def _combine_metric(items: list[dict[str, Any]]) -> dict[str, Any]:
-    if any(item.get("status") == "unavailable" for item in items):
-        reason = next(item.get("reason") for item in items if item.get("status") == "unavailable")
-        return {"status": "unavailable", "value": None, "reason": reason, "count": 0}
-    values = [float(item["value"]) for item in items if item.get("status") == "ok" and item.get("value") is not None]
-    if values:
-        return {"status": "ok", "value": sum(values) / len(values), "reason": None, "count": len(values)}
-    reason = next((item.get("reason") for item in items if item.get("reason")), "no score")
-    return {"status": "na", "value": None, "reason": reason, "count": 0}
-
-
 def _positive_int(name: str, value: object) -> int:
+    """Require a positive integer."""
     if isinstance(value, bool) or not isinstance(value, int) or value < 1:
         raise BuildError(f"{name} must be a positive integer")
     return value
 
 
 def _non_negative_int(name: str, value: object) -> int:
+    """Require an integer that is zero or greater."""
     if isinstance(value, bool) or not isinstance(value, int) or value < 0:
         raise BuildError(f"{name} must be an integer >= 0")
     return value
