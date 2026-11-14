@@ -155,7 +155,7 @@ class MPSENetGANTests(unittest.TestCase):
             build_experiment(load_experiment(path)).close()
         wrong = self.base / "claim"
         wrong_text = _yaml_text(wrong, steps=1, updates=2).replace(
-            "experiment_claim: official_faithful",
+            "experiment_claim: research",
             "experiment_claim: leakage_safe",
         )
         wrong_path = wrong / "experiment.yaml"
@@ -787,7 +787,9 @@ def _yaml_text(
     timeout: int = 60,
 ) -> str:
     stop = "" if stop_after is None else f"      stop_after_logical_steps: {stop_after}\n"
-    claim = profile
+    # Synthetic waves are not the official VoiceBank snapshot. The algorithm
+    # tests keep running as research; official_faithful is refused without it.
+    claim = "research" if profile == "official_faithful" else profile
     arch = ", ".join(f"{key}: {value}" for key, value in ARCH.items())
     return f"""schema: audio-db-experiment/v1
 checkpoint:

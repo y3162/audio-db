@@ -14,7 +14,7 @@
 - 保存前に rank 間の parameter、buffer、optimizer、scheduler、trainer、data、Selector の決定と状態を比べる。不一致なら書かない。
 - 保存点は完了した logical step の境界と、Trainer が安全と宣言した点だけ。GAN の optimizer 対の途中では書かない。
 - 停止ポリシーは Selector と独立し、指標を評価しない。Trainer は境界処理後に指標を配送し、停止状態を更新してから保存点を offer する。停止設定は実験同一性に含み、状態を全 rank で照合して再開する。
-- 再開は同じ実験の厳密な続きである。`config_sha256` は `output`、`checkpoint`、`stop_after_logical_steps` を除いた設定の SHA-256 で、違う設定、違う出力ディレクトリ、違う world size を拒否する。Latest より前の Archive から続けることも拒否する。古い状態から始めるのは、`initialize` を使う別の実験である。
+- 再開は同じ実験の厳密な続きである。`config_sha256` は `output`、`checkpoint`、`stop_after_logical_steps` を除いた設定の SHA-256 で、違う設定、違う出力ディレクトリ、違う world size を拒否する。`initialize` と `publication` は書かれているときだけハッシュに入る。無い文書は以前と同じハッシュになる。Latest より前の Archive から続けることも拒否する。古い状態から始めるのは、`initialize` を使う別の実験である。
 - `initialize` は module、optimizer、scheduler の状態だけを読み、元の実験のファイルを変更しない。データ位置、Trainer の履歴、RNG は引き継がない。
 - 再開は現行の設定ハッシュだけを受ける。Selector のクラス ID と設定はハッシュとは別に照合し、停止ポリシーもクラス ID と状態を照合する。旧設定世代のハッシュを再開時に受け入れない。
 - `COMPLETED` と `complete.json` は、全プロセスが正常終了したあとに書く。Launcher の下では Launcher が書く。一部の rank だけが学習を続ける経路を作らない。
@@ -23,8 +23,9 @@
 
 ## 公式再現と研究
 
-- `official_faithful` は、公式が test を選択に使うなら使う。`selection_uses_test` は true。独立な最終評価とは呼ばない。
-- `leakage_safe` は test を選択に使わない。profile または `selection_uses_test` が claim と矛盾する設定は拒否する。
+- `official_faithful` は、その Trainer の公式条件として設定に書いた Dataset ID、Protocol ID、snapshot hash、profile、claim、`selection_uses_test`、sample rate、teacher、pipeline が、開いたスナップショットの identity と一致するときだけ許す。`selection_uses_test` は true。profile や identity が欠けたもの、`WavePairData`、別の snapshot は拒否する。独立な最終評価とは呼ばない。
+- `leakage_safe` は profile が `leakage_safe` で `selection_uses_test` が false のときだけ許す。不明な値は適合にしない。snapshot の train / valid / test の重なり検査はデータモジュールが開くときに行う。
+- `research` は適合する音声ペアを使え、公式再現としては記録しない。
 - 公式再現設定は `configs/reproduction/experiments/official/`（`official_faithful`）。1 step の宣言は `tests/fixtures/configs/experiments/`。Dataset と Protocol の定義は `configs/data/`。評価 DB の登録は `configs/db/init.yaml`。
 - `dfn3.online.official@1` と `semambapp.gsr.official@1` は blocked。代替素材を公式データの再現と呼ばない。
 - 追跡中の `libdf_rfft.so` は置き換えない。ファイルが在るのに読めないときは、ABI が合うローカル再ビルドだけを使い、無ければエラーにする。PyTorch に戻るのは、ファイル自体が無く `DF_RFFT_REQUIRED=1` でもないときだけで、そのとき libdf とのビット一致は成り立たない（`src/se/models/deepfilternet3/dsp.py`）。

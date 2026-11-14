@@ -245,8 +245,8 @@ class Phase4FCheckpointAndExportTests(unittest.TestCase):
         text = path.read_text(encoding="utf-8")
         if stop_after is not None:
             text = text.replace(
-                "      experiment_claim: official_faithful\n",
-                "      experiment_claim: official_faithful\n      stop_after_logical_steps: 1\n",
+                "      experiment_claim: research\n",
+                "      experiment_claim: research\n      stop_after_logical_steps: 1\n",
                 1,
             )
         path.write_text(text, encoding="utf-8")

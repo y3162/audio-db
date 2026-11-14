@@ -227,7 +227,7 @@ components:
       max_logical_steps: {steps}
       accumulation: {accumulation}
       grad_clip: 10.0
-      experiment_claim: official_faithful
+      experiment_claim: research
       validate_on_epoch_end: {validate}
     inject:
       generator: {{ref: generator}}
@@ -722,9 +722,18 @@ class MossFormerGANAlgorithmTests(unittest.TestCase):
                         trainer._check_claim()
                 else:
                     trainer._check_claim()
+        trainer = MossFormerGANTrainer(
+            self.generator,
+            self.discriminator,
+            _ProfileData("leakage_safe", False),
+            self.optim_g,
+            self.optim_d,
+            max_logical_steps=1,
+            experiment_claim="leakage_safe",
+        )
+        trainer._check_claim()
         for claim, profile, uses_test in (
             ("official_faithful", "official_faithful", True),
-            ("leakage_safe", "leakage_safe", False),
             ("official_faithful", None, None),
             ("leakage_safe", None, None),
         ):
@@ -737,8 +746,9 @@ class MossFormerGANAlgorithmTests(unittest.TestCase):
                 max_logical_steps=1,
                 experiment_claim=claim,
             )
-            with self.subTest(claim=claim, profile=profile, uses_test=uses_test, accepted=True):
-                trainer._check_claim()
+            with self.subTest(claim=claim, profile=profile, uses_test=uses_test, accepted=False):
+                with self.assertRaises(RuntimeFailure):
+                    trainer._check_claim()
 
     def test_leakage_safe_update_matches_the_official_update(self) -> None:
         batches = [_as_batch(_noise(index), index) for index in range(2)]

@@ -24,6 +24,8 @@ YAML の `class` には公開 import パスを書く。公開境界と checkpoin
 
 `official/` に無い設定を、パスを変えただけでは公式再現と呼ばない。`dfn3.online.official@1` と `semambapp.gsr.official@1` は blocked である。
 
+`experiment_claim: official_faithful` の設定は `publication` に、そのモデルの Dataset ID、Protocol ID、snapshot hash、profile、claim、`selection_uses_test`、sample rate、teacher、pipeline を書く。Preflight は、この宣言と開いたスナップショットの identity が一致しないとき、学習の前に拒否する。保存先ディレクトリ名では判定しない。`research` は適合する音声ペアを使え、公式再現にはならない。`leakage_safe` は `selection_uses_test: false` が明示されているときだけ許す。
+
 VoiceBank の公式設定は `data/db/snapshots-voicebank-float-v1/` の snapshot を使う。旧 PCM16 変換の snapshot は新しい仕様では読み込めない。実素材から新たに準備する際は、既存の DB・staging・snapshot を上書きせず、次のように空いている別のパスを指定する。
 
 ```bash

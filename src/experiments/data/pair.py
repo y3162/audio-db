@@ -94,11 +94,12 @@ def bind_trainer_data(trainer: object) -> None:
 
 
 def check_publication(trainer: object) -> None:
-    """Compare an official claim with the dataset profile. Research does not.
+    """Refuse an official or leakage-safe claim that the opened data does not support.
 
-    ``research`` trains on a compatible pair without recording the run as the
-    paper's official reproduction. Official and leakage-safe claims keep the
-    profile and test-selection checks.
+    ``research`` trains on a compatible pair and is not recorded as the paper's
+    reproduction. ``official_faithful`` requires the trainer's known dataset,
+    protocol, snapshot, profile, test use, and pipeline. A missing value is not
+    a match. ``leakage_safe`` requires an explicit false ``selection_uses_test``.
     """
 
     claim = getattr(trainer, "experiment_claim", None)
@@ -107,25 +108,19 @@ def check_publication(trainer: object) -> None:
         return
     if claim == "research" or label == "research":
         return
+    from src.experiments.data.publication import require_leakage_identity, require_official_identity
+
     data = getattr(trainer, "data", None)
     identity_fn = getattr(data, "identity", None)
-    identity = identity_fn() if callable(identity_fn) else {}
+    if not callable(identity_fn):
+        raise RuntimeFailure("data has no identity")
+    identity = identity_fn()
     if not isinstance(identity, dict):
         raise RuntimeFailure("data identity is not a mapping")
     if claim == "official_faithful":
-        profile = identity.get("profile")
-        uses_test = identity.get("selection_uses_test")
-        if profile not in (None, "official_faithful"):
-            raise RuntimeFailure("official_faithful data profile must be official_faithful")
-        if uses_test is False:
-            raise RuntimeFailure("official_faithful selection uses the dataset test split as validation")
+        require_official_identity(trainer, identity)
     elif claim == "leakage_safe":
-        profile = identity.get("profile")
-        uses_test = identity.get("selection_uses_test")
-        if profile not in (None, "leakage_safe"):
-            raise RuntimeFailure("leakage_safe data profile must be leakage_safe")
-        if uses_test is True:
-            raise RuntimeFailure("leakage_safe selection keeps the test split out of best-checkpoint decisions")
+        require_leakage_identity(identity)
     if isinstance(label, str) and label:
         data_claim = identity.get("claim_label")
         if data_claim == "official_reproduction":

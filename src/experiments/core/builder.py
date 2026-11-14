@@ -73,9 +73,12 @@ class ExperimentBuilder:
         if not callable(getattr(trainer, "run", None)):
             raise BuildError(f"component {config.entry}: trainer has no run method")
         from src.experiments.data.pair import bind_trainer_data
+        from src.experiments.data.publication import require_declared_publication
         from src.experiments.errors import DataError, RuntimeFailure
 
         try:
+            if getattr(trainer, "experiment_claim", None) == "official_faithful":
+                require_declared_publication(trainer, config.publication)
             bind_trainer_data(trainer)
         except (DataError, RuntimeFailure) as exc:
             raise BuildError(f"component {config.entry}: {exc}") from exc

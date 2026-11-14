@@ -9,6 +9,32 @@ schema: audio-db-experiment/v1
 seed: 777
 deterministic: true
 entry: trainer
+publication:
+  algorithm: fixed_pair.mossformergan_se_16k
+  claim_label: official_reproduction
+  dataset_id: 18c0d64a78edc2914cc1ea71ea6558a0fa54d52f03252af843d49fc417c3c69c
+  normalize: independent_audio_norm_v1
+  profile: official_faithful
+  protocol_id: 6a0fcf415f437d0e0a9b2a4f5cc5670645e48dc28536babd4fef860b99f00a33
+  resample:
+    tool: soxr
+    quality: HQ
+    source_rate: 48000
+    target_rate: 16000
+    length: source_frames_plus_one_div_3
+    order:
+      - read_float32
+      - soxr_hq
+      - protocol_normalize
+      - protocol_window
+  sample_rate: 16000
+  selection_uses_test: true
+  snapshot_hash: 8d9107b91fe36e11a76c5b6e686d29dcad16064a6c3de7598c82dd195e5056f5
+  split: train
+  teacher: dry_clean
+  validation_crop: per_epoch_random
+  validation_scope: per_rank
+  window: 32000
 runtime:
   class: src.experiments.runtime.ProcessRuntime
   kwargs:

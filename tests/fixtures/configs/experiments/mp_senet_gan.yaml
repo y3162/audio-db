@@ -10,6 +10,32 @@ schema: audio-db-experiment/v1
 seed: 1234
 deterministic: true
 entry: trainer
+publication:
+  algorithm: fixed_pair.mp_senet
+  claim_label: official_reproduction
+  dataset_id: 2e1ebda5109626e04198b8dd16c1948cd2bde159087a16001fa9239c2860c67f
+  normalize: noisy_rms_unit_v1
+  profile: official_faithful
+  protocol_id: 4d3e13e34a7c6beaa8406bee8ae006951aa12a8f88791f8ca29c6ce57a9bf6ae
+  resample:
+    tool: soxr
+    quality: HQ
+    source_rate: 48000
+    target_rate: 16000
+    length: source_frames_plus_one_div_3
+    order:
+      - read_float32
+      - soxr_hq
+      - protocol_normalize
+      - protocol_window
+  sample_rate: 16000
+  selection_uses_test: true
+  snapshot_hash: 9f342b0fccf5a021971d918a14821b8c18a05ea7de05d97086f9785dbaa413dc
+  split: train
+  teacher: dry_clean
+  validation_crop: full_length
+  validation_scope: rank0
+  window: 32000
 runtime:
   class: src.experiments.runtime.ProcessRuntime
   kwargs:

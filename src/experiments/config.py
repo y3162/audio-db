@@ -19,7 +19,18 @@ from src.experiments.execution.runtime import PreparePolicy
 
 SCHEMA = "audio-db-experiment/v1"
 TOP_KEYS = frozenset(
-    {"schema", "seed", "deterministic", "entry", "runtime", "components", "output", "checkpoint", "initialize"}
+    {
+        "schema",
+        "seed",
+        "deterministic",
+        "entry",
+        "runtime",
+        "components",
+        "output",
+        "checkpoint",
+        "initialize",
+        "publication",
+    }
 )
 DEFAULT_SELECTOR = "src.experiments.selectors.StandardSelector"
 CONCRETE_KEYS = frozenset({"role", "class", "kwargs", "inject", "parameters_of", "prepare", "state"})
@@ -87,6 +98,7 @@ class ExperimentConfig:
     selector_class: str = DEFAULT_SELECTOR
     selector_kwargs: dict[str, Any] = field(default_factory=dict)
     initialize: InitializeConfig | None = None
+    publication: dict[str, Any] | None = None
 
 
 class _UniqueKeyLoader(yaml.SafeLoader):
@@ -146,6 +158,7 @@ def _parse_document(raw: dict[str, Any]) -> ExperimentConfig:
     output_directory = _parse_output(raw.get("output"))
     selector_class, selector_kwargs = _parse_checkpoint(raw.get("checkpoint"))
     initialize = _parse_initialize(raw.get("initialize"))
+    publication = _parse_publication(raw.get("publication"))
     components = _parse_components(raw.get("components"))
     _reject_differentiable(components)
     trainers = [
@@ -172,6 +185,7 @@ def _parse_document(raw: dict[str, Any]) -> ExperimentConfig:
         selector_class=selector_class,
         selector_kwargs=selector_kwargs,
         initialize=initialize,
+        publication=publication,
     )
 
 
@@ -240,6 +254,85 @@ def _parse_initialize(raw: object) -> InitializeConfig | None:
             raise ConfigError(f"initialize.states repeats {state_id}")
         cleaned.append(state_id)
     return InitializeConfig(checkpoint=Path(checkpoint), states=tuple(cleaned))
+
+
+def _parse_publication(raw: object) -> dict[str, Any] | None:
+    """Read the official dataset and pipeline declaration. Absence is allowed here.
+
+    ``official_faithful`` refuses a missing or different block when the graph
+    is built. Other claims do not become official reproductions by carrying one.
+    """
+
+    if raw is None:
+        return None
+    from src.experiments.data.publication import PUBLICATION_KEYS
+
+    mapping = _expect_mapping(raw, "publication")
+    allowed = frozenset(PUBLICATION_KEYS)
+    _reject_unknown(mapping, allowed, "publication")
+    missing = [key for key in PUBLICATION_KEYS if key not in mapping]
+    if missing:
+        raise ConfigError(f"publication is missing {missing[0]}")
+    cleaned: dict[str, Any] = {}
+    for key in PUBLICATION_KEYS:
+        value = mapping[key]
+        if key in {
+            "dataset_id",
+            "protocol_id",
+            "snapshot_hash",
+            "profile",
+            "claim_label",
+            "teacher",
+            "algorithm",
+            "normalize",
+            "validation_crop",
+            "validation_scope",
+            "split",
+        }:
+            if not isinstance(value, str) or not value:
+                raise ConfigError(f"publication.{key} must be a non-empty string")
+            cleaned[key] = value
+            continue
+        if key in {"sample_rate", "window"}:
+            if isinstance(value, bool) or not isinstance(value, int) or value < 1:
+                raise ConfigError(f"publication.{key} must be a positive integer")
+            cleaned[key] = value
+            continue
+        if key == "selection_uses_test":
+            if not isinstance(value, bool):
+                raise ConfigError("publication.selection_uses_test must be a bool")
+            cleaned[key] = value
+            continue
+        if key == "resample":
+            cleaned[key] = _parse_resample(value)
+            continue
+        raise ConfigError(f"publication.{key} is not parsed")
+    return cleaned
+
+
+def _parse_resample(raw: object) -> dict[str, Any]:
+    mapping = _expect_mapping(raw, "publication.resample")
+    allowed = frozenset({"tool", "quality", "source_rate", "target_rate", "length", "order"})
+    _reject_unknown(mapping, allowed, "publication.resample")
+    missing = [key for key in ("tool", "quality", "source_rate", "target_rate", "length", "order") if key not in mapping]
+    if missing:
+        raise ConfigError(f"publication.resample is missing {missing[0]}")
+    cleaned: dict[str, Any] = {}
+    for key in ("tool", "quality", "length"):
+        value = mapping[key]
+        if not isinstance(value, str) or not value:
+            raise ConfigError(f"publication.resample.{key} must be a non-empty string")
+        cleaned[key] = value
+    for key in ("source_rate", "target_rate"):
+        value = mapping[key]
+        if isinstance(value, bool) or not isinstance(value, int) or value < 1:
+            raise ConfigError(f"publication.resample.{key} must be a positive integer")
+        cleaned[key] = value
+    order = mapping["order"]
+    if not isinstance(order, list) or not order or any(not isinstance(item, str) or not item for item in order):
+        raise ConfigError("publication.resample.order must be a non-empty list of strings")
+    cleaned["order"] = list(order)
+    return cleaned
 
 
 def _parse_components(raw: object) -> dict[str, ComponentConfig]:
@@ -468,7 +561,9 @@ def config_sha256(config: ExperimentConfig) -> str:
     same algorithm configuration. ``checkpoint`` is excluded: a selector
     decides which states are kept and does not change a training step.
     ``initialize`` is included when present, because another initial state is
-    another experiment. A document without it hashes as before.
+    another experiment. ``publication`` is included when present, because an
+    official dataset declaration is part of the experiment. A document without
+    either field hashes as before.
     """
 
     payload: dict[str, Any] = {
@@ -487,6 +582,8 @@ def config_sha256(config: ExperimentConfig) -> str:
             "checkpoint": str(config.initialize.checkpoint),
             "states": list(config.initialize.states),
         }
+    if config.publication is not None:
+        payload["publication"] = _jsonable(config.publication)
     encoded = json.dumps(payload, ensure_ascii=True, separators=(",", ":"), sort_keys=True)
     return hashlib.sha256(encoded.encode("utf-8")).hexdigest()
 

@@ -224,6 +224,7 @@ def main() -> None:
         max_logical_steps=3,
         accumulation=2,
         grad_clip=10.0,
+        experiment_claim="research",
         validate_on_epoch_end=False,
     )
     checkpoint = NoCheckpoints(OUT / "mossformer-trainer")

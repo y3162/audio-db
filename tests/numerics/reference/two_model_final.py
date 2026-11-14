@@ -1213,7 +1213,7 @@ def _mp_trainer_once(cmp, h, device, trainer_cls, gen_cls, disc_cls, policy_cls,
         directory.mkdir(parents=True, exist_ok=True)
         trainer = trainer_cls(
             prepared_g, prepared_d, data, opt_g, opt_d, sched_g, sched_d,
-            max_logical_steps=3, experiment_claim="official_faithful", accumulation=1,
+            max_logical_steps=3, experiment_claim="research", accumulation=1,
             validation_interval=0, best_checkpoint_start_epoch=40,
         )
         def hook(phase: str, payload=None) -> None:
