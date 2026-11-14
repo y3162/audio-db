@@ -524,6 +524,96 @@ class MPSENetGANTests(unittest.TestCase):
                 for alias in node.names:
                     self.assertNotIn("mp_senet.trainer", alias.name)
 
+    def test_validation_does_not_step_the_scheduler_and_drops_its_shadow(self) -> None:
+        directory = self.base / "shadow-cache"
+        experiment = build_experiment(
+            load_experiment(_yaml(directory, steps=1, updates=2, validation_interval=1, best_start=0))
+        )
+        try:
+            trainer = experiment.get("trainer")
+            runtime = experiment._graph.runtime
+            cursor = (int(trainer.data.epoch), int(trainer.data.update_index))
+            summary = trainer._validate(runtime, 0, "trainer")
+            self.assertEqual((int(trainer.data.epoch), int(trainer.data.update_index)), cursor)
+            self.assertEqual(trainer.scheduler_steps, 0)
+            self.assertIsNone(trainer.best_pesq)
+            self.assertIsNotNone(trainer._validator._shadow)
+            trainer.load_state_dict(trainer.state_dict())
+            self.assertIsNone(trainer._validator._shadow)
+            again = trainer._validate(runtime, 0, "trainer")
+            self.assertEqual(again["pesq"], summary["pesq"])
+            self.assertEqual(trainer.scheduler_steps, 0)
+            self.assertIsNone(trainer.best_pesq)
+            self.assertEqual((int(trainer.data.epoch), int(trainer.data.update_index)), cursor)
+        finally:
+            experiment.close()
+
+    def test_trainer_payload_keeps_its_keys_and_optional_stop_reason(self) -> None:
+        runtime = ProcessRuntime(device="cpu", precision="fp32")
+        try:
+            trainer, _gen, _disc = _manual_trainer(runtime, accumulation=1)
+            payload = trainer.state_dict()
+            self.assertEqual(
+                set(payload),
+                {
+                    "best_epoch",
+                    "best_logical_step",
+                    "best_pesq",
+                    "boundary",
+                    "completed_boundaries",
+                    "experiment_claim",
+                    "history",
+                    "logical_step",
+                    "optimizer_updates",
+                    "phase",
+                    "scheduler_steps",
+                    "step_log",
+                    "stop_reason",
+                },
+            )
+            trainer.logical_step = 4
+            trainer.stop_reason = "kept"
+            reduced = dict(payload)
+            del reduced["stop_reason"]
+            trainer.load_state_dict(reduced)
+            self.assertEqual(trainer.logical_step, payload["logical_step"])
+            self.assertEqual(trainer.stop_reason, "kept")
+            self.assertTrue(trainer._restored)
+            broken = dict(payload)
+            broken["phase"] = "pending_scheduler"
+            with self.assertRaises(RuntimeFailure):
+                trainer.load_state_dict(broken)
+        finally:
+            runtime.shutdown()
+
+    def test_state_module_only_copies_the_payload(self) -> None:
+        text = (ROOT / "src/experiments/official/mp_senet/state.py").read_text(encoding="utf-8")
+        self.assertNotIn("MPSENetGANTrainer", text)
+        self.assertNotIn("self.trainer", text)
+        self.assertNotIn("StepJournal", text)
+        self.assertNotIn("save_if_needed", text)
+        tree = ast.parse(text)
+        for node in ast.walk(tree):
+            if isinstance(node, ast.ImportFrom) and node.module is not None:
+                self.assertNotIn("mp_senet.trainer", node.module)
+
+    def test_validator_module_does_not_take_the_trainer(self) -> None:
+        path = ROOT / "src/experiments/official/mp_senet/validation.py"
+        text = path.read_text(encoding="utf-8")
+        self.assertNotIn("MPSENetGANTrainer", text)
+        self.assertNotIn("self.trainer", text)
+        self.assertNotIn("ResearchSession", text)
+        self.assertNotIn("save_if_needed", text)
+        self.assertNotIn("consider_best_pesq", text)
+        self.assertNotIn("write_best", text)
+        tree = ast.parse(text)
+        for node in ast.walk(tree):
+            if isinstance(node, ast.ImportFrom) and node.module is not None:
+                self.assertNotIn("mp_senet.trainer", node.module)
+            if isinstance(node, ast.Import):
+                for alias in node.names:
+                    self.assertNotIn("mp_senet.trainer", alias.name)
+
 
 class _FakeCheckpoint:
     def __init__(self) -> None:

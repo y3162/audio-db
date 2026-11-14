@@ -3,6 +3,7 @@
 ``fit`` orders one logical step, the step log, official validation, PESQ
 selection, both schedulers, research evaluation, and the checkpoint safe
 point. One GAN pair is :class:`~src.experiments.official.mp_senet.training_step.MPSENetUpdate`.
+Official validation is :class:`~src.experiments.official.mp_senet.validation.MPSENetOfficialValidator`.
 That pair keeps one generator forward, steps the discriminator, then the
 generator. ``StandardTrainer`` and the TF-GridNet / TF-Locoformer trainers
 are not used for this loop.
@@ -30,8 +31,15 @@ from src.experiments.data import Batch
 from src.experiments.data.pair import bind_trainer_data
 from src.experiments.errors import BuildError, RuntimeFailure
 from src.experiments.official.mp_senet.artifacts import write_best
-from src.experiments.official.mp_senet.metrics import aggregate_reports
 from src.experiments.official.mp_senet.selection import consider_best_pesq
+from src.experiments.official.mp_senet.state import (
+    IN_EPOCH,
+    PENDING_BOUNDARY,
+    export_progress,
+    open_boundary,
+    restore_progress,
+)
+from src.experiments.official.mp_senet.validation import MPSENetOfficialValidator
 from src.experiments.training.control import finish_training_run, open_flat_window, stop_requested
 from src.experiments.official.mp_senet.models import (
     MPSENetGANGenerator,
@@ -47,12 +55,10 @@ from src.experiments.trainers import (
     _close_epoch_view,
     _rank,
 )
-from src.experiments.calc.errors import TrainingError
 from src.experiments.training.official_objectives import require_mp_senet
-from src.experiments.official.mp_senet.reference import validation_model
 
-_IN_EPOCH = "in_epoch"
-_PENDING = "pending_boundary"
+_IN_EPOCH = IN_EPOCH
+_PENDING = PENDING_BOUNDARY
 OFFICIAL_FAITHFUL = "official_faithful"
 LEAKAGE_SAFE = "leakage_safe"
 _CLAIMS = frozenset({OFFICIAL_FAITHFUL, LEAKAGE_SAFE, "research"})
@@ -174,7 +180,6 @@ class MPSENetGANTrainer:
         self.model_selection = self.research.selection
         self._restored = False
         self._in_official_step = False
-        self._shadow = None
         self._average_calls = 0
         self._generator_synced_during_backward = False
         self._update = MPSENetUpdate(
@@ -186,6 +191,13 @@ class MPSENetGANTrainer:
             metric_objective=self.metric_objective,
             discriminator_objective=self.discriminator_objective,
             accumulation=self.accumulation,
+        )
+        self._validator = MPSENetOfficialValidator(
+            generator=self.generator,
+            discriminator=self.discriminator,
+            data=self.data,
+            optim_g=self.optim_g,
+            scheduler_g=self.scheduler_g,
         )
 
     def fit(self) -> RunResult:
@@ -231,7 +243,7 @@ class MPSENetGANTrainer:
                 ):
                     continue
                 self.phase = _PENDING
-                self.boundary = _open_boundary(epoch, validate=will_validate, epoch_done=epoch_done)
+                self.boundary = open_boundary(epoch, validate=will_validate, epoch_done=epoch_done)
                 self._on_boundary_phase(self.phase)
                 self._offer("boundary_pending")
                 if self._stop_requested(runtime):
@@ -397,60 +409,38 @@ class MPSENetGANTrainer:
         self._average_calls += 1
 
     def state_dict(self) -> dict[str, Any]:
-        return {
-            "best_epoch": self.best_epoch,
-            "best_logical_step": self.best_logical_step,
-            "best_pesq": self.best_pesq,
-            "boundary": self.boundary,
-            "completed_boundaries": list(self.completed_boundaries),
-            "experiment_claim": self.experiment_claim,
-            "history": list(self.history),
-            "logical_step": self.logical_step,
-            "optimizer_updates": dict(self.optimizer_updates),
-            "phase": self.phase,
-            "scheduler_steps": self.scheduler_steps,
-            "step_log": list(self.step_log),
-            "stop_reason": self.stop_reason,
-        }
+        return export_progress(
+            best_epoch=self.best_epoch,
+            best_logical_step=self.best_logical_step,
+            best_pesq=self.best_pesq,
+            boundary=self.boundary,
+            completed_boundaries=self.completed_boundaries,
+            experiment_claim=self.experiment_claim,
+            history=self.history,
+            logical_step=self.logical_step,
+            optimizer_updates=self.optimizer_updates,
+            phase=self.phase,
+            scheduler_steps=self.scheduler_steps,
+            step_log=self.step_log,
+            stop_reason=self.stop_reason,
+        )
 
     def load_state_dict(self, state: dict[str, Any]) -> None:
-        logical_step = state.get("logical_step")
-        updates = state.get("optimizer_updates")
-        phase = state.get("phase")
-        if isinstance(logical_step, bool) or not isinstance(logical_step, int) or not isinstance(updates, dict):
-            raise RuntimeFailure("trainer state is invalid")
-        if phase not in {_IN_EPOCH, _PENDING}:
-            raise RuntimeFailure(f"trainer phase {phase!r} is invalid")
-        if state.get("experiment_claim") != self.experiment_claim:
-            raise RuntimeFailure("experiment claim does not match this trainer")
-        history = state.get("history")
-        completed = state.get("completed_boundaries")
-        step_log = state.get("step_log")
-        if not isinstance(history, list) or not isinstance(completed, list) or not isinstance(step_log, list):
-            raise RuntimeFailure("trainer history is invalid")
-        self.logical_step = logical_step
-        self.optimizer_updates = {str(key): int(value) for key, value in updates.items()}
-        self.phase = phase
-        self.history = list(history)
-        self.completed_boundaries = list(completed)
-        self.step_log = list(step_log)
-        boundary = state.get("boundary")
-        self.boundary = None if boundary is None else dict(boundary)
-        self.scheduler_steps = int(state.get("scheduler_steps", 0))
-        best = state.get("best_pesq")
-        self.best_pesq = None if best is None else float(best)
-        best_epoch = state.get("best_epoch")
-        best_step = state.get("best_logical_step")
-        if best_epoch is not None and (isinstance(best_epoch, bool) or not isinstance(best_epoch, int)):
-            raise RuntimeFailure("best_epoch is invalid")
-        if best_step is not None and (isinstance(best_step, bool) or not isinstance(best_step, int)):
-            raise RuntimeFailure("best_logical_step is invalid")
-        self.best_epoch = best_epoch
-        self.best_logical_step = best_step
-        stop_reason = state.get("stop_reason")
-        if isinstance(stop_reason, str):
-            self.stop_reason = stop_reason
-        self._shadow = None
+        restored = restore_progress(state, experiment_claim=self.experiment_claim)
+        self.logical_step = restored.logical_step
+        self.optimizer_updates = restored.optimizer_updates
+        self.phase = restored.phase
+        self.history = restored.history
+        self.completed_boundaries = restored.completed_boundaries
+        self.step_log = restored.step_log
+        self.boundary = restored.boundary
+        self.scheduler_steps = restored.scheduler_steps
+        self.best_pesq = restored.best_pesq
+        self.best_epoch = restored.best_epoch
+        self.best_logical_step = restored.best_logical_step
+        if restored.stop_reason is not None:
+            self.stop_reason = restored.stop_reason
+        self._validator.invalidate()
         self._restored = True
 
     def _on_update_phase(self, phase: str, payload: object = None) -> None:
@@ -523,70 +513,9 @@ class MPSENetGANTrainer:
         self._offer("boundary", metrics={**metrics, **extra} if extra else metrics)
 
     def _validate(self, runtime: ProcessRuntime, trainer_epoch: int, component_id: str) -> dict[str, Any]:
-        """Run the official validation report on rank 0 and share that summary."""
-        cursor = (int(self.data.epoch), int(self.data.update_index))
-        rng = runtime.capture_rng()
-        error: str | None = None
-        summary: dict[str, Any] | None = None
-        try:
-            if runtime.rank == 0:
-                try:
-                    summary = self._validate_rank0(trainer_epoch, runtime, component_id)
-                except (TrainingError, RuntimeFailure, RuntimeError, ValueError, OSError) as exc:
-                    error = f"{type(exc).__name__}: {exc}"
-        finally:
-            runtime.restore_rng(rng)
-        errors = runtime.gather_objects(error)
-        failure = next((item for item in errors if item), None)
-        if failure:
-            raise RuntimeFailure(f"validation failed: {failure}")
-        gathered = runtime.gather_objects(summary)
-        shared = gathered[0]
-        if not isinstance(shared, dict):
-            raise RuntimeFailure(f"component {component_id}: rank 0 did not return a validation summary")
-        moved = (int(self.data.epoch), int(self.data.update_index))
-        if moved != cursor:
-            raise RuntimeFailure(f"component {component_id}: validation advanced the training cursor")
-        return shared
+        """Run official validation. Scheduling and best selection stay in the boundary."""
 
-    def _validate_rank0(self, trainer_epoch: int, runtime: ProcessRuntime, component_id: str) -> dict[str, Any]:
-        task = self._shadow_task(runtime)
-        reports: list[dict[str, Any]] = []
-        for batch in self.data.validation_epoch(trainer_epoch):
-            if not isinstance(batch, Batch):
-                raise RuntimeFailure(f"component {component_id}: validation did not return a batch")
-            batch = runtime.move(batch)
-            report = task.validation_report({"clean": batch.targets, "noisy": batch.inputs})
-            reports.append(report)
-        if not reports:
-            raise RuntimeFailure(f"component {component_id}: rank 0 validation produced no batches")
-        return aggregate_reports(reports)
-
-    def _shadow_task(self, runtime: ProcessRuntime):
-        if self._shadow is None:
-            group = self.optim_g.param_groups[0]
-            betas = group["betas"]
-            self._shadow = validation_model(
-                {
-                    "loss": "official",
-                    "model": dict(self.generator.unwrapped().architecture),
-                    "optimizer": {
-                        "betas": [float(betas[0]), float(betas[1])],
-                        "lr": float(group["lr"]),
-                        "weight_decay": float(group["weight_decay"]),
-                    },
-                    "scheduler": {"gamma": float(self.scheduler_g.gamma)},
-                    "seed": int(self.generator.unwrapped().seed),
-                },
-                runtime.device,
-            )
-        task = self._shadow
-        if task.discriminator is None:
-            raise RuntimeFailure("shadow MP-SENet task has no discriminator")
-        task.generator.load_state_dict(self.generator.unwrapped().generator.state_dict(), strict=True)
-        task.discriminator.load_state_dict(self.discriminator.unwrapped().discriminator.state_dict(), strict=True)
-        task.eval_mode()
-        return task
+        return self._validator.evaluate(runtime, trainer_epoch, component_id)
 
     def _consider_best(self, epoch: int, summary: dict[str, Any]) -> dict[str, Any]:
         """Apply the official PESQ rule and remember a strict improvement."""
@@ -677,25 +606,6 @@ def _require_disjoint(optim_g: torch.optim.Optimizer, optim_d: torch.optim.Optim
         raise BuildError("generator and discriminator optimizers share a parameter")
     if not generator_ids or not discriminator_ids:
         raise BuildError("MP-SENet GAN optimizers must each own parameters")
-
-
-def _open_boundary(trainer_epoch: int, *, validate: bool, epoch_done: bool) -> dict[str, Any]:
-    """Record whether this safe point still owes validation or a scheduler step."""
-    return {
-        "closed": False,
-        "epoch_done": bool(epoch_done),
-        "lr_d": None,
-        "lr_g": None,
-        "pesq": None,
-        "pesq_status": None,
-        "scheduler": bool(epoch_done),
-        "scheduler_done": False,
-        "selected": False,
-        "selection_done": False,
-        "trainer_epoch": int(trainer_epoch),
-        "validate": bool(validate),
-        "validation_done": False,
-    }
 
 
 def _positive_int(name: str, value: object) -> int:
