@@ -26,7 +26,6 @@ from typing import Any
 
 import torch
 
-from src.experiments.checkpoint import CheckpointManager
 from src.experiments.data import Batch
 from src.experiments.data.pair import bind_trainer_data
 from src.experiments.errors import BuildError, RuntimeFailure
@@ -183,25 +182,24 @@ class MPSENetGANTrainer:
 
         self.lifecycle.start()
         runtime = self.runtime
-        checkpoint = self.lifecycle.checkpoint
-        component_id = self._prepare_run(runtime, checkpoint)
+        component_id = self._prepare_run(runtime)
         if should_stop(self):
-            return self._result(checkpoint, "completed")
+            return self._result("completed")
         if self.phase == _PENDING:
-            self._finish_boundary(runtime, checkpoint, component_id)
+            self._finish_boundary(runtime, component_id)
             if should_stop(self):
-                return self._result(checkpoint, "completed")
+                return self._result("completed")
             if self._epoch_cap_reached():
-                return self._result(checkpoint, "completed")
+                return self._result("completed")
         while self.logical_step < self.max_logical_steps:
             if self._stop_requested(runtime):
                 self._drain_mp_io()
                 if self.logical_step > 0 and not self._in_official_step:
-                    self._offer(checkpoint, "stop")
-                return self._result(checkpoint, "interrupted")
+                    self._offer("stop")
+                return self._result("interrupted")
             if self._epoch_cap_reached():
                 self._drain_mp_io()
-                return self._result(checkpoint, "completed")
+                return self._result("completed")
             epoch, index, view, batches = self._open_window(component_id)
             try:
                 local = self.official_step(batches, runtime)
@@ -215,7 +213,6 @@ class MPSENetGANTrainer:
                 will_validate = self.validation_interval > 0 and self.logical_step % self.validation_interval == 0
                 if self._record_step(
                     runtime,
-                    checkpoint,
                     local,
                     epoch=epoch,
                     epoch_done=epoch_done,
@@ -225,31 +222,31 @@ class MPSENetGANTrainer:
                 self.phase = _PENDING
                 self.boundary = _open_boundary(epoch, validate=will_validate, epoch_done=epoch_done)
                 self._on_boundary_phase(self.phase)
-                self._offer(checkpoint, "boundary_pending")
+                self._offer("boundary_pending")
                 if self._stop_requested(runtime):
-                    return self._result(checkpoint, "interrupted")
-                self._finish_boundary(runtime, checkpoint, component_id)
+                    return self._result("interrupted")
+                self._finish_boundary(runtime, component_id)
                 if should_stop(self):
-                    return self._result(checkpoint, "completed")
+                    return self._result("completed")
                 if self._epoch_cap_reached():
-                    return self._result(checkpoint, "completed")
+                    return self._result("completed")
             finally:
                 _close_epoch_view(view)
         self._drain_mp_io()
-        return self._result(checkpoint, "completed")
+        return self._result("completed")
 
-    def _prepare_run(self, runtime: ProcessRuntime, checkpoint: CheckpointManager) -> str:
+    def _prepare_run(self, runtime: ProcessRuntime) -> str:
         """Rewind logs. Does not run a discriminator or generator update."""
 
         self.research.rewind(
-            checkpoint.directory,
+            self.lifecycle.output_directory,
             restored=self._restored,
             phase=self.phase,
             progress={"logical_step": int(self.logical_step)},
         )
         self._refuse_amp(runtime)
         component_id = getattr(self, "_experiment_component_id", "trainer")
-        self.journal = StepJournal(checkpoint.directory, runtime)
+        self.journal = StepJournal(self.lifecycle.output_directory, runtime)
         if self._restored and (not hasattr(self.data, "epoch") or not hasattr(self.data, "update_index")):
             raise RuntimeFailure("resumed data has no epoch position")
         self.journal.begin(
@@ -309,7 +306,6 @@ class MPSENetGANTrainer:
     def _record_step(
         self,
         runtime: ProcessRuntime,
-        checkpoint: CheckpointManager,
         local: dict[str, Any],
         *,
         epoch: int,
@@ -343,14 +339,15 @@ class MPSENetGANTrainer:
         if offer_step:
             step_metrics = self.research.score(
                 runtime,
-                checkpoint,
+                output_directory=self.lifecycle.output_directory,
+                config_identity=self.lifecycle.config_identity,
                 kind="step",
                 epoch=epoch,
                 logical_step=self.logical_step,
                 stopping=getattr(self, "training_control", None),
             )
         if runtime.device.type == "cuda" and runtime.world_size == 1:
-            self._mp_io = (entry, local, offer_step, checkpoint, step_metrics)
+            self._mp_io = (entry, local, offer_step, step_metrics)
             if offer_step:
                 return True
             self._drain_mp_io()
@@ -359,9 +356,9 @@ class MPSENetGANTrainer:
         self.journal.write_sample({**local, "logical_step": self.logical_step, "loss": local["generator"]})
         if offer_step:
             if step_metrics:
-                self._offer(checkpoint, "step", metrics=step_metrics)
+                self._offer("step", metrics=step_metrics)
             else:
-                self._offer(checkpoint, "step")
+                self._offer("step")
             return True
         return False
 
@@ -372,16 +369,16 @@ class MPSENetGANTrainer:
         if item is None:
             return
         self._mp_io = None
-        entry, local, offer_step, checkpoint, step_metrics = item
+        entry, local, offer_step, step_metrics = item
         self.journal.write_metrics(entry)
         self.journal.write_sample(
             {**local, "logical_step": entry["logical_step"], "loss": local["generator"]}
         )
         if offer_step:
             if step_metrics:
-                self._offer(checkpoint, "step", metrics=step_metrics)
+                self._offer("step", metrics=step_metrics)
             else:
-                self._offer(checkpoint, "step")
+                self._offer("step")
 
     def _cuda_overlapped_step(self, batch: Batch, runtime: ProcessRuntime) -> dict[str, float]:
         """PESQ runs while the signal backward uses the same generator graph.
@@ -689,7 +686,6 @@ class MPSENetGANTrainer:
     def _finish_boundary(
         self,
         runtime: ProcessRuntime,
-        checkpoint: CheckpointManager,
         component_id: str,
     ) -> None:
         if self.phase != _PENDING or self.boundary is None:
@@ -702,7 +698,7 @@ class MPSENetGANTrainer:
             metrics = scalar_metrics(summary)
             decision = self._consider_best(trainer_epoch, summary)
             self.history.append(decision)
-            self._write_best(runtime, checkpoint.directory, decision)
+            self._write_best(runtime, self.lifecycle.output_directory, decision)
             boundary["validation_done"] = True
             boundary["selection_done"] = True
             boundary["pesq"] = decision["pesq"]
@@ -735,14 +731,15 @@ class MPSENetGANTrainer:
             )
         extra = self.research.score(
             runtime,
-            checkpoint,
+            output_directory=self.lifecycle.output_directory,
+            config_identity=self.lifecycle.config_identity,
             kind="boundary",
             epoch=trainer_epoch,
             logical_step=self.logical_step,
             official=metrics if boundary["validate"] else {},
             stopping=getattr(self, "training_control", None),
         )
-        self._offer(checkpoint, "boundary", metrics={**metrics, **extra} if extra else metrics)
+        self._offer("boundary", metrics={**metrics, **extra} if extra else metrics)
 
     def _validate(self, runtime: ProcessRuntime, trainer_epoch: int, component_id: str) -> dict[str, Any]:
         cursor = (int(self.data.epoch), int(self.data.update_index))
@@ -904,7 +901,6 @@ class MPSENetGANTrainer:
 
     def _offer(
         self,
-        checkpoint: CheckpointManager,
         event: str,
         metrics: dict[str, float] | None = None,
     ) -> None:
@@ -923,14 +919,15 @@ class MPSENetGANTrainer:
     def _epoch_cap_reached(self) -> bool:
         return self.max_epochs is not None and int(self.data.epoch) >= self.max_epochs
 
-    def _result(self, checkpoint: CheckpointManager, reason: str) -> RunResult:
+    def _result(self, reason: str) -> RunResult:
         if reason == "completed":
             epoch = getattr(self.data, "epoch", None)
             if isinstance(epoch, bool) or not isinstance(epoch, int):
                 epoch = None
             extra = self.research.score(
                 self.runtime,
-                checkpoint,
+                output_directory=self.lifecycle.output_directory,
+                config_identity=self.lifecycle.config_identity,
                 kind="end",
                 epoch=epoch,
                 logical_step=self.logical_step,
@@ -948,7 +945,7 @@ class MPSENetGANTrainer:
                 stop_reason=reason,
                 logical_step=self.logical_step,
                 optimizer_updates=dict(self.optimizer_updates),
-                output_dir=checkpoint.directory,
+                output_dir=self.lifecycle.output_directory,
             )
         )
 

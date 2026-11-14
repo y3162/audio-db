@@ -4,9 +4,10 @@ Official validation, schedulers, and official best files run before this
 module. A session with neither evaluators nor a model selection returns
 without touching RNG, weights, or the checkpoint metrics.
 
-The session does not read the trainer. The trainer passes the data, the
-inference module, the predict function, the restored flag, the phase name,
-and the progress it actually publishes.
+The session does not read the trainer and does not receive a checkpoint
+manager. The trainer passes the data, the inference module, the predict
+function, the output directory, the config identity, and the progress it
+actually publishes.
 """
 
 from __future__ import annotations
@@ -75,8 +76,9 @@ class ResearchSession:
     def metrics(
         self,
         runtime: Any,
-        checkpoint: Any,
         *,
+        output_directory: Path,
+        config_identity: str | None,
         kind: str,
         epoch: int | None,
         progress: Mapping[str, int] | None = None,
@@ -88,11 +90,14 @@ class ResearchSession:
         The returned mapping is merged into the save point. Official keys are
         not replaced. An empty mapping means the caller can keep its original
         offer. A missing ``logical_step`` stays missing; this method does not
-        invent 0.
+        invent 0. ``config_identity`` is the experiment SHA-256, or ``None``
+        when a direct comparison has no experiment document.
         """
 
         if not self.attached:
             return {}
+        if config_identity is not None and not isinstance(config_identity, str):
+            raise RuntimeFailure("config_identity must be a string or None")
         checked = _checked_progress(progress, epoch)
         logical_step = checked.get("logical_step")
         due = [
@@ -102,7 +107,7 @@ class ResearchSession:
         ]
         if kind != "boundary" and not due:
             return {}
-        directory = Path(checkpoint.directory)
+        directory = Path(output_directory)
         provenance = _provenance(self.data, kind)
         bridged: dict[str, float] = {}
         if kind == "boundary":
@@ -135,16 +140,27 @@ class ResearchSession:
                 _selection_result(self, evaluator.source, result, logical_step, epoch, provenance)
                 _deliver_stopping(stopping, evaluator.source, result, logical_step)
         if results or (kind == "boundary" and bridged):
-            _write_log(runtime, directory, checkpoint, kind, epoch, logical_step, provenance, results, bridged)
-            _export_if_needed(self, runtime, directory, checkpoint)
+            _write_log(
+                runtime,
+                directory,
+                config_identity,
+                kind,
+                epoch,
+                logical_step,
+                provenance,
+                results,
+                bridged,
+            )
+            _export_if_needed(self, runtime, directory, config_identity)
             _agree(runtime, self)
         return bridged
 
     def score(
         self,
         runtime: Any,
-        checkpoint: Any,
         *,
+        output_directory: Path,
+        config_identity: str | None,
         kind: str,
         epoch: int | None,
         logical_step: int,
@@ -155,7 +171,8 @@ class ResearchSession:
 
         return self.metrics(
             runtime,
-            checkpoint,
+            output_directory=output_directory,
+            config_identity=config_identity,
             kind=kind,
             epoch=epoch,
             progress={"logical_step": int(logical_step)},
@@ -249,11 +266,16 @@ def _deliver_stopping(stopping: Any, source: str, result: MetricResult, logical_
     )
 
 
-def _export_if_needed(session: ResearchSession, runtime: Any, directory: Path, checkpoint: Any) -> None:
+def _export_if_needed(
+    session: ResearchSession,
+    runtime: Any,
+    directory: Path,
+    config_identity: str | None,
+) -> None:
     selection = session.selection
     if selection is None or not getattr(selection, "_improved", False):
         return
-    export_best(runtime, directory, session.module, selection, config_sha256=_config_hash(checkpoint))
+    export_best(runtime, directory, session.module, selection, config_sha256=config_identity)
 
 
 def _agree(runtime: Any, session: ResearchSession) -> None:
@@ -297,7 +319,7 @@ def _provenance(data: Any, kind: str) -> dict[str, Any]:
 def _write_log(
     runtime: Any,
     directory: Path,
-    checkpoint: Any,
+    config_identity: str | None,
     kind: str,
     epoch: int | None,
     logical_step: int | None,
@@ -308,7 +330,7 @@ def _write_log(
     if int(getattr(runtime, "rank", 0)) != 0:
         _barrier(runtime)
         return
-    digest = _config_hash(checkpoint)
+    digest = config_identity
     rows: list[dict[str, Any]] = []
     seen: set[str] = set()
     for evaluator, outcome in results:
@@ -355,15 +377,6 @@ def _write_log(
         for row in rows:
             handle.write(json.dumps(row, sort_keys=True) + "\n")
     _barrier(runtime)
-
-
-def _config_hash(checkpoint: Any) -> str | None:
-    config = getattr(checkpoint, "_config", None)
-    if config is None:
-        return None
-    from src.experiments.config import config_sha256
-
-    return config_sha256(config)
 
 
 def _rewind(path: Path, logical_step: int, *, drop_current: bool) -> None:

@@ -35,7 +35,6 @@ from typing import Any
 
 import torch
 
-from src.experiments.checkpoint import CheckpointManager
 from src.experiments.data import Batch
 from src.experiments.data.pair import bind_trainer_data
 from src.experiments.errors import BuildError, RuntimeFailure
@@ -181,10 +180,9 @@ class TFLocoformerTrainer:
 
         self.lifecycle.start()
         runtime = self.runtime
-        checkpoint = self.lifecycle.checkpoint
-        component_id = self._prepare_run(runtime, checkpoint)
+        component_id = self._prepare_run(runtime)
         if should_stop(self):
-            return self._result(checkpoint, "completed")
+            return self._result("completed")
         if self._restored and (
             len(self.learning_rates) != self.logical_step or len(self.scheduled_rates) != self.logical_step
         ):
@@ -192,23 +190,23 @@ class TFLocoformerTrainer:
                 f"component {component_id}: learning-rate history does not match logical step"
             )
         if self.phase == _PENDING:
-            self._finish_boundary(runtime, checkpoint, component_id)
+            self._finish_boundary(runtime, component_id)
             if should_stop(self):
-                return self._result(checkpoint, "completed")
+                return self._result("completed")
             if self.early_stopped or self._epoch_cap_reached():
-                return self._result(checkpoint, "completed")
+                return self._result("completed")
         while self.logical_step < self.max_logical_steps:
             if self._stop_requested(runtime):
-                self._drain_step_io(checkpoint)
+                self._drain_step_io()
                 if self.logical_step > 0:
                     self.lifecycle.save_if_needed("stop", logical_step=self.logical_step)
-                return self._result(checkpoint, "interrupted")
+                return self._result("interrupted")
             if self._epoch_cap_reached():
-                self._drain_step_io(checkpoint)
-                return self._result(checkpoint, "completed")
+                self._drain_step_io()
+                return self._result("completed")
             epoch, index, view, planned = self._open_window(component_id)
             try:
-                self._drain_step_io(checkpoint)
+                self._drain_step_io()
                 self.model.train()
                 self.optimizer.zero_grad(set_to_none=True)
                 total: torch.Tensor | None = None
@@ -263,7 +261,8 @@ class TFLocoformerTrainer:
                 if not epoch_done:
                     step_metrics = self.research.score(
                         runtime,
-                        checkpoint,
+                        output_directory=self.lifecycle.output_directory,
+                        config_identity=self.lifecycle.config_identity,
                         kind="step",
                         epoch=epoch,
                         logical_step=self.logical_step,
@@ -284,23 +283,23 @@ class TFLocoformerTrainer:
                 )
                 if not epoch_done:
                     continue
-                self._drain_step_io(checkpoint)
+                self._drain_step_io()
                 self.phase = _PENDING
                 self.finished_epoch = epoch
                 self.boundary = _open_boundary(epoch, warmup_updated=bool(result.applied))
                 self._on_boundary_phase(_PENDING)
                 self.lifecycle.save_if_needed("boundary_pending", logical_step=self.logical_step)
                 if self._stop_requested(runtime):
-                    return self._result(checkpoint, "interrupted")
-                self._finish_boundary(runtime, checkpoint, component_id)
+                    return self._result("interrupted")
+                self._finish_boundary(runtime, component_id)
                 if should_stop(self):
-                    return self._result(checkpoint, "completed")
+                    return self._result("completed")
                 if self.early_stopped or self._epoch_cap_reached():
-                    return self._result(checkpoint, "completed")
+                    return self._result("completed")
             finally:
                 _close_epoch_view(view)
-        self._drain_step_io(checkpoint)
-        return self._result(checkpoint, "completed")
+        self._drain_step_io()
+        return self._result("completed")
 
     def state_dict(self) -> dict[str, Any]:
         return {
@@ -366,7 +365,6 @@ class TFLocoformerTrainer:
     def _finish_boundary(
         self,
         runtime: ProcessRuntime,
-        checkpoint: CheckpointManager,
         component_id: str,
     ) -> None:
         if self.phase != _PENDING or self.finished_epoch is None or self.boundary is None:
@@ -391,7 +389,7 @@ class TFLocoformerTrainer:
         self._on_boundary_phase(self.phase)
         self._select(
             runtime,
-            checkpoint.directory,
+            self.lifecycle.output_directory,
             espnet_epoch,
             float(summary["loss"]),
             float(summary["si_snr"]),
@@ -418,7 +416,8 @@ class TFLocoformerTrainer:
         )
         extra = self.research.score(
             runtime,
-            checkpoint,
+            output_directory=self.lifecycle.output_directory,
+            config_identity=self.lifecycle.config_identity,
             kind="boundary",
             epoch=trainer_epoch,
             logical_step=self.logical_step,
@@ -585,14 +584,15 @@ class TFLocoformerTrainer:
     def _epoch_cap_reached(self) -> bool:
         return self.max_epochs is not None and int(self.data.epoch) >= self.max_epochs
 
-    def _result(self, checkpoint: CheckpointManager, reason: str) -> RunResult:
+    def _result(self, reason: str) -> RunResult:
         if reason == "completed":
             epoch = getattr(self.data, "epoch", None)
             if isinstance(epoch, bool) or not isinstance(epoch, int):
                 epoch = None
             extra = self.research.score(
                 self.runtime,
-                checkpoint,
+                output_directory=self.lifecycle.output_directory,
+                config_identity=self.lifecycle.config_identity,
                 kind="end",
                 epoch=epoch,
                 logical_step=self.logical_step,
@@ -610,21 +610,21 @@ class TFLocoformerTrainer:
                 stop_reason=reason,
                 logical_step=self.logical_step,
                 optimizer_updates=dict(self.optimizer_updates),
-                output_dir=checkpoint.directory,
+                output_dir=self.lifecycle.output_directory,
             )
         )
 
-    def _prepare_run(self, runtime: ProcessRuntime, checkpoint: CheckpointManager) -> str:
+    def _prepare_run(self, runtime: ProcessRuntime) -> str:
         """Rewind logs and counters. Does not run an optimizer update."""
 
         self.research.rewind(
-            checkpoint.directory,
+            self.lifecycle.output_directory,
             restored=self._restored,
             phase=self.phase,
             progress={"logical_step": int(self.logical_step)},
         )
         component_id = getattr(self, "_experiment_component_id", "trainer")
-        self.journal = StepJournal(checkpoint.directory, runtime)
+        self.journal = StepJournal(self.lifecycle.output_directory, runtime)
         if self._restored and (not hasattr(self.data, "epoch") or not hasattr(self.data, "update_index")):
             raise RuntimeFailure("resumed data has no epoch position")
         self.losses = self.journal.begin(restored=self._restored, logical_step=self.logical_step)
@@ -679,7 +679,7 @@ class TFLocoformerTrainer:
     def _queue_step(self, **record: Any) -> None:
         self._step_io = record
 
-    def _drain_step_io(self, checkpoint: CheckpointManager) -> None:
+    def _drain_step_io(self) -> None:
         """Write the previous step while the next forward is already queued."""
 
         item = self._step_io

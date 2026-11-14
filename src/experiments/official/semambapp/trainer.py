@@ -22,7 +22,6 @@ from typing import Any
 
 import torch
 
-from src.experiments.checkpoint import CheckpointManager
 from src.experiments.data import Batch
 from src.experiments.data.pair import bind_trainer_data
 from src.experiments.errors import BuildError, RuntimeFailure
@@ -175,23 +174,22 @@ class SEMambaPPTrainer:
 
         self.lifecycle.start()
         runtime = self.runtime
-        checkpoint = self.lifecycle.checkpoint
-        component_id = self._prepare_run(runtime, checkpoint)
+        component_id = self._prepare_run(runtime)
         if should_stop(self):
-            return self._result(checkpoint, "completed")
+            return self._result("completed")
         if self.phase == _PENDING:
-            self._finish_boundary(runtime, checkpoint, component_id)
+            self._finish_boundary(runtime, component_id)
             if should_stop(self):
-                return self._result(checkpoint, "completed")
+                return self._result("completed")
             if self._epoch_cap_reached():
-                return self._result(checkpoint, "completed")
+                return self._result("completed")
         while self.logical_step < self.max_logical_steps:
             if self._stop_requested(runtime):
                 if self.logical_step > 0 and not self._in_official_step:
-                    self._offer(runtime, checkpoint, "stop")
-                return self._result(checkpoint, "interrupted")
+                    self._offer(runtime, "stop")
+                return self._result("interrupted")
             if self._epoch_cap_reached():
-                return self._result(checkpoint, "completed")
+                return self._result("completed")
             epoch, index, view, batches = self._open_window(component_id)
             try:
                 local = self.official_step(batches, runtime)
@@ -205,7 +203,6 @@ class SEMambaPPTrainer:
                 will_validate = self.validation_interval > 0 and self.logical_step % self.validation_interval == 0
                 if self._record_step(
                     runtime,
-                    checkpoint,
                     local,
                     epoch=epoch,
                     epoch_done=epoch_done,
@@ -215,23 +212,23 @@ class SEMambaPPTrainer:
                 self.phase = _PENDING
                 self.boundary = _open_boundary(epoch, validate=will_validate, epoch_done=epoch_done)
                 self._on_boundary_phase(self.phase)
-                self._offer(runtime, checkpoint, "boundary_pending")
+                self._offer(runtime, "boundary_pending")
                 if self._stop_requested(runtime):
-                    return self._result(checkpoint, "interrupted")
-                self._finish_boundary(runtime, checkpoint, component_id)
+                    return self._result("interrupted")
+                self._finish_boundary(runtime, component_id)
                 if should_stop(self):
-                    return self._result(checkpoint, "completed")
+                    return self._result("completed")
                 if self._epoch_cap_reached():
-                    return self._result(checkpoint, "completed")
+                    return self._result("completed")
             finally:
                 _close_epoch_view(view)
-        return self._result(checkpoint, "completed")
+        return self._result("completed")
 
-    def _prepare_run(self, runtime: ProcessRuntime, checkpoint: CheckpointManager) -> str:
+    def _prepare_run(self, runtime: ProcessRuntime) -> str:
         """Rewind logs. Does not run a discriminator or generator update."""
 
         self.research.rewind(
-            checkpoint.directory,
+            self.lifecycle.output_directory,
             restored=self._restored,
             phase=self.phase,
             progress={"logical_step": int(self.logical_step)},
@@ -239,7 +236,7 @@ class SEMambaPPTrainer:
         self._refuse_amp(runtime)
         self._require_scan(runtime)
         component_id = getattr(self, "_experiment_component_id", "trainer")
-        self.journal = StepJournal(checkpoint.directory, runtime)
+        self.journal = StepJournal(self.lifecycle.output_directory, runtime)
         if self._restored and (not hasattr(self.data, "epoch") or not hasattr(self.data, "update_index")):
             raise RuntimeFailure("resumed data has no epoch position")
         self.journal.begin(
@@ -296,7 +293,6 @@ class SEMambaPPTrainer:
     def _record_step(
         self,
         runtime: ProcessRuntime,
-        checkpoint: CheckpointManager,
         local: dict[str, Any],
         *,
         epoch: int,
@@ -344,16 +340,17 @@ class SEMambaPPTrainer:
             return False
         step_metrics = self.research.score(
             runtime,
-            checkpoint,
+            output_directory=self.lifecycle.output_directory,
+            config_identity=self.lifecycle.config_identity,
             kind="step",
             epoch=epoch,
             logical_step=self.logical_step,
             stopping=getattr(self, "training_control", None),
         )
         if step_metrics:
-            self._offer(runtime, checkpoint, "step", metrics=step_metrics)
+            self._offer(runtime, "step", metrics=step_metrics)
         else:
-            self._offer(runtime, checkpoint, "step")
+            self._offer(runtime, "step")
         return True
 
     def official_step(self, batches: list[Batch], runtime: ProcessRuntime) -> dict[str, float | str]:
@@ -571,7 +568,6 @@ class SEMambaPPTrainer:
     def _finish_boundary(
         self,
         runtime: ProcessRuntime,
-        checkpoint: CheckpointManager,
         component_id: str,
     ) -> None:
         if self.phase != _PENDING or self.boundary is None:
@@ -620,14 +616,15 @@ class SEMambaPPTrainer:
             )
         extra = self.research.score(
             runtime,
-            checkpoint,
+            output_directory=self.lifecycle.output_directory,
+            config_identity=self.lifecycle.config_identity,
             kind="boundary",
             epoch=trainer_epoch,
             logical_step=self.logical_step,
             official=metrics if boundary["validate"] else {},
             stopping=getattr(self, "training_control", None),
         )
-        self._offer(runtime, checkpoint, "boundary", metrics={**metrics, **extra} if extra else metrics)
+        self._offer(runtime, "boundary", metrics={**metrics, **extra} if extra else metrics)
 
     def _validate(self, runtime: ProcessRuntime, trainer_epoch: int, component_id: str) -> dict[str, Any]:
         cursor = (int(self.data.epoch), int(self.data.update_index))
@@ -864,7 +861,6 @@ class SEMambaPPTrainer:
     def _offer(
         self,
         runtime: ProcessRuntime,
-        checkpoint: CheckpointManager,
         event: str,
         metrics: dict[str, float] | None = None,
     ) -> None:
@@ -897,14 +893,15 @@ class SEMambaPPTrainer:
     def _epoch_cap_reached(self) -> bool:
         return self.max_epochs is not None and int(self.data.epoch) >= self.max_epochs
 
-    def _result(self, checkpoint: CheckpointManager, reason: str) -> RunResult:
+    def _result(self, reason: str) -> RunResult:
         if reason == "completed":
             epoch = getattr(self.data, "epoch", None)
             if isinstance(epoch, bool) or not isinstance(epoch, int):
                 epoch = None
             extra = self.research.score(
                 self.runtime,
-                checkpoint,
+                output_directory=self.lifecycle.output_directory,
+                config_identity=self.lifecycle.config_identity,
                 kind="end",
                 epoch=epoch,
                 logical_step=self.logical_step,
@@ -922,7 +919,7 @@ class SEMambaPPTrainer:
                 stop_reason=reason,
                 logical_step=self.logical_step,
                 optimizer_updates=dict(self.optimizer_updates),
-                output_dir=checkpoint.directory,
+                output_dir=self.lifecycle.output_directory,
             )
         )
 

@@ -28,7 +28,6 @@ from typing import Any
 
 import torch
 
-from src.experiments.checkpoint import CheckpointManager
 from src.experiments.data import Batch
 from src.experiments.data.pair import bind_trainer_data, check_publication
 from src.experiments.errors import BuildError, RuntimeFailure
@@ -195,29 +194,28 @@ class MossFormerGANTrainer:
 
         self.lifecycle.start()
         runtime = self.runtime
-        checkpoint = self.lifecycle.checkpoint
-        component_id = self._prepare_run(runtime, checkpoint)
+        component_id = self._prepare_run(runtime)
         if should_stop(self):
-            return self._result(checkpoint, "completed")
+            return self._result("completed")
         while True:
             if self.phase == _PENDING:
-                self._finish_boundary(runtime, checkpoint, component_id)
+                self._finish_boundary(runtime, component_id)
                 if should_stop(self):
-                    return self._result(checkpoint, "completed")
+                    return self._result("completed")
                 if self.stop_training:
-                    return self._result(checkpoint, "completed")
+                    return self._result("completed")
                 continue
             if self.logical_step >= self.max_logical_steps:
-                return self._result(checkpoint, "completed")
+                return self._result("completed")
             if self._stop_requested(runtime):
-                self._publish_interrupt(runtime, checkpoint)
-                return self._result(checkpoint, "interrupted")
+                self._publish_interrupt(runtime)
+                return self._result("interrupted")
             epoch = int(self.data.epoch)
             index = int(self.data.update_index)
             if self.max_epochs is not None and epoch >= self.max_epochs and index == 0:
                 self.halt_reason = "max_epochs"
-                return self._result(checkpoint, "completed")
-            opened = self._open_micro_batch(runtime, checkpoint, component_id, epoch, index)
+                return self._result("completed")
+            opened = self._open_micro_batch(runtime, component_id, epoch, index)
             if opened is None:
                 continue
             view, batch, updates = opened
@@ -226,24 +224,24 @@ class MossFormerGANTrainer:
                 index += 1
                 self.data.epoch = epoch
                 self.data.update_index = index
-                self._note_micro_batch(runtime, checkpoint, stepped, epoch)
+                self._note_micro_batch(runtime, stepped, epoch)
                 if index == updates:
-                    self._open_boundary(runtime, checkpoint, epoch)
+                    self._open_boundary(runtime, epoch)
             finally:
                 _close_epoch_view(view)
 
-    def _prepare_run(self, runtime: ProcessRuntime, checkpoint: CheckpointManager) -> str:
+    def _prepare_run(self, runtime: ProcessRuntime) -> str:
         """Rewind metrics and the skip sidecar. Does not run an optimizer pair."""
 
         self.research.rewind(
-            checkpoint.directory,
+            self.lifecycle.output_directory,
             restored=self._restored,
             phase=self.phase,
             progress={"logical_step": int(self.logical_step)},
         )
         self._refuse_amp(runtime)
         component_id = getattr(self, "_experiment_component_id", "trainer")
-        self.journal = StepJournal(checkpoint.directory, runtime)
+        self.journal = StepJournal(self.lifecycle.output_directory, runtime)
         if self._restored and (not hasattr(self.data, "epoch") or not hasattr(self.data, "update_index")):
             raise RuntimeFailure("resumed data has no epoch position")
         self.journal.begin(
@@ -287,7 +285,6 @@ class MossFormerGANTrainer:
     def _open_micro_batch(
         self,
         runtime: ProcessRuntime,
-        checkpoint: CheckpointManager,
         component_id: str,
         epoch: int,
         index: int,
@@ -308,7 +305,7 @@ class MossFormerGANTrainer:
             if index > updates:
                 raise RuntimeFailure(f"component {component_id}: update {index} is past epoch {epoch}")
             if index == updates:
-                self._open_boundary(runtime, checkpoint, epoch)
+                self._open_boundary(runtime, epoch)
                 _close_epoch_view(view)
                 return None
             if index == 0:
@@ -325,12 +322,11 @@ class MossFormerGANTrainer:
     def _note_micro_batch(
         self,
         runtime: ProcessRuntime,
-        checkpoint: CheckpointManager,
         stepped: dict[str, Any] | None,
         epoch: int,
     ) -> None:
         if stepped is None:
-            self._offer(runtime, checkpoint, "partial")
+            self._offer(runtime, "partial")
             return
         self.logical_step += 1
         self.step_log.append(stepped)
@@ -352,16 +348,17 @@ class MossFormerGANTrainer:
         )
         step_metrics = self.research.score(
             runtime,
-            checkpoint,
+            output_directory=self.lifecycle.output_directory,
+            config_identity=self.lifecycle.config_identity,
             kind="step",
             epoch=epoch,
             logical_step=self.logical_step,
             stopping=getattr(self, "training_control", None),
         )
         if step_metrics:
-            self._offer(runtime, checkpoint, "step", metrics=step_metrics)
+            self._offer(runtime, "step", metrics=step_metrics)
         else:
-            self._offer(runtime, checkpoint, "step")
+            self._offer(runtime, "step")
 
     def consume_micro_batch(
         self,
@@ -632,7 +629,7 @@ class MossFormerGANTrainer:
             self.journal.write_sidecar(self._skip_path, record)
         return True
 
-    def _open_boundary(self, runtime: ProcessRuntime, checkpoint: CheckpointManager, epoch: int) -> None:
+    def _open_boundary(self, runtime: ProcessRuntime, epoch: int) -> None:
         if self.phase != _IN_EPOCH:
             raise RuntimeFailure("an epoch boundary is already pending")
         self.boundary = {
@@ -644,9 +641,9 @@ class MossFormerGANTrainer:
             "validation_summary": None,
         }
         self.phase = _PENDING
-        self._offer(runtime, checkpoint, "boundary_pending")
+        self._offer(runtime, "boundary_pending")
 
-    def _finish_boundary(self, runtime: ProcessRuntime, checkpoint: CheckpointManager, component_id: str) -> None:
+    def _finish_boundary(self, runtime: ProcessRuntime, component_id: str) -> None:
         if self.phase != _PENDING or self.boundary is None:
             raise RuntimeFailure(f"component {component_id}: there is no pending MossFormerGAN boundary")
         boundary = self.boundary
@@ -654,7 +651,7 @@ class MossFormerGANTrainer:
             summary = self._validate(runtime, int(boundary["trainer_epoch"]))
             boundary["validation_summary"] = summary
             boundary["validation_done"] = True
-            self._offer(runtime, checkpoint, "boundary_pending")
+            self._offer(runtime, "boundary_pending")
         if boundary["validate"] and not boundary["plateau_done"]:
             summary = boundary.get("validation_summary")
             if not isinstance(summary, dict):
@@ -694,7 +691,8 @@ class MossFormerGANTrainer:
             )
             extra = self.research.score(
                 runtime,
-                checkpoint,
+                output_directory=self.lifecycle.output_directory,
+                config_identity=self.lifecycle.config_identity,
                 kind="boundary",
                 epoch=int(boundary["trainer_epoch"]),
                 logical_step=self.logical_step,
@@ -703,7 +701,7 @@ class MossFormerGANTrainer:
             )
             if extra:
                 metrics = {**metrics, **extra}
-        self._offer(runtime, checkpoint, "boundary", metrics=metrics)
+        self._offer(runtime, "boundary", metrics=metrics)
 
     def _validate(self, runtime: ProcessRuntime, trainer_epoch: int) -> dict[str, Any]:
         cursor = (int(self.data.epoch), int(self.data.update_index))
@@ -915,14 +913,14 @@ class MossFormerGANTrainer:
     def _check_claim(self) -> None:
         check_publication(self)
 
-    def _publish_interrupt(self, runtime: ProcessRuntime, checkpoint: CheckpointManager) -> None:
+    def _publish_interrupt(self, runtime: ProcessRuntime) -> None:
         """Save the last finished boundary. A GAN optimizer pair is not a boundary."""
 
         if self._in_optimizer_pair:
             raise RuntimeFailure("refusing to checkpoint between the generator step and the discriminator step")
         if self.logical_step <= 0 and self._accu_count <= 0:
             return
-        self._offer(runtime, checkpoint, "stop")
+        self._offer(runtime, "stop")
 
     def _require_group_size(self, component_id: str) -> None:
         group_size = getattr(self.data, "group_size", None)
@@ -944,7 +942,6 @@ class MossFormerGANTrainer:
     def _offer(
         self,
         runtime: ProcessRuntime,
-        checkpoint: CheckpointManager,
         event: str,
         metrics: dict[str, float] | None = None,
     ) -> None:
@@ -996,14 +993,15 @@ class MossFormerGANTrainer:
         capped = self.stop_after_logical_steps is not None and self.logical_step >= self.stop_after_logical_steps
         return ranks_should_stop(runtime, extra=capped)
 
-    def _result(self, checkpoint: CheckpointManager, reason: str) -> RunResult:
+    def _result(self, reason: str) -> RunResult:
         if reason == "completed":
             epoch = getattr(self.data, "epoch", None)
             if isinstance(epoch, bool) or not isinstance(epoch, int):
                 epoch = None
             extra = self.research.score(
                 self.runtime,
-                checkpoint,
+                output_directory=self.lifecycle.output_directory,
+                config_identity=self.lifecycle.config_identity,
                 kind="end",
                 epoch=epoch,
                 logical_step=self.logical_step,
@@ -1022,7 +1020,7 @@ class MossFormerGANTrainer:
                 stop_reason=reason,
                 logical_step=self.logical_step,
                 optimizer_updates=dict(self.optimizer_updates),
-                output_dir=checkpoint.directory,
+                output_dir=self.lifecycle.output_directory,
             )
         )
 

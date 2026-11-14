@@ -27,7 +27,6 @@ from typing import Any
 import torch
 import torch.nn.functional as F
 
-from src.experiments.checkpoint import CheckpointManager
 from src.experiments.data import Batch
 from src.experiments.data.pair import bind_trainer_data
 from src.experiments.errors import BuildError, RuntimeFailure
@@ -270,23 +269,22 @@ class DeepFilterNet3Trainer:
 
         self.lifecycle.start()
         runtime = self.runtime
-        checkpoint = self.lifecycle.checkpoint
-        component_id = self._prepare_run(runtime, checkpoint)
+        component_id = self._prepare_run(runtime)
         if should_stop(self):
-            return self._result(checkpoint, "completed")
+            return self._result("completed")
         if self.phase == _PENDING:
-            self._finish_boundary(runtime, checkpoint, component_id)
+            self._finish_boundary(runtime, component_id)
             if should_stop(self):
-                return self._result(checkpoint, "completed")
+                return self._result("completed")
             if self.early_stopped or self._epoch_cap_reached():
-                return self._result(checkpoint, "completed")
+                return self._result("completed")
         while self.logical_step < self.max_logical_steps:
             if self._stop_requested(runtime):
                 if self.logical_step > 0:
-                    self._offer(runtime, checkpoint, "stop")
-                return self._result(checkpoint, "interrupted")
+                    self._offer(runtime, "stop")
+                return self._result("interrupted")
             if self._epoch_cap_reached():
-                return self._result(checkpoint, "completed")
+                return self._result("completed")
             epoch = int(self.data.epoch)
             index = int(self.data.update_index)
             if index == 0:
@@ -336,31 +334,32 @@ class DeepFilterNet3Trainer:
                 if index != view.updates:
                     step_metrics = self.research.score(
                         runtime,
-                        checkpoint,
+                        output_directory=self.lifecycle.output_directory,
+                        config_identity=self.lifecycle.config_identity,
                         kind="step",
                         epoch=epoch,
                         logical_step=self.logical_step,
                         stopping=getattr(self, "training_control", None),
                     )
                     if step_metrics:
-                        self._offer(runtime, checkpoint, "step", metrics=step_metrics)
+                        self._offer(runtime, "step", metrics=step_metrics)
                     else:
-                        self._offer(runtime, checkpoint, "step")
+                        self._offer(runtime, "step")
                     continue
                 self.phase = _PENDING
                 self.finished_epoch = epoch
                 self.boundary = {"epoch": epoch, "schedule_steps": steps}
-                self._offer(runtime, checkpoint, "boundary_pending")
+                self._offer(runtime, "boundary_pending")
                 if self._stop_requested(runtime):
-                    return self._result(checkpoint, "interrupted")
-                self._finish_boundary(runtime, checkpoint, component_id)
+                    return self._result("interrupted")
+                self._finish_boundary(runtime, component_id)
                 if should_stop(self):
-                    return self._result(checkpoint, "completed")
+                    return self._result("completed")
                 if self.early_stopped or self._epoch_cap_reached():
-                    return self._result(checkpoint, "completed")
+                    return self._result("completed")
             finally:
                 _close_epoch_view(view)
-        return self._result(checkpoint, "completed")
+        return self._result("completed")
 
     def state_dict(self) -> dict[str, Any]:
         return {
@@ -428,7 +427,7 @@ class DeepFilterNet3Trainer:
             raise RuntimeFailure("DeepFilterNet3 research predict did not return a waveform")
         return wave
 
-    def _finish_boundary(self, runtime: ProcessRuntime, checkpoint: CheckpointManager, component_id: str) -> None:
+    def _finish_boundary(self, runtime: ProcessRuntime, component_id: str) -> None:
         if self.phase != _PENDING or self.finished_epoch is None:
             raise RuntimeFailure(f"component {component_id}: there is no pending epoch boundary")
         trainer_epoch = int(self.finished_epoch)
@@ -441,7 +440,7 @@ class DeepFilterNet3Trainer:
         if improved:
             self.best_loss = loss
             self.best_epoch = trainer_epoch
-        self._write_best(runtime, checkpoint.directory, improved)
+        self._write_best(runtime, self.lifecycle.output_directory, improved)
         self.phase = _IN_EPOCH
         self.finished_epoch = None
         self.boundary = None
@@ -458,19 +457,19 @@ class DeepFilterNet3Trainer:
         )
         extra = self.research.score(
             runtime,
-            checkpoint,
+            output_directory=self.lifecycle.output_directory,
+            config_identity=self.lifecycle.config_identity,
             kind="boundary",
             epoch=trainer_epoch,
             logical_step=self.logical_step,
             official=official,
             stopping=getattr(self, "training_control", None),
         )
-        self._offer(runtime, checkpoint, "boundary", metrics={**official, **extra} if extra else official)
+        self._offer(runtime, "boundary", metrics={**official, **extra} if extra else official)
 
     def _offer(
         self,
         runtime: ProcessRuntime,
-        checkpoint: CheckpointManager,
         event: str,
         metrics: dict[str, float] | None = None,
     ) -> None:
@@ -621,17 +620,17 @@ class DeepFilterNet3Trainer:
         except TrainingError as exc:
             raise BuildError(str(exc)) from exc
 
-    def _prepare_run(self, runtime: ProcessRuntime, checkpoint: CheckpointManager) -> str:
+    def _prepare_run(self, runtime: ProcessRuntime) -> str:
         """Rewind logs, build the DF stream, and record the FFT kernel."""
 
         self.research.rewind(
-            checkpoint.directory,
+            self.lifecycle.output_directory,
             restored=self._restored,
             phase=self.phase,
             progress={"logical_step": int(self.logical_step)},
         )
         component_id = getattr(self, "_experiment_component_id", "trainer")
-        self.journal = StepJournal(checkpoint.directory, runtime)
+        self.journal = StepJournal(self.lifecycle.output_directory, runtime)
         if self.batch_schedule is not None and runtime.world_size != 1:
             raise RuntimeFailure("batch_schedule is implemented for one process")
         self.losses = self.journal.begin(
@@ -659,7 +658,7 @@ class DeepFilterNet3Trainer:
         bind_trainer_data(self)
         self._require_group_size(component_id)
         self._stream = _stream_for(self.model.unwrapped(), runtime.device)
-        self._record_rfft(runtime, checkpoint)
+        self._record_rfft(runtime)
         runtime.barrier()
         return str(component_id)
 
@@ -738,7 +737,7 @@ class DeepFilterNet3Trainer:
                 f"does not match accumulation {self.accumulation}"
             )
 
-    def _record_rfft(self, runtime: ProcessRuntime, checkpoint: CheckpointManager) -> None:
+    def _record_rfft(self, runtime: ProcessRuntime) -> None:
         """Write the kernel actually selected on this host. Rank 0 writes the file."""
 
         problem = ""
@@ -746,7 +745,7 @@ class DeepFilterNet3Trainer:
             try:
                 from src.se.models.deepfilternet3.dsp import rfft_runtime_record
 
-                write_rfft(Path(checkpoint.directory), rfft_runtime_record())
+                write_rfft(Path(self.lifecycle.output_directory), rfft_runtime_record())
             except Exception as exc:
                 problem = f"{type(exc).__name__}: {exc}"
         if runtime.world_size > 1:
@@ -764,14 +763,15 @@ class DeepFilterNet3Trainer:
     def _epoch_cap_reached(self) -> bool:
         return int(self.data.epoch) >= self.max_epochs
 
-    def _result(self, checkpoint: CheckpointManager, reason: str) -> RunResult:
+    def _result(self, reason: str) -> RunResult:
         if reason == "completed":
             epoch = getattr(self.data, "epoch", None)
             if isinstance(epoch, bool) or not isinstance(epoch, int):
                 epoch = None
             extra = self.research.score(
                 self.runtime,
-                checkpoint,
+                output_directory=self.lifecycle.output_directory,
+                config_identity=self.lifecycle.config_identity,
                 kind="end",
                 epoch=epoch,
                 logical_step=self.logical_step,
@@ -789,7 +789,7 @@ class DeepFilterNet3Trainer:
                 stop_reason=reason,
                 logical_step=self.logical_step,
                 optimizer_updates=dict(self.optimizer_updates),
-                output_dir=checkpoint.directory,
+                output_dir=self.lifecycle.output_directory,
             )
         )
 

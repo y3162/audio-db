@@ -15,7 +15,6 @@ import torch
 
 from src.experiments.data import Batch
 from src.experiments.errors import BuildError, CheckpointError, ExperimentError, RuntimeFailure
-from src.experiments.execution.checkpoint import CheckpointManager
 from src.experiments.execution.journal import StepJournal
 from src.experiments.execution.results import RunResult
 from src.experiments.execution.runtime import PreparedModel, ProcessRuntime, require_prepared
@@ -93,9 +92,9 @@ class StandardTrainer:
 
         self.lifecycle.start()
         runtime = self.runtime
-        checkpoint = self.lifecycle.checkpoint
+        output_directory = self.lifecycle.output_directory
         component_id = getattr(self, "_experiment_component_id", "trainer")
-        self.journal = StepJournal(checkpoint.directory, runtime)
+        self.journal = StepJournal(output_directory, runtime)
         if self._restored and (not hasattr(self.data, "epoch") or not hasattr(self.data, "update_index")):
             raise CheckpointError("resumed data has no epoch position")
         self.losses = self.journal.begin(restored=self._restored, logical_step=self.logical_step)
@@ -118,14 +117,14 @@ class StandardTrainer:
             )
             if ranks_should_stop(runtime, extra=capped):
                 if self.logical_step > 0:
-                    self._offer(checkpoint, "stop")
+                    self._offer("stop")
                 self.stop_reason = "interrupted"
                 return self.lifecycle.finish(
                     RunResult(
                         stop_reason="interrupted",
                         logical_step=self.logical_step,
                         optimizer_updates=dict(self.optimizer_updates),
-                        output_dir=checkpoint.directory,
+                        output_dir=output_directory,
                     )
                 )
             self._before_logical_step(runtime)
@@ -196,17 +195,17 @@ class StandardTrainer:
                     rank_losses = runtime.gather_objects(loss_value)
                     mean = sum(rank_losses) / len(rank_losses)
                     control.observe(MetricEvent("train", self.logical_step, {"mean_rank_loss": mean}))
-                self._offer(checkpoint, "step")
+                self._offer("step")
             finally:
                 _close_epoch_view(view)
-        self._offer(checkpoint, "final")
+        self._offer("final")
         self.stop_reason = "early_stopping" if should_stop(self) else "completed"
         return self.lifecycle.finish(
             RunResult(
                 stop_reason=self.stop_reason,
                 logical_step=self.logical_step,
                 optimizer_updates=dict(self.optimizer_updates),
-                output_dir=checkpoint.directory,
+                output_dir=output_directory,
             )
         )
 
@@ -239,12 +238,12 @@ class StandardTrainer:
 
         del runtime
 
-    def _before_checkpoint(self, runtime: ProcessRuntime, checkpoint: CheckpointManager) -> None:
+    def _before_checkpoint(self, runtime: ProcessRuntime) -> None:
         """Hook for tests that change state after a step and before publish."""
 
-        del runtime, checkpoint
+        del runtime
 
-    def _offer(self, checkpoint: CheckpointManager, event: str) -> None:
+    def _offer(self, event: str) -> None:
         """Offer this state to the selector. ``_before_checkpoint`` runs only when a file is written.
 
         ``stop`` and ``final`` follow the offer of the last finished step
@@ -257,7 +256,7 @@ class StandardTrainer:
             event,
             logical_step=self.logical_step,
             progress={"logical_step": int(self.logical_step)},
-            prepare=lambda runtime: self._before_checkpoint(runtime, checkpoint),
+            prepare=self._before_checkpoint,
         )
 
     def _require_group_size(self, component_id: str) -> None:

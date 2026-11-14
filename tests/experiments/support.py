@@ -280,13 +280,13 @@ class TamperTrainer:
         self._trainer._before_checkpoint = self._before_checkpoint  # type: ignore[method-assign]
         return run_direct(self._trainer, runtime, checkpoint)
 
-    def _before_checkpoint(self, runtime: object, checkpoint: object) -> None:
+    def _before_checkpoint(self, runtime: object) -> None:
         import hashlib
 
         trainer = self._trainer
         if trainer.logical_step != 2:
             return
-        directory = checkpoint.directory  # type: ignore[attr-defined]
+        directory = trainer.lifecycle.output_directory
         if int(getattr(runtime, "rank", 0)) == 0:
             previous = directory / "archive/step_00000001.pt"
             digest = hashlib.sha256(previous.read_bytes()).hexdigest()
@@ -654,11 +654,11 @@ class CudaConsumeTrainer:
         trainer = self._trainer
         original = trainer._before_checkpoint
 
-        def before(runtime_arg: object, checkpoint_arg: object) -> None:
+        def before(runtime_arg: object) -> None:
             device = getattr(runtime_arg, "device", None)
             if getattr(device, "type", None) == "cuda":
                 torch.rand(2 + int(getattr(runtime_arg, "rank", 0)), device=device)
-            original(runtime_arg, checkpoint_arg)  # type: ignore[arg-type]
+            original(runtime_arg)  # type: ignore[arg-type]
 
         trainer._before_checkpoint = before  # type: ignore[method-assign]
         return run_direct(trainer, runtime, checkpoint)
@@ -706,8 +706,7 @@ class GainWave(nn.Module):
 class CursorSkewTrainer(StandardTrainer):
     """Moves rank 1's data cursor before the first checkpoint."""
 
-    def _before_checkpoint(self, runtime: ProcessRuntime, checkpoint: object) -> None:
-        del checkpoint
+    def _before_checkpoint(self, runtime: ProcessRuntime) -> None:
         if int(runtime.rank) == 1 and self.logical_step == 1:
             self.data.update_index = int(self.data.update_index) + 1
 
@@ -715,8 +714,7 @@ class CursorSkewTrainer(StandardTrainer):
 class PlanSkewTrainer(StandardTrainer):
     """Reports a different plan hash from rank 1 at the first checkpoint."""
 
-    def _before_checkpoint(self, runtime: ProcessRuntime, checkpoint: object) -> None:
-        del checkpoint
+    def _before_checkpoint(self, runtime: ProcessRuntime) -> None:
         if int(runtime.rank) != 1 or self.logical_step != 1:
             return
         original = self.data.state_dict

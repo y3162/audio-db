@@ -8,6 +8,7 @@ or decide a launcher outcome.
 
 from __future__ import annotations
 
+from pathlib import Path
 from typing import Any
 
 from src.experiments.errors import BuildError, CheckpointError
@@ -15,7 +16,13 @@ from src.experiments.execution.results import RunResult
 
 
 class DirectSession:
-    """Save adapter for one direct ``fit`` call."""
+    """Save adapter for one direct ``fit`` call.
+
+    Comparison scripts still pass a checkpoint-like object here. Trainers use
+    the same attributes as :class:`~src.experiments.execution.lifecycle.Lifecycle`:
+    ``output_directory``, ``config_identity``, ``restore_report``, and
+    ``save_if_needed``. This is the only adapter that holds that object.
+    """
 
     def __init__(self, checkpoint: Any) -> None:
         self.checkpoint = checkpoint
@@ -32,6 +39,38 @@ class DirectSession:
     @property
     def finished(self) -> bool:
         return self._finished
+
+    @property
+    def output_directory(self) -> Path:
+        """Directory the comparison script gave the checkpoint-like object."""
+
+        directory = getattr(self.checkpoint, "directory", None)
+        if directory is None:
+            raise CheckpointError("direct session has no output directory")
+        return Path(directory)
+
+    @property
+    def config_identity(self) -> str | None:
+        """Experiment identity when the checkpoint-like object carries a config.
+
+        A comparison stub has no experiment document. Research rows then store
+        a null identity, the same value as before this session existed.
+        """
+
+        config = getattr(self.checkpoint, "_config", None)
+        if config is None:
+            return None
+        from src.experiments.config import ExperimentConfig, config_sha256
+
+        if not isinstance(config, ExperimentConfig):
+            return None
+        return config_sha256(config)
+
+    @property
+    def restored(self) -> bool:
+        """True only when this session itself recorded a resume. Direct callers do not."""
+
+        return getattr(self.restore_report, "mode", None) == "resume"
 
     def start(self, *, resume: Any = None) -> None:
         """Mark the session open. Direct callers have already built their state."""

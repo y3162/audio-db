@@ -45,9 +45,9 @@ class InterruptProbe:
 
     def fit(self):  # type: ignore[no-untyped-def]
         self.lifecycle.start()
-        checkpoint = self.lifecycle.checkpoint
+        output_directory = self.lifecycle.output_directory
         runtime = self.runtime
-        journal = StepJournal(checkpoint.directory, runtime)
+        journal = StepJournal(output_directory, runtime)
         journal.begin(restored=self._restored, logical_step=self.logical_step, samples=False)
         if not self._restored:
             self.logical_step = 0
@@ -62,7 +62,7 @@ class InterruptProbe:
                         stop_reason="interrupted",
                         logical_step=self.logical_step,
                         optimizer_updates=dict(self.optimizer_updates),
-                        output_dir=checkpoint.directory,
+                        output_dir=output_directory,
                     )
                 )
             _pause(0.2)
@@ -84,7 +84,7 @@ class InterruptProbe:
                 stop_reason="completed",
                 logical_step=self.logical_step,
                 optimizer_updates=dict(self.optimizer_updates),
-                output_dir=checkpoint.directory,
+                output_dir=output_directory,
             )
         )
 

@@ -27,6 +27,10 @@ class Lifecycle:
     stop signal, and publishes ``RUNNING``. ``finish`` publishes the process
     outcome once. The trainer calls both. Training calls ``save_if_needed`` in
     between. This class does not choose the training order.
+
+    A trainer reads ``output_directory``, ``config_identity``, and
+    ``restore_report``. It does not take the checkpoint manager. This object
+    still owns that manager and is the only caller of its save and restore.
     """
 
     def __init__(
@@ -64,6 +68,32 @@ class Lifecycle:
     @property
     def finished(self) -> bool:
         return self._finished
+
+    @property
+    def output_directory(self) -> Path:
+        """Directory for logs and model-specific inference artifacts."""
+
+        return self.checkpoint.directory
+
+    @property
+    def config_identity(self) -> str:
+        """SHA-256 of the experiment identity. Research export stores this value."""
+
+        from src.experiments.config import config_sha256
+
+        return config_sha256(self.config)
+
+    @property
+    def restored(self) -> bool:
+        """True when ``start`` resumed the same experiment.
+
+        ``initialize`` loads weights into a different experiment, so it is not
+        restored training state. A trainer's own ``_restored`` flag still means
+        that its ``load_state_dict`` ran. Direct comparisons set that flag
+        before ``fit`` and do not go through this report.
+        """
+
+        return getattr(self.restore_report, "mode", None) == "resume"
 
     def start(self, *, resume: str | Path | None | object = _UNSET) -> Any:
         """Restore once, then open the session when Experiment asked for one.

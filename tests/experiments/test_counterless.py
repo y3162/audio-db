@@ -49,18 +49,19 @@ class EventSE:
 
     def fit(self) -> RunResult:
         self.lifecycle.start()
-        checkpoint = self.lifecycle.checkpoint
+        output_directory = self.lifecycle.output_directory
         done = _optimizer_steps(self.optimizer)
         if done >= self.updates:
             self.lifecycle.save_if_needed("final")
             return self.lifecycle.finish(
-                RunResult("completed", None, {"optimizer": done}, checkpoint.directory)
+                RunResult("completed", None, {"optimizer": done}, output_directory)
             )
         loss = _supervised_step(self.runtime, self.model, self.loss, self.data, self.optimizer)
         done = _optimizer_steps(self.optimizer)
         extra = self.research.metrics(
             self.runtime,
-            checkpoint,
+            output_directory=output_directory,
+            config_identity=self.lifecycle.config_identity,
             kind="boundary",
             epoch=None,
             progress={},
@@ -71,10 +72,10 @@ class EventSE:
         if done >= self.updates:
             self.lifecycle.save_if_needed("final", metrics=metrics)
             return self.lifecycle.finish(
-                RunResult("completed", None, {"optimizer": done}, checkpoint.directory)
+                RunResult("completed", None, {"optimizer": done}, output_directory)
             )
         return self.lifecycle.finish(
-            RunResult("interrupted", None, {"optimizer": done}, checkpoint.directory)
+            RunResult("interrupted", None, {"optimizer": done}, output_directory)
         )
 
 
@@ -99,7 +100,7 @@ class EventGAN:
 
     def fit(self) -> RunResult:
         self.lifecycle.start()
-        checkpoint = self.lifecycle.checkpoint
+        output_directory = self.lifecycle.output_directory
         _supervised_step(self.runtime, self.generator, self.loss, self.data, self.optim_g)
         _supervised_step(self.runtime, self.discriminator, self.loss, self.data, self.optim_d)
         self.lifecycle.save_if_needed("boundary")
@@ -112,7 +113,7 @@ class EventGAN:
                     "optim_d": _optimizer_steps(self.optim_d),
                     "optim_g": _optimizer_steps(self.optim_g),
                 },
-                checkpoint.directory,
+                output_directory,
             )
         )
 
@@ -257,7 +258,9 @@ class CounterlessTests(unittest.TestCase):
         self.assertIsNotNone(selection.best_observation)
         rows = (result.output_dir / "research_metrics.jsonl").read_text(encoding="utf-8").splitlines()
         self.assertTrue(rows)
-        self.assertNotIn("logical_step", json.loads(rows[0]))
+        recorded = json.loads(rows[0])
+        self.assertNotIn("logical_step", recorded)
+        self.assertEqual(len(recorded["config_sha256"]), 64)
 
     def _directory(self):
         import tempfile

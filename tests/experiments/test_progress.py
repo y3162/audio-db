@@ -28,7 +28,7 @@ class EventTrainer:
         from src.experiments.execution.results import RunResult
 
         self.lifecycle.start()
-        directory = self.lifecycle.checkpoint.directory
+        directory = self.lifecycle.output_directory
         self.lifecycle.save_if_needed("boundary")
         self.lifecycle.save_if_needed("final")
         return self.lifecycle.finish(RunResult("completed", None, {}, directory))
