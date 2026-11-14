@@ -13,7 +13,7 @@ from typing import Mapping, Protocol
 @dataclass(frozen=True)
 class MetricEvent:
     source: str
-    logical_step: int
+    logical_step: int | None
     metrics: Mapping[str, float]
     event_id: str | None = None
     expected_metrics: frozenset[str] | None = None
@@ -21,7 +21,9 @@ class MetricEvent:
     def __post_init__(self) -> None:
         if self.source not in {"train", "train_eval", "validation"}:
             raise ValueError("invalid metric source")
-        if isinstance(self.logical_step, bool) or not isinstance(self.logical_step, int) or self.logical_step < 0:
+        if self.logical_step is not None and (
+            isinstance(self.logical_step, bool) or not isinstance(self.logical_step, int) or self.logical_step < 0
+        ):
             raise ValueError("logical_step must be a non-negative integer")
         if self.expected_metrics is not None and (
             not isinstance(self.expected_metrics, frozenset)
@@ -190,17 +192,24 @@ class TrainingControl:
         self.stopped, self.last_event = state["stopped"], event
 
 
-def observe_validation(trainer: object, runtime: object, metrics: Mapping[str, float]) -> None:
-    control = getattr(trainer, "training_control", None)
+def observe_validation(
+    control: object,
+    metrics: Mapping[str, float],
+    *,
+    step: int | None,
+    scoped: bool = False,
+) -> None:
+    """Deliver one official validation event. This function does not score or save.
+
+    ``step`` is the trainer's counter when it has one. ``scoped`` limits the
+    event to the names in ``metrics`` so a research-only policy does not
+    reject the official payload.
+    """
+
     if control is None:
         return
-    # Research events carry their own expected names. Scope the official event
-    # the same way so a policy watching only a research metric does not reject
-    # this payload, and a policy watching the official metric still counts it.
-    expected = None
-    if getattr(trainer, "evaluators", None) or getattr(trainer, "model_selection", None) is not None:
-        expected = frozenset(str(key) for key in metrics)
-    control.observe(MetricEvent("validation", trainer.logical_step, metrics, expected_metrics=expected))
+    expected = frozenset(str(key) for key in metrics) if scoped else None
+    control.observe(MetricEvent("validation", step, metrics, expected_metrics=expected))
 
 
 def should_stop(trainer: object) -> bool:

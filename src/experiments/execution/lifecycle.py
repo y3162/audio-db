@@ -116,9 +116,10 @@ class Lifecycle:
     ) -> SaveReport:
         """Offer one safe point. Write nothing when the selector declines it.
 
-        ``logical_step`` remains the stored counter when the trainer has one.
-        ``progress`` may carry that counter under the same name. A missing
-        counter is refused here until a save point can be stored without it.
+        ``logical_step`` is stored when the trainer has that counter.
+        ``progress`` may carry it under the same name. An empty progress map
+        is an event-only point: ``step`` still fails in the selector when the
+        configured key is missing, and the file stores null rather than 0.
         """
 
         if not self._started:
@@ -240,6 +241,4 @@ def _merge_progress(logical_step: int | None, progress: Mapping[str, int] | None
         if "logical_step" in merged and merged["logical_step"] != logical_step:
             raise CheckpointError("logical_step does not match progress")
         merged["logical_step"] = int(logical_step)
-    elif progress is None:
-        raise CheckpointError("logical_step must be an integer >= 0")
     return merged

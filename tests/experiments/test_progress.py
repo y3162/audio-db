@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import tempfile
 import unittest
 from pathlib import Path
@@ -14,6 +15,23 @@ from src.experiments.errors import BuildError, CheckpointError
 from src.experiments.evaluation.schedule import EvaluationSchedule
 from src.experiments.execution.selector import SavePoint, StandardSelector
 from tests.experiments.support import write_config
+
+
+class EventTrainer:
+    """Saves at boundary and completion without publishing a counter."""
+
+    def __init__(self, model: torch.nn.Module, **kwargs: object) -> None:
+        del kwargs
+        self.model = model
+
+    def fit(self):
+        from src.experiments.execution.results import RunResult
+
+        self.lifecycle.start()
+        directory = self.lifecycle.checkpoint.directory
+        self.lifecycle.save_if_needed("boundary")
+        self.lifecycle.save_if_needed("final")
+        return self.lifecycle.finish(RunResult("completed", None, {}, directory))
 
 
 class NoCounterTrainer:
@@ -124,6 +142,35 @@ class ProgressTests(unittest.TestCase):
         payload = torch.load(result.output_dir / "latest.pt", map_location="cpu", weights_only=False)
         self.assertEqual(payload["logical_step"], 1)
         self.assertEqual(payload["progress"]["logical_step"], 1)
+
+    def test_an_event_trainer_does_not_invent_a_zero_counter(self) -> None:
+        directory = Path(self.enterContext(tempfile.TemporaryDirectory()))
+        path = write_config(
+            directory,
+            {
+                "model": {
+                    "role": "module",
+                    "class": "torch.nn.Linear",
+                    "kwargs": {"in_features": 2, "out_features": 2},
+                    "prepare": {"trainable": True, "distribute": "none"},
+                },
+                "trainer": {
+                    "role": "trainer",
+                    "class": "tests.experiments.test_progress.EventTrainer",
+                    "state": {"save": False},
+                    "inject": {"model": {"ref": "model"}},
+                },
+            },
+        )
+        result = build_experiment(load_experiment(path)).run()
+        self.assertIsNone(result.logical_step)
+        self.assertEqual(result.optimizer_updates, {})
+        payload = torch.load(result.output_dir / "latest.pt", map_location="cpu", weights_only=False)
+        self.assertIsNone(payload["logical_step"])
+        self.assertEqual(payload["progress"], {})
+        self.assertNotEqual(payload["logical_step"], 0)
+        completed = json.loads((result.output_dir / "complete.json").read_text(encoding="utf-8"))
+        self.assertIsNone(completed["logical_step"])
 
 
 if __name__ == "__main__":

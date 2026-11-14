@@ -1,8 +1,12 @@
 """Connect research evaluators and model selection at a safe trainer boundary.
 
 Official validation, schedulers, and official best files run before this
-module. A trainer with neither evaluators nor a model selection returns
+module. A session with neither evaluators nor a model selection returns
 without touching RNG, weights, or the checkpoint metrics.
+
+The session does not read the trainer. The trainer passes the data, the
+inference module, the predict function, the restored flag, the phase name,
+and the progress it actually publishes.
 """
 
 from __future__ import annotations
@@ -21,126 +25,181 @@ from src.experiments.stopping import MetricEvent
 LOG_NAME = "research_metrics.jsonl"
 
 
-def attach_research(trainer: Any, evaluators: Any, model_selection: Any) -> None:
-    """Store optional components. Existing official constructors omit both."""
+class ResearchSession:
+    """Research evaluators and selection for one trainer.
 
-    if evaluators is None:
-        stored: tuple[Any, ...] = ()
-    elif isinstance(evaluators, (list, tuple)):
-        stored = tuple(evaluators)
-    else:
-        stored = (evaluators,)
-    for evaluator in stored:
-        if not isinstance(evaluator, AudioPairEvaluator):
-            raise RuntimeFailure("evaluators must be AudioPairEvaluator instances")
-    trainer.evaluators = stored
-    trainer.model_selection = model_selection
-
-
-def research_attached(trainer: Any) -> bool:
-    return bool(getattr(trainer, "evaluators", None)) or getattr(trainer, "model_selection", None) is not None
-
-
-def rewind_on_resume(trainer: Any, directory: Path) -> None:
-    """Drop research log rows that belong to a step the checkpoint did not commit."""
-
-    if not research_attached(trainer) or not getattr(trainer, "_restored", False):
-        return
-    phase = str(getattr(trainer, "phase", ""))
-    drop_current = phase.startswith("pending")
-    step = _progress(trainer, None).get("logical_step")
-    if step is None:
-        return
-    _rewind(directory / LOG_NAME, int(step), drop_current=drop_current)
-
-
-def final_research_metrics(trainer: Any, checkpoint: Any) -> dict[str, float]:
-    """Score ``every.unit: end`` once training has reached a completed result."""
-
-    runtime = getattr(trainer, "_research_runtime", None)
-    if runtime is None or not research_attached(trainer):
-        return {}
-    epoch = getattr(getattr(trainer, "data", None), "epoch", None)
-    if isinstance(epoch, bool) or not isinstance(epoch, int):
-        epoch = None
-    return research_metrics(trainer, runtime, checkpoint, kind="end", epoch=epoch)
-
-
-def research_metrics(
-    trainer: Any,
-    runtime: Any,
-    checkpoint: Any,
-    *,
-    kind: str,
-    epoch: int | None,
-    official: Mapping[str, float] | None = None,
-) -> dict[str, float]:
-    """Run due research evaluators and return finite namespaced metrics.
-
-    The returned mapping is merged into the save point. Official keys are not
-    replaced. An empty mapping means the caller can keep its original offer.
+    ``module`` is the inference module the trainer chooses. ``predict`` is an
+    optional waveform function. ``data`` supplies lineage and is not advanced
+    by this session.
     """
 
-    if not research_attached(trainer):
-        return {}
-    progress = _progress(trainer, epoch)
-    logical_step = int(progress["logical_step"]) if "logical_step" in progress else 0
-    due = [
-        evaluator
-        for evaluator in trainer.evaluators
-        if evaluator.due(logical_step=progress.get("logical_step"), epoch=epoch, kind=kind, progress=progress)
-    ]
-    if kind != "boundary" and not due:
-        return {}
-    directory = Path(checkpoint.directory)
-    provenance = _provenance(trainer.data, kind)
-    bridged: dict[str, float] = {}
-    if kind == "boundary":
-        for key, value in (official or {}).items():
-            number = finite_number(value)
-            if number is None:
-                continue
-            bridged[f"validation.{key}"] = number
-            _selection_official(trainer, runtime, key, number, logical_step, epoch, provenance)
-    results: list[tuple[AudioPairEvaluator, list[MetricResult]]] = []
-    predict = _predict(trainer)
-    for evaluator in due:
-        outcome = evaluator.evaluate(
+    def __init__(
+        self,
+        evaluators: Any,
+        selection: Any,
+        *,
+        data: Any,
+        module: Any,
+        predict: Any = None,
+    ) -> None:
+        if evaluators is None:
+            stored: tuple[Any, ...] = ()
+        elif isinstance(evaluators, (list, tuple)):
+            stored = tuple(evaluators)
+        else:
+            stored = (evaluators,)
+        for evaluator in stored:
+            if not isinstance(evaluator, AudioPairEvaluator):
+                raise RuntimeFailure("evaluators must be AudioPairEvaluator instances")
+        self.evaluators = stored
+        self.selection = selection
+        self.data = data
+        self.module = module
+        self.predict = predict if callable(predict) else None
+
+    @property
+    def attached(self) -> bool:
+        return bool(self.evaluators) or self.selection is not None
+
+    def rewind(self, directory: Path, *, restored: bool, phase: str, progress: Mapping[str, int]) -> None:
+        """Drop research rows past a restored counter. No counter means no rewind."""
+
+        if not self.attached or not restored:
+            return
+        step = progress.get("logical_step")
+        if step is None:
+            return
+        drop_current = str(phase).startswith("pending")
+        _rewind(Path(directory) / LOG_NAME, int(step), drop_current=drop_current)
+
+    def metrics(
+        self,
+        runtime: Any,
+        checkpoint: Any,
+        *,
+        kind: str,
+        epoch: int | None,
+        progress: Mapping[str, int] | None = None,
+        official: Mapping[str, float] | None = None,
+        stopping: Any = None,
+    ) -> dict[str, float]:
+        """Run due research evaluators and return finite namespaced metrics.
+
+        The returned mapping is merged into the save point. Official keys are
+        not replaced. An empty mapping means the caller can keep its original
+        offer. A missing ``logical_step`` stays missing; this method does not
+        invent 0.
+        """
+
+        if not self.attached:
+            return {}
+        checked = _checked_progress(progress, epoch)
+        logical_step = checked.get("logical_step")
+        due = [
+            evaluator
+            for evaluator in self.evaluators
+            if evaluator.due(logical_step=logical_step, epoch=epoch, kind=kind, progress=checked)
+        ]
+        if kind != "boundary" and not due:
+            return {}
+        directory = Path(checkpoint.directory)
+        provenance = _provenance(self.data, kind)
+        bridged: dict[str, float] = {}
+        if kind == "boundary":
+            for key, value in (official or {}).items():
+                number = finite_number(value)
+                if number is None:
+                    continue
+                bridged[f"validation.{key}"] = number
+                _selection_official(self, key, number, logical_step, epoch, provenance)
+        results: list[tuple[AudioPairEvaluator, list[MetricResult]]] = []
+        predict = _predict(self)
+        for evaluator in due:
+            outcome = evaluator.evaluate(
+                runtime,
+                logical_step=logical_step,
+                epoch=epoch,
+                predict=predict,
+                progress=checked,
+            )
+            results.append((evaluator, outcome))
+            for result in outcome:
+                namespaced = f"{evaluator.source}.{result.name}"
+                if namespaced in bridged:
+                    raise RuntimeFailure(
+                        f"research metric {namespaced} collides with an official validation metric"
+                    )
+                number = finite_number(result.value) if result.status == "ok" else None
+                if number is not None:
+                    bridged[namespaced] = number
+                _selection_result(self, evaluator.source, result, logical_step, epoch, provenance)
+                _deliver_stopping(stopping, evaluator.source, result, logical_step)
+        if results or (kind == "boundary" and bridged):
+            _write_log(runtime, directory, checkpoint, kind, epoch, logical_step, provenance, results, bridged)
+            _export_if_needed(self, runtime, directory, checkpoint)
+            _agree(runtime, self)
+        return bridged
+
+    def score(
+        self,
+        runtime: Any,
+        checkpoint: Any,
+        *,
+        kind: str,
+        epoch: int | None,
+        logical_step: int,
+        official: Mapping[str, float] | None = None,
+        stopping: Any = None,
+    ) -> dict[str, float]:
+        """Score with the trainer's ``logical_step``. Callers that have no counter use :meth:`metrics`."""
+
+        return self.metrics(
             runtime,
-            logical_step=logical_step,
+            checkpoint,
+            kind=kind,
             epoch=epoch,
-            predict=predict,
-            progress=progress,
+            progress={"logical_step": int(logical_step)},
+            official=official,
+            stopping=stopping,
         )
-        results.append((evaluator, outcome))
-        for result in outcome:
-            namespaced = f"{evaluator.source}.{result.name}"
-            if namespaced in bridged:
-                raise RuntimeFailure(
-                    f"research metric {namespaced} collides with an official validation metric"
-                )
-            number = finite_number(result.value) if result.status == "ok" else None
-            if number is not None:
-                bridged[namespaced] = number
-            _selection_result(trainer, runtime, evaluator.source, result, logical_step, epoch, provenance)
-            _deliver_stopping(trainer, evaluator.source, result, logical_step)
-    if results or (kind == "boundary" and bridged):
-        _write_log(runtime, directory, checkpoint, kind, epoch, logical_step, provenance, results, bridged)
-        _export_if_needed(trainer, runtime, directory, checkpoint)
-        _agree(runtime, trainer)
-    return bridged
+
+
+def _checked_progress(progress: Mapping[str, int] | None, epoch: int | None) -> dict[str, int]:
+    checked: dict[str, int] = {}
+    if progress is not None:
+        if not isinstance(progress, Mapping):
+            raise RuntimeFailure("progress must be a mapping")
+        for key, value in progress.items():
+            if isinstance(value, bool) or not isinstance(value, int) or value < 0:
+                raise RuntimeFailure(f"progress {key} must be an integer >= 0")
+            checked[str(key)] = int(value)
+    if epoch is not None and "epoch" not in checked:
+        if isinstance(epoch, bool) or not isinstance(epoch, int):
+            raise RuntimeFailure("epoch must be an integer")
+        checked["epoch"] = int(epoch)
+    return checked
+
+
+def _predict(session: ResearchSession):
+    method = session.predict
+    if not callable(method):
+        return None
+
+    def predict(inputs: Any, targets: Any) -> Any:
+        return method(inputs, targets)
+
+    return predict
 
 
 def _selection_official(
-    trainer: Any,
-    runtime: Any,
+    session: ResearchSession,
     key: str,
     value: float,
-    logical_step: int,
+    logical_step: int | None,
     epoch: int | None,
     provenance: Mapping[str, Any],
 ) -> None:
-    selection = getattr(trainer, "model_selection", None)
+    selection = session.selection
     if selection is None:
         return
     selection.observe(
@@ -152,19 +211,17 @@ def _selection_official(
         value=value,
         provenance=provenance,
     )
-    del runtime
 
 
 def _selection_result(
-    trainer: Any,
-    runtime: Any,
+    session: ResearchSession,
     source: str,
     result: MetricResult,
-    logical_step: int,
+    logical_step: int | None,
     epoch: int | None,
     provenance: Mapping[str, Any],
 ) -> None:
-    selection = getattr(trainer, "model_selection", None)
+    selection = session.selection
     if selection is None or selection.source != source or selection.name != result.name:
         return
     selection.observe(
@@ -176,15 +233,13 @@ def _selection_result(
         value=result.value,
         provenance=provenance,
     )
-    del runtime
 
 
-def _deliver_stopping(trainer: Any, source: str, result: MetricResult, logical_step: int) -> None:
-    control = getattr(trainer, "training_control", None)
+def _deliver_stopping(stopping: Any, source: str, result: MetricResult, logical_step: int | None) -> None:
     number = finite_number(result.value) if result.status == "ok" else None
-    if control is None or number is None:
+    if stopping is None or number is None:
         return
-    control.observe(
+    stopping.observe(
         MetricEvent(
             source,
             logical_step,
@@ -194,54 +249,19 @@ def _deliver_stopping(trainer: Any, source: str, result: MetricResult, logical_s
     )
 
 
-def _progress(trainer: Any, epoch: int | None) -> dict[str, int]:
-    """Counters the trainer publishes. ``logical_step`` is read only when present."""
-
-    method = getattr(trainer, "progress_state", None)
-    progress: dict[str, int] = {}
-    if callable(method):
-        raw = method()
-        if not isinstance(raw, Mapping):
-            raise RuntimeFailure("progress_state must return a mapping")
-        for key, value in raw.items():
-            if isinstance(value, bool) or not isinstance(value, int) or value < 0:
-                raise RuntimeFailure(f"progress {key} must be an integer >= 0")
-            progress[str(key)] = int(value)
-    else:
-        step = getattr(trainer, "logical_step", None)
-        if isinstance(step, int) and not isinstance(step, bool):
-            progress["logical_step"] = int(step)
-    if epoch is not None and "epoch" not in progress:
-        progress["epoch"] = int(epoch)
-    return progress
-
-
-def _predict(trainer: Any):
-    method = getattr(trainer, "research_predict", None)
-    if not callable(method):
-        return None
-
-    def predict(inputs: Any, targets: Any) -> Any:
-        return method(inputs, targets)
-
-    return predict
-
-
-def _export_if_needed(trainer: Any, runtime: Any, directory: Path, checkpoint: Any) -> None:
-    selection = getattr(trainer, "model_selection", None)
+def _export_if_needed(session: ResearchSession, runtime: Any, directory: Path, checkpoint: Any) -> None:
+    selection = session.selection
     if selection is None or not getattr(selection, "_improved", False):
         return
-    export_best(runtime, directory, trainer, selection, config_sha256=_config_hash(checkpoint))
+    export_best(runtime, directory, session.module, selection, config_sha256=_config_hash(checkpoint))
 
 
-def _agree(runtime: Any, trainer: Any) -> None:
+def _agree(runtime: Any, session: ResearchSession) -> None:
     if int(getattr(runtime, "world_size", 1)) <= 1:
         return
     payload = {
-        "evaluators": [evaluator.state_dict() for evaluator in getattr(trainer, "evaluators", ())],
-        "selection": None
-        if getattr(trainer, "model_selection", None) is None
-        else trainer.model_selection.state_dict(),
+        "evaluators": [evaluator.state_dict() for evaluator in session.evaluators],
+        "selection": None if session.selection is None else session.selection.state_dict(),
     }
     gathered = runtime.gather_objects(payload)
     if any(item != payload for item in gathered):
@@ -280,7 +300,7 @@ def _write_log(
     checkpoint: Any,
     kind: str,
     epoch: int | None,
-    logical_step: int,
+    logical_step: int | None,
     provenance: Mapping[str, Any],
     results: list[tuple[Any, list[MetricResult]]],
     bridged: Mapping[str, float],
@@ -301,40 +321,39 @@ def _write_log(
                     "config_sha256": digest,
                     "epoch": epoch,
                     "kind": kind,
-                    "logical_step": logical_step,
                     "provenance": dict(provenance),
                     "record": "metric",
                     "source": evaluator.source,
                 }
             )
+            if logical_step is not None:
+                row["logical_step"] = logical_step
             rows.append(row)
     for key, value in bridged.items():
         if key in seen or "." not in key:
             continue
         source, name = key.split(".", 1)
-        rows.append(
-            {
-                "config_sha256": digest,
-                "count": None,
-                "epoch": epoch,
-                "excluded": 0,
-                "failures": 0,
-                "kind": kind,
-                "logical_step": logical_step,
-                "metric": name,
-                "provenance": dict(provenance),
-                "record": "official",
-                "source": source,
-                "status": "ok",
-                "value": value,
-            }
-        )
-    selection = None
+        official = {
+            "config_sha256": digest,
+            "count": None,
+            "epoch": epoch,
+            "excluded": 0,
+            "failures": 0,
+            "kind": kind,
+            "metric": name,
+            "provenance": dict(provenance),
+            "record": "official",
+            "source": source,
+            "status": "ok",
+            "value": value,
+        }
+        if logical_step is not None:
+            official["logical_step"] = logical_step
+        rows.append(official)
     path = directory / LOG_NAME
     with path.open("a", encoding="utf-8") as handle:
         for row in rows:
             handle.write(json.dumps(row, sort_keys=True) + "\n")
-        del selection
     _barrier(runtime)
 
 

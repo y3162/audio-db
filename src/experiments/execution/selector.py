@@ -44,7 +44,7 @@ class SavePoint:
     """
 
     event: str
-    logical_step: int
+    logical_step: int | None
     metrics: Mapping[str, float] = field(default_factory=dict)
     # True on ``stop`` and ``final`` when Latest already holds exactly this state.
     latest_is_current: bool = False
@@ -52,7 +52,15 @@ class SavePoint:
     progress_explicit: bool = False
 
     def __post_init__(self) -> None:
+        if self.logical_step is not None and (
+            isinstance(self.logical_step, bool)
+            or not isinstance(self.logical_step, int)
+            or self.logical_step < 0
+        ):
+            raise CheckpointError("logical_step must be an integer >= 0")
         if not self.progress and not self.progress_explicit:
+            if self.logical_step is None:
+                raise CheckpointError("save point has no progress")
             progress = {"logical_step": int(self.logical_step)}
         else:
             progress = dict(self.progress)
@@ -63,8 +71,11 @@ class SavePoint:
             if isinstance(value, bool) or not isinstance(value, int) or value < 0:
                 raise CheckpointError(f"progress {key} must be an integer >= 0")
             cleaned[key] = int(value)
-        if "logical_step" in cleaned and cleaned["logical_step"] != int(self.logical_step):
-            raise CheckpointError("logical_step does not match progress")
+        if "logical_step" in cleaned:
+            if self.logical_step is None:
+                object.__setattr__(self, "logical_step", cleaned["logical_step"])
+            elif cleaned["logical_step"] != int(self.logical_step):
+                raise CheckpointError("logical_step does not match progress")
         object.__setattr__(self, "progress", cleaned)
 
 

@@ -256,9 +256,17 @@ class DeepFilterNet3Trainer:
         self.finished_epoch: int | None = None
         self.boundary: dict[str, Any] | None = None
         self.stop_reason = "initialized"
-        from src.experiments.evaluation.boundary import attach_research
+        from src.experiments.evaluation.boundary import ResearchSession
 
-        attach_research(self, evaluators, model_selection)
+        self.research = ResearchSession(
+            evaluators,
+            model_selection,
+            data=self.data,
+            module=self.model,
+            predict=getattr(self, "research_predict", None),
+        )
+        self.evaluators = self.research.evaluators
+        self.model_selection = self.research.selection
         self._restored = False
         self._stream: DFStream | None = None
 
@@ -267,11 +275,12 @@ class DeepFilterNet3Trainer:
         self.lifecycle.start()
         runtime = self.runtime
         checkpoint = self.lifecycle.checkpoint
-        from src.experiments.evaluation.boundary import research_attached, rewind_on_resume
-
-        if research_attached(self):
-            self._research_runtime = runtime
-        rewind_on_resume(self, checkpoint.directory)
+        self.research.rewind(
+            checkpoint.directory,
+            restored=self._restored,
+            phase=self.phase,
+            progress={"logical_step": int(self.logical_step)},
+        )
         component_id = getattr(self, "_experiment_component_id", "trainer")
         self.journal = StepJournal(checkpoint.directory, runtime)
         if self.batch_schedule is not None and runtime.world_size != 1:
@@ -397,11 +406,14 @@ class DeepFilterNet3Trainer:
                     }
                 )
                 if index != view.updates:
-                    step_metrics: dict[str, float] = {}
-                    if research_attached(self):
-                        from src.experiments.evaluation.boundary import research_metrics
-
-                        step_metrics = research_metrics(self, runtime, checkpoint, kind="step", epoch=epoch)
+                    step_metrics = self.research.score(
+                        runtime,
+                        checkpoint,
+                        kind="step",
+                        epoch=epoch,
+                        logical_step=self.logical_step,
+                        stopping=getattr(self, "training_control", None),
+                    )
                     if step_metrics:
                         self._offer(runtime, checkpoint, "step", metrics=step_metrics)
                     else:
@@ -510,11 +522,20 @@ class DeepFilterNet3Trainer:
         if stop:
             self.early_stopped = True
         official = {"loss": float(loss)}
-        observe_validation(self, runtime, official)
-        from src.experiments.evaluation.boundary import research_metrics
-
-        extra = research_metrics(
-            self, runtime, checkpoint, kind="boundary", epoch=trainer_epoch, official=official
+        observe_validation(
+            getattr(self, "training_control", None),
+            official,
+            step=self.logical_step,
+            scoped=self.research.attached,
+        )
+        extra = self.research.score(
+            runtime,
+            checkpoint,
+            kind="boundary",
+            epoch=trainer_epoch,
+            logical_step=self.logical_step,
+            official=official,
+            stopping=getattr(self, "training_control", None),
         )
         self._offer(runtime, checkpoint, "boundary", metrics={**official, **extra} if extra else official)
 
@@ -719,9 +740,17 @@ class DeepFilterNet3Trainer:
 
     def _result(self, checkpoint: CheckpointManager, reason: str) -> RunResult:
         if reason == "completed":
-            from src.experiments.evaluation.boundary import final_research_metrics
-
-            extra = final_research_metrics(self, checkpoint)
+            epoch = getattr(self.data, "epoch", None)
+            if isinstance(epoch, bool) or not isinstance(epoch, int):
+                epoch = None
+            extra = self.research.score(
+                self.runtime,
+                checkpoint,
+                kind="end",
+                epoch=epoch,
+                logical_step=self.logical_step,
+                stopping=getattr(self, "training_control", None),
+            )
             if extra:
                 self.lifecycle.save_if_needed("final", logical_step=self.logical_step, metrics=extra, prepare=self._sync_ranks)
             else:

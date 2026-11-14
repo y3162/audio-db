@@ -98,8 +98,8 @@ class LifecycleFlowTests(unittest.TestCase):
         experiment = self._built()
         lifecycle = Lifecycle(experiment._checkpoint, experiment._graph.runtime, experiment.config)
         lifecycle.start()
-        with self.assertRaisesRegex(CheckpointError, "logical_step"):
-            lifecycle.save_if_needed("stop")
+        with self.assertRaisesRegex(CheckpointError, "missing progress logical_step"):
+            lifecycle.save_if_needed("step")
         with self.assertRaisesRegex(CheckpointError, "does not match"):
             lifecycle.save_if_needed("step", logical_step=1, progress={"logical_step": 2})
         with self.assertRaisesRegex(BuildError, "unknown stop reason"):

@@ -35,6 +35,12 @@ class ScheduleTests(unittest.TestCase):
         self.assertTrue(step.due(logical_step=2, epoch=0, kind="step"))
         self.assertTrue(EvaluationSchedule(None).due(logical_step=3, epoch=1, kind="boundary"))
         self.assertTrue(EvaluationSchedule({"unit": "end"}).due(logical_step=3, epoch=1, kind="end"))
+        self.assertEqual(
+            EvaluationSchedule({"unit": "end"}).token(source="validation", progress={}),
+            ("end", "validation", 1),
+        )
+        with self.assertRaisesRegex(BuildError, "progress"):
+            EvaluationSchedule(None).token(source="validation", progress={})
         with self.assertRaises(BuildError):
             EvaluationSchedule({"unit": "boundary", "interval": 2})
 

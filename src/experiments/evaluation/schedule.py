@@ -76,8 +76,15 @@ class EvaluationSchedule:
             return ("epoch", source, int(values["epoch"]))
         if self.unit == "logical_step" and "logical_step" not in values:
             raise BuildError("logical_step schedule requires progress logical_step")
-        marker = values.get("logical_step", values.get("epoch", 0))
-        return (self.unit, source, int(marker))
+        if "logical_step" in values:
+            return (self.unit, source, int(values["logical_step"]))
+        if "epoch" in values:
+            return (self.unit, source, int(values["epoch"]))
+        if self.unit == "end":
+            return ("end", source, 1)
+        if "event" in values:
+            return (self.unit, source, int(values["event"]))
+        raise BuildError(f"{self.unit} schedule needs progress logical_step, epoch, or event")
 
 
 def _progress_values(

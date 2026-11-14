@@ -21,32 +21,38 @@ FORMAT = "audio-db-research-selection-v1"
 def export_best(
     runtime: Any,
     directory: Path,
-    trainer: Any,
+    module: Any,
     selection: Any,
     *,
     config_sha256: str | None,
 ) -> None:
     """Replace the research inference weights when the selected step changed.
 
-    Rank 0 writes ``research_selection/best.pt`` and ``best.json``. Official
-    filenames are not used. Other ranks wait at the barrier.
+    ``module`` is the inference module, a ``PreparedModel``, or a plain
+    ``nn.Module``. Rank 0 writes ``research_selection/best.pt`` and
+    ``best.json``. Official filenames are not used. Other ranks wait at the
+    barrier. A selection that has no trainer counter stores ``logical_step``
+    as null.
     """
 
-    if selection.best is None or selection.best_step is None:
+    if selection.best is None:
+        _barrier(runtime)
+        return
+    if selection.best_step is None and getattr(selection, "best_observation", None) is None:
         _barrier(runtime)
         return
     error: str | None = None
     if int(getattr(runtime, "rank", 0)) == 0:
         try:
-            module = _module(trainer)
+            weights = _inference_module(module)
             payload = {
                 "config_sha256": config_sha256,
                 "epoch": selection.best_epoch,
                 "format": FORMAT,
-                "logical_step": int(selection.best_step),
+                "logical_step": None if selection.best_step is None else int(selection.best_step),
                 "metric": selection.metric,
                 "mode": selection.mode,
-                "model": _cpu_tree(module),
+                "model": _cpu_tree(weights),
                 "provenance": dict(selection.provenance),
                 "value": float(selection.best),
             }
@@ -66,14 +72,12 @@ def export_best(
         raise RuntimeFailure(f"research selection export failed: {error}")
 
 
-def _module(trainer: Any) -> torch.nn.Module:
-    for name in ("model", "generator"):
-        handle = getattr(trainer, name, None)
-        if isinstance(handle, PreparedModel):
-            return handle.state_module
-        if isinstance(handle, torch.nn.Module):
-            return handle
-    raise RuntimeFailure("research export needs the trainer model or generator")
+def _inference_module(module: Any) -> torch.nn.Module:
+    if isinstance(module, PreparedModel):
+        return module.state_module
+    if isinstance(module, torch.nn.Module):
+        return module
+    raise RuntimeFailure("research export needs an inference module")
 
 
 def _cpu_tree(module: torch.nn.Module) -> dict[str, Any]:

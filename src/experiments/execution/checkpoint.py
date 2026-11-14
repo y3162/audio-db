@@ -290,7 +290,7 @@ class CheckpointManager:
         if event not in EVENTS:
             raise CheckpointError(f"unknown save point event {event!r}")
         progress_map = _offer_progress(logical_step, progress)
-        step = int(progress_map["logical_step"]) if "logical_step" in progress_map else 0
+        step = progress_map.get("logical_step")
         current = self._latest_current and event in ("stop", "final")
         point = SavePoint(
             event=event,

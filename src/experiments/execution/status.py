@@ -40,7 +40,7 @@ def read_status(directory: Path) -> dict[str, Any] | None:
     return _read_mapping(directory / "status.json")
 
 
-def write_complete(directory: Path, logical_step: int, **details: Any) -> None:
+def write_complete(directory: Path, logical_step: int | None, **details: Any) -> None:
     """Publish ``complete.json``. Its presence refuses a later resume."""
 
     body = json.dumps({"logical_step": logical_step, **details}, sort_keys=True) + "\n"

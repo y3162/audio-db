@@ -34,6 +34,46 @@ class SelectionPolicyTests(unittest.TestCase):
         self.assertFalse(_observe(higher, 2, 2.0))
         self.assertEqual(higher.best_step, 1)
 
+        uncounted = BestMetricSelection("validation.loss", "min")
+        self.assertTrue(
+            uncounted.observe(
+                source="validation",
+                name="loss",
+                logical_step=None,
+                epoch=None,
+                status="ok",
+                value=1.0,
+            )
+        )
+        self.assertIsNone(uncounted.best_step)
+        self.assertEqual(uncounted.best_observation, 1)
+        self.assertFalse(
+            uncounted.observe(
+                source="validation",
+                name="loss",
+                logical_step=None,
+                epoch=None,
+                status="ok",
+                value=1.0,
+            )
+        )
+        self.assertTrue(
+            uncounted.observe(
+                source="validation",
+                name="loss",
+                logical_step=None,
+                epoch=None,
+                status="ok",
+                value=0.5,
+            )
+        )
+        self.assertIsNone(uncounted.best_step)
+        self.assertEqual(uncounted.best, 0.5)
+        restored = BestMetricSelection("validation.loss", "min")
+        restored.load_state_dict(json.loads(json.dumps(uncounted.state_dict())))
+        self.assertIsNone(restored.best_step)
+        self.assertEqual(restored.best_observation, uncounted.best_observation)
+
         rejected = BestMetricSelection("validation.loss", "min")
         self.assertFalse(rejected.observe(
             source="validation",
@@ -111,7 +151,7 @@ class ExportTests(unittest.TestCase):
         _observe(selection, 3, 0.2)
         with tempfile.TemporaryDirectory() as tmp:
             directory = Path(tmp)
-            export_best(type("Runtime", (), {"rank": 0, "world_size": 1})(), directory, trainer, selection, config_sha256="abc")
+            export_best(type("Runtime", (), {"rank": 0, "world_size": 1})(), directory, trainer.model, selection, config_sha256="abc")
             weights = directory / DIRECTORY / WEIGHTS
             metadata = json.loads((directory / DIRECTORY / METADATA).read_text(encoding="utf-8"))
             payload = torch.load(weights, map_location="cpu", weights_only=False)
