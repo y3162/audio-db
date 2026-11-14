@@ -43,7 +43,6 @@ from src.experiments.runtime import PreparedModel, ProcessRuntime
 from src.experiments.selectors import scalar_metrics
 from src.experiments.trainers import (
     _append_jsonl,
-    _batch_on_device,
     _close_epoch_view,
     _rank,
     _rewind_metrics,
@@ -175,7 +174,21 @@ class MPSENetGANTrainer:
         self._generator_synced_during_backward = False
 
     def run(self, runtime: ProcessRuntime, checkpoint: CheckpointManager) -> RunResult:
+        """Bind a direct caller and train. Experiment calls :meth:`fit`."""
+
+        self.runtime = runtime
+        current = getattr(self, "lifecycle", None)
+        if current is None or getattr(current, "checkpoint", None) is not checkpoint:
+            from src.experiments.training.trainers import _DirectLifecycle
+
+            self.lifecycle = _DirectLifecycle(checkpoint)
+        return self.fit()
+
+    def fit(self) -> RunResult:
         """Train until the step budget, an epoch cap, or an interrupt."""
+
+        runtime = self.runtime
+        checkpoint = self.lifecycle.checkpoint
 
         from src.experiments.evaluation.boundary import research_attached, rewind_on_resume
 
@@ -465,7 +478,7 @@ class MPSENetGANTrainer:
             stored: list[tuple[torch.Tensor, dict[str, torch.Tensor]]] = []
             discriminator_total = 0.0
             sample_ids: list[str] = []
-            with runtime.sync_context([self.generator], sync=False):
+            with runtime.sync_gradients([self.generator], enabled=False):
                 for index, batch in enumerate(batches):
                     last = index == len(batches) - 1
                     clean, noisy = self._waveforms(batch, runtime)
@@ -488,7 +501,7 @@ class MPSENetGANTrainer:
                         raise RuntimeFailure("generator forward produced no tensors")
                     stored.append((clean, parts))
                     ones = torch.ones(clean.shape[0], device=clean.device)
-                    with runtime.sync_context([self.discriminator], sync=last):
+                    with runtime.sync_gradients([self.discriminator], enabled=last):
                         disc_error: str | None = None
                         loss: torch.Tensor | None = None
                         try:
@@ -734,7 +747,7 @@ class MPSENetGANTrainer:
         for batch in self.data.validation_epoch(trainer_epoch):
             if not isinstance(batch, Batch):
                 raise RuntimeFailure(f"component {component_id}: validation did not return a batch")
-            batch = _batch_on_device(batch, runtime.device)
+            batch = runtime.move(batch)
             report = task.validation_report({"clean": batch.targets, "noisy": batch.inputs})
             reports.append(report)
         if not reports:
@@ -821,7 +834,7 @@ class MPSENetGANTrainer:
             raise RuntimeFailure(f"best checkpoint write failed: {failure}")
 
     def _waveforms(self, batch: Batch, runtime: ProcessRuntime) -> tuple[torch.Tensor, torch.Tensor]:
-        batch = _batch_on_device(batch, runtime.device)
+        batch = runtime.move(batch)
         clean = batch.targets
         noisy = batch.inputs
         if clean.ndim != 2 or clean.shape != noisy.shape:
@@ -870,7 +883,7 @@ class MPSENetGANTrainer:
 
         if self._in_official_step:
             raise RuntimeFailure("refusing to checkpoint between the discriminator step and the generator step")
-        checkpoint.offer(event, logical_step=self.logical_step, metrics=metrics)
+        self.lifecycle.save_if_needed(event, logical_step=self.logical_step, metrics=metrics)
 
     def _stop_requested(self, runtime: object | None = None) -> bool:
         from src.experiments.signals import ranks_should_stop
@@ -887,9 +900,9 @@ class MPSENetGANTrainer:
 
             extra = final_research_metrics(self, checkpoint)
             if extra:
-                checkpoint.offer("final", logical_step=self.logical_step, metrics=extra)
+                self.lifecycle.save_if_needed("final", logical_step=self.logical_step, metrics=extra)
             else:
-                checkpoint.offer("final", logical_step=self.logical_step)
+                self.lifecycle.save_if_needed("final", logical_step=self.logical_step)
         self.stop_reason = reason
         if reason == "completed" and should_stop(self):
             reason = "early_stopping"
