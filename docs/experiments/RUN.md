@@ -24,6 +24,12 @@
 
 YAML の `class` には公開 import パスを書く。公開境界と checkpoint のクラス識別は [Checkpoint](CHECKPOINT.md#公開パスとクラス識別) を参照する。
 
+`extends` は親 YAML を1つだけ名指しする。パスは、その行を書いたファイルのディレクトリから解決する。絶対パスも読める。プロセスの作業ディレクトリからは解決しない。子と親がどちらも辞書ならキーごとに再帰マージし、リストは子のリストで置き、スカラーは子が親を上書きする。`null` は値であり、キーの削除ではない。辞書を親ごと捨てて子の辞書にするときは、その辞書に `__replace__: true` を書く。`true` 以外は拒否する。このキーは解決後の設定に残らない。親は1段でも多段でもよいが、1ファイルの親は1つである。循環、自分自身、無い親、辞書でない親は読み込み時に拒否する。スキーマ検証は解決後に行う。
+
+モジュールの `prepare.trainable_modules` と `prepare.frozen_modules` は、そのモジュール直下の名前で学習対象を選ぶ。未指定なら全パラメータが学習対象である。`trainable: false` はモジュール全体を凍結し、名前リストと同時には書けない。空リスト、無い名前、重複、両方に入った名前は拒否する。学習対象が空になる指定も拒否する。Optimizer の `parameters_of` は、同じモジュールを `modules` で分けてグループにできる。グループに書いた学習率はそのグループだけを上書きし、どのグループにも入らない学習対象は Optimizer の既定学習率になる。凍結したパラメータはグループに入らない。同じパラメータを複数グループや複数 Optimizer に入れる指定は拒否する。
+
+学習を始めると、出力ディレクトリに解決済みの `config.yaml` と `metadata.json` を書く。`metadata.json` の `run_id` はそのディレクトリの実行識別で、再開しても変えない。再開のたびに `launches` を足す。解決結果が前回と違うときは、置き換える前の `config.yaml` を `config_history/` に残す。チェックポイントの同一性は解決後の設定ハッシュであり、後から親ファイルが変わっても、そのハッシュは親の再読込を必要としない。
+
 `official/` に無い設定を、パスを変えただけでは公式再現と呼ばない。`dfn3.online.official@1` と `semambapp.gsr.official@1` は blocked である。
 
 `experiment_claim: official_faithful` の設定は `publication` に、そのモデルの Dataset ID、Protocol ID、snapshot hash、profile、claim、`selection_uses_test`、sample rate、teacher、pipeline を書く。Preflight は、この宣言と開いたスナップショットの identity が一致しないとき、学習の前に拒否する。同じ Preflight は、Sampler の order と、その world size で解決した順序が公式であること、および `max_epoch_samples` と `max_validation_batches` が未設定であることも見る。MP-SENet は world size 1 が `fixed_single_shuffle_v1`、2 以上が `torch_distributed_sampler_v1`、MossFormerGAN は `rank_mod_fixed_v1` である。保存先ディレクトリ名では判定しない。`research` は適合する音声ペアを使え、これらの件数制限も使え、公式再現にはならない。`leakage_safe` は `selection_uses_test: false` が明示されているときだけ許す。

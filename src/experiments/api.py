@@ -111,6 +111,7 @@ class Experiment:
                 self.build()
             if self._graph is None or self._checkpoint is None or self._directory is None:
                 raise BuildError("experiment is not built")
+            self._publish_run_record(resume=resume is not None)
             from src.experiments.execution.lifecycle import Lifecycle
 
             trainer = self._graph.trainer
@@ -251,6 +252,34 @@ class Experiment:
                     pass
         self.close()
 
+    def _publish_run_record(self, *, resume: bool) -> None:
+        """Write the resolved config on rank 0, then wait until every rank can see it."""
+
+        if self._directory is None:
+            return
+        runtime = self._runtime if self._runtime is not None else getattr(self._graph, "runtime", None)
+        rank = int(getattr(runtime, "rank", 0))
+        error = ""
+        if rank == 0:
+            try:
+                from src.experiments.errors import ConfigError
+                from src.experiments.execution.run_record import publish_run_record
+
+                publish_run_record(self._directory, self.config, resume=resume)
+            except (OSError, CheckpointError, ConfigError) as exc:
+                error = str(exc)
+        gather = getattr(runtime, "gather_objects", None)
+        if callable(gather):
+            errors = gather(error)
+            failure = errors[0] if errors else ""
+        else:
+            failure = error
+        if failure:
+            raise CheckpointError(f"could not write the resolved experiment config: {failure}")
+        barrier = getattr(runtime, "barrier", None)
+        if callable(barrier):
+            barrier()
+
     def _is_primary(self) -> bool:
         return self._rank() == 0
 
@@ -317,6 +346,9 @@ def preflight_experiment(experiment: Experiment, directory: str | Path | None = 
     path = target / "preflight.json"
     runtime = graph.runtime
     if int(getattr(runtime, "rank", 0)) == 0:
+        from src.experiments.execution.run_record import publish_run_record
+
+        publish_run_record(target, experiment.config, resume=False)
         temporary = target / ".preflight.json.tmp"
         temporary.write_text(json.dumps(payload, indent=2, sort_keys=True) + "\n", encoding="utf-8")
         os.replace(temporary, path)

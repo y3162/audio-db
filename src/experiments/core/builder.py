@@ -6,6 +6,7 @@ Argument names and type annotations are not treated as dependencies.
 
 from __future__ import annotations
 
+import logging
 import random
 from dataclasses import dataclass, replace
 from typing import Any
@@ -20,6 +21,8 @@ from src.experiments.core.registry import ComponentRegistry, StateRegistry
 from src.experiments.core.state import ComponentState, RuntimeState
 from src.experiments.execution.runtime import PreparedModel, ProcessRuntime
 from src.experiments.calc.rng import set_determinism
+
+_LOGGER = logging.getLogger(__name__)
 
 _STAGE = {
     "module": 0,
@@ -179,7 +182,8 @@ class ExperimentBuilder:
             spec = config.components[component_id]
             if spec.parameters_of is None:
                 continue
-            seen: set[str] = set()
+            seen_whole: set[str] = set()
+            seen_named: set[str] = set()
             for binding in spec.parameters_of:
                 target = _concrete_id(config, binding.component)
                 role = config.components[target].role
@@ -188,11 +192,19 @@ class ExperimentBuilder:
                 policy = config.components[target].prepare
                 if policy is not None and not policy.trainable:
                     raise BuildError(f"component {component_id}: parameters_of {binding.component} is not trainable")
-                if target in seen:
+                # One optimizer may split a module into named groups. Taking the
+                # whole module twice, or both the whole module and a named slice,
+                # would assign the same parameters twice.
+                if binding.modules is None:
+                    if target in seen_whole or target in seen_named:
+                        raise BuildError(f"component {component_id}: parameters_of repeats {binding.component}")
+                    seen_whole.add(target)
+                elif target in seen_whole:
                     raise BuildError(f"component {component_id}: parameters_of repeats {binding.component}")
-                seen.add(target)
+                else:
+                    seen_named.add(target)
                 previous = owners.get(target)
-                if previous is not None:
+                if previous is not None and previous != component_id:
                     raise BuildError(f"components {previous} and {component_id} share parameters of {target}")
                 owners[target] = component_id
 
@@ -272,17 +284,44 @@ class ExperimentBuilder:
         assert spec.parameters_of is not None
         if spec.parameters_flat:
             binding = spec.parameters_of[0]
-            return list(self._prepared_parameters(binding.component, registry, component_id))
+            if binding.modules is not None:
+                raise BuildError(f"component {component_id}: a flat parameters_of cannot select modules")
+            return list(self._prepared_parameters(binding.component, registry, component_id, None))
         groups: list[dict[str, Any]] = []
+        used: dict[int, str] = {}
+        named = any(binding.modules is not None for binding in spec.parameters_of)
+        referenced: list[str] = []
         for binding in spec.parameters_of:
-            group: dict[str, Any] = {
-                "params": list(self._prepared_parameters(binding.component, registry, component_id))
-            }
+            params = list(
+                self._prepared_parameters(binding.component, registry, component_id, binding.modules)
+            )
+            if not params:
+                raise BuildError(f"component {component_id}: parameter group for {binding.component} is empty")
+            for parameter in params:
+                identity = id(parameter)
+                if identity in used:
+                    raise BuildError(
+                        f"component {component_id}: parameter is in more than one group"
+                    )
+                used[identity] = binding.component
+            if binding.component not in referenced:
+                referenced.append(binding.component)
+            group: dict[str, Any] = {"params": params}
             if binding.lr is not None:
                 group["lr"] = binding.lr
             if binding.weight_decay is not None:
                 group["weight_decay"] = binding.weight_decay
             groups.append(group)
+        if named:
+            for referenced_id in referenced:
+                remainder = [
+                    parameter
+                    for parameter in self._prepared_parameters(referenced_id, registry, component_id, None)
+                    if id(parameter) not in used
+                ]
+                if remainder:
+                    groups.append({"params": remainder})
+        self._log_parameter_groups(component_id, groups, registry)
         return groups
 
     def _prepared_parameters(
@@ -290,13 +329,57 @@ class ExperimentBuilder:
         component_id: str,
         registry: ComponentRegistry,
         owner_id: str,
+        modules: tuple[str, ...] | None,
     ) -> tuple[torch.nn.Parameter, ...]:
         handle = registry.get(component_id)
         if not isinstance(handle, PreparedModel):
             raise BuildError(f"component {owner_id}: parameters_of {component_id} is not a prepared module")
         if not handle.policy.trainable:
             raise BuildError(f"component {owner_id}: parameters_of {component_id} is not trainable")
-        return handle.parameters
+        if modules is None:
+            return handle.parameters
+        known = {name for name, _child in handle.state_module.named_modules()}
+        for name in modules:
+            if name not in known:
+                raise BuildError(f"component {owner_id}: parameters_of names missing module {name}")
+        selected: list[torch.nn.Parameter] = []
+        seen: set[int] = set()
+        for parameter_name, parameter in handle.state_module.named_parameters():
+            if not parameter.requires_grad:
+                continue
+            hits = [
+                name
+                for name in modules
+                if parameter_name == name or parameter_name.startswith(name + ".")
+            ]
+            if len(hits) > 1:
+                raise BuildError(
+                    f"component {owner_id}: parameter {parameter_name} matches {hits[0]} and {hits[1]}"
+                )
+            if hits and id(parameter) not in seen:
+                seen.add(id(parameter))
+                selected.append(parameter)
+        return tuple(selected)
+
+    def _log_parameter_groups(
+        self,
+        component_id: str,
+        groups: list[dict[str, Any]],
+        registry: ComponentRegistry,
+    ) -> None:
+        names_by_id: dict[int, str] = {}
+        for owner_id, handle in registry.items():
+            if not isinstance(handle, PreparedModel):
+                continue
+            for name, parameter in handle.state_module.named_parameters():
+                names_by_id[id(parameter)] = f"{owner_id}.{name}"
+        parts = []
+        for index, group in enumerate(groups):
+            names = [names_by_id.get(id(parameter), "?") for parameter in group["params"]]
+            parts.append(
+                f"group {index} n={len(names)} lr={group.get('lr', 'default')} names={names}"
+            )
+        _LOGGER.info("optimizer %s parameter groups: %s", component_id, "; ".join(parts))
 
     def _prepare_modules(
         self,

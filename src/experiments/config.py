@@ -38,7 +38,15 @@ ROLES = frozenset(
     {"module", "optimizer", "scheduler", "trainer", "data", "loss", "metric", "evaluator", "other", "stopping"}
 )
 PREPARE_KEYS = frozenset(
-    {"trainable", "distribute", "find_unused_parameters", "broadcast_buffers", "sync_batchnorm"}
+    {
+        "trainable",
+        "distribute",
+        "find_unused_parameters",
+        "broadcast_buffers",
+        "sync_batchnorm",
+        "trainable_modules",
+        "frozen_modules",
+    }
 )
 PRECISIONS = frozenset({"fp32", "amp_fp16"})
 _COMPONENT_ID = re.compile(r"[A-Za-z_][A-Za-z0-9_]{0,63}\Z")
@@ -53,11 +61,16 @@ class InjectRef:
 
 @dataclass(frozen=True)
 class ParameterOf:
-    """One module whose parameters feed an optimizer."""
+    """One module whose parameters feed an optimizer.
+
+    ``modules`` selects named submodules. The parameters of that component
+    that belong to none of the named groups stay in a default group.
+    """
 
     component: str
     lr: float | None = None
     weight_decay: float | None = None
+    modules: tuple[str, ...] | None = None
 
 
 @dataclass(frozen=True)
@@ -101,6 +114,9 @@ class ExperimentConfig:
     selector_kwargs: dict[str, Any] = field(default_factory=dict)
     initialize: InitializeConfig | None = None
     publication: dict[str, Any] | None = None
+    extends_chain: tuple[str, ...] = ()
+    source_hashes: tuple[str, ...] = ()
+    resolved_document: dict[str, Any] | None = None
 
 
 class _UniqueKeyLoader(yaml.SafeLoader):
@@ -124,7 +140,43 @@ _UniqueKeyLoader.add_constructor(
 
 
 def load_experiment(path: str | Path) -> ExperimentConfig:
-    """Read YAML and validate the schema. Do not construct components."""
+    """Read YAML, resolve ``extends``, and validate the schema.
+
+    Loading does not construct components. A relative ``extends`` path is
+    resolved from the file that names it, never from the process working
+    directory. The returned config is the fully resolved document: restoring
+    a run does not need the parent files to stay unchanged.
+    """
+
+    source = Path(path)
+    resolved, chain, hashes = _resolve_extends(source, ())
+    stored = _clone_yaml(resolved)
+    return replace(
+        _parse_document(resolved),
+        source_path=source,
+        extends_chain=tuple(chain),
+        source_hashes=tuple(hashes),
+        resolved_document=stored,
+    )
+
+
+def dump_resolved_yaml(config: ExperimentConfig) -> str:
+    """Serialize the resolved document. The text does not contain ``extends``."""
+
+    document = config.resolved_document
+    if not isinstance(document, dict):
+        raise ConfigError("resolved experiment document is missing")
+    text = yaml.safe_dump(document, sort_keys=True, allow_unicode=False)
+    if not isinstance(text, str) or not text.endswith("\n"):
+        raise ConfigError("resolved experiment document could not be serialized")
+    return text
+
+
+def _resolve_extends(
+    path: Path,
+    stack: tuple[Path, ...],
+) -> tuple[dict[str, Any], list[str], list[str]]:
+    """Load one file and merge its single parent, root ancestor first."""
 
     source = Path(path)
     try:
@@ -138,8 +190,79 @@ def load_experiment(path: str | Path) -> ExperimentConfig:
     except yaml.YAMLError as exc:
         raise ConfigError(f"invalid YAML in {source}: {exc}") from exc
     if not isinstance(raw, dict):
-        raise ConfigError("experiment config must be a mapping")
-    return replace(_parse_document(raw), source_path=source)
+        raise ConfigError(f"experiment config must be a mapping: {source}")
+    try:
+        real = source.resolve()
+    except OSError as exc:
+        raise ConfigError(f"cannot resolve experiment config {source}: {exc}") from exc
+    if real in stack:
+        chain = " -> ".join(str(item) for item in (*stack, real))
+        raise ConfigError(f"extends cycle: {chain}")
+    extends = raw.pop("extends", None)
+    file_hash = hashlib.sha256(text.encode("utf-8")).hexdigest()
+    if extends is None:
+        _reject_unconsumed_replace(raw, str(real))
+        return raw, [str(real)], [file_hash]
+    parent = _extends_path(source, extends)
+    parent_doc, parent_chain, parent_hashes = _resolve_extends(parent, stack + (real,))
+    merged = _merge_dicts(parent_doc, raw)
+    _reject_unconsumed_replace(merged, str(real))
+    return merged, [*parent_chain, str(real)], [*parent_hashes, file_hash]
+
+
+def _extends_path(source: Path, extends: object) -> Path:
+    """Resolve one parent. Absolute paths are accepted; the working directory is not used."""
+
+    if not isinstance(extends, str) or not extends:
+        raise ConfigError("extends must be one non-empty path")
+    parent = Path(extends)
+    if not parent.is_absolute():
+        parent = source.parent / parent
+    if not parent.is_file():
+        raise ConfigError(f"extends parent does not exist: {parent}")
+    return parent
+
+
+def _merge_dicts(parent: dict[str, Any], child: dict[str, Any]) -> dict[str, Any]:
+    """Merge mappings. Lists replace wholesale. ``null`` is a value, not a deletion."""
+
+    if "__replace__" in child:
+        if child["__replace__"] is not True:
+            raise ConfigError("__replace__ must be true")
+        base: dict[str, Any] = {}
+        items = ((key, value) for key, value in child.items() if key != "__replace__")
+    else:
+        base = {key: _clone_yaml(value) for key, value in parent.items()}
+        items = child.items()
+    for key, value in items:
+        if key == "__replace__":
+            raise ConfigError("__replace__ must be true")
+        if isinstance(value, dict) and isinstance(base.get(key), dict):
+            base[key] = _merge_dicts(base[key], value)
+        elif isinstance(value, dict):
+            base[key] = _merge_dicts({}, value)
+        else:
+            base[key] = _clone_yaml(value)
+    return base
+
+
+def _clone_yaml(value: Any) -> Any:
+    if isinstance(value, dict):
+        return {key: _clone_yaml(item) for key, item in value.items()}
+    if isinstance(value, list):
+        return [_clone_yaml(item) for item in value]
+    return value
+
+
+def _reject_unconsumed_replace(value: object, label: str) -> None:
+    if isinstance(value, dict):
+        if "__replace__" in value:
+            raise ConfigError(f"__replace__ was not consumed in {label}")
+        for key, item in value.items():
+            _reject_unconsumed_replace(item, f"{label}.{key}")
+    elif isinstance(value, list):
+        for index, item in enumerate(value):
+            _reject_unconsumed_replace(item, f"{label}[{index}]")
 
 
 def _parse_document(raw: dict[str, Any]) -> ExperimentConfig:
@@ -461,7 +584,11 @@ def _parse_parameter_item(raw: object, component_id: str) -> ParameterOf:
 
 
 def _parse_parameter_group(raw: dict[str, Any], component_id: str) -> ParameterOf:
-    _reject_unknown(raw, frozenset({"component", "lr", "weight_decay"}), f"component {component_id} parameters_of")
+    _reject_unknown(
+        raw,
+        frozenset({"component", "lr", "weight_decay", "modules"}),
+        f"component {component_id} parameters_of",
+    )
     component = raw.get("component")
     if not isinstance(component, str):
         raise ConfigError(f"component {component_id}: parameters_of.component must be a component id")
@@ -470,6 +597,9 @@ def _parse_parameter_group(raw: dict[str, Any], component_id: str) -> ParameterO
         component,
         _optional_number(raw.get("lr"), component_id, "lr"),
         _optional_number(raw.get("weight_decay"), component_id, "weight_decay"),
+        _parse_module_names(raw["modules"], component_id, "parameters_of.modules")
+        if "modules" in raw
+        else None,
     )
 
 
@@ -493,13 +623,54 @@ def _parse_prepare(raw: object, component_id: str, role: object) -> PreparePolic
         raise ConfigError(f"component {component_id}: prepare flags must be bools")
     if distribute not in {"ddp", "none", "fsdp"}:
         raise ConfigError(f"component {component_id}: invalid distribute {distribute!r}")
+    trainable_modules = (
+        _parse_module_names(mapping["trainable_modules"], component_id, "trainable_modules")
+        if "trainable_modules" in mapping
+        else None
+    )
+    frozen_modules = (
+        _parse_module_names(mapping["frozen_modules"], component_id, "frozen_modules")
+        if "frozen_modules" in mapping
+        else None
+    )
+    if not trainable and (trainable_modules is not None or frozen_modules is not None):
+        raise ConfigError(
+            f"component {component_id}: trainable false cannot be combined with module names"
+        )
+    if trainable_modules is not None and frozen_modules is not None:
+        overlap = sorted(set(trainable_modules) & set(frozen_modules))
+        if overlap:
+            raise ConfigError(
+                f"component {component_id}: module {overlap[0]} is both trainable and frozen"
+            )
     return PreparePolicy(
         trainable=trainable,
         distribute=distribute,  # type: ignore[arg-type]
         find_unused_parameters=find_unused,
         broadcast_buffers=broadcast,
         sync_batchnorm=sync_batchnorm,
+        trainable_modules=trainable_modules,
+        frozen_modules=frozen_modules,
     )
+
+
+def _parse_module_names(raw: object, component_id: str, field: str) -> tuple[str, ...]:
+    """Parse a list of module names. Callers treat a missing key as unused."""
+
+    if not isinstance(raw, list):
+        raise ConfigError(f"component {component_id}: {field} must be a list of module names")
+    if not raw:
+        raise ConfigError(f"component {component_id}: {field} is empty")
+    names: list[str] = []
+    seen: set[str] = set()
+    for item in raw:
+        if not isinstance(item, str) or not item or item.startswith(".") or item.endswith(".") or ".." in item:
+            raise ConfigError(f"component {component_id}: {field} has invalid module name {item!r}")
+        if item in seen:
+            raise ConfigError(f"component {component_id}: {field} repeats module {item}")
+        seen.add(item)
+        names.append(item)
+    return tuple(names)
 
 
 def _parse_state(raw: object, component_id: str) -> bool | None:
@@ -607,16 +778,22 @@ def _component_identity(spec: ComponentConfig) -> dict[str, Any]:
         }
     if spec.parameters_of is not None:
         payload["parameters_flat"] = spec.parameters_flat
-        payload["parameters_of"] = [
-            {
+        payload["parameters_of"] = []
+        for binding in spec.parameters_of:
+            row: dict[str, Any] = {
                 "component": binding.component,
                 "lr": binding.lr,
                 "weight_decay": binding.weight_decay,
             }
-            for binding in spec.parameters_of
-        ]
+            if binding.modules is not None:
+                row["modules"] = list(binding.modules)
+            payload["parameters_of"].append(row)
     if spec.prepare is not None:
-        payload["prepare"] = asdict(spec.prepare)
+        prepared = asdict(spec.prepare)
+        for key in ("trainable_modules", "frozen_modules"):
+            if prepared.get(key) is None:
+                prepared.pop(key, None)
+        payload["prepare"] = prepared
     if spec.save_state is not None:
         payload["state"] = {"save": spec.save_state}
     return payload

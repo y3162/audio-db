@@ -138,20 +138,26 @@ class ResumeTests(_Base):
         resumed = _cli(resume_config, "--resume", str(interrupted_out))
         self.assertEqual(resumed.returncode, 0, resumed.stderr)
         continuous_out = continuous_dir / "continuous"
+        recorded = [
+            ".lock",
+            "complete.json",
+            "config.yaml",
+            "data_provenance.json",
+            "latest.data_provenance.json",
+            "latest.pt",
+            "metadata.json",
+            "metrics.jsonl",
+            "status.json",
+        ]
         for out in (continuous_out, interrupted_out):
             self.assertEqual(_status(out), "COMPLETED")
-            self.assertEqual(
-                sorted(path.name for path in out.iterdir()),
-                [
-                    ".lock",
-                    "complete.json",
-                    "data_provenance.json",
-                    "latest.data_provenance.json",
-                    "latest.pt",
-                    "metrics.jsonl",
-                    "status.json",
-                ],
-            )
+        # The resumed run drops stop_after_logical_steps, so its resolved text
+        # differs and the previous text is kept. The uninterrupted run does not.
+        self.assertEqual(sorted(path.name for path in continuous_out.iterdir()), recorded)
+        self.assertEqual(
+            sorted(path.name for path in interrupted_out.iterdir()),
+            sorted([*recorded, "config_history"]),
+        )
         left = _load(continuous_out / "latest.pt")
         right = _load(interrupted_out / "latest.pt")
         self.assertEqual(right["logical_step"], 4)

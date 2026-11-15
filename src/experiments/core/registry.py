@@ -55,6 +55,11 @@ class ComponentRegistry:
             raise BuildError(f"component {component_id} is not built")
         self._objects[canonical] = obj
 
+    def items(self) -> tuple[tuple[str, object], ...]:
+        """Built component ids and objects, in id order. Aliases are omitted."""
+
+        return tuple(sorted(self._objects.items()))
+
     def __contains__(self, component_id: object) -> bool:
         return isinstance(component_id, str) and (
             component_id in self._objects or component_id in self._aliases

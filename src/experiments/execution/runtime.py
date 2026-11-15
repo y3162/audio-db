@@ -43,6 +43,8 @@ class PreparePolicy:
     find_unused_parameters: bool = False
     broadcast_buffers: bool = True
     sync_batchnorm: bool = False
+    trainable_modules: tuple[str, ...] | None = None
+    frozen_modules: tuple[str, ...] | None = None
 
 
 @dataclass(frozen=True)
@@ -122,6 +124,50 @@ class StepResult:
     """Whether every rank applied an optimizer update."""
 
     applied: bool
+
+
+def _module_covers(module_name: str, parameter_name: str) -> bool:
+    return parameter_name == module_name or parameter_name.startswith(module_name + ".")
+
+
+def _named_trainable_parameters(
+    module: torch.nn.Module,
+    policy: PreparePolicy,
+) -> tuple[torch.nn.Parameter, ...]:
+    """Freeze or train named submodules and return the trainable parameters.
+
+    A requested name must be one ``named_modules`` entry. Parameters under a
+    trainable name stay trainable. Parameters under a frozen name, and every
+    parameter when ``trainable_modules`` is set and does not cover them, do
+    not require gradients. An empty trainable set is an error.
+    """
+
+    known = {name for name, _child in module.named_modules()}
+    for field, names in (
+        ("trainable_modules", policy.trainable_modules),
+        ("frozen_modules", policy.frozen_modules),
+    ):
+        if names is None:
+            continue
+        for name in names:
+            if name not in known:
+                raise PrepareError(f"{field} names missing module {name}")
+    trainable_names = policy.trainable_modules
+    frozen_names = policy.frozen_modules or ()
+    chosen: list[torch.nn.Parameter] = []
+    for parameter_name, parameter in module.named_parameters():
+        covered_frozen = any(_module_covers(name, parameter_name) for name in frozen_names)
+        if trainable_names is None:
+            train = not covered_frozen
+        else:
+            covered_train = any(_module_covers(name, parameter_name) for name in trainable_names)
+            train = covered_train and not covered_frozen
+        parameter.requires_grad_(train)
+        if train:
+            chosen.append(parameter)
+    if not chosen:
+        raise PrepareError("trainable parameter set is empty")
+    return tuple(chosen)
 
 
 class ProcessRuntime:
@@ -228,7 +274,10 @@ class ProcessRuntime:
             raise PrepareError("placed module is not a torch.nn.Module")
         if policy.sync_batchnorm and self.device.type == "cuda" and self.world_size > 1:
             placed = torch.nn.SyncBatchNorm.convert_sync_batchnorm(placed)
-        if policy.trainable:
+        if policy.trainable_modules is not None or policy.frozen_modules is not None:
+            placed.train()
+            parameters = _named_trainable_parameters(placed, policy)
+        elif policy.trainable:
             placed.train()
             parameters = tuple(placed.parameters())
         else:
