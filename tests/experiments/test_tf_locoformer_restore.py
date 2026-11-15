@@ -5,7 +5,7 @@ from __future__ import annotations
 import unittest
 
 from src.experiments.errors import RuntimeFailure
-from src.experiments.official.tf_locoformer.state import LocoformerProgress
+from src.experiments.official.tf_locoformer.trainer import LocoformerProgress
 
 PROFILE = "tf_locoformer.dns.accept_recipe.research_valid_fixed@1"
 

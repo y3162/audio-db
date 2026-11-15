@@ -30,9 +30,11 @@ from src.experiments.losses import OFFICIAL_WINDOWS, MultiResolutionL1Loss
 from src.experiments.official.tf_locoformer.model import TFLocoformerModel
 from src.experiments.runtime import PreparedModel, ProcessRuntime, StepResult
 from src.experiments.official.tf_gridnet.evaluator import early_stop, rank_validation_loss
-from src.experiments.official.tf_locoformer.artifacts import write_selection
-from src.experiments.official.tf_locoformer.metrics import per_sample_si_snr
-from src.experiments.official.tf_locoformer.selection import rank_validation_si_snr
+from src.experiments.official.tf_locoformer.evaluator import (
+    per_sample_si_snr,
+    rank_validation_si_snr,
+    write_selection,
+)
 from src.experiments.official.tf_locoformer.trainer import (
     RESEARCH_VALIDATION_PROFILE,
     TFLocoformerTrainer,
@@ -42,7 +44,7 @@ from src.se.models.tf_locoformer.model import TFLocoformer
 from src.experiments.calc.average import average_state_dicts
 from src.experiments.calc.optim import WarmupReduceLROnPlateau, clip_gradients
 from src.experiments.calc.spectral import multi_resolution_l1, si_sdr_loss
-from src.experiments.official.tf_locoformer.reference import TFLocoformerTask
+from tests.numerics.reference.tf_locoformer_task import TFLocoformerTask
 from tests.experiments.test_chunk_data import _write_snapshot
 from tests.experiments.tf_gridnet_data import ScriptedChunkData
 

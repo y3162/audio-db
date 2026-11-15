@@ -21,7 +21,7 @@ OUT = Path(os.environ.get("AUDIO_DB_NUMERICS_OUT", "/tmp/audio-db-level1-2026111
 from src.experiments.calc.optim import clip_gradients  # noqa: E402
 from src.experiments.calc.rng import seed_model_init  # noqa: E402
 from src.experiments.calc.spectral import multi_resolution_l1  # noqa: E402
-from src.experiments.official.tf_locoformer.reference import TFLocoformerTask  # noqa: E402
+from tests.numerics.reference.tf_locoformer_task import TFLocoformerTask  # noqa: E402
 from tests.numerics.reference.common import gap, grad_report, optim_report, weight_report  # noqa: E402
 from tests.numerics.reference.level1_locoformer_ulp import (  # noqa: E402
     DNS,

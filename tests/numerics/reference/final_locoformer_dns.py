@@ -21,7 +21,7 @@ sys.path.insert(0, str(ROOT))
 
 from src.experiments.calc.rng import seed_model_init  # noqa: E402
 from src.experiments.calc.spectral import multi_resolution_l1  # noqa: E402
-from src.experiments.official.tf_locoformer.reference import TFLocoformerTask  # noqa: E402
+from tests.numerics.reference.tf_locoformer_task import TFLocoformerTask  # noqa: E402
 from tests.se.test_tf_locoformer import OFFICIAL, _frontend  # noqa: E402
 
 DNS = dict(
