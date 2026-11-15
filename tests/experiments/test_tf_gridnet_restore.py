@@ -10,7 +10,7 @@ from __future__ import annotations
 import unittest
 
 from src.experiments.errors import RuntimeFailure
-from src.experiments.official.tf_gridnet.state import GridNetProgress
+from src.experiments.official.tf_gridnet.trainer import GridNetProgress
 
 
 def _progress() -> GridNetProgress:

@@ -13,7 +13,7 @@ from pathlib import Path
 from typing import Any
 
 from src.experiments.errors import RuntimeFailure
-from src.experiments.official.tf_gridnet.selection import early_stop
+from src.experiments.official.tf_gridnet.evaluator import early_stop
 from src.experiments.official.tf_locoformer.state import PENDING_VALIDATION, LocoformerProgress
 from src.experiments.official.tf_locoformer.validation import LocoformerValidator
 from src.experiments.runtime import ProcessRuntime

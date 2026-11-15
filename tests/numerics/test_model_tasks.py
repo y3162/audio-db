@@ -14,7 +14,7 @@ from src.experiments.calc.errors import TrainingError
 from src.experiments.official.deepfilternet3.reference import DeepFilterNetTask, deepfilter_cosine_schedules
 from src.experiments.official.mossformergan.reference import MossFormerGANTask
 from src.experiments.official.semambapp.reference import SEMambaTask
-from src.experiments.official.tf_gridnet.reference import TFGridNetTask
+from tests.numerics.reference.tf_gridnet_task import TFGridNetTask
 from tests.numerics.support import accelerator_device, enable_accelerator_determinism, paired_dataset, tiny_config
 
 

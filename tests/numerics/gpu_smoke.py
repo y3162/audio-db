@@ -5,7 +5,7 @@ from src.se import load_enhancer
 from tests.numerics.test_model_tasks import _base, _updated
 from tests.numerics.support import paired_dataset, tiny_config
 from tests.numerics.reference.mp_senet_task import MPSENetTask
-from src.experiments.official.tf_gridnet.reference import TFGridNetTask
+from tests.numerics.reference.tf_gridnet_task import TFGridNetTask
 from src.experiments.official.semambapp.reference import SEMambaTask
 from src.experiments.official.deepfilternet3.reference import DeepFilterNetTask
 from src.experiments.official.mossformergan.reference import MossFormerGANTask

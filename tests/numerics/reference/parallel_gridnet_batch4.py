@@ -34,7 +34,7 @@ from tests.numerics.reference.compare_tf_gridnet import (  # noqa: E402
     _step,
 )
 from tests.numerics.reference.parallel_gridnet_trainer import _cpu_state, _task_config  # noqa: E402
-from src.experiments.official.tf_gridnet.reference import TFGridNetTask  # noqa: E402
+from tests.numerics.reference.tf_gridnet_task import TFGridNetTask  # noqa: E402
 from tests.numerics.reference.common import NoCheckpoints, weight_report  # noqa: E402
 
 

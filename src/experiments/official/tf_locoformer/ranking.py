@@ -10,7 +10,7 @@ from pathlib import Path
 from typing import Any
 
 from src.experiments.errors import RuntimeFailure
-from src.experiments.official.tf_gridnet.selection import rank_validation_loss
+from src.experiments.official.tf_gridnet.evaluator import rank_validation_loss
 from src.experiments.official.tf_locoformer.artifacts import write_selection
 from src.experiments.official.tf_locoformer.selection import rank_validation_si_snr
 from src.experiments.official.tf_locoformer.state import LocoformerProgress

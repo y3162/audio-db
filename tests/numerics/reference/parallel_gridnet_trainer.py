@@ -21,7 +21,7 @@ OUT = Path(os.environ.get("AUDIO_DB_NUMERICS_OUT", "/tmp/audio-db-official-conti
 from src.experiments.data import Batch  # noqa: E402
 from src.experiments.losses import MultiResolutionL1Loss  # noqa: E402
 from src.experiments.official.tf_gridnet.model import TFGridNetModel  # noqa: E402
-from src.experiments.official.tf_gridnet.reference import TFGridNetTask  # noqa: E402
+from tests.numerics.reference.tf_gridnet_task import TFGridNetTask  # noqa: E402
 from src.experiments.official.tf_gridnet.trainer import TFGridNetTrainer  # noqa: E402
 from src.experiments.runtime import PreparePolicy, ProcessRuntime  # noqa: E402
 from tests.numerics.reference.compare_tf_gridnet import (  # noqa: E402

@@ -1,1 +1,1 @@
-"""TF-GridNet training components. Import trainer, model, or reference directly."""
+"""TF-GridNet training components. Import trainer or model directly."""
