@@ -205,7 +205,7 @@ class CudaCheckpointSafePointTests(unittest.TestCase):
             original_drain(self)
 
         def offer(self: MPSENetGANTrainer, event: str, metrics: dict[str, float] | None = None) -> None:
-            seen.append(("offer", event, self._in_official_step, self.logical_step))
+            seen.append(("offer", event, self._in_official_step, self.progress.logical_step))
             original_offer(self, event, metrics)
 
         MPSENetGANTrainer._drain_mp_io = drain
