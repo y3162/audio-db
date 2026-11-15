@@ -20,7 +20,7 @@ from src.experiments.official.tf_gridnet.boundary import GridNetBoundary
 from src.experiments.official.tf_gridnet.checks import positive_float, positive_int, require_gridnet_setup, require_group_size
 from src.experiments.official.tf_gridnet.recording import DeferredStepLog
 from src.experiments.official.tf_gridnet.state import GridNetProgress
-from src.experiments.official.tf_gridnet.update import GridNetUpdate
+from src.experiments.official.tf_gridnet.update import GridNetUpdate, _forward_loss as _micro_loss
 from src.experiments.official.tf_gridnet.validation import GridNetValidator
 from src.experiments.results import RunResult
 from src.experiments.runtime import PreparedModel, ProcessRuntime
@@ -187,6 +187,14 @@ class TFGridNetTrainer:
                 _close_epoch_view(view)
         self._log.drain(self.journal, self.lifecycle, progress.optimizer_updates)
         return self._finish("completed")
+
+    def _forward_loss(
+        self,
+        batches: list[Any],
+        component_id: str,
+        runtime: ProcessRuntime,
+    ) -> tuple[torch.Tensor, dict[str, float]]:
+        return _micro_loss(self.model, self.objective, batches, component_id, runtime)
 
     def state_dict(self) -> dict[str, Any]:
         return self.progress.export()
