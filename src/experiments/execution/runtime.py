@@ -186,6 +186,7 @@ class ProcessRuntime:
         device: str = "cpu",
         precision: str = "fp32",
         world_size: int | None = None,
+        preflight: bool = True,
         timeout_seconds: float = 120,
         init_scale: float = 65536.0,
         growth_factor: float = 2.0,
@@ -200,6 +201,8 @@ class ProcessRuntime:
             raise PrepareError(f"runtime only supports precision fp32 or amp_fp16, got {precision}")
         if precision == "amp_fp16" and device != "cuda":
             raise PrepareError("amp_fp16 requires device cuda; refusing to fall back to fp32")
+        if not isinstance(preflight, bool):
+            raise PrepareError("preflight must be a bool")
         if world_size is not None and (isinstance(world_size, bool) or not isinstance(world_size, int) or world_size < 1):
             raise PrepareError("world_size must be a positive integer")
         if (
@@ -213,6 +216,7 @@ class ProcessRuntime:
         os.environ.setdefault("CUBLAS_WORKSPACE_CONFIG", ":4096:8")
         resolved_world, rank, local_rank = _launch_world(world_size)
         self.precision = precision
+        self.preflight = preflight
         self.world_size = resolved_world
         self.rank = rank
         self.local_rank = local_rank

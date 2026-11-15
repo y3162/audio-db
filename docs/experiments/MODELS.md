@@ -38,7 +38,7 @@ Generator と Discriminator を別コンポーネントに持つモデルは、�
 
 ## 公式値
 
-研究用に変えてよい。`official_faithful` の MP-SENet と MossFormerGAN は、この表と違う構造を構築時に拒否する。比較相手はモデル自身の重みではなく、コードに置いた公開定数である。`leakage_safe` は損失係数だけを公式に固定し、構造は固定しない。`research` はどちらも固定しない。
+研究用に変えてよい。`official_faithful` の MP-SENet と MossFormerGAN は、この表と違う構造を構築時に差異として記録し、実行は拒否しない。比較相手はモデル自身の重みではなく、コードに置いた公開定数である。`leakage_safe` は損失係数の違いを記録し、構造の比較はしない。`research` はどちらも比較しない。
 
 ### MP-SENet
 
@@ -203,7 +203,7 @@ Generator と Discriminator を別コンポーネントに持つモデルは、�
 3. 新しいディレクトリで `initialize` する。変える前の checkpoint を resume しない。
 4. 構築できたあと、パラメータ数か `state_dict` の shape が公式構造と違うことを確認する。
 
-`official_faithful` のまま幅や層数だけを変えると、MP-SENet と MossFormerGAN は構築時に拒否する。DeepFilterNet3 の `dfn3.online.official@1` と SEMamba++ の `semambapp.gsr.official@1` は、構造とは別に閉じたままである。
+`official_faithful` のまま幅や層数だけを変えると、MP-SENet と MossFormerGAN はその差異を記録して構築する。チャネルがヘッド数で割れない指定は、これまでどおり拒否する。DeepFilterNet3 の `dfn3.online.official@1` と SEMamba++ の `semambapp.gsr.official@1` は、構造とは別に閉じたままである。
 
 ## 公式 checkpoint
 

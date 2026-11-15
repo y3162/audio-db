@@ -170,15 +170,25 @@ def network_config(architecture: Mapping[str, Any]) -> dict[str, Any]:
     return {key: value for key, value in architecture.items() if key != "disc_dim"}
 
 
-def require_official_architecture(architecture: Mapping[str, Any], claim: str) -> None:
-    """Refuse a non-published structure on the official-faithful path."""
+def require_official_architecture(architecture: Mapping[str, Any], claim: str) -> tuple[str, ...]:
+    """Record published-structure differences. A different width still runs.
+
+    Shape and divisibility checks stay in ``architecture_config``. This
+    function does not refuse a run. ``research`` and ``leakage_safe`` are not
+    compared with the published constants.
+    """
 
     if claim != "official_faithful":
-        return
-    if dict(architecture) != OFFICIAL_ARCHITECTURE:
-        raise BuildError(
-            "official MP-SENet architecture does not match the published MPNet and metric discriminator"
-        )
+        return ()
+    if dict(architecture) == OFFICIAL_ARCHITECTURE:
+        return ()
+    differences: list[str] = []
+    for key in sorted(set(architecture) | set(OFFICIAL_ARCHITECTURE)):
+        actual = architecture.get(key)
+        published = OFFICIAL_ARCHITECTURE.get(key)
+        if actual != published:
+            differences.append(f"mp_senet.{key} is {actual!r}, published value is {published!r}")
+    return tuple(differences)
 
 
 def pack_forward(values: tuple[torch.Tensor, ...] | list[torch.Tensor]) -> dict[str, torch.Tensor]:

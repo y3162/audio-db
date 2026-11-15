@@ -31,7 +31,7 @@
 - `research` は適合する音声ペアを使え、公式再現としては記録しない。
 - 公式再現設定は `configs/reproduction/experiments/official/`（`official_faithful`）。1 step の宣言は `tests/fixtures/configs/experiments/`。Dataset と Protocol の定義は `configs/data/`。評価 DB の登録は `configs/db/init.yaml`。
 - 構造ハイパーパラメータは実験 YAML の `kwargs` または `kwargs.architecture` に書く。省略したキーは公開コンストラクタの既定値で埋め、YAML の値をその既定値で上書きしない。未知のキーは構築時に拒否する。仕様は `docs/experiments/MODELS.md`。
-- `official_faithful` の MP-SENet と MossFormerGAN は、公開構造定数と違う architecture を構築時に拒否する。比較相手はモデル自身の重みではない。`leakage_safe` と `research` はこの構造ロックを使わない。
+- `official_faithful` の MP-SENet と MossFormerGAN は、公開構造定数と違う architecture を構築時に差異として記録し、実行は拒否しない。比較相手はモデル自身の重みではない。`leakage_safe` と `research` はこの比較をしない。チャネルが割れない、型が違う、などの形の検査は残る。
 - DeepFilterNet3 の公式データは 48 kHz のままである。モデル、DFStream、損失は同じ `DFN3Params` を使う。`scan_backend` の fused と reference は構造の変更ではない。
 - 構造を変えた設定は `config_sha256` が変わり、変える前の checkpoint から再開できない。shape が違う state_dict の strict load は失敗する。
 - `dfn3.online.official@1` と `semambapp.gsr.official@1` は blocked。代替素材を公式データの再現と呼ばない。
@@ -43,7 +43,7 @@
 - 加算順は Objective に注入した項の順である。同じ損失式を複数の学習経路へ複製しない。参照ステップは自分の係数を残し、学習経路はその定数を黙って読まない。
 - 重み `1.0` は乗算しない。`0.0` でも項は実行し、その勾配は 0 である。有限な負の重みは、項が禁じていない限り許す。非有限、未知のキー、重複名、欠ける context は拒否する。実行時に YAML を書き換えない。
 - `config_sha256` は損失コンポーネントの class、kwargs、inject を含む。係数が違う checkpoint は再開できない。損失の内部状態は保存しない。重みのスケジュールは未実装。
-- `official_faithful` と `leakage_safe` の MP-SENet と MossFormerGAN は、公開係数と違う Objective を構築時に拒否する。`research` は項の追加、削除、重み変更ができる。SEMamba++ の `official_reproduction` と DeepFilterNet3 の公式データセットは、損失とは別に拒否されたままである。
+- `official_faithful` と `leakage_safe` の MP-SENet と MossFormerGAN は、公開係数と違う Objective を構築時に差異として記録し、実行は拒否しない。`research` はこの比較をしない。SEMamba++ の `official_reproduction` と DeepFilterNet3 の公式データセットは、損失とは別に拒否されたままである。AdamW であることは更新手順の前提として残し、学習率、betas、weight decay、eps、amsgrad、ExponentialLR の gamma の違いは記録して実行する。
 - モデルの STFT 幅、sample rate、local SNR の上下限は、損失の YAML 定数に複製せず、モデルから context へ渡す。
 
 ## モデルごとの更新

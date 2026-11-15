@@ -59,13 +59,13 @@ MossFormerGAN の time 項は、この波形 L1 ではない。clean の real �
 
 | claim | 損失 |
 |---|---|
-| `official_faithful`、`leakage_safe` | MP-SENet と MossFormerGAN は、公開した項、順、係数、内部パラメータと違う Objective を構築時に拒否する。`check_finite: true` も拒否する |
+| `official_faithful`、`leakage_safe` | MP-SENet と MossFormerGAN は、公開した項、順、係数、内部パラメータと違う Objective を構築時に差異として記録する。実行は拒否しない。`check_finite: true` も差異として記録する |
 | `research` | 項の追加、削除、重みの変更ができる。公式再現としては記録しない |
 | SEMamba++、DeepFilterNet3、TF-GridNet、TF-Locoformer | claim による損失の施錠は無い。出荷 YAML の係数をテストが公開値と比べる。SEMamba++ の `official_reproduction` と DeepFilterNet3 の公式データセットは、損失とは別に拒否されたままである |
 
 `experiment_claim` を公式にしただけでは、任意の損失は通らない。MP-SENet と MossFormerGAN は Objective の型、項の class、kwargs、重み、順を見る。
 
-公式が拒否する例は、項の欠落、順の入れ替え、係数の変更、位相 mode の変更、complex の内部 scale の変更、別の Objective class、`check_finite: true` である。
+公開値と違う例は、項の欠落、順の入れ替え、係数の変更、位相 mode の変更、complex の内部 scale の変更、別の Objective class、`check_finite: true` である。これらは差異として記録し、その Objective のまま学習する。非有限な係数、項名の不一致、スカラでない戻り値は、この記録とは別に拒否する。
 
 ## モデルごとのグラフ
 

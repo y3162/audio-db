@@ -129,6 +129,9 @@ class Experiment:
             self._lifecycle = lifecycle
             trainer.runtime = self._graph.runtime  # type: ignore[attr-defined]
             trainer.lifecycle = lifecycle  # type: ignore[attr-defined]
+            from src.experiments.execution.preflight import run_batch_probe
+
+            self._record_probe(run_batch_probe(self))
             result = trainer.fit()  # type: ignore[attr-defined]
             if not isinstance(result, RunResult):
                 raise BuildError(f"component {self.config.entry}: trainer did not return RunResult")
@@ -280,6 +283,32 @@ class Experiment:
         if callable(barrier):
             barrier()
 
+    def _record_probe(self, report: dict[str, object]) -> None:
+        """Store the batch probe on the latest launch. Every rank hears a write error."""
+
+        if self._directory is None:
+            return
+        runtime = self._runtime if self._runtime is not None else getattr(self._graph, "runtime", None)
+        error = ""
+        if int(getattr(runtime, "rank", 0)) == 0:
+            try:
+                from src.experiments.execution.run_record import record_batch_probe
+
+                record_batch_probe(self._directory, report)
+            except (OSError, CheckpointError) as exc:
+                error = str(exc)
+        gather = getattr(runtime, "gather_objects", None)
+        if callable(gather):
+            errors = gather(error)
+            failure = errors[0] if errors else ""
+        else:
+            failure = error
+        if failure:
+            raise CheckpointError(f"could not record the preflight batch: {failure}")
+        barrier = getattr(runtime, "barrier", None)
+        if callable(barrier):
+            barrier()
+
     def _is_primary(self) -> bool:
         return self._rank() == 0
 
@@ -334,27 +363,44 @@ def preflight_experiment(experiment: Experiment, directory: str | Path | None = 
     assert_output_allowed(target)
     target.mkdir(parents=True, exist_ok=True)
     graph = experiment._graph
+    trainer = graph.trainer
+    runtime = graph.runtime
+    trainer.runtime = runtime  # type: ignore[attr-defined]
+    from src.experiments.execution.preflight import run_batch_probe
+
+    try:
+        batch_probe = run_batch_probe(experiment)
+        status = "PASS"
+        error = None
+    except ExperimentError as exc:
+        batch_probe = {"enabled": True, "error": str(exc), "status": "error"}
+        status = "FAIL"
+        error = exc
     payload = {
-        "status": "PASS",
+        "status": status,
         "training_executed": False,
         "entry": experiment.config.entry,
         "component_ids": sorted(experiment.config.components),
         "state_ids": list(graph.states.ids()),
         "logical_step": 0,
         "optimizer_updates": {},
+        "batch_probe": batch_probe,
     }
     path = target / "preflight.json"
     runtime = graph.runtime
     if int(getattr(runtime, "rank", 0)) == 0:
-        from src.experiments.execution.run_record import publish_run_record
+        from src.experiments.execution.run_record import publish_run_record, record_batch_probe
 
         publish_run_record(target, experiment.config, resume=False)
+        record_batch_probe(target, batch_probe)
         temporary = target / ".preflight.json.tmp"
         temporary.write_text(json.dumps(payload, indent=2, sort_keys=True) + "\n", encoding="utf-8")
         os.replace(temporary, path)
     barrier = getattr(runtime, "barrier", None)
     if callable(barrier):
         barrier()
+    if error is not None:
+        raise error
     return path
 
 

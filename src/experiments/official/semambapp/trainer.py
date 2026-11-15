@@ -549,29 +549,41 @@ def positive_float(name: str, value: object) -> float:
         raise BuildError(f"{name} must be a positive finite number")
     return number
 
-def require_adamw(optimizer: torch.optim.Optimizer, name: str) -> None:
+def require_adamw(optimizer: torch.optim.Optimizer, name: str) -> tuple[str, ...]:
+    """Require AdamW. Record published hyperparameter differences and keep running."""
+
     if not isinstance(optimizer, torch.optim.AdamW):
         raise BuildError(f"{name} must be AdamW")
     if not optimizer.param_groups:
         raise BuildError(f"{name} has no parameters")
-    for group in optimizer.param_groups:
+    differences: list[str] = []
+    for index, group in enumerate(optimizer.param_groups):
+        label = f"{name} group {index}"
         if float(group["lr"]) != OFFICIAL_LR:
-            raise BuildError(f"{name} learning rate must be {OFFICIAL_LR}")
+            differences.append(f"{label} learning rate is {group['lr']}, published value is {OFFICIAL_LR}")
         betas = tuple(float(value) for value in group["betas"])
         if betas != OFFICIAL_BETAS:
-            raise BuildError(f"{name} betas must be {OFFICIAL_BETAS}")
+            differences.append(f"{label} betas are {betas}, published value is {OFFICIAL_BETAS}")
         if float(group["weight_decay"]) != OFFICIAL_WEIGHT_DECAY:
-            raise BuildError(f"{name} weight_decay must be {OFFICIAL_WEIGHT_DECAY}")
+            differences.append(
+                f"{label} weight decay is {group['weight_decay']}, published value is {OFFICIAL_WEIGHT_DECAY}"
+            )
         if float(group["eps"]) != 1e-8:
-            raise BuildError(f"{name} eps must be 1e-8")
+            differences.append(f"{label} eps is {group['eps']}, published value is 1e-8")
         if bool(group.get("amsgrad", False)):
-            raise BuildError(f"{name} amsgrad must stay off")
+            differences.append(f"{label} amsgrad is true, published value is false")
+    optimizer.official_differences = tuple(differences)  # type: ignore[attr-defined]
+    return tuple(differences)
 
-def require_scheduler(scheduler: torch.optim.lr_scheduler.ExponentialLR, name: str) -> None:
+def require_scheduler(scheduler: torch.optim.lr_scheduler.ExponentialLR, name: str) -> tuple[str, ...]:
     if not isinstance(scheduler, torch.optim.lr_scheduler.ExponentialLR):
         raise BuildError(f"{name} must be ExponentialLR")
     if float(scheduler.gamma) != OFFICIAL_GAMMA:
-        raise BuildError(f"{name} gamma must be {OFFICIAL_GAMMA}")
+        difference = (f"{name} gamma is {scheduler.gamma}, published value is {OFFICIAL_GAMMA}",)
+        scheduler.official_differences = difference  # type: ignore[attr-defined]
+        return difference
+    scheduler.official_differences = ()  # type: ignore[attr-defined]
+    return ()
 
 def require_disjoint(optim_g: torch.optim.Optimizer, optim_d: torch.optim.Optimizer) -> None:
     generator_ids = {id(parameter) for group in optim_g.param_groups for parameter in group["params"]}

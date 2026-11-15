@@ -137,8 +137,10 @@ class MossFormerGANTrainer(ProgressView):
         require_disjoint(optim_g, optim_d)
         if experiment_claim not in CLAIMS:
             raise BuildError("experiment_claim must be official_faithful, leakage_safe, or research")
-        require_official_architecture(generator.unwrapped().architecture, experiment_claim)
-        require_mossformer(generator_objective, discriminator_objective, experiment_claim)
+        generator.unwrapped().official_differences = (
+            *require_official_architecture(generator.unwrapped().architecture, experiment_claim),
+            *require_mossformer(generator_objective, discriminator_objective, experiment_claim),
+        )
         if not hasattr(data, "train_epoch") or not hasattr(data, "validation_epoch"):
             raise BuildError("data must provide train_epoch and validation_epoch")
         optim_g_id = getattr(optim_g, "_experiment_component_id", None)
@@ -672,21 +674,33 @@ def positive_float(name: str, value: object) -> float:
         raise BuildError(f"{name} must be a positive number")
     return float(value)
 
-def require_adamw(optimizer: torch.optim.Optimizer, name: str, *, lr: float) -> None:
+def require_adamw(optimizer: torch.optim.Optimizer, name: str, *, lr: float) -> tuple[str, ...]:
+    """Require AdamW. Record published hyperparameter differences and keep running.
+
+    More than one parameter group is allowed. Each group is compared with the
+    published learning rate, betas, weight decay, eps, and amsgrad.
+    """
+
     if not isinstance(optimizer, torch.optim.AdamW):
         raise BuildError(f"{name} must be AdamW")
-    if len(optimizer.param_groups) != 1:
-        raise BuildError(f"{name} must have one parameter group")
-    group = optimizer.param_groups[0]
-    if float(group["lr"]) != float(lr):
-        raise BuildError(f"{name} learning rate must be {lr}")
-    betas = tuple(float(item) for item in group["betas"])
-    if betas != OFFICIAL_BETAS:
-        raise BuildError(f"{name} betas must be {OFFICIAL_BETAS}")
-    if float(group["weight_decay"]) != float(OFFICIAL_ADAMW_WEIGHT_DECAY):
-        raise BuildError(f"{name} weight decay must be the PyTorch AdamW default {OFFICIAL_ADAMW_WEIGHT_DECAY}")
-    if float(group["eps"]) != 1e-8 or bool(group["amsgrad"]):
-        raise BuildError(f"{name} must keep AdamW eps 1e-8 and amsgrad false")
+    if not optimizer.param_groups:
+        raise BuildError(f"{name} has no parameters")
+    differences: list[str] = []
+    for index, group in enumerate(optimizer.param_groups):
+        label = f"{name} group {index}"
+        if float(group["lr"]) != float(lr):
+            differences.append(f"{label} learning rate is {group['lr']}, published value is {lr}")
+        betas = tuple(float(item) for item in group["betas"])
+        if betas != OFFICIAL_BETAS:
+            differences.append(f"{label} betas are {betas}, published value is {OFFICIAL_BETAS}")
+        if float(group["weight_decay"]) != float(OFFICIAL_ADAMW_WEIGHT_DECAY):
+            differences.append(
+                f"{label} weight decay is {group['weight_decay']}, published value is {OFFICIAL_ADAMW_WEIGHT_DECAY}"
+            )
+        if float(group["eps"]) != 1e-8 or bool(group["amsgrad"]):
+            differences.append(f"{label} eps is {group['eps']} and amsgrad is {bool(group['amsgrad'])}")
+    optimizer.official_differences = tuple(differences)  # type: ignore[attr-defined]
+    return tuple(differences)
 
 def require_disjoint(generator: torch.optim.Optimizer, discriminator: torch.optim.Optimizer) -> None:
     left = {id(parameter) for group in generator.param_groups for parameter in group["params"]}

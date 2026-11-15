@@ -668,8 +668,10 @@ def require_mp_gan_setup(
         raise BuildError("data must provide train_epoch and validation_epoch")
     if experiment_claim not in _CLAIMS:
         raise BuildError("experiment_claim must be official_faithful, leakage_safe, or research")
-    require_official_architecture(generator.unwrapped().architecture, experiment_claim)
-    require_mp_senet(signal_objective, metric_objective, discriminator_objective, experiment_claim)
+    generator.unwrapped().official_differences = (
+        *require_official_architecture(generator.unwrapped().architecture, experiment_claim),
+        *require_mp_senet(signal_objective, metric_objective, discriminator_objective, experiment_claim),
+    )
     optim_g_id = getattr(optim_g, "_experiment_component_id", None)
     optim_d_id = getattr(optim_d, "_experiment_component_id", None)
     if not isinstance(optim_g_id, str) or not isinstance(optim_d_id, str):

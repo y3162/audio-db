@@ -1,14 +1,14 @@
-"""Official objective graphs and the checks that refuse a different one.
+"""Official objective graphs and the published-coefficient comparison.
 
 The numbers here are the published coefficients. Training reads the injected
-module. These constants are only the lock for ``official_faithful`` and
-``leakage_safe``, and the explicit graph used by tests that build a trainer
-without YAML.
+module. ``official_faithful`` and ``leakage_safe`` record a difference when the
+built objective does not match these constants. They do not refuse the run.
+``research`` is not compared. Tests that build a trainer without YAML use the
+same graphs.
 """
 
 from __future__ import annotations
 
-from src.experiments.errors import BuildError
 from src.experiments.training.loss_terms import (
     ContextTerm,
     MagnitudeMSE,
@@ -116,41 +116,62 @@ def semamba_discriminator_objective() -> WeightedObjective:
     return WeightedObjective([term], {"discriminator": 1.0})
 
 
-def require_weighted(objective: object, claim: str, spec: tuple[tuple[str, float, type, dict], ...], *, what: str) -> None:
+def require_weighted(objective: object, claim: str, spec: tuple[tuple[str, float, type, dict], ...], *, what: str) -> tuple[str, ...]:
+    """Record coefficient and term differences. Do not refuse a changed loss.
+
+    A missing attribute on a term that is present is still reported. The
+    objective keeps running with the weights it was given.
+    """
+
     if claim not in _LOCKED:
-        return
+        return ()
     if type(objective) is not WeightedObjective:
-        raise BuildError(f"{claim} {what} must be WeightedObjective")
+        return (f"{claim} {what} is {type(objective).__name__}, published objective is WeightedObjective",)
+    differences: list[str] = []
     if objective.check_finite:
-        raise BuildError(f"{claim} {what} cannot set check_finite")
+        differences.append(f"{claim} {what} sets check_finite")
     expected = tuple(name for name, _weight, _cls, _kwargs in spec)
     if objective.order != expected:
-        raise BuildError(f"{claim} {what} term order must be {expected}")
+        differences.append(f"{claim} {what} term order is {objective.order}, published order is {expected}")
     for name, weight, cls, kwargs in spec:
+        if name not in objective.weights:
+            differences.append(f"{claim} {what} is missing term {name}")
+            continue
         if objective.weights[name] != weight:
-            raise BuildError(f"{claim} {what} weight for {name} must be {weight}")
+            differences.append(
+                f"{claim} {what} weight for {name} is {objective.weights[name]}, published weight is {weight}"
+            )
         term = objective.term(name)
         if type(term) is not cls:
-            raise BuildError(f"{claim} {what} term {name} must be {cls.__name__}")
+            differences.append(f"{claim} {what} term {name} is {type(term).__name__}, published class is {cls.__name__}")
         for key, value in kwargs.items():
             got = getattr(term, key)
             if got != value:
-                raise BuildError(f"{claim} {what} term {name} {key} must be {value}")
+                differences.append(f"{claim} {what} term {name} {key} is {got!r}, published value is {value!r}")
+    for name in objective.order:
+        if name not in expected:
+            differences.append(f"{claim} {what} adds term {name}")
+    return tuple(differences)
 
 
-def require_objective_type(objective: object, claim: str, cls: type, *, what: str) -> None:
+def require_objective_type(objective: object, claim: str, cls: type, *, what: str) -> tuple[str, ...]:
     if claim not in _LOCKED:
-        return
+        return ()
     if type(objective) is not cls:
-        raise BuildError(f"{claim} {what} must be {cls.__name__}")
+        return (f"{claim} {what} is {type(objective).__name__}, published class is {cls.__name__}",)
+    return ()
 
 
-def require_mp_senet(signal: object, metric: object, discriminator: object, claim: str) -> None:
-    require_weighted(signal, claim, MP_SIGNAL, what="signal objective")
-    require_weighted(metric, claim, MP_METRIC, what="metric objective")
-    require_objective_type(discriminator, claim, MPSENetDiscriminatorObjective, what="discriminator objective")
+def require_mp_senet(signal: object, metric: object, discriminator: object, claim: str) -> tuple[str, ...]:
+    return (
+        *require_weighted(signal, claim, MP_SIGNAL, what="signal objective"),
+        *require_weighted(metric, claim, MP_METRIC, what="metric objective"),
+        *require_objective_type(discriminator, claim, MPSENetDiscriminatorObjective, what="discriminator objective"),
+    )
 
 
-def require_mossformer(generator: object, discriminator: object, claim: str) -> None:
-    require_weighted(generator, claim, MOSS_GENERATOR, what="generator objective")
-    require_objective_type(discriminator, claim, MossFormerDiscriminatorObjective, what="discriminator objective")
+def require_mossformer(generator: object, discriminator: object, claim: str) -> tuple[str, ...]:
+    return (
+        *require_weighted(generator, claim, MOSS_GENERATOR, what="generator objective"),
+        *require_objective_type(discriminator, claim, MossFormerDiscriminatorObjective, what="discriminator objective"),
+    )

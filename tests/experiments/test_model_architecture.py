@@ -64,10 +64,10 @@ class ModelArchitectureTests(unittest.TestCase):
         self.assertEqual(plain.generator.state_dict().keys(), explicit.generator.state_dict().keys())
         for key, left in plain.state_dict().items():
             self.assertTrue(torch.equal(left, explicit.state_dict()[key]), key)
-        require_mp(explicit.architecture, "official_faithful")
-        with self.assertRaises(BuildError):
-            require_mp(mp_architecture(**_mp(num_tsconformers=2)), "official_faithful")
-        require_mp(mp_architecture(**_mp(num_tsconformers=2)), "research")
+        self.assertEqual(require_mp(explicit.architecture, "official_faithful"), ())
+        differences = require_mp(mp_architecture(**_mp(num_tsconformers=2)), "official_faithful")
+        self.assertTrue(any("num_tsconformers" in item for item in differences))
+        self.assertEqual(require_mp(mp_architecture(**_mp(num_tsconformers=2)), "research"), ())
 
     def test_mp_senet_research_depth_and_discriminator_change_the_modules(self) -> None:
         common = _mp(
@@ -110,9 +110,9 @@ class ModelArchitectureTests(unittest.TestCase):
         spectrum = torch.randn(1, 2, 4, 201)
         real, imag = one(spectrum)
         (real.square().mean() + imag.square().mean()).backward()
-        require_moss(MossFormerGANGenerator(seed=2).architecture, "official_faithful")
-        with self.assertRaises(BuildError):
-            require_moss(one.architecture, "official_faithful")
+        self.assertEqual(require_moss(MossFormerGANGenerator(seed=2).architecture, "official_faithful"), ())
+        differences = require_moss(one.architecture, "official_faithful")
+        self.assertTrue(any("num_channel" in item or "n_layers" in item for item in differences))
         with self.assertRaises(BuildError):
             MossFormerGANGenerator(seed=2, **dict(small, n_head=3))
         with self.assertRaises(ValueError):

@@ -701,15 +701,16 @@ class MossFormerGANAlgorithmTests(unittest.TestCase):
             leakage._check_claim()
         bad = torch.optim.AdamW(self.optim_d.param_groups[0]["params"], lr=1e-3, weight_decay=0.0)
         bad._experiment_component_id = "optim_d"  # type: ignore[attr-defined]
-        with self.assertRaises(BuildError):
-            MossFormerGANTrainer(
-                self.generator,
-                self.discriminator,
-                _IdleData(),
-                self.optim_g,
-                bad,
-                **_moss_kwargs(), max_logical_steps=1,
-            )
+        changed = MossFormerGANTrainer(
+            self.generator,
+            self.discriminator,
+            _IdleData(),
+            self.optim_g,
+            bad,
+            **_moss_kwargs(), max_logical_steps=1,
+        )
+        self.assertTrue(any("weight decay" in item for item in bad.official_differences))
+        self.assertEqual(changed.optim_d.param_groups[0]["weight_decay"], 0.0)
 
     def test_profile_must_match_the_claim(self) -> None:
         cases = (

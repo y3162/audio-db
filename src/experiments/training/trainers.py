@@ -79,6 +79,70 @@ class StandardTrainer:
         self.stop_reason = "initialized"
         self._restored = False
 
+    def preflight_probe(self) -> dict[str, Any]:
+        """Run one accumulation of forward, loss, and backward. Do not update.
+
+        The caller snapshots and restores RNG, parameters, buffers, gradients,
+        optimizer state, and the data cursor. This method does not advance
+        ``logical_step`` and does not call the optimizer.
+        """
+
+        runtime = getattr(self, "runtime", None)
+        if not isinstance(runtime, ProcessRuntime):
+            raise BuildError("preflight has no runtime")
+        component_id = getattr(self, "_experiment_component_id", "trainer")
+        self._require_group_size(component_id)
+        was_training = bool(self.model.training)
+        self.model.train()
+        view = self.data.train_epoch(0, start_update=0)
+        try:
+            if view.updates < 1 or self.accumulation > view.updates:
+                raise RuntimeFailure(
+                    f"component {component_id}: preflight accumulation {self.accumulation} "
+                    f"does not fit in {view.updates} updates"
+                )
+            self.optimizer.zero_grad(set_to_none=True)
+            total: torch.Tensor | None = None
+            sample_ids: list[str] = []
+            for offset in range(self.accumulation):
+                sync = offset == self.accumulation - 1
+                batches = view.batch(offset)
+                sample_ids.extend(batch.sample_id for batch in batches)
+                with runtime.sync_gradients([self.model], enabled=sync):
+                    with runtime.autocast():
+                        micro = self._forward_loss(batches, component_id, runtime)
+                    micro = micro / self.accumulation
+                    runtime.backward(micro)
+                detached = micro.detach()
+                total = detached if total is None else total + detached
+            if total is None or total.numel() != 1 or not bool(torch.isfinite(total).all()):
+                raise RuntimeFailure(f"component {component_id}: preflight loss is not finite")
+            missing = 0
+            present = 0
+            for parameter in self.model.parameters:
+                if not parameter.requires_grad:
+                    continue
+                if parameter.grad is None:
+                    missing += 1
+                else:
+                    present += 1
+            if missing:
+                raise RuntimeFailure(
+                    f"component {component_id}: preflight left {missing} trainable parameters without gradients"
+                )
+            return {
+                "finite": True,
+                "loss": float(total),
+                "parameters_missing_grad": missing,
+                "parameters_with_grad": present,
+                "sample_id": ",".join(sample_ids),
+                "status": "ok",
+            }
+        finally:
+            if not was_training:
+                self.model.eval()
+            _close_epoch_view(view)
+
     def fit(self) -> RunResult:
         """Run until ``max_logical_steps``. A restored trainer continues.
 

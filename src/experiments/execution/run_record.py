@@ -80,6 +80,23 @@ def publish_run_record(directory: Path, config: ExperimentConfig, *, resume: boo
     _atomic_text(meta_path, json.dumps(meta, indent=2, sort_keys=True) + "\n")
 
 
+def record_batch_probe(directory: Path, report: dict[str, object]) -> None:
+    """Attach the preflight batch report to the latest launch. Rank 0 calls this."""
+
+    meta_path = directory / "metadata.json"
+    if not meta_path.is_file():
+        raise CheckpointError(f"run metadata is missing: {meta_path}")
+    try:
+        loaded = json.loads(meta_path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError) as exc:
+        raise CheckpointError(f"cannot read run metadata {meta_path}: {exc}") from exc
+    launches = loaded.get("launches") if isinstance(loaded, dict) else None
+    if not isinstance(launches, list) or not launches or not isinstance(launches[-1], dict):
+        raise CheckpointError(f"run metadata is invalid: {meta_path}")
+    launches[-1]["batch_probe"] = report
+    _atomic_text(meta_path, json.dumps(loaded, indent=2, sort_keys=True) + "\n")
+
+
 def _atomic_text(path: Path, text: str) -> None:
     temporary = path.with_name(f".{path.name}.tmp")
     try:

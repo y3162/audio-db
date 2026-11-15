@@ -268,9 +268,14 @@ class OfficialGraphTests(unittest.TestCase):
             self.assertTrue(torch.equal(actual, expected))
         wrong = mp_senet_signal_objective()
         wrong.weights["magnitude"] = 0.4
-        with self.assertRaises(BuildError):
-            require_mp_senet(wrong, built["metric_objective"], built["discriminator_objective"], "official_faithful")
-        require_mp_senet(wrong, built["metric_objective"], built["discriminator_objective"], "research")
+        differences = require_mp_senet(
+            wrong, built["metric_objective"], built["discriminator_objective"], "official_faithful"
+        )
+        self.assertTrue(any("magnitude" in item and "0.4" in item for item in differences))
+        self.assertEqual(
+            require_mp_senet(wrong, built["metric_objective"], built["discriminator_objective"], "research"),
+            (),
+        )
 
     def test_a_different_coefficient_changes_config_sha256(self) -> None:
         config = load_experiment(_FIXTURES["mp_senet"])
@@ -337,8 +342,14 @@ components:
     def test_mossformer_yaml_is_locked_for_both_official_claims(self) -> None:
         for name in ("mossformergan_se_16k.yaml", "mossformergan_se_16k_leakage_safe.yaml"):
             built = _build_losses(load_experiment(FIX / name))
-            require_mossformer(built["generator_objective"], built["discriminator_objective"], "official_faithful")
-            require_mossformer(built["generator_objective"], built["discriminator_objective"], "leakage_safe")
+            self.assertEqual(
+                require_mossformer(built["generator_objective"], built["discriminator_objective"], "official_faithful"),
+                (),
+            )
+            self.assertEqual(
+                require_mossformer(built["generator_objective"], built["discriminator_objective"], "leakage_safe"),
+                (),
+            )
 
     def test_deepfilternet_yaml_matches_the_uninjected_oracle(self) -> None:
         torch.manual_seed(0)

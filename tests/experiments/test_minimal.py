@@ -24,15 +24,40 @@ ROOT = Path(__file__).resolve().parents[2]
 EXAMPLE = ROOT / "tests/fixtures/configs/experiments/linear_supervised.yaml"
 
 
+class DropLinear(torch.nn.Module):
+    """Linear layer plus dropout, so a preflight that leaks RNG changes step 1."""
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.linear = torch.nn.Linear(8, 8)
+        self.drop = torch.nn.Dropout(0.5)
+
+    def forward(self, inputs: torch.Tensor) -> torch.Tensor:
+        return self.drop(self.linear(inputs))
+
+
 def _weights(experiment: object) -> list[torch.Tensor]:
     module = experiment.get("model").state_module  # type: ignore[attr-defined]
     return [parameter.detach().cpu().clone() for parameter in module.parameters()]
 
 
-def _config_text(directory: Path, steps: int) -> Path:
+def _config_text(
+    directory: Path,
+    steps: int,
+    *,
+    model: str | None = None,
+    preflight: bool | None = None,
+) -> Path:
     text = EXAMPLE.read_text(encoding="utf-8")
     text = text.replace("directory: runs/linear-supervised", f"directory: {directory / 'out'}")
     text = text.replace("max_logical_steps: 4", f"max_logical_steps: {steps}")
+    if model is not None:
+        text = text.replace(
+            "class: torch.nn.Linear\n    kwargs: {in_features: 8, out_features: 8}\n",
+            f"class: {model}\n    kwargs: {{}}\n",
+        )
+    if preflight is not None:
+        text = text.replace("precision: fp32\n", f"precision: fp32\n    preflight: {str(preflight).lower()}\n")
     path = directory / "linear.yaml"
     path.write_text(text, encoding="utf-8")
     return path
@@ -93,6 +118,9 @@ class MinimalExperimentTests(unittest.TestCase):
         payload = json.loads(path.read_text(encoding="utf-8"))
         self.assertEqual(payload["training_executed"], False)
         self.assertEqual(payload["logical_step"], 0)
+        self.assertEqual(payload["batch_probe"]["status"], "ok")
+        self.assertTrue(payload["batch_probe"]["finite"])
+        self.assertGreater(payload["batch_probe"]["parameters_with_grad"], 0)
         self.assertNotIn("loss", payload["state_ids"])
         after = _weights(experiment)
         for left, right in zip(before, after):
@@ -140,6 +168,7 @@ class MinimalExperimentTests(unittest.TestCase):
         self.assertEqual(preflight.returncode, 0, preflight.stderr)
         report = json.loads((preflight_dir / "preflight.json").read_text(encoding="utf-8"))
         self.assertFalse(report["training_executed"])
+        self.assertEqual(report["batch_probe"]["status"], "ok")
         self.assertFalse((preflight_dir / "metrics.jsonl").exists())
 
         failed = subprocess.run(
@@ -192,6 +221,24 @@ class MinimalExperimentTests(unittest.TestCase):
         self.assertEqual(resumed.stop_reason, "completed")
         self.assertEqual(len((out / "metrics.jsonl").read_text(encoding="utf-8").splitlines()), 2)
 
+    def test_preflight_does_not_change_the_first_dropout_step(self) -> None:
+        probed = Path(self.enterContext(self._directory()))
+        skipped = Path(self.enterContext(self._directory()))
+        probed_run = self._run(probed, steps=1, model="tests.experiments.test_minimal.DropLinear")
+        skipped_run = self._run(
+            skipped,
+            steps=1,
+            model="tests.experiments.test_minimal.DropLinear",
+            preflight=False,
+        )
+        for left, right in zip(probed_run["after"], skipped_run["after"], strict=True):
+            self.assertTrue(torch.equal(left, right))
+        self.assertEqual(probed_run["losses"], skipped_run["losses"])
+        probed_meta = json.loads((probed / "out" / "metadata.json").read_text(encoding="utf-8"))
+        skipped_meta = json.loads((skipped / "out" / "metadata.json").read_text(encoding="utf-8"))
+        self.assertEqual(probed_meta["launches"][0]["batch_probe"]["status"], "ok")
+        self.assertEqual(skipped_meta["launches"][0]["batch_probe"]["status"], "disabled")
+
     def test_ctrl_c_does_not_leave_the_status_running(self) -> None:
         directory = Path(self.enterContext(self._directory()))
         experiment = build_experiment(load_experiment(_config_text(directory, 2)))
@@ -202,8 +249,15 @@ class MinimalExperimentTests(unittest.TestCase):
         self.assertEqual(status["status"], "FAILED")
         self.assertFalse((directory / "out" / "complete.json").exists())
 
-    def _run(self, directory: Path, *, steps: int) -> dict[str, object]:
-        experiment = build_experiment(load_experiment(_config_text(directory, steps)))
+    def _run(
+        self,
+        directory: Path,
+        *,
+        steps: int,
+        model: str | None = None,
+        preflight: bool | None = None,
+    ) -> dict[str, object]:
+        experiment = build_experiment(load_experiment(_config_text(directory, steps, model=model, preflight=preflight)))
         before = _weights(experiment)
         result = experiment.run()
         return {

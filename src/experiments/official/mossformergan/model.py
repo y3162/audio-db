@@ -101,13 +101,24 @@ def architecture_config(
         "win_len": win_len,
     }
 
-def require_official_architecture(architecture: Mapping[str, Any], claim: str) -> None:
-    """Refuse a non-published generator structure on the official-faithful path."""
+def require_official_architecture(architecture: Mapping[str, Any], claim: str) -> tuple[str, ...]:
+    """Record published-structure differences. A different width still runs.
+
+    Channel divisibility and the ``se_16k`` variant stay in
+    ``architecture_config``. This function does not refuse a run.
+    """
 
     if claim != "official_faithful":
-        return
-    if dict(architecture) != OFFICIAL_ARCHITECTURE:
-        raise BuildError("official MossFormerGAN architecture does not match the published SyncANet")
+        return ()
+    if dict(architecture) == OFFICIAL_ARCHITECTURE:
+        return ()
+    differences: list[str] = []
+    for key in sorted(set(architecture) | set(OFFICIAL_ARCHITECTURE)):
+        actual = architecture.get(key)
+        published = OFFICIAL_ARCHITECTURE.get(key)
+        if actual != published:
+            differences.append(f"mossformergan.{key} is {actual!r}, published value is {published!r}")
+    return tuple(differences)
 
 class MossFormerGANGenerator(torch.nn.Module):
     """G1. The constructor draws only the first SyncANet."""

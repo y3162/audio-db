@@ -519,18 +519,25 @@ def positive_float(name: str, value: object) -> float:
     return float(value)
 
 def require_adamw(optimizer: torch.optim.Optimizer) -> str:
+    """Require AdamW and a component id. Record published hyperparameter differences."""
+
     if not isinstance(optimizer, torch.optim.AdamW):
         raise BuildError("DeepFilterNet3 optimizer must be AdamW")
-    group = optimizer.param_groups[0]
-    if float(group["lr"]) != 0.001:
-        raise BuildError("DeepFilterNet3 learning rate must be 0.001")
-    betas = tuple(group["betas"])
-    if betas != (0.9, 0.999):
-        raise BuildError("DeepFilterNet3 betas must be (0.9, 0.999)")
-    if float(group["weight_decay"]) != 1e-12:
-        raise BuildError("DeepFilterNet3 weight decay must be 1e-12")
-    if group.get("amsgrad") is not True:
-        raise BuildError("DeepFilterNet3 AdamW requires amsgrad")
+    if not optimizer.param_groups:
+        raise BuildError("DeepFilterNet3 optimizer has no parameters")
+    differences: list[str] = []
+    for index, group in enumerate(optimizer.param_groups):
+        label = f"deepfilternet3 optimizer group {index}"
+        if float(group["lr"]) != 0.001:
+            differences.append(f"{label} learning rate is {group['lr']}, published value is 0.001")
+        betas = tuple(float(value) for value in group["betas"])
+        if betas != (0.9, 0.999):
+            differences.append(f"{label} betas are {betas}, published value is (0.9, 0.999)")
+        if float(group["weight_decay"]) != 1e-12:
+            differences.append(f"{label} weight decay is {group['weight_decay']}, published value is 1e-12")
+        if group.get("amsgrad") is not True:
+            differences.append(f"{label} amsgrad is {group.get('amsgrad')!r}, published value is true")
+    optimizer.official_differences = tuple(differences)  # type: ignore[attr-defined]
     component_id = getattr(optimizer, "_experiment_component_id", None)
     if not isinstance(component_id, str):
         raise BuildError("optimizer has no component id")
