@@ -69,7 +69,7 @@ def compare_official() -> dict:
     import torch
 
     from src.experiments.official.mossformergan.discriminator import Discriminator
-    from src.experiments.official.mossformergan.reference import MossFormerGANTask
+    from tests.numerics.reference.mossformer_task import MossFormerGANTask
 
     result: dict = {"status": "ok", "seed": SEED}
     try:

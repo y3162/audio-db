@@ -34,7 +34,7 @@ from src.experiments.official.mossformergan.models import (  # noqa: E402
     MossFormerGANDiscriminator,
     MossFormerGANGenerator,
 )
-from src.experiments.official.mossformergan.reference import MossFormerGANTask  # noqa: E402
+from tests.numerics.reference.mossformer_task import MossFormerGANTask  # noqa: E402
 from src.experiments.official.mossformergan.trainer import MossFormerGANTrainer  # noqa: E402
 from src.experiments.training.official_objectives import (  # noqa: E402
     mossformer_discriminator_objective,

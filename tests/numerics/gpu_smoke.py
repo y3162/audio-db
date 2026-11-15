@@ -8,7 +8,7 @@ from tests.numerics.reference.mp_senet_task import MPSENetTask
 from tests.numerics.reference.tf_gridnet_task import TFGridNetTask
 from tests.numerics.reference.semamba_task import SEMambaTask
 from tests.numerics.reference.deepfilternet_task import DeepFilterNetTask
-from src.experiments.official.mossformergan.reference import MossFormerGANTask
+from tests.numerics.reference.mossformer_task import MossFormerGANTask
 
 torch.set_num_threads(4)
 print('gpu',torch.cuda.get_device_properties(0), flush=True)

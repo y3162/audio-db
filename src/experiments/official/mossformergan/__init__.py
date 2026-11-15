@@ -1,1 +1,1 @@
-"""MossFormerGAN training components. Import trainer, models, or reference directly."""
+"""MossFormerGAN training components. Import trainer or model directly."""

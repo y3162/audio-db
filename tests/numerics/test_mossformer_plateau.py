@@ -5,7 +5,7 @@ import unittest
 import torch
 from torch import nn
 
-from src.experiments.official.mossformergan.reference import (
+from tests.numerics.reference.mossformer_task import (
     OFFICIAL_ADAMW_WEIGHT_DECAY,
     MossFormerGANTask,
     mossformer_validation_decision,

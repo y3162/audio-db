@@ -12,7 +12,7 @@ from src.se import build_model, load_enhancer
 from src.experiments.calc.rng import seed_model_init, set_determinism
 from src.experiments.calc.errors import TrainingError
 from tests.numerics.reference.deepfilternet_task import DeepFilterNetTask, deepfilter_cosine_schedules
-from src.experiments.official.mossformergan.reference import MossFormerGANTask
+from tests.numerics.reference.mossformer_task import MossFormerGANTask
 from tests.numerics.reference.semamba_task import SEMambaTask
 from tests.numerics.reference.tf_gridnet_task import TFGridNetTask
 from tests.numerics.support import accelerator_device, enable_accelerator_determinism, paired_dataset, tiny_config

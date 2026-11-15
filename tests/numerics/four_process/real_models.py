@@ -553,7 +553,7 @@ def _official_moss_losses(generator, discriminator, normalized, teacher, device)
 
 def _independent_moss_losses(generator, discriminator, normalized, teacher, sample_rate):
     from src.experiments.calc.losses import metric_targets
-    from src.experiments.official.mossformergan.reference import _compress, _istft, _stft, _uncompress
+    from tests.numerics.reference.mossformer_task import _compress, _istft, _stft, _uncompress
     noisy_spec = _compress(_stft(normalized, 400, 100, 400)).permute(0, 1, 3, 2)
     real, imag = generator(noisy_spec)
     real = real.permute(0, 1, 3, 2)

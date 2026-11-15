@@ -2,7 +2,7 @@
 import unittest
 import torch
 from src.experiments.official.mossformergan.discriminator import Discriminator
-from src.experiments.official.mossformergan.reference import _uncompress, _istft
+from tests.numerics.reference.mossformer_task import _uncompress, _istft
 
 class MossFormerDiscriminatorTests(unittest.TestCase):
     def test_reconstruction_gradient_uses_shared_phase(self):

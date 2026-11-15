@@ -28,7 +28,7 @@ import utils.misc as misc  # noqa: E402
 from solver import Solver  # noqa: E402
 from utils.misc import pesq_loss  # noqa: E402
 from src.experiments.calc.stft import centered_stft  # noqa: E402
-from src.experiments.official.mossformergan.reference import MossFormerGANTask  # noqa: E402
+from tests.numerics.reference.mossformer_task import MossFormerGANTask  # noqa: E402
 from tests.experiments.test_mossformergan import _task_config  # noqa: E402
 from tests.numerics.reference.final_mossformer_solver import _Pairs, _tone_pair  # noqa: E402
 

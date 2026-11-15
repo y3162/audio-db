@@ -14,7 +14,7 @@ from src.experiments.data.sampling.order import (
     recipe_validation_positions,
     sampler_batch_count,
 )
-from src.experiments.official.mossformergan.reference import average_new_grad, official_validation_mean
+from tests.numerics.reference.mossformer_task import average_new_grad, official_validation_mean
 
 
 def _official_rank_slices(size: int, world: int, epoch: int = 0) -> list[list[int]]:

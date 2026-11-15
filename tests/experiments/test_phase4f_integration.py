@@ -231,7 +231,7 @@ class Phase4FCheckpointAndExportTests(unittest.TestCase):
 
     def _execute(self, config: Path, *, resume: Path | None = None, pesq: bool = False) -> None:
         if pesq:
-            with patch("src.experiments.official.mossformergan.reference.metric_targets", _pesq_stub):
+            with patch("src.experiments.official.mossformergan.loss.metric_targets", _pesq_stub):
                 Experiment(load_experiment(config)).run(resume=resume)
             return
         Experiment(load_experiment(config)).run(resume=resume)

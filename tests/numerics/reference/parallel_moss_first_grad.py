@@ -27,7 +27,7 @@ sys.path.insert(0, str(SE))
 
 from models.mossformer_gan.generator import SyncANet  # noqa: E402
 from utils.misc import power_compress, stft  # noqa: E402
-from src.experiments.official.mossformergan.reference import (  # noqa: E402
+from tests.numerics.reference.mossformer_task import (  # noqa: E402
     MossFormerGANTask,
     _GAN,
     _MAG,

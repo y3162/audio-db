@@ -341,7 +341,7 @@ def _arm_stop_probe(probe: object, cls: type) -> None:
         probe.progress = DFProgress.initial("optimizer", 1)
         return
     if cls is MossFormerGANTrainer:
-        from src.experiments.official.mossformergan.state import MossProgress
+        from src.experiments.official.mossformergan.trainer import MossProgress
 
         probe.progress = MossProgress.initial("optim_g", "optim_d", "research")
         return
