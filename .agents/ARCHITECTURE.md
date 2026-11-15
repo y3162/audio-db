@@ -21,7 +21,7 @@
 - 再開は現行の設定ハッシュだけを受ける。Selector のクラス ID と設定はハッシュとは別に照合し、停止ポリシーもクラス ID と状態を照合する。旧設定世代のハッシュを再開時に受け入れない。
 - `COMPLETED` と `complete.json` は、全プロセスが正常終了したあとに書く。Launcher の下では Launcher が書く。一部の rank だけが学習を続ける経路を作らない。
 - `provenance_sha256` が None の checkpoint は来歴なしのまま再開できる。後から同じディレクトリに JSON ができても、その checkpoint を証明済みにしない。
-- FSDP、sharded checkpoint、AMP BF16 は未実装。複数 Optimizer の `amp_fp16` は拒否する。
+- FSDP と sharded checkpoint は未実装。`fp16` は CUDA autocast と GradScaler、`bf16` は CUDA autocast だけで Scaler は無い。CPU への黙った降格はしない。複数 Optimizer の `fp16` は拒否する。
 
 ## 公式再現と研究
 

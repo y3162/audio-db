@@ -48,7 +48,7 @@ PREPARE_KEYS = frozenset(
         "frozen_modules",
     }
 )
-PRECISIONS = frozenset({"fp32", "amp_fp16"})
+PRECISIONS = frozenset({"fp32", "fp16", "bf16"})
 _COMPONENT_ID = re.compile(r"[A-Za-z_][A-Za-z0-9_]{0,63}\Z")
 
 

@@ -7,7 +7,7 @@ then either a step save or a pending save, validation, best, schedulers,
 research, and the boundary save. Counters live on ``MPTrainingProgress`` in
 this file. ``OfficialBoundary.run`` is validation, best, then the schedulers.
 A step save is offered after both optimizers, before the next forward. A CUDA
-log flush is not a save. ``amp_fp16`` is refused.
+log flush is not a save. ``fp16`` is refused.
 
 The update order is ``MPSENetUpdate.run`` in this file. CPU, more than one
 rank, and CUDA with accumulation above 1 use ``accumulated_step``: discriminator
@@ -1134,9 +1134,9 @@ def _schedule_metric_targets(clean: torch.Tensor, enhanced: torch.Tensor, sample
 def refuse_gan_amp(runtime: ProcessRuntime) -> None:
     """Refuse FP16 AMP. The two AdamW steps are not one scaler decision."""
 
-    if getattr(runtime, "precision", "fp32") == "amp_fp16":
+    if getattr(runtime, "precision", "fp32") == "fp16":
         raise RuntimeFailure(
-            "MP-SENet official GAN refuses amp_fp16. "
+            "MP-SENet official GAN refuses fp16. "
             "The current scaler decides overflow per optimizer, so the discriminator "
             "step and the generator step are not one atomic update. FP32 is unchanged."
         )

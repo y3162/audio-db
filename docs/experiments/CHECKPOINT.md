@@ -153,4 +153,4 @@ Selector と StopPolicy は具象クラス自身に `checkpoint_class_id` を宣
 
 ## 未実装
 
-FSDP、sharded checkpoint、AMP BF16。複数 Optimizer の `amp_fp16` は拒否する。
+FSDP、sharded checkpoint。`fp16` は GradScaler を保存する。`bf16` は autocast だけで Scaler は無い。複数 Optimizer の `fp16` は拒否する。

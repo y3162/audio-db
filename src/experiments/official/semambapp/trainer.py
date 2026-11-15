@@ -780,9 +780,9 @@ class SEMambaUpdate:
         self._phase: Any = None
 
     def refuse_amp(self, runtime: ProcessRuntime) -> None:
-        if getattr(runtime, "precision", "fp32") == "amp_fp16":
+        if getattr(runtime, "precision", "fp32") == "fp16":
             raise RuntimeFailure(
-                "SEMamba++ official GAN refuses amp_fp16. "
+                "SEMamba++ official GAN refuses fp16. "
                 "The current scaler decides overflow per optimizer, so the discriminator "
                 "step and the generator step are not one atomic update. FP32 is unchanged."
             )

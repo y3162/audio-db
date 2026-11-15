@@ -324,11 +324,23 @@ class LifecycleTests(unittest.TestCase):
             experiment.build()
 
     def test_runtime_refuses_cpu_amp_unavailable_cuda_and_fsdp(self) -> None:
-        with self.assertRaises(PrepareError) as caught_cpu_amp:
+        for precision in ("fp16", "bf16"):
+            with self.assertRaises(PrepareError) as caught_cpu_amp:
+                ProcessRuntime(device="cpu", precision=precision)
+            self.assertIn("refusing to fall back", str(caught_cpu_amp.exception))
+        with self.assertRaises(PrepareError) as caught_alias:
             ProcessRuntime(device="cpu", precision="amp_fp16")
-        self.assertIn("refusing to fall back", str(caught_cpu_amp.exception))
+        self.assertIn("fp32, fp16, or bf16", str(caught_alias.exception))
         with self.assertRaises(PrepareError):
             ProcessRuntime(device="cuda", precision="amp_bf16")
+        alias_dir = self.enterContext(self._directory())
+        alias = write_config(alias_dir, {"trainer": null_trainer()})
+        alias.write_text(alias.read_text(encoding="utf-8").replace("precision: fp32", "precision: amp_fp16"), encoding="utf-8")
+        with self.assertRaises(ConfigError):
+            load_experiment(alias)
+        alias.write_text(alias.read_text(encoding="utf-8").replace("precision: amp_fp16", "precision: bf16"), encoding="utf-8")
+        with self.assertRaises(PrepareError):
+            build_experiment(load_experiment(alias))
         if not torch.cuda.is_available():
             with self.assertRaises(PrepareError) as caught_cuda:
                 ProcessRuntime(device="cuda", precision="fp32")

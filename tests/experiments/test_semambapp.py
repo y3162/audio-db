@@ -328,7 +328,7 @@ class SEMambaPPAlgorithmTests(unittest.TestCase):
             experiment = build_experiment(load_experiment(_yaml(root / "amp", steps=1, count=1)))
             try:
                 class _Amp:
-                    precision = "amp_fp16"
+                    precision = "fp16"
 
                 with self.assertRaises(RuntimeFailure):
                     experiment.get("trainer")._refuse_amp(_Amp())

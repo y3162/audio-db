@@ -34,7 +34,7 @@ class ResearchCudaTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
             text = _selection_text(root, mode="min", steps=1, updates=1)
-            text = text.replace("device: cpu", "device: cuda", 1).replace("precision: fp32", "precision: amp_fp16", 1)
+            text = text.replace("device: cpu", "device: cuda", 1).replace("precision: fp32", "precision: fp16", 1)
             completed = _launch(root, text, nproc=1)
             self.assertEqual(completed.returncode, 0, completed.stderr[-2000:])
             choice = json.loads((root / "research_selection" / "best.json").read_text(encoding="utf-8"))
@@ -46,7 +46,7 @@ class ResearchCudaTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
             text = _selection_text(root, mode="min", steps=1, updates=1, distribute="ddp")
-            text = text.replace("device: cpu", "device: cuda", 1).replace("precision: fp32", "precision: amp_fp16", 1)
+            text = text.replace("device: cpu", "device: cuda", 1).replace("precision: fp32", "precision: fp16", 1)
             completed = _launch(root, text, nproc=2)
             self.assertEqual(completed.returncode, 0, completed.stderr[-2000:])
             choice = json.loads((root / "research_selection" / "best.json").read_text(encoding="utf-8"))

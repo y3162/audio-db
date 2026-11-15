@@ -324,7 +324,7 @@ class ClipRuntimeTests(unittest.TestCase):
         runtime.clip_repeated([parameter], 1.0)
         self.assertLessEqual(float(parameter.grad.detach().norm()), 1.0 + 1e-5)
         self.assertEqual(runtime._clipped, set())
-        runtime.precision = "amp_fp16"
+        runtime.precision = "fp16"
         with self.assertRaises(RuntimeFailure):
             runtime.clip_repeated([parameter], 1.0)
         runtime.precision = "fp32"
@@ -814,7 +814,7 @@ class MossFormerGANAlgorithmTests(unittest.TestCase):
     def test_amp_and_mid_pair_checkpoint_are_refused(self) -> None:
         trainer = self._trainer(1)
         with self.assertRaises(RuntimeFailure):
-            trainer._refuse_amp(type("Runtime", (), {"precision": "amp_fp16"})())
+            trainer._refuse_amp(type("Runtime", (), {"precision": "fp16"})())
         trainer._in_optimizer_pair = True
         with self.assertRaises(RuntimeFailure):
             trainer._offer(self.runtime, _CheckpointStub(), "step")

@@ -38,7 +38,7 @@ class CudaAmpRuntimeTests(unittest.TestCase):
     def test_scaled_backward_unscale_and_step_ignore_a_none_return(self) -> None:
         _require_devices(1)
         torch.cuda.set_device(0)
-        runtime = ProcessRuntime(device="cuda", precision="amp_fp16", init_scale=32.0, growth_interval=2000)
+        runtime = ProcessRuntime(device="cuda", precision="fp16", init_scale=32.0, growth_interval=2000)
         weight = torch.nn.Parameter(torch.ones(2, device="cuda"))
         optimizer = torch.optim.SGD([weight], lr=0.1)
         loss = (weight * 2).sum()
@@ -57,7 +57,7 @@ class CudaAmpRuntimeTests(unittest.TestCase):
 
     def test_nonfinite_loss_is_not_an_overflow_skip(self) -> None:
         _require_devices(1)
-        runtime = ProcessRuntime(device="cuda", precision="amp_fp16", init_scale=8.0)
+        runtime = ProcessRuntime(device="cuda", precision="fp16", init_scale=8.0)
         weight = torch.nn.Parameter(torch.ones(1, device="cuda"))
         optimizer = torch.optim.SGD([weight], lr=0.1)
         loss = torch.tensor(float("nan"), device="cuda", requires_grad=True)
@@ -72,7 +72,7 @@ class CudaAmpRuntimeTests(unittest.TestCase):
         torch.manual_seed(17)
         runtime = ProcessRuntime(
             device="cuda",
-            precision="amp_fp16",
+            precision="fp16",
             init_scale=2.0,
             growth_factor=2.0,
             backoff_factor=0.5,
@@ -96,7 +96,7 @@ class CudaAmpRuntimeTests(unittest.TestCase):
         self.assertEqual(runtime.scaler_state()["_growth_tracker"], 0)
         runtime.shutdown()
 
-        runtime = ProcessRuntime(device="cuda", precision="amp_fp16", init_scale=65536.0, growth_interval=2000)
+        runtime = ProcessRuntime(device="cuda", precision="fp16", init_scale=65536.0, growth_interval=2000)
         torch.manual_seed(17)
         model = torch.nn.Linear(2, 2).cuda()
         optimizer = torch.optim.SGD(model.parameters(), lr=0.01)
@@ -132,7 +132,7 @@ class CudaAmpRuntimeTests(unittest.TestCase):
 
     def test_missing_scaler_state_is_refused(self) -> None:
         _require_devices(1)
-        runtime = ProcessRuntime(device="cuda", precision="amp_fp16", init_scale=16.0)
+        runtime = ProcessRuntime(device="cuda", precision="fp16", init_scale=16.0)
         with self.assertRaises(RuntimeFailure):
             runtime.load_scaler({"scale": 16.0})
         with self.assertRaises(RuntimeFailure):
@@ -149,7 +149,7 @@ class CudaAmpRuntimeTests(unittest.TestCase):
 
     def test_cpu_amp_and_a_busy_launch_do_not_fall_back(self) -> None:
         with self.assertRaises(PrepareError) as caught:
-            ProcessRuntime(device="cpu", precision="amp_fp16")
+            ProcessRuntime(device="cpu", precision="fp16")
         self.assertIn("refusing to fall back", str(caught.exception))
 
 
@@ -222,7 +222,7 @@ class CudaWorldTests(unittest.TestCase):
         interrupted = Path(self.enterContext(tempfile.TemporaryDirectory()))
         common = dict(
             device="cuda",
-            precision="amp_fp16",
+            precision="fp16",
             steps=4,
             init_scale=65536.0,
             model="autocast",
@@ -354,7 +354,7 @@ class CudaWorldTests(unittest.TestCase):
         interrupted = Path(self.enterContext(tempfile.TemporaryDirectory()))
         common = dict(
             device="cuda",
-            precision="amp_fp16",
+            precision="fp16",
             steps=4,
             world_size=2,
             accumulation=2,
@@ -387,7 +387,7 @@ class CudaWorldTests(unittest.TestCase):
         overflow = _write_yaml(
             overflow_dir,
             device="cuda",
-            precision="amp_fp16",
+            precision="fp16",
             steps=3,
             world_size=2,
             distribute="ddp",

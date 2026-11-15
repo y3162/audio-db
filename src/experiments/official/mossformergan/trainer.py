@@ -711,9 +711,9 @@ def require_disjoint(generator: torch.optim.Optimizer, discriminator: torch.opti
         raise BuildError("generator and discriminator share parameters")
 
 def refuse_amp(runtime: object) -> None:
-    if getattr(runtime, "precision", "fp32") == "amp_fp16":
+    if getattr(runtime, "precision", "fp32") == "fp16":
         raise RuntimeFailure(
-            "MossFormerGAN refuses amp_fp16. Each successful micro-batch clips, and the "
+            "MossFormerGAN refuses fp16. Each successful micro-batch clips, and the "
             "generator step and the discriminator step are not one scaler decision."
         )
 

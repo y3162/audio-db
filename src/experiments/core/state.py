@@ -76,9 +76,9 @@ class RuntimeState:
         ):
             raise StateError("runtime state does not match this process")
         saved_scaler = state.get("grad_scaler")
-        if self.runtime.precision != "amp_fp16":
+        if self.runtime.precision != "fp16":
             if saved_scaler is not None:
-                raise CheckpointError("fp32 runtime cannot restore a grad scaler")
+                raise CheckpointError(f"{self.runtime.precision} runtime cannot restore a grad scaler")
             return
         if not isinstance(saved_scaler, dict):
             raise CheckpointError("amp runtime requires a grad scaler state")

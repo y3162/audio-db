@@ -1,11 +1,12 @@
-"""Process runtime for CPU/FP32, CUDA/FP32, and CUDA AMP FP16.
+"""Process runtime for FP32, CUDA FP16, and CUDA BF16.
 
 World size 1 does not initialize a process group. CPU world size 2 or more
 uses Gloo. CUDA world size 2 or more uses NCCL, one GPU per rank. A launch
 environment that does not match the requested device, precision, or world
 size is an error; this runtime does not fall back to CPU or to one process.
 
-AMP owns one ``torch.amp.GradScaler`` per process. The trainer calls
+FP16 owns one ``torch.amp.GradScaler`` per process. BF16 autocasts and does not
+scale. The trainer calls
 ``autocast``, ``backward``, ``clip``, ``step``, and ``end_step``. The scaler
 is updated once at ``end_step``, after every optimizer the trainer grouped
 into that call has been unscaled and either stepped or skipped together on
@@ -173,7 +174,7 @@ def _named_trainable_parameters(
 class ProcessRuntime:
     """CPU or CUDA runtime for one process or a matching process group.
 
-    ``precision`` is ``fp32`` or, on CUDA only, ``amp_fp16``. ``world_size``
+    ``precision`` is ``fp32``, or on CUDA only ``fp16`` or ``bf16``. ``world_size``
     in the constructor, when set, must equal the ``WORLD_SIZE`` of this launch.
     An unset environment variable means one process. Ranks above 0 require
     ``RANK`` and ``LOCAL_RANK`` from ``torchrun``. CUDA selects
@@ -197,10 +198,10 @@ class ProcessRuntime:
             raise PrepareError("device and precision must be strings")
         if device not in {"cpu", "cuda"}:
             raise PrepareError(f"runtime only supports device cpu or cuda, got {device}")
-        if precision not in {"fp32", "amp_fp16"}:
-            raise PrepareError(f"runtime only supports precision fp32 or amp_fp16, got {precision}")
-        if precision == "amp_fp16" and device != "cuda":
-            raise PrepareError("amp_fp16 requires device cuda; refusing to fall back to fp32")
+        if precision not in {"fp32", "fp16", "bf16"}:
+            raise PrepareError(f"runtime only supports precision fp32, fp16, or bf16, got {precision}")
+        if precision in {"fp16", "bf16"} and device != "cuda":
+            raise PrepareError(f"{precision} requires device cuda; refusing to fall back to fp32")
         if not isinstance(preflight, bool):
             raise PrepareError("preflight must be a bool")
         if world_size is not None and (isinstance(world_size, bool) or not isinstance(world_size, int) or world_size < 1):
@@ -228,8 +229,12 @@ class ProcessRuntime:
         self._loss_finite: torch.Tensor | None = None
         self._group_started = False
         self._scaler: torch.amp.GradScaler | None = None
+        self._autocast_dtype: torch.dtype | None = None
         self.device = _resolve_device(device, local_rank, resolved_world)
-        if precision == "amp_fp16":
+        if precision == "bf16":
+            self._autocast_dtype = torch.bfloat16
+        elif precision == "fp16":
+            self._autocast_dtype = torch.float16
             self._scaler = torch.amp.GradScaler(
                 "cuda",
                 init_scale=float(init_scale),
@@ -239,7 +244,7 @@ class ProcessRuntime:
                 enabled=True,
             )
             if not self._scaler.is_enabled():
-                raise PrepareError("amp_fp16 GradScaler was disabled; refusing to fall back to fp32")
+                raise PrepareError("fp16 GradScaler was disabled; refusing to fall back to fp32")
         if self.world_size > 1:
             try:
                 self._init_distributed()
@@ -372,11 +377,11 @@ class ProcessRuntime:
         return _move_value(value, self.device)
 
     def autocast(self) -> AbstractContextManager[None]:
-        """Return CUDA FP16 autocast, or a no-op context for FP32."""
+        """Return CUDA autocast for FP16 or BF16, or a no-op context for FP32."""
 
-        if self.precision == "amp_fp16":
-            return torch.autocast(device_type="cuda", dtype=torch.float16)
-        return nullcontext()
+        if self._autocast_dtype is None:
+            return nullcontext()
+        return torch.autocast(device_type="cuda", dtype=self._autocast_dtype)
 
     def backward(self, loss: torch.Tensor, *, retain_graph: bool = False) -> None:
         """Backpropagate a loss. A non-finite loss is rejected by step() before the update.
@@ -420,9 +425,9 @@ class ProcessRuntime:
         """
 
         params = [parameter for parameter in _as_parameters(parameters) if parameter.requires_grad]
-        if self.precision == "amp_fp16":
+        if self.precision == "fp16":
             if optimizer is None:
-                raise RuntimeFailure("amp clip requires the optimizer that owns these parameters")
+                raise RuntimeFailure("fp16 clip requires the optimizer that owns these parameters")
             self._unscale(optimizer)
         key = frozenset(id(parameter) for parameter in params)
         if key in self._clipped:
@@ -442,12 +447,12 @@ class ProcessRuntime:
         MossFormerGAN clips after every successful micro-batch, so one
         accumulation window clips the same parameters more than once.
         This method does not record a clip and does not unscale. It refuses
-        ``amp_fp16`` rather than weakening that one-unscale rule.
+        ``fp16`` rather than weakening that one-unscale rule. BF16 has no scaler.
         A :class:`PreparedModel` contributes its optimizer parameters.
         """
 
-        if self.precision == "amp_fp16":
-            raise RuntimeFailure("clip_repeated refuses amp_fp16; clip once per step after unscale")
+        if self.precision == "fp16":
+            raise RuntimeFailure("clip_repeated refuses fp16; clip once per step after unscale")
         params = [parameter for parameter in _as_parameters(parameters) if parameter.requires_grad]
         if not params:
             raise RuntimeFailure("clip_repeated received no trainable parameters")
@@ -548,7 +553,7 @@ class ProcessRuntime:
         """
 
         if self._scaler is None:
-            raise RuntimeFailure("grad scale exists only for amp_fp16")
+            raise RuntimeFailure("grad scale exists only for fp16")
         if self._unscaled or self._stepped:
             raise RuntimeFailure("grad scale cannot change during a logical step")
         if isinstance(scale, bool) or not isinstance(scale, (int, float)):

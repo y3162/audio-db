@@ -276,10 +276,10 @@ class MPSENetGANTests(unittest.TestCase):
         runtime = ProcessRuntime(device="cpu", precision="fp32")
         try:
             trainer, _gen, _disc = _manual_trainer(runtime, accumulation=1)
-            runtime.precision = "amp_fp16"
+            runtime.precision = "fp16"
             with self.assertRaises(RuntimeFailure) as caught:
                 trainer.official_step([_random_batch(LENGTH, 1)], runtime)
-            self.assertIn("amp_fp16", str(caught.exception))
+            self.assertIn("fp16", str(caught.exception))
             runtime.precision = "fp32"
             trainer._in_official_step = True
             with self.assertRaises(RuntimeFailure):
