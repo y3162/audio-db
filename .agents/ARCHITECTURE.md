@@ -55,7 +55,7 @@
 - TF-GridNet: `mr_l1_tfd` を重み 1 の Objective で包む。Adam、epoch 末の `ReduceLROnPlateau`、`valid.loss` の n-best。検証は注入した Objective の total である。進捗の実体は `official/tf_gridnet/state.py` の `GridNetProgress` 一つで、Trainer は同じ値を複製しない。復元は検査後に代入する。`optimizer_updates` の加算は登録した id だけで、余分な id は残して加算しない。
 - TF-Locoformer: 同じスペクトル損失、AdamW、`WarmupReduceLROnPlateau`。warmup は Optimizer 更新のあと。最初の更新は構築時の学習率。SI-SDR は監視だけで backward に入れない。検証は注入した Objective の total である。進捗の実体は `official/tf_locoformer/state.py` の `LocoformerProgress` 一つである。`step_batch` は適用された更新の直後、`step_validation` は epoch の検証のあとで、`scheduler.step` は使わない。`learning_rates` は使った学習率、`scheduled_rates` は次の学習率である。
 - DeepFilterNet3: multi-resolution スペクトルは 1 項で、local SNR の Objective 重みは `1e-3` である。FFT、hop、sample rate、SNR の上下限はモデルの context から渡す。cosine は Optimizer 更新の前。batch schedule は world size 1 の micro-batch 幅だけを付け替える。検証は注入した Objective の total である。
-- SEMamba++: Discriminator を先に更新する。蓄積 1 は Generator グラフを再利用する。蓄積 2 以上は再 forward し、DataModule は再消費しない。CQT 族と MRD 族はそれぞれ 1 項にまとめ、外側の重みは族の和へ一度だけ掛かる。波形 L1 は学習の和に入らない。`best_generator.pt` は書かない。検証は参照タスクの波形 L1 のままである。`resampy==0.4.3` は `kaiser_best` と `kaiser_fast` に必要。
+- SEMamba++: Discriminator を先に更新する。蓄積 1 は Generator グラフを再利用する。蓄積 2 以上は再 forward し、DataModule は再消費しない。CQT 族と MRD 族はそれぞれ 1 項にまとめ、外側の重みは族の和へ一度だけ掛かる。波形 L1 は学習の和に入らない。`best_generator.pt` は書かない。検証は参照タスクの波形 L1 のままである。`resampy==0.4.3` は `kaiser_best` と `kaiser_fast` に必要。保存する進捗は `SEMambaProgress` 一つで、forward 回数と同期トレースは更新側の非保存観測である。両 Optimizer は登録 ID だけを増やし、欠けた登録 ID は復元時に拒否する。
 
 Global batch は micro-batch、world size、蓄積回数の積と一致しない構成を拒否する。logical step は、蓄積 1 回ぶんの Optimizer 更新を試みた回数。AMP が更新を skip した step も logical step とデータ位置を進め、`optimizer_updates` は適用された更新だけを数える。
 
