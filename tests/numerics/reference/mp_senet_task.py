@@ -2,7 +2,7 @@
 
 This is not the production updater. ``train_update`` keeps its own
 discriminator-then-generator loop, including the manual gradient average that
-skips missing gradients. Production validation calls ``validation_math``
+skips missing gradients. Production validation calls ``evaluator.report_batch``
 directly and does not construct this task. ``validation_report`` delegates to
 that same report so the batch formula is not copied.
 """
@@ -19,8 +19,8 @@ from src.experiments.calc.distributed import ProcessInfo, unwrap, wrap_module
 from src.experiments.calc.rng import seed_model_init
 from src.experiments.calc.scope import accumulation_scope
 from src.experiments.calc.errors import TrainingError
-from src.experiments.official.mp_senet.discriminator import MetricDiscriminator
-from src.experiments.official.mp_senet.lengths import (
+from src.experiments.official.mp_senet.model import MetricDiscriminator
+from src.experiments.official.mp_senet.dataset import (
     official_center_istft_length,
     require_discriminator_resolution as _require_discriminator_resolution,
 )
@@ -155,13 +155,13 @@ class MPSENetTask:
         return metrics
 
     def validation_report(self, batch: dict[str, Any]) -> dict[str, Any]:
-        """Official or research report. The formula lives in ``validation_math``.
+        """Official or research report. The formula lives in ``evaluator``.
 
         This task does not call the production updater. The report function
         does not build an optimizer.
         """
 
-        from src.experiments.official.mp_senet.validation_math import report_batch
+        from src.experiments.official.mp_senet.evaluator import report_batch
 
         discriminator = None if self.discriminator is None else unwrap(self.discriminator)
         return report_batch(

@@ -1,21 +1,17 @@
-"""Official MP-SENet validation report for one batch.
+"""MP-SENet validation, PESQ selection, and ``best_generator.pt``.
 
-The generator sees the full waveform. Official ``center=True`` iSTFT may
-return the largest hop multiple that does not exceed that length. This module
-does not trim the model input. ``align_validation_length`` stays importable
-so a test can prove the report does not call it.
-
-``official=True`` puts PESQ failures in the mean as -1, matching
-``eval_pesq``. The research path still drops ``na`` and errors. A missing
-PESQ library is ``unavailable`` on both paths, not -1 and not 0.
-
-No optimizer is built here. The caller supplies the generator and, for the
-official loss, the metric discriminator.
+Rank 0 scores a shadow copy and restores the training cursor and RNG.
+Selection and the inference file run only when the trainer asks, after
+validation and before the epoch schedulers. This module does not step an
+optimizer or offer a checkpoint.
 """
 
 from __future__ import annotations
 
+import json
 import math
+import os
+from pathlib import Path
 from typing import Any
 
 import torch
@@ -23,12 +19,21 @@ import torch.nn.functional as F
 
 from src.experiments.calc.errors import TrainingError
 from src.experiments.calc.losses import discriminator_loss, generator_losses, metric_targets
+from src.experiments.calc.rng import seed_model_init
 from src.experiments.calc.stft import mag_pha_istft, mag_pha_stft
-from src.experiments.official.mp_senet.lengths import (
+from src.experiments.data import Batch
+from src.experiments.errors import RuntimeFailure
+from src.experiments.execution.journal import rank_of
+from src.experiments.official.mp_senet.dataset import (
     align_validation_length,  # noqa: F401  # tests patch this name; report_batch does not call it
     official_center_istft_length,
     require_discriminator_resolution,
 )
+from src.experiments.official.mp_senet.model import MetricDiscriminator, network_config
+from src.experiments.runtime import PreparedModel, ProcessRuntime
+from src.se import build_model
+
+# --- One validation batch. ``align_validation_length`` is not used to cut the waveform. ---
 
 OFFICIAL_PESQ_POLICY = "official_include_negative_one"
 RESEARCH_PESQ_POLICY = "research_exclude_na"
@@ -340,3 +345,287 @@ def _pesq_unavailable(reason: str, policy: str) -> dict[str, Any]:
 
 def _waveform_numpy(waveform: torch.Tensor) -> Any:
     return waveform.detach().to(dtype=torch.float32).contiguous().numpy()
+
+# --- Mean of the rank-0 reports. Unavailable stays unavailable. ---
+
+def aggregate_reports(reports: list[dict[str, Any]]) -> dict[str, Any]:
+    """Mean of batch-level official reports. Unavailable stays unavailable."""
+
+    names: list[str] = []
+    for report in reports:
+        for name in report["losses"]:
+            if name not in names:
+                names.append(name)
+    losses = {
+        name: combine_metric([report["losses"][name] for report in reports if name in report["losses"]])
+        for name in names
+    }
+    pesq = combine_metric([report["pesq"] for report in reports])
+    policy = next((report["pesq"].get("pesq_policy") for report in reports if isinstance(report.get("pesq"), dict)), None)
+    if policy is not None:
+        pesq["pesq_policy"] = policy
+    lengths: list[dict[str, int]] = []
+    for report in reports:
+        rows = report.get("audio_lengths")
+        if isinstance(rows, list):
+            lengths.extend(rows)
+    return {
+        "audio_lengths": lengths,
+        "losses": losses,
+        "pesq": pesq,
+        "stoi": combine_metric([report["stoi"] for report in reports]),
+    }
+
+
+def combine_metric(items: list[dict[str, Any]]) -> dict[str, Any]:
+    """Mean the finite ok values. One unavailable item makes the result unavailable."""
+
+    if any(item.get("status") == "unavailable" for item in items):
+        reason = next(item.get("reason") for item in items if item.get("status") == "unavailable")
+        return {"status": "unavailable", "value": None, "reason": reason, "count": 0}
+    values = [float(item["value"]) for item in items if item.get("status") == "ok" and item.get("value") is not None]
+    if values:
+        return {"status": "ok", "value": sum(values) / len(values), "reason": None, "count": len(values)}
+    reason = next((item.get("reason") for item in items if item.get("reason")), "no score")
+    return {"status": "na", "value": None, "reason": reason, "count": 0}
+
+# --- Strict PESQ selection. The trainer stores the decision. ---
+
+def consider_best_pesq(
+    epoch: int,
+    summary: dict[str, Any],
+    *,
+    start_epoch: int,
+    best_pesq: float | None,
+    logical_step: int,
+) -> dict[str, Any]:
+    """Keep the earlier checkpoint unless PESQ is strictly higher after the start epoch.
+
+    The returned record does not change ``best_pesq``. The trainer stores
+    ``pesq``, ``epoch``, and ``logical_step`` when ``selected`` is true.
+    """
+
+    pesq = summary.get("pesq")
+    if not isinstance(pesq, dict):
+        pesq = {"status": "na", "value": None, "reason": "missing pesq"}
+    status = pesq.get("status")
+    value = pesq.get("value")
+    record: dict[str, Any] = {
+        "epoch": int(epoch),
+        "logical_step": int(logical_step),
+        "pesq": None if value is None else float(value),
+        "pesq_status": status,
+        "reason": None,
+        "selected": False,
+    }
+    if epoch < start_epoch:
+        record["reason"] = "before_start_epoch"
+        return record
+    if status != "ok" or value is None:
+        record["reason"] = "unavailable" if status == "unavailable" else "not_ok"
+        return record
+    score = float(value)
+    if not math.isfinite(score):
+        record["reason"] = "non_finite"
+        return record
+    if best_pesq is not None and score <= float(best_pesq):
+        record["reason"] = "not_higher"
+        return record
+    record["selected"] = True
+    record["reason"] = "improved"
+    return record
+
+
+def apply_pesq_selection(
+    progress: Any,
+    epoch: int,
+    summary: dict[str, Any],
+    *,
+    start_epoch: int,
+) -> dict[str, Any]:
+    """Decide the official PESQ rule and store a strict improvement on ``progress``."""
+
+    decision = consider_best_pesq(
+        epoch,
+        summary,
+        start_epoch=start_epoch,
+        best_pesq=progress.best_pesq,
+        logical_step=progress.logical_step,
+    )
+    progress.remember_best(decision)
+    return decision
+
+# --- Inference weights. This is not a resume checkpoint. ---
+
+def write_best(
+    directory: Path,
+    exported: dict[str, torch.Tensor],
+    decision: dict[str, Any],
+    experiment_claim: str,
+) -> None:
+    payload_path = directory / "best_generator.pt"
+    meta_path = directory / "best_generator.json"
+    temporary = directory / ".best_generator.pt.tmp"
+    torch.save(exported, temporary)
+    os.replace(temporary, payload_path)
+    meta = {
+        "checkpoint": payload_path.name,
+        "epoch": decision["epoch"],
+        "experiment_claim": experiment_claim,
+        "logical_step": decision["logical_step"],
+        "metric": "pesq",
+        "pesq": decision["pesq"],
+        "pesq_policy": "official_include_negative_one",
+    }
+    meta_temporary = directory / ".best_generator.json.tmp"
+    meta_temporary.write_text(json.dumps(meta, sort_keys=True) + "\n", encoding="utf-8")
+    os.replace(meta_temporary, meta_path)
+
+
+def publish_best(
+    runtime: Any,
+    directory: Path,
+    decision: dict[str, Any],
+    exported: dict[str, torch.Tensor],
+    experiment_claim: str,
+) -> None:
+    """Rank 0 writes the selected generator. Every rank hears a write error."""
+
+    error: str | None = None
+    if rank_of(runtime) == 0 and decision["selected"]:
+        try:
+            write_best(directory, exported, decision, experiment_claim)
+        except (OSError, RuntimeError, TypeError) as exc:
+            error = f"{type(exc).__name__}: {exc}"
+    errors = runtime.gather_objects(error)
+    failure = next((item for item in errors if item), None)
+    if failure:
+        raise RuntimeFailure(f"best checkpoint write failed: {failure}")
+
+# --- Rank-0 shadow validation. The trainer chooses the epoch. ---
+
+class _Shadow:
+    """Eval-mode weights for one report. Not a training task."""
+
+    def __init__(
+        self,
+        generator: torch.nn.Module,
+        discriminator: torch.nn.Module,
+        architecture: dict[str, Any],
+        device: torch.device,
+    ) -> None:
+        self.generator = generator
+        self.discriminator = discriminator
+        self.spec = architecture
+        self.device = device
+
+    def eval_mode(self) -> None:
+        self.generator.eval()
+        self.discriminator.eval()
+
+    def validation_report(self, batch: dict[str, Any]) -> dict[str, Any]:
+        return report_batch(
+            generator=self.generator,
+            discriminator=self.discriminator,
+            spec=self.spec,
+            device=self.device,
+            batch=batch,
+            official=True,
+        )
+
+
+class MPSENetOfficialValidator:
+    """Rank-0 official report. The caller decides the epoch and what to do next."""
+
+    def __init__(
+        self,
+        *,
+        generator: PreparedModel,
+        discriminator: PreparedModel,
+        data: Any,
+        optim_g: torch.optim.Optimizer,
+        scheduler_g: torch.optim.lr_scheduler.ExponentialLR,
+    ) -> None:
+        self.generator = generator
+        self.discriminator = discriminator
+        self.data = data
+        # Kept so a caller can see which optimizer group the live model uses.
+        # The shadow does not construct another optimizer from them.
+        self.optim_g = optim_g
+        self.scheduler_g = scheduler_g
+        self._shadow: _Shadow | None = None
+
+    def invalidate(self) -> None:
+        """Drop the cached shadow. The next call builds a new one."""
+
+        self._shadow = None
+
+    def evaluate(self, runtime: ProcessRuntime, trainer_epoch: int, component_id: str) -> dict[str, Any]:
+        """Run the official validation report on rank 0 and share that summary."""
+
+        cursor = (int(self.data.epoch), int(self.data.update_index))
+        rng = runtime.capture_rng()
+        error: str | None = None
+        summary: dict[str, Any] | None = None
+        try:
+            if runtime.rank == 0:
+                try:
+                    summary = self._rank0(trainer_epoch, runtime, component_id)
+                except (TrainingError, RuntimeFailure, RuntimeError, ValueError, OSError) as exc:
+                    error = f"{type(exc).__name__}: {exc}"
+        finally:
+            runtime.restore_rng(rng)
+        errors = runtime.gather_objects(error)
+        failure = next((item for item in errors if item), None)
+        if failure:
+            raise RuntimeFailure(f"validation failed: {failure}")
+        gathered = runtime.gather_objects(summary)
+        shared = gathered[0]
+        if not isinstance(shared, dict):
+            raise RuntimeFailure(f"component {component_id}: rank 0 did not return a validation summary")
+        moved = (int(self.data.epoch), int(self.data.update_index))
+        if moved != cursor:
+            raise RuntimeFailure(f"component {component_id}: validation advanced the training cursor")
+        return shared
+
+    def _rank0(self, trainer_epoch: int, runtime: ProcessRuntime, component_id: str) -> dict[str, Any]:
+        shadow = self._shadow_for(runtime)
+        reports: list[dict[str, Any]] = []
+        for batch in self.data.validation_epoch(trainer_epoch):
+            if not isinstance(batch, Batch):
+                raise RuntimeFailure(f"component {component_id}: validation did not return a batch")
+            batch = runtime.move(batch)
+            report = shadow.validation_report({"clean": batch.targets, "noisy": batch.inputs})
+            reports.append(report)
+        if not reports:
+            raise RuntimeFailure(f"component {component_id}: rank 0 validation produced no batches")
+        return aggregate_reports(reports)
+
+    def _shadow_for(self, runtime: ProcessRuntime) -> _Shadow:
+        if self._shadow is None:
+            architecture = dict(self.generator.unwrapped().architecture)
+            seed = int(self.generator.unwrapped().seed)
+            self._shadow = _build_shadow(architecture, seed, runtime.device)
+        shadow = self._shadow
+        shadow.generator.load_state_dict(self.generator.unwrapped().generator.state_dict(), strict=True)
+        shadow.discriminator.load_state_dict(
+            self.discriminator.unwrapped().discriminator.state_dict(), strict=True
+        )
+        shadow.eval_mode()
+        return shadow
+
+
+def _build_shadow(architecture: dict[str, Any], seed: int, device: torch.device) -> _Shadow:
+    """Build eval modules under the same seed as the reference task, without an optimizer.
+
+    The discarded generator consumes the same initialization draws the metric
+    discriminator expects. Its weights are replaced before the report.
+    """
+
+    with seed_model_init(seed):
+        generator = build_model("mp_senet", network_config(architecture)).to(device)
+        if "disc_dim" in architecture:
+            discriminator = MetricDiscriminator(dim=int(architecture["disc_dim"])).to(device)
+        else:
+            discriminator = MetricDiscriminator().to(device)
+    return _Shadow(generator, discriminator, architecture, device)

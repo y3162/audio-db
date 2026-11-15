@@ -11,7 +11,7 @@ from __future__ import annotations
 import unittest
 
 from src.experiments.errors import RuntimeFailure
-from src.experiments.official.mp_senet.state import MPTrainingProgress
+from src.experiments.official.mp_senet.trainer import MPTrainingProgress
 
 
 def _progress() -> MPTrainingProgress:

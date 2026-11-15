@@ -7,10 +7,10 @@ make ``metric_targets`` return None; the 16,000-sample test uses real PESQ.
 
 from __future__ import annotations
 
-import ast
 import hashlib
 import json
 import os
+import inspect
 import socket
 import random
 import subprocess
@@ -36,7 +36,7 @@ from src.experiments.data import Batch
 from src.experiments.errors import BuildError, CheckpointError, RuntimeFailure
 from src.experiments.official.mp_senet.waveform import MPSENetWaveformAdapter
 from src.experiments.official.mp_senet.models import MPSENetGANGenerator, MPSENetMetricDiscriminator
-from src.experiments.official.mp_senet.selection import apply_pesq_selection
+from src.experiments.official.mp_senet.evaluator import apply_pesq_selection
 from src.experiments.official.mp_senet.trainer import (
     BEST_CHECKPOINT_START_EPOCH,
     LEAKAGE_SAFE_VALIDATION_INTERVAL,
@@ -524,17 +524,19 @@ class MPSENetGANTests(unittest.TestCase):
             runtime.shutdown()
 
     def test_update_module_does_not_take_the_trainer(self) -> None:
-        path = ROOT / "src/experiments/official/mp_senet/training_step.py"
-        text = path.read_text(encoding="utf-8")
-        self.assertNotIn("MPSENetGANTrainer", text)
-        self.assertNotIn("self.trainer", text)
-        tree = ast.parse(text)
-        for node in ast.walk(tree):
-            if isinstance(node, ast.ImportFrom) and node.module is not None:
-                self.assertNotIn("mp_senet.trainer", node.module)
-            if isinstance(node, ast.Import):
-                for alias in node.names:
-                    self.assertNotIn("mp_senet.trainer", alias.name)
+        from src.experiments.official.mp_senet.trainer import (
+            MPSENetUpdate,
+            accumulated_step,
+            cuda_overlapped_step,
+        )
+
+        for function in (accumulated_step, cuda_overlapped_step, MPSENetUpdate.run, MPSENetUpdate.__init__):
+            text = inspect.getsource(function)
+            self.assertNotIn("MPSENetGANTrainer", text)
+            self.assertNotIn("self.trainer", text)
+            self.assertNotIn("save_if_needed", text)
+        for function in (accumulated_step, cuda_overlapped_step, MPSENetUpdate.run):
+            self.assertNotIn("trainer", inspect.signature(function).parameters)
 
     def test_validation_does_not_step_the_scheduler_and_drops_its_shadow(self) -> None:
         directory = self.base / "shadow-cache"
@@ -631,7 +633,7 @@ class MPSENetGANTests(unittest.TestCase):
             runtime.shutdown()
 
     def test_old_payload_round_trips_without_a_second_copy(self) -> None:
-        from src.experiments.official.mp_senet.state import MPTrainingProgress
+        from src.experiments.official.mp_senet.trainer import MPTrainingProgress
 
         stored = {
             "best_epoch": 4,
@@ -680,32 +682,24 @@ class MPSENetGANTests(unittest.TestCase):
         self.assertEqual(progress.scheduler_steps, 0)
 
     def test_state_module_only_copies_the_payload(self) -> None:
-        text = (ROOT / "src/experiments/official/mp_senet/state.py").read_text(encoding="utf-8")
+        from src.experiments.official.mp_senet.trainer import MPTrainingProgress
+
+        text = inspect.getsource(MPTrainingProgress)
         self.assertNotIn("MPSENetGANTrainer", text)
         self.assertNotIn("self.trainer", text)
         self.assertNotIn("StepJournal", text)
         self.assertNotIn("save_if_needed", text)
-        tree = ast.parse(text)
-        for node in ast.walk(tree):
-            if isinstance(node, ast.ImportFrom) and node.module is not None:
-                self.assertNotIn("mp_senet.trainer", node.module)
 
     def test_validator_module_does_not_take_the_trainer(self) -> None:
-        path = ROOT / "src/experiments/official/mp_senet/validation.py"
-        text = path.read_text(encoding="utf-8")
+        from src.experiments.official.mp_senet.evaluator import MPSENetOfficialValidator, _Shadow, _build_shadow
+
+        text = "\n".join(inspect.getsource(item) for item in (MPSENetOfficialValidator, _Shadow, _build_shadow))
         self.assertNotIn("MPSENetGANTrainer", text)
         self.assertNotIn("self.trainer", text)
         self.assertNotIn("ResearchSession", text)
         self.assertNotIn("save_if_needed", text)
         self.assertNotIn("consider_best_pesq", text)
         self.assertNotIn("write_best", text)
-        tree = ast.parse(text)
-        for node in ast.walk(tree):
-            if isinstance(node, ast.ImportFrom) and node.module is not None:
-                self.assertNotIn("mp_senet.trainer", node.module)
-            if isinstance(node, ast.Import):
-                for alias in node.names:
-                    self.assertNotIn("mp_senet.trainer", alias.name)
 
 
 class _FakeCheckpoint:

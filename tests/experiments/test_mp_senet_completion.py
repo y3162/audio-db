@@ -11,6 +11,7 @@ only the previous log line.
 from __future__ import annotations
 
 import ast
+import inspect
 import json
 import os
 import subprocess
@@ -25,7 +26,7 @@ from src.experiments.api import build_experiment
 from src.experiments.config import load_experiment
 from src.experiments.errors import RuntimeFailure
 from src.experiments.execution.journal import StepJournal
-from src.experiments.official.mp_senet.metrics import aggregate_reports
+from src.experiments.official.mp_senet.evaluator import aggregate_reports
 from src.experiments.runtime import ProcessRuntime
 from tests.experiments.test_mp_senet_gan import _manual_trainer, _yaml_text
 from tests.numerics.reference.mp_senet_task import MPSENetTask
@@ -378,11 +379,47 @@ class ValidationSeparationTests(unittest.TestCase):
             text = path.read_text(encoding="utf-8")
             self.assertNotIn("MPSENetTask", text, path.name)
             self.assertNotIn("CheckpointManager", text, path.name)
-        for name in ("training_step.py", "update_accumulated.py", "update_cuda_overlap.py", "validation.py", "recording.py", "boundary.py"):
-            text = (package / name).read_text(encoding="utf-8")
-            self.assertNotIn("save_if_needed", text, name)
-            self.assertNotIn("MPSENetGANTrainer", text, name)
-            self.assertNotIn("ResearchSession", text, name)
+        removed = (
+            "training_step.py",
+            "update_accumulated.py",
+            "update_common.py",
+            "update_cuda_overlap.py",
+            "validation.py",
+            "validation_math.py",
+            "recording.py",
+            "boundary.py",
+            "state.py",
+            "checks.py",
+            "selection.py",
+            "metrics.py",
+            "artifacts.py",
+            "lengths.py",
+            "discriminator.py",
+        )
+        for name in removed:
+            self.assertFalse((package / name).exists(), name)
+        from src.experiments.official.mp_senet.evaluator import MPSENetOfficialValidator
+        from src.experiments.official.mp_senet.trainer import (
+            MPSENetUpdate,
+            OfficialBoundary,
+            StepRecorder,
+            accumulated_step,
+            cuda_overlapped_step,
+        )
+
+        for item in (
+            accumulated_step,
+            cuda_overlapped_step,
+            MPSENetUpdate.run,
+            OfficialBoundary.run,
+            StepRecorder,
+            MPSENetOfficialValidator.evaluate,
+        ):
+            text = inspect.getsource(item)
+            label = getattr(item, "__qualname__", str(item))
+            self.assertNotIn("save_if_needed", text, label)
+            self.assertNotIn("MPSENetGANTrainer", text, label)
+            self.assertNotIn("ResearchSession", text, label)
 
 
 def _write_cuda_yaml(

@@ -1,0 +1,391 @@
+"""MP-SENet generator, metric discriminator, and the discriminator network.
+
+The generator is one ``src.se.build_model("mp_senet")`` MPNet. The
+discriminator network follows Yexin Lu's MIT-licensed MP-SENet
+(https://github.com/yxlu-0102/MP-SENet, commit 89932cfe). The license text is
+``src/se/models/mp_senet/LICENSE``. This module does not import
+``src/se/official``.
+
+YAML still constructs ``src.experiments.official.mp_senet.models.MPSENetGANGenerator``
+and ``MPSENetMetricDiscriminator``. ``models.py`` re-exports those classes.
+"""
+
+from __future__ import annotations
+
+from collections.abc import Mapping
+from typing import Any
+
+import torch
+from torch import nn
+
+from src.experiments.calc.errors import TrainingError
+from src.experiments.calc.rng import seed_model_init
+from src.experiments.calc.stft import mag_pha_istft, mag_pha_stft
+from src.experiments.errors import BuildError, RuntimeFailure
+from src.se import build_model
+from src.se.models.mp_senet.model import MPNet
+
+# --- Discriminator network ---
+
+class _LearnableSigmoid1d(nn.Module):
+    def __init__(self, in_features: int, beta: float = 1.0) -> None:
+        super().__init__()
+        self.beta = beta
+        self.slope = nn.Parameter(torch.ones(in_features))
+
+    def forward(self, value: torch.Tensor) -> torch.Tensor:
+        return self.beta * torch.sigmoid(self.slope * value)
+
+
+class _GlobalMaxPool(nn.Module):
+    """Global max with the same values as ``AdaptiveMaxPool2d(1)``.
+
+    ``adaptive_max_pool2d_backward_cuda`` has no deterministic implementation.
+    ``amax`` matches the forward values and has a deterministic backward.
+    """
+
+    def forward(self, value: torch.Tensor) -> torch.Tensor:
+        return value.amax(dim=(-2, -1), keepdim=True)
+
+
+class MetricDiscriminator(nn.Module):
+    def __init__(self, dim: int = 16, in_channel: int = 2) -> None:
+        super().__init__()
+        self.layers = nn.Sequential(
+            nn.utils.spectral_norm(nn.Conv2d(in_channel, dim, (4, 4), (2, 2), (1, 1), bias=False)),
+            nn.InstanceNorm2d(dim, affine=True),
+            nn.PReLU(dim),
+            nn.utils.spectral_norm(nn.Conv2d(dim, dim * 2, (4, 4), (2, 2), (1, 1), bias=False)),
+            nn.InstanceNorm2d(dim * 2, affine=True),
+            nn.PReLU(dim * 2),
+            nn.utils.spectral_norm(nn.Conv2d(dim * 2, dim * 4, (4, 4), (2, 2), (1, 1), bias=False)),
+            nn.InstanceNorm2d(dim * 4, affine=True),
+            nn.PReLU(dim * 4),
+            nn.utils.spectral_norm(nn.Conv2d(dim * 4, dim * 8, (4, 4), (2, 2), (1, 1), bias=False)),
+            nn.InstanceNorm2d(dim * 8, affine=True),
+            nn.PReLU(dim * 8),
+            _GlobalMaxPool(),
+            nn.Flatten(),
+            nn.utils.spectral_norm(nn.Linear(dim * 8, dim * 4)),
+            nn.Dropout(0.3),
+            nn.PReLU(dim * 4),
+            nn.utils.spectral_norm(nn.Linear(dim * 4, 1)),
+            _LearnableSigmoid1d(1),
+        )
+
+    def forward(self, reference_magnitude: torch.Tensor, estimate_magnitude: torch.Tensor) -> torch.Tensor:
+        paired = torch.stack((reference_magnitude, estimate_magnitude), dim=1)
+        return self.layers(paired)
+
+# --- Generator and prepared discriminator ---
+
+_SAMPLE_RATE = 16000
+# Published MPNet plus the metric discriminator. This is the official recipe,
+# not a copy of whatever weights happen to be loaded.
+OFFICIAL_ARCHITECTURE = {
+    "beta": 2.0,
+    "compress_factor": 0.3,
+    "dense_channel": 64,
+    "dense_depth": 4,
+    "disc_dim": 16,
+    "hop_size": 100,
+    "n_fft": 400,
+    "n_heads": 4,
+    "num_tsconformers": 4,
+    "sampling_rate": 16000,
+    "ts_dropout": 0.0,
+    "win_size": 400,
+}
+# Tuple order is the trainer's dict order. DDP forwards this tuple.
+_FORWARD_FIELDS = (
+    "clean_mag",
+    "clean_phase",
+    "clean_complex",
+    "noisy_mag",
+    "noisy_phase",
+    "mag",
+    "phase",
+    "complex",
+    "audio",
+    "mag_hat",
+    "phase_hat",
+    "recomputed_complex",
+)
+
+
+def architecture_config(
+    *,
+    dense_channel: int,
+    num_tsconformers: int,
+    n_fft: int,
+    hop_size: int,
+    win_size: int,
+    compress_factor: float,
+    beta: float,
+    sampling_rate: int,
+    n_heads: int = 4,
+    dense_depth: int = 4,
+    ts_dropout: float = 0.0,
+    disc_dim: int = 16,
+) -> dict[str, Any]:
+    """Return the shared generator and discriminator architecture."""
+
+    dense_channel = _positive_int("dense_channel", dense_channel)
+    num_tsconformers = _positive_int("num_tsconformers", num_tsconformers)
+    n_fft = _positive_int("n_fft", n_fft)
+    hop_size = _positive_int("hop_size", hop_size)
+    win_size = _positive_int("win_size", win_size)
+    sampling_rate = _positive_int("sampling_rate", sampling_rate)
+    n_heads = _positive_int("n_heads", n_heads)
+    dense_depth = _positive_int("dense_depth", dense_depth)
+    disc_dim = _positive_int("disc_dim", disc_dim)
+    compress_factor = _positive_float("compress_factor", compress_factor)
+    beta = _positive_float("beta", beta)
+    ts_dropout = _unit_interval("ts_dropout", ts_dropout)
+    if dense_channel % n_heads != 0:
+        raise BuildError(f"dense_channel must be divisible by n_heads ({n_heads})")
+    if win_size > n_fft:
+        raise BuildError(f"win_size {win_size} is larger than n_fft {n_fft}")
+    if sampling_rate != _SAMPLE_RATE:
+        raise BuildError(f"mp_senet sampling_rate must be {_SAMPLE_RATE}, got {sampling_rate}")
+    return {
+        "beta": beta,
+        "compress_factor": compress_factor,
+        "dense_channel": dense_channel,
+        "dense_depth": dense_depth,
+        "disc_dim": disc_dim,
+        "hop_size": hop_size,
+        "n_fft": n_fft,
+        "n_heads": n_heads,
+        "num_tsconformers": num_tsconformers,
+        "sampling_rate": sampling_rate,
+        "ts_dropout": ts_dropout,
+        "win_size": win_size,
+    }
+
+
+def network_config(architecture: Mapping[str, Any]) -> dict[str, Any]:
+    """Config for ``build_model``. ``disc_dim`` sizes only the discriminator."""
+
+    return {key: value for key, value in architecture.items() if key != "disc_dim"}
+
+
+def require_official_architecture(architecture: Mapping[str, Any], claim: str) -> None:
+    """Refuse a non-published structure on the official-faithful path."""
+
+    if claim != "official_faithful":
+        return
+    if dict(architecture) != OFFICIAL_ARCHITECTURE:
+        raise BuildError(
+            "official MP-SENet architecture does not match the published MPNet and metric discriminator"
+        )
+
+
+def pack_forward(values: tuple[torch.Tensor, ...] | list[torch.Tensor]) -> dict[str, torch.Tensor]:
+    """Map the generator tuple to the names used by the official update."""
+
+    if len(values) != len(_FORWARD_FIELDS):
+        raise RuntimeFailure(
+            f"MP-SENet generator returned {len(values)} tensors, expected {len(_FORWARD_FIELDS)}"
+        )
+    packed = dict(zip(_FORWARD_FIELDS, values, strict=True))
+    for name, value in packed.items():
+        if not isinstance(value, torch.Tensor):
+            raise RuntimeFailure(f"MP-SENet field {name} is not a tensor")
+    return packed
+
+
+class MPSENetGANGenerator(torch.nn.Module):
+    """One MPNet plus the official STFT pair used by GAN training.
+
+    ``forward`` runs one generator evaluation. The caller keeps the graph and
+    does not call this again for the discriminator step. The returned complex
+    spectra use the training stack layout from ``mag_pha_stft``.
+    """
+
+    def __init__(
+        self,
+        *,
+        seed: int,
+        dense_channel: int,
+        num_tsconformers: int,
+        n_fft: int,
+        hop_size: int,
+        win_size: int,
+        compress_factor: float,
+        beta: float,
+        sampling_rate: int,
+        n_heads: int = 4,
+        dense_depth: int = 4,
+        ts_dropout: float = 0.0,
+        disc_dim: int = 16,
+    ) -> None:
+        super().__init__()
+        self.seed = _seed(seed)
+        self.architecture = architecture_config(
+            dense_channel=dense_channel,
+            num_tsconformers=num_tsconformers,
+            n_fft=n_fft,
+            hop_size=hop_size,
+            win_size=win_size,
+            compress_factor=compress_factor,
+            beta=beta,
+            sampling_rate=sampling_rate,
+            n_heads=n_heads,
+            dense_depth=dense_depth,
+            ts_dropout=ts_dropout,
+            disc_dim=disc_dim,
+        )
+        with seed_model_init(self.seed):
+            generator = build_model("mp_senet", network_config(self.architecture))
+        if not isinstance(generator, MPNet):
+            raise BuildError(f"mp_senet builder returned {type(generator).__name__}, expected MPNet")
+        self.generator = generator
+        self.n_fft = int(self.architecture["n_fft"])
+        self.hop_size = int(self.architecture["hop_size"])
+        self.win_size = int(self.architecture["win_size"])
+        self.compress_factor = float(self.architecture["compress_factor"])
+
+    def forward(self, noisy: torch.Tensor, clean: torch.Tensor) -> tuple[torch.Tensor, ...]:
+        """Return the official generation tuple for one micro-batch.
+
+        Training rejects an iSTFT length that differs from the waveform.
+        Validation uses the task report, which allows the official center
+        length. This method does not.
+        """
+
+        if not isinstance(noisy, torch.Tensor) or not isinstance(clean, torch.Tensor):
+            raise RuntimeFailure("MP-SENet GAN inputs must be tensors")
+        if noisy.ndim != 2 or clean.shape != noisy.shape:
+            raise RuntimeFailure(
+                f"expected matching [batch, time] waveforms, got {tuple(noisy.shape)} and {tuple(clean.shape)}"
+            )
+        length = int(clean.shape[-1])
+        if length <= self.n_fft // 2:
+            raise RuntimeFailure(
+                f"waveform length {length} is too short for reflect-padded STFT "
+                f"(need more than {self.n_fft // 2} samples)"
+            )
+        spec = self.architecture
+        try:
+            clean_mag, clean_phase, clean_complex = mag_pha_stft(
+                clean, spec["n_fft"], spec["hop_size"], spec["win_size"], spec["compress_factor"]
+            )
+            noisy_mag, noisy_phase, _noisy_complex = mag_pha_stft(
+                noisy, spec["n_fft"], spec["hop_size"], spec["win_size"], spec["compress_factor"]
+            )
+            magnitude, phase, complex_spectrum = self.generator(noisy_mag, noisy_phase)
+            audio = mag_pha_istft(
+                magnitude, phase, spec["n_fft"], spec["hop_size"], spec["win_size"], spec["compress_factor"]
+            )
+        except TrainingError as exc:
+            raise RuntimeFailure(str(exc)) from exc
+        if int(audio.shape[-1]) != length:
+            from src.experiments.official.mp_senet.dataset import official_center_istft_length
+
+            official = official_center_istft_length(length, self.hop_size)
+            raise RuntimeFailure(
+                f"iSTFT length {int(audio.shape[-1])} does not match the waveform length {length} "
+                f"(official center length would be {official})"
+            )
+        try:
+            magnitude_hat, phase_hat, recomputed = mag_pha_stft(
+                audio, spec["n_fft"], spec["hop_size"], spec["win_size"], spec["compress_factor"]
+            )
+        except (RuntimeError, TrainingError) as exc:
+            raise RuntimeFailure(str(exc)) from exc
+        return (
+            clean_mag,
+            clean_phase,
+            clean_complex,
+            noisy_mag,
+            noisy_phase,
+            magnitude,
+            phase,
+            complex_spectrum,
+            audio,
+            magnitude_hat,
+            phase_hat,
+            recomputed,
+        )
+
+    def export_for_inference(self) -> dict[str, torch.Tensor]:
+        """Generator weights only. The discriminator is not part of enhancement."""
+
+        return {"generator": self.generator.state_dict()}
+
+
+class MPSENetMetricDiscriminator(torch.nn.Module):
+    """Existing metric discriminator, initialized after a discarded generator.
+
+    The discarded ``build_model`` call is only there to consume the same
+    ``seed_model_init`` draws as the independent reference task. It is not registered and it
+    is not the training generator.
+    """
+
+    def __init__(
+        self,
+        *,
+        seed: int,
+        dense_channel: int,
+        num_tsconformers: int,
+        n_fft: int,
+        hop_size: int,
+        win_size: int,
+        compress_factor: float,
+        beta: float,
+        sampling_rate: int,
+        n_heads: int = 4,
+        dense_depth: int = 4,
+        ts_dropout: float = 0.0,
+        disc_dim: int = 16,
+    ) -> None:
+        super().__init__()
+        self.seed = _seed(seed)
+        self.architecture = architecture_config(
+            dense_channel=dense_channel,
+            num_tsconformers=num_tsconformers,
+            n_fft=n_fft,
+            hop_size=hop_size,
+            win_size=win_size,
+            compress_factor=compress_factor,
+            beta=beta,
+            sampling_rate=sampling_rate,
+            n_heads=n_heads,
+            dense_depth=dense_depth,
+            ts_dropout=ts_dropout,
+            disc_dim=disc_dim,
+        )
+        with seed_model_init(self.seed):
+            build_model("mp_senet", network_config(self.architecture))
+            self.discriminator = MetricDiscriminator(dim=int(self.architecture["disc_dim"]))
+
+    def forward(self, reference_magnitude: torch.Tensor, estimate_magnitude: torch.Tensor) -> torch.Tensor:
+        return self.discriminator(reference_magnitude, estimate_magnitude)
+
+
+def _seed(seed: object) -> int:
+    if isinstance(seed, bool) or not isinstance(seed, int) or seed < 0:
+        raise BuildError("seed must be an integer >= 0")
+    return seed
+
+
+def _positive_int(name: str, value: object) -> int:
+    if isinstance(value, bool) or not isinstance(value, int) or value < 1:
+        raise BuildError(f"{name} must be a positive integer")
+    return value
+
+
+def _positive_float(name: str, value: object) -> float:
+    if isinstance(value, bool) or not isinstance(value, (int, float)) or float(value) <= 0:
+        raise BuildError(f"{name} must be a positive number")
+    return float(value)
+
+
+def _unit_interval(name: str, value: object) -> float:
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        raise BuildError(f"{name} must be a number from 0 to 1")
+    number = float(value)
+    if number < 0.0 or number > 1.0 or number != number:
+        raise BuildError(f"{name} must be a number from 0 to 1")
+    return number

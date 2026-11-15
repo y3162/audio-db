@@ -27,7 +27,7 @@ from src.experiments.checkpoint import CheckpointError, _assert_replicated_state
 from src.experiments.config import load_experiment
 from src.experiments.official.deepfilternet3.trainer import DeepFilterNet3Trainer
 from src.experiments.official.mossformergan.trainer import MossFormerGANTrainer
-from src.experiments.official.mp_senet.state import MPTrainingProgress
+from src.experiments.official.mp_senet.trainer import MPTrainingProgress
 from src.experiments.official.mp_senet.trainer import MPSENetGANTrainer
 from src.experiments.provenance import judge_experiment_checkpoint
 from src.experiments.selectors import StandardSelector
