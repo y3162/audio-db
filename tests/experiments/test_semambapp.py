@@ -29,7 +29,7 @@ from src.experiments.data.sample import Batch
 from src.experiments.errors import BuildError, CheckpointError, RuntimeFailure
 from src.experiments.official.semambapp.models import SEMambaPPGenerator, scan_execution
 from src.experiments.runtime import ProcessRuntime
-from src.experiments.official.semambapp.reference import SEMambaTask
+from tests.numerics.reference.semamba_task import SEMambaTask
 
 _ROOT = Path(__file__).resolve().parents[2]
 _ARCH = {

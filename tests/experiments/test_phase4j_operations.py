@@ -331,7 +331,7 @@ def _arm_stop_probe(probe: object, cls: type) -> None:
         probe.progress = LocoformerProgress.initial("optimizer", "probe")
         return
     if cls is SEMambaPPTrainer:
-        from src.experiments.official.semambapp.state import SEMambaProgress
+        from src.experiments.official.semambapp.trainer import SEMambaProgress
 
         probe.progress = SEMambaProgress.initial("optim_g", "optim_d", "probe")
         return

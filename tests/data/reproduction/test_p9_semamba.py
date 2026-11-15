@@ -508,7 +508,7 @@ class TrainerTests(unittest.TestCase):
 
     def test_one_reduced_generator_step_is_finite(self):
         from src.experiments.calc.rng import set_determinism
-        from src.experiments.official.semambapp.reference import SEMambaTask
+        from tests.numerics.reference.semamba_task import SEMambaTask
         from tests.numerics.support import accelerator_device, prepare_accelerator_numerics
         from tests.numerics.test_model_tasks import _base
 

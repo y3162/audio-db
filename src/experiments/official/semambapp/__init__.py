@@ -1,1 +1,1 @@
-"""SEMamba++ training components. Import trainer, models, or reference directly."""
+"""SEMamba++ training components. Import trainer or model directly."""
