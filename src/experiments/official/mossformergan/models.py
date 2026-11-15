@@ -8,6 +8,7 @@ Remove it when those class paths name ``model``.
 """
 
 from src.experiments.official.mossformergan.model import (
+    OFFICIAL_ARCHITECTURE,
     MossFormerGANDiscriminator,
     MossFormerGANGenerator,
     architecture_config,
@@ -15,6 +16,7 @@ from src.experiments.official.mossformergan.model import (
 )
 
 __all__ = [
+    "OFFICIAL_ARCHITECTURE",
     "MossFormerGANDiscriminator",
     "MossFormerGANGenerator",
     "architecture_config",
