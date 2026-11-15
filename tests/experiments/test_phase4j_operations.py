@@ -320,6 +320,11 @@ def _arm_stop_probe(probe: object, cls: type) -> None:
     if cls is MPSENetGANTrainer:
         probe.progress = MPTrainingProgress.initial("optim_g", "optim_d")
         return
+    if cls is TFGridNetTrainer:
+        from src.experiments.official.tf_gridnet.state import GridNetProgress
+
+        probe.progress = GridNetProgress.initial("optimizer")
+        return
     probe.logical_step = 0
 
 
