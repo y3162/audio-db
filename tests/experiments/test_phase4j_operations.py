@@ -325,6 +325,11 @@ def _arm_stop_probe(probe: object, cls: type) -> None:
 
         probe.progress = GridNetProgress.initial("optimizer")
         return
+    if cls is TFLocoformerTrainer:
+        from src.experiments.official.tf_locoformer.state import LocoformerProgress
+
+        probe.progress = LocoformerProgress.initial("optimizer", "probe")
+        return
     probe.logical_step = 0
 
 
