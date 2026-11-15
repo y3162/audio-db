@@ -13,6 +13,9 @@ from typing import Any
 
 import torch
 
+from src.experiments.errors import RuntimeFailure
+from src.experiments.execution.journal import rank_of
+
 
 def write_best(
     directory: Path,
@@ -37,3 +40,24 @@ def write_best(
     meta_temporary = directory / ".best_generator.json.tmp"
     meta_temporary.write_text(json.dumps(meta, sort_keys=True) + "\n", encoding="utf-8")
     os.replace(meta_temporary, meta_path)
+
+
+def publish_best(
+    runtime: Any,
+    directory: Path,
+    decision: dict[str, Any],
+    exported: dict[str, torch.Tensor],
+    experiment_claim: str,
+) -> None:
+    """Rank 0 writes the selected generator. Every rank hears a write error."""
+
+    error: str | None = None
+    if rank_of(runtime) == 0 and decision["selected"]:
+        try:
+            write_best(directory, exported, decision, experiment_claim)
+        except (OSError, RuntimeError, TypeError) as exc:
+            error = f"{type(exc).__name__}: {exc}"
+    errors = runtime.gather_objects(error)
+    failure = next((item for item in errors if item), None)
+    if failure:
+        raise RuntimeFailure(f"best checkpoint write failed: {failure}")

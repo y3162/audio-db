@@ -1,14 +1,13 @@
-"""MP-SENet generator and metric-discriminator updates.
+"""Independent MP-SENet learning task for numeric comparison.
 
-The generator module is the inference implementation from ``src.se``. The
-discriminator and the losses stay in this package. ``enhance()`` is not called
-during training. ``loss: reconstruction`` is a time L1 objective for foundation
-tests. It is not the official MP-SENet objective.
+This is not the production updater. ``train_update`` keeps its own
+discriminator-then-generator loop, including the manual gradient average that
+skips missing gradients. Production validation calls ``validation_math``
+directly and does not construct this task. ``validation_report`` delegates to
+that same report so the batch formula is not copied.
 """
-
 from __future__ import annotations
 
-import math
 from typing import Any
 
 import torch
@@ -21,14 +20,12 @@ from src.experiments.calc.rng import seed_model_init
 from src.experiments.calc.scope import accumulation_scope
 from src.experiments.calc.errors import TrainingError
 from src.experiments.official.mp_senet.discriminator import MetricDiscriminator
+from src.experiments.official.mp_senet.lengths import (
+    official_center_istft_length,
+    require_discriminator_resolution as _require_discriminator_resolution,
+)
 from src.experiments.calc.losses import discriminator_loss, generator_losses, metric_targets
 from src.experiments.calc.stft import mag_pha_istft, mag_pha_stft
-
-
-def validation_model(config: dict[str, Any], device: torch.device) -> "MPSENetTask":
-    """Reference MP-SENet modules used to score validation on a weight copy."""
-
-    return MPSENetTask(config, device)
 
 
 class MPSENetTask:
@@ -158,108 +155,23 @@ class MPSENetTask:
         return metrics
 
     def validation_report(self, batch: dict[str, Any]) -> dict[str, Any]:
-        """Losses and reference metrics for one validation batch.
+        """Official or research report. The formula lives in ``validation_math``.
 
-        The caller has already switched to eval mode and disabled gradients.
-        The generator receives the full waveform. Official ``center=True``
-        iSTFT may come back at the largest hop multiple that does not exceed
-        that length. This method does not trim the model input.
-        ``align_validation_length`` remains available for the old truncation
-        length. Training updates still reject an iSTFT length mismatch.
-
-        Magnitude, phase, complex, and consistency spectrograms are the
-        full-length STFT pair used by official validation. Time-domain L1
-        uses only the overlapping prefix and records both lengths.
-
-        ``loss == "official"`` puts PESQ failures in the mean as -1, matching
-        ``eval_pesq``. The research path still drops ``na`` and errors.
-        A missing PESQ library is ``unavailable`` on both paths, not -1 and
-        not 0.
+        This task does not call the production updater. The report function
+        does not build an optimizer.
         """
-        clean, noisy = self._waveforms(batch)
-        with torch.no_grad():
-            parts = self._generate(
-                clean,
-                noisy,
-                generator=unwrap(self.generator),
-                allow_official_istft_length=True,
-            )
-        audio = parts["audio"]
-        overlap = min(int(clean.shape[-1]), int(audio.shape[-1]))
-        if overlap <= 0:
-            time_metric = _metric(status="na", reason="iSTFT audio and reference have no overlap")
-            time_value = None
-        else:
-            time_value = float(F.l1_loss(clean[..., :overlap], audio[..., :overlap]).detach())
-            time_metric = _metric(time_value)
-        magnitude = float(F.mse_loss(parts["clean_mag"], parts["mag"]).detach())
-        losses: dict[str, dict[str, Any]] = {
-            "time": time_metric,
-            "magnitude": _metric(magnitude),
-        }
-        generator_value = time_value
-        if (
-            self.loss_name == "official"
-            and self.discriminator is not None
-            and parts.get("mag_hat") is not None
-            and overlap > 0
-        ):
-            try:
-                _require_discriminator_resolution(parts["clean_mag"].shape[-2], parts["clean_mag"].shape[-1])
-                ones = torch.ones(clean.shape[0], device=self.device)
-                raw = unwrap(self.discriminator)
-                metric = raw(parts["clean_mag"], parts["mag_hat"])
-                detailed = generator_losses(
-                    parts["clean_mag"],
-                    parts["mag"],
-                    parts["clean_phase"],
-                    parts["phase"],
-                    parts["clean_complex"],
-                    parts["complex"],
-                    parts["recomputed_complex"],
-                    clean[..., :overlap],
-                    audio[..., :overlap],
-                    metric,
-                    ones,
-                )
-                generator_value = float(detailed["total"].detach())
-                for name in ("phase", "complex", "consistency", "metric"):
-                    losses[name] = _metric(float(detailed[name].detach()))
-                real = raw(parts["clean_mag"], parts["clean_mag"])
-                fake = raw(parts["clean_mag"], parts["mag_hat"])
-                targets = metric_targets(clean, audio, int(self.spec["sampling_rate"]))
-                losses["discriminator"] = _metric(float(discriminator_loss(real, fake, ones, targets).detach()))
-            except (TrainingError, RuntimeError, ValueError) as exc:
-                losses["discriminator"] = _metric(status="na", reason=str(exc))
-        elif self.loss_name == "official" and self.discriminator is not None:
-            losses["discriminator"] = _metric(
-                status="na",
-                reason="iSTFT audio is too short to form the consistency spectrogram",
-            )
-        else:
-            losses["discriminator"] = _metric(
-                status="na",
-                reason="reconstruction loss has no discriminator",
-            )
-        if generator_value is None:
-            losses["generator"] = _metric(status="na", reason="iSTFT audio and reference have no overlap")
-        else:
-            losses["generator"] = _metric(generator_value)
-        rate = int(self.spec["sampling_rate"])
-        pesq = _validation_pesq(clean, audio, rate, official=self.loss_name == "official")
-        stoi_scores = [
-            _reference_score(row_clean, row_audio, rate, kind="stoi")
-            for row_clean, row_audio in _rows(clean, audio)
-        ]
-        return {
-            "losses": losses,
-            "pesq": pesq,
-            "stoi": _combine_scores(stoi_scores),
-            "audio_lengths": _audio_length_rows(clean, audio),
-            "pesq_failures": pesq.get("pesq_failures"),
-            "pesq_scored": pesq.get("pesq_scored"),
-            "pesq_policy": pesq.get("pesq_policy"),
-        }
+
+        from src.experiments.official.mp_senet.validation_math import report_batch
+
+        discriminator = None if self.discriminator is None else unwrap(self.discriminator)
+        return report_batch(
+            generator=unwrap(self.generator),
+            discriminator=discriminator,
+            spec=self.spec,
+            device=self.device,
+            batch=batch,
+            official=self.loss_name == "official",
+        )
 
     def _reconstruction(self, batches: list[dict[str, Any]], accumulation: int) -> dict[str, float]:
         self.optim_g.zero_grad(set_to_none=True)
@@ -416,218 +328,3 @@ class MPSENetTask:
             result["phase_hat"] = phase_hat
             result["recomputed_complex"] = recomputed
         return result
-
-
-def official_center_istft_length(length: int, hop: int) -> int:
-    """Samples restored by official ``center=True`` iSTFT for this input length.
-
-    With ``center=True``, the frame count is ``1 + length // hop`` and iSTFT
-    without an explicit length returns ``(frames - 1) * hop``. That is the
-    largest multiple of ``hop`` that does not exceed ``length``.
-    """
-    if hop < 1:
-        raise TrainingError("hop must be positive")
-    if length < 0:
-        raise TrainingError("length must be non-negative")
-    return (int(length) // int(hop)) * int(hop)
-
-
-def align_validation_length(length: int, hop: int, n_fft: int) -> int:
-    """Old validation truncation: largest hop multiple at most ``length``.
-
-    ``validation_report`` does not call this to cut the generator input.
-    The update path still requires the waveform and iSTFT lengths to match.
-    Lengths whose hop multiple is at most ``n_fft // 2`` are rejected here
-    because the old path refused to build that shorter STFT.
-    """
-    if hop < 1:
-        raise TrainingError("hop must be positive")
-    if length % hop == 0:
-        return length
-    aligned = (length // hop) * hop
-    if aligned <= n_fft // 2:
-        raise TrainingError(f"utterance length {length} is too short to align to hop {hop}")
-    return aligned
-
-
-def _conv_out(size: int) -> int:
-    return (size + 2 - 4) // 2 + 1
-
-
-def _require_discriminator_resolution(n_freq: int, n_time: int) -> None:
-    """InstanceNorm rejects a 1x1 map while the discriminator is training.
-
-    Four stride-2 convolutions shrink the spectrogram before that norm. The
-    official 400-point STFT and 2-second segments stay large enough. A smaller
-    setup is rejected instead of switching the norm to evaluation statistics.
-    """
-    freq, time = int(n_freq), int(n_time)
-    for _ in range(4):
-        freq, time = _conv_out(freq), _conv_out(time)
-        if freq < 1 or time < 1 or freq * time <= 1:
-            raise TrainingError(
-                "official loss needs a larger spectrogram so the metric discriminator "
-                "InstanceNorm sees more than one spatial location. Increase segment_size or n_fft."
-            )
-
-
-def _metric(value: float | None = None, *, status: str = "ok", reason: str | None = None) -> dict[str, Any]:
-    if status == "ok" and (value is None or value != value or value in (float("inf"), float("-inf"))):
-        return {"status": "na", "value": None, "reason": "non-finite loss"}
-    return {"status": status, "value": value, "reason": reason}
-
-
-def _rows(clean: torch.Tensor, audio: torch.Tensor):
-    return zip(clean.detach().cpu(), audio.detach().cpu(), strict=True)
-
-
-def _reference_score(reference: torch.Tensor, estimate: torch.Tensor, sample_rate: int, *, kind: str) -> dict[str, Any]:
-    if kind == "pesq":
-        from src.evaluation.metrics.pesq import score_pesq
-
-        result = score_pesq(reference, estimate, sample_rate)
-    else:
-        from src.evaluation.metrics.stoi import score_stoi
-
-        result = score_stoi(reference, estimate, sample_rate, extended=False)
-    status = result["status"]
-    if status == "ok":
-        return _metric(float(result["value"]))
-    if status == "unavailable":
-        return _metric(status="unavailable", reason=str(result["reason"]))
-    return _metric(status="na", reason=str(result.get("reason") or status))
-
-
-def _combine_scores(scores: list[dict[str, Any]]) -> dict[str, Any]:
-    if any(item["status"] == "unavailable" for item in scores):
-        reason = next(item["reason"] for item in scores if item["status"] == "unavailable")
-        return {"status": "unavailable", "value": None, "reason": reason, "count": 0}
-    values = [float(item["value"]) for item in scores if item["status"] == "ok" and item["value"] is not None]
-    if values:
-        return {"status": "ok", "value": sum(values) / len(values), "reason": None, "count": len(values)}
-    reason = next((item["reason"] for item in scores if item["reason"]), "no score")
-    return {"status": "na", "value": None, "reason": reason, "count": 0}
-
-
-OFFICIAL_PESQ_POLICY = "official_include_negative_one"
-RESEARCH_PESQ_POLICY = "research_exclude_na"
-
-
-def _audio_length_rows(clean: torch.Tensor, audio: torch.Tensor) -> list[dict[str, int]]:
-    model_input = int(clean.shape[-1])
-    produced = int(audio.shape[-1])
-    overlap = min(model_input, produced)
-    return [
-        {
-            "model_input": model_input,
-            "clean": model_input,
-            "audio": produced,
-            "pesq_reference": model_input,
-            "pesq_estimate": produced,
-            "time_overlap": overlap,
-        }
-        for _index in range(int(clean.shape[0]))
-    ]
-
-
-def _pesq_unavailable(reason: str, policy: str) -> dict[str, Any]:
-    return {
-        "status": "unavailable",
-        "value": None,
-        "reason": reason,
-        "count": 0,
-        "pesq_failures": None,
-        "pesq_scored": 0,
-        "pesq_policy": policy,
-    }
-
-
-def _waveform_numpy(waveform: torch.Tensor) -> Any:
-    return waveform.detach().to(dtype=torch.float32).contiguous().numpy()
-
-
-def official_eval_pesq(clean_utt: Any, esti_utt: Any, sample_rate: int) -> float:
-    """One utterance, matching official ``eval_pesq``.
-
-    An exception, a non-finite value, or a negative library error code becomes
-    -1. The caller keeps that -1 in the mean. ImportError is not converted:
-    a missing library stays unavailable.
-    """
-    from pesq import PesqError, pesq
-
-    try:
-        score = pesq(int(sample_rate), clean_utt, esti_utt, on_error=PesqError.RETURN_VALUES)
-    except Exception:
-        return -1.0
-    try:
-        score = float(score)
-    except (TypeError, ValueError):
-        return -1.0
-    if not math.isfinite(score) or score < 0.0:
-        return -1.0
-    return score
-
-
-def combine_official_pesq_values(values: list[float]) -> dict[str, Any]:
-    """``np.mean`` of official per-utterance scores, including -1."""
-    if not values:
-        return {
-            "status": "na",
-            "value": None,
-            "reason": "no score",
-            "count": 0,
-            "pesq_failures": 0,
-            "pesq_scored": 0,
-            "pesq_policy": OFFICIAL_PESQ_POLICY,
-        }
-    failures = sum(1 for value in values if not math.isfinite(float(value)) or float(value) < 0.0)
-    mean = float(sum(float(value) for value in values)) / float(len(values))
-    return {
-        "status": "ok",
-        "value": mean,
-        "reason": None,
-        "count": len(values),
-        "pesq_failures": failures,
-        "pesq_scored": len(values) - failures,
-        "pesq_policy": OFFICIAL_PESQ_POLICY,
-    }
-
-
-def _annotate_research_pesq(scores: list[dict[str, Any]]) -> dict[str, Any]:
-    """Research mean: drop ``na`` and errors. Do not rename this into the official mean."""
-    summary = dict(_combine_scores(scores))
-    summary["pesq_policy"] = RESEARCH_PESQ_POLICY
-    if summary["status"] == "unavailable":
-        summary["pesq_failures"] = None
-        summary["pesq_scored"] = 0
-        return summary
-    summary["pesq_scored"] = sum(1 for item in scores if item["status"] == "ok" and item["value"] is not None)
-    summary["pesq_failures"] = sum(1 for item in scores if item["status"] != "ok")
-    return summary
-
-
-def _validation_pesq(
-    clean: torch.Tensor,
-    audio: torch.Tensor,
-    sample_rate: int,
-    *,
-    official: bool,
-) -> dict[str, Any]:
-    pairs = list(_rows(clean, audio))
-    if not official:
-        scores = [_reference_score(reference, estimate, sample_rate, kind="pesq") for reference, estimate in pairs]
-        return _annotate_research_pesq(scores)
-    from src.evaluation.metrics.pesq import library_status
-
-    missing = library_status()
-    if missing:
-        return _pesq_unavailable(str(missing), OFFICIAL_PESQ_POLICY)
-    values: list[float] = []
-    try:
-        for reference, estimate in pairs:
-            values.append(
-                official_eval_pesq(_waveform_numpy(reference), _waveform_numpy(estimate), sample_rate)
-            )
-    except ImportError as exc:
-        return _pesq_unavailable(str(exc), OFFICIAL_PESQ_POLICY)
-    return combine_official_pesq_values(values)

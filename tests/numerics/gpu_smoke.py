@@ -4,7 +4,7 @@ import torch
 from src.se import load_enhancer
 from tests.numerics.test_model_tasks import _base, _updated
 from tests.numerics.support import paired_dataset, tiny_config
-from src.experiments.official.mp_senet.reference import MPSENetTask
+from tests.numerics.reference.mp_senet_task import MPSENetTask
 from src.experiments.official.tf_gridnet.reference import TFGridNetTask
 from src.experiments.official.semambapp.reference import SEMambaTask
 from src.experiments.official.deepfilternet3.reference import DeepFilterNetTask

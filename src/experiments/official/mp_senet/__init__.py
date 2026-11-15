@@ -1,1 +1,1 @@
-"""MP-SENet training components. Import trainer, models, or reference directly."""
+"""MP-SENet training components. Import trainer, models, or training_step directly."""

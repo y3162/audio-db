@@ -1,36 +1,39 @@
 """Official MP-SENet GAN loop for the experiment framework.
 
-``fit`` orders one logical step, the step log, official validation, PESQ
-selection, both schedulers, research evaluation, and the checkpoint safe
-point. One GAN pair is :class:`~src.experiments.official.mp_senet.training_step.MPSENetUpdate`.
-Official validation is :class:`~src.experiments.official.mp_senet.validation.MPSENetOfficialValidator`.
-That pair keeps one generator forward, steps the discriminator, then the
-generator. ``StandardTrainer`` and the TF-GridNet / TF-Locoformer trainers
-are not used for this loop.
+``fit`` orders one logical step, the step log, a checkpoint safe point,
+official validation, PESQ selection, both schedulers, research evaluation,
+and the boundary checkpoint. One GAN pair is
+:class:`~src.experiments.official.mp_senet.training_step.MPSENetUpdate`.
+Official validation is
+:class:`~src.experiments.official.mp_senet.validation.MPSENetOfficialValidator`.
 
 ``ExponentialLR`` advances once when the epoch's usable micro-batches are
 finished. A validation interval does not advance it. When the same update
 both validates and ends the epoch, validation and best selection run, then
 both schedulers step.
 
-Checkpoint files are written only after both optimizers have stepped and
-``end_step`` has returned. ``amp_fp16`` is refused: the two AdamW updates are
-not one atomic scaler decision.
+A step checkpoint is offered only after both optimizers have stepped,
+``end_step`` has returned, and the counters for that step are stored, and
+before the next forward. The CUDA overlap path may flush a previous log row
+during the next signal backward. That flush does not offer a checkpoint.
+``prepare`` flushes the journal again before a file is published.
+``amp_fp16`` is refused: the two AdamW updates are not one atomic scaler
+decision.
 """
 
 from __future__ import annotations
 
-from src.experiments.stopping import observe_validation, should_stop
-
-from pathlib import Path
 from typing import Any
 
 import torch
 
-from src.experiments.data import Batch
 from src.experiments.data.pair import bind_trainer_data
-from src.experiments.errors import BuildError, RuntimeFailure
-from src.experiments.official.mp_senet.artifacts import write_best
+from src.experiments.errors import RuntimeFailure
+from src.experiments.execution.journal import StepJournal
+from src.experiments.official.mp_senet.artifacts import publish_best
+from src.experiments.official.mp_senet.boundary import apply_official_boundary
+from src.experiments.official.mp_senet.checks import non_negative_int, positive_int, require_mp_gan_setup
+from src.experiments.official.mp_senet.recording import StepRecorder
 from src.experiments.official.mp_senet.selection import consider_best_pesq
 from src.experiments.official.mp_senet.state import (
     IN_EPOCH,
@@ -39,29 +42,16 @@ from src.experiments.official.mp_senet.state import (
     open_boundary,
     restore_progress,
 )
-from src.experiments.official.mp_senet.validation import MPSENetOfficialValidator
-from src.experiments.training.control import finish_training_run, open_flat_window, stop_requested
-from src.experiments.official.mp_senet.models import (
-    MPSENetGANGenerator,
-    MPSENetMetricDiscriminator,
-    require_official_architecture,
-)
 from src.experiments.official.mp_senet.training_step import MPSENetUpdate, refuse_gan_amp
-from src.experiments.execution.journal import StepJournal
+from src.experiments.official.mp_senet.validation import MPSENetOfficialValidator
 from src.experiments.results import RunResult
-from src.experiments.runtime import PreparedModel, ProcessRuntime, require_prepared
-from src.experiments.selectors import scalar_metrics
-from src.experiments.trainers import (
-    _close_epoch_view,
-    _rank,
-)
-from src.experiments.training.official_objectives import require_mp_senet
+from src.experiments.runtime import PreparedModel, ProcessRuntime
+from src.experiments.stopping import observe_validation, should_stop
+from src.experiments.training.control import finish_training_run, open_flat_window, stop_requested
+from src.experiments.trainers import _close_epoch_view
 
 _IN_EPOCH = IN_EPOCH
 _PENDING = PENDING_BOUNDARY
-OFFICIAL_FAITHFUL = "official_faithful"
-LEAKAGE_SAFE = "leakage_safe"
-_CLAIMS = frozenset({OFFICIAL_FAITHFUL, LEAKAGE_SAFE, "research"})
 OFFICIAL_VALIDATION_INTERVAL = 5000
 LEAKAGE_SAFE_VALIDATION_INTERVAL = 2675
 OFFICIAL_CHECKPOINT_INTERVAL = 5000
@@ -102,33 +92,19 @@ class MPSENetGANTrainer:
         evaluators: Any | None = None,
         model_selection: Any | None = None,
     ) -> None:
-        require_prepared(generator, MPSENetGANGenerator, "generator must be a prepared MPSENetGANGenerator")
-        require_prepared(
+        optim_g_id, optim_d_id = require_mp_gan_setup(
+            generator,
             discriminator,
-            MPSENetMetricDiscriminator,
-            "discriminator must be a prepared MPSENetMetricDiscriminator",
+            data,
+            optim_g,
+            optim_d,
+            scheduler_g,
+            scheduler_d,
+            signal_objective,
+            metric_objective,
+            discriminator_objective,
+            experiment_claim,
         )
-        if generator.unwrapped().architecture != discriminator.unwrapped().architecture:
-            raise BuildError("discriminator initialization architecture does not match the generator")
-        if generator.unwrapped().seed != discriminator.unwrapped().seed:
-            raise BuildError("generator and discriminator seeds differ")
-        if not isinstance(optim_g, torch.optim.AdamW) or not isinstance(optim_d, torch.optim.AdamW):
-            raise BuildError("MP-SENet GAN optimizers must be AdamW")
-        if not isinstance(scheduler_g, torch.optim.lr_scheduler.ExponentialLR):
-            raise BuildError("scheduler_g must be ExponentialLR")
-        if not isinstance(scheduler_d, torch.optim.lr_scheduler.ExponentialLR):
-            raise BuildError("scheduler_d must be ExponentialLR")
-        _require_disjoint(optim_g, optim_d)
-        if not hasattr(data, "train_epoch") or not hasattr(data, "validation_epoch"):
-            raise BuildError("data must provide train_epoch and validation_epoch")
-        if experiment_claim not in _CLAIMS:
-            raise BuildError("experiment_claim must be official_faithful, leakage_safe, or research")
-        require_official_architecture(generator.unwrapped().architecture, experiment_claim)
-        require_mp_senet(signal_objective, metric_objective, discriminator_objective, experiment_claim)
-        optim_g_id = getattr(optim_g, "_experiment_component_id", None)
-        optim_d_id = getattr(optim_d, "_experiment_component_id", None)
-        if not isinstance(optim_g_id, str) or not isinstance(optim_d_id, str):
-            raise BuildError("optimizers have no component id")
         self.generator = generator
         self.discriminator = discriminator
         self.data = data
@@ -144,17 +120,17 @@ class MPSENetGANTrainer:
         self.experiment_claim = experiment_claim
         self.audio_sample_rate = 16000
         self.audio_teachers = ("dry_clean",)
-        self.max_logical_steps = _positive_int("max_logical_steps", max_logical_steps)
-        self.accumulation = _positive_int("accumulation", accumulation)
-        self.validation_interval = _non_negative_int("validation_interval", validation_interval)
-        self.best_checkpoint_start_epoch = _non_negative_int(
+        self.max_logical_steps = positive_int("max_logical_steps", max_logical_steps)
+        self.accumulation = positive_int("accumulation", accumulation)
+        self.validation_interval = non_negative_int("validation_interval", validation_interval)
+        self.best_checkpoint_start_epoch = non_negative_int(
             "best_checkpoint_start_epoch", best_checkpoint_start_epoch
         )
-        self.max_epochs = None if max_epochs is None else _positive_int("max_epochs", max_epochs)
+        self.max_epochs = None if max_epochs is None else positive_int("max_epochs", max_epochs)
         if stop_after_logical_steps is not None:
-            stop_after_logical_steps = _positive_int("stop_after_logical_steps", stop_after_logical_steps)
+            stop_after_logical_steps = positive_int("stop_after_logical_steps", stop_after_logical_steps)
         self.stop_after_logical_steps = stop_after_logical_steps
-        self._mp_io: tuple[Any, ...] | None = None
+        self._recorder = StepRecorder()
         self.logical_step = 0
         self.optimizer_updates = {optim_g_id: 0, optim_d_id: 0}
         self.scheduler_steps = 0
@@ -201,7 +177,12 @@ class MPSENetGANTrainer:
         )
 
     def fit(self) -> RunResult:
-        """Train until the step budget, an epoch cap, or an interrupt."""
+        """Train until the step budget, an epoch cap, or an interrupt.
+
+        After each GAN pair the order is: log, step checkpoint when the epoch
+        continues, otherwise pending checkpoint, official validation, PESQ
+        best, epoch-end schedulers, research, boundary checkpoint.
+        """
 
         self.lifecycle.start()
         runtime = self.runtime
@@ -216,12 +197,12 @@ class MPSENetGANTrainer:
                 return self._result("completed")
         while self.logical_step < self.max_logical_steps:
             if self._stop_requested(runtime):
-                self._drain_mp_io()
+                self._recorder.flush(self.journal)
                 if self.logical_step > 0 and not self._in_official_step:
                     self._offer("stop")
                 return self._result("interrupted")
             if self._epoch_cap_reached():
-                self._drain_mp_io()
+                self._recorder.flush(self.journal)
                 return self._result("completed")
             epoch, index, view, batches = self._open_window(component_id)
             try:
@@ -255,7 +236,7 @@ class MPSENetGANTrainer:
                     return self._result("completed")
             finally:
                 _close_epoch_view(view)
-        self._drain_mp_io()
+        self._recorder.flush(self.journal)
         return self._result("completed")
 
     def _prepare_run(self, runtime: ProcessRuntime) -> str:
@@ -296,7 +277,7 @@ class MPSENetGANTrainer:
         runtime.barrier()
         return str(component_id)
 
-    def _open_window(self, component_id: str) -> tuple[int, int, Any, list[Batch]]:
+    def _open_window(self, component_id: str) -> tuple[int, int, Any, list[Any]]:
         """Take the next flat micro-batch window. The epoch length must divide evenly."""
 
         return open_flat_window(self, component_id)
@@ -310,27 +291,18 @@ class MPSENetGANTrainer:
         epoch_done: bool,
         will_validate: bool,
     ) -> bool:
-        """Write or defer the step log. Return True when the epoch continues."""
+        """Record the completed step. Offer a step checkpoint before the next forward.
 
-        shared = _shared_log(runtime, local)
-        entry = {
-            "applied_d": True,
-            "applied_g": True,
-            "complex": shared["complex"],
-            "consistency": shared["consistency"],
-            "discriminator": shared["discriminator"],
-            "epoch": epoch,
-            "generator": shared["generator"],
-            "logical_step": self.logical_step,
-            "loss": shared["generator"],
-            "lr_d": shared["lr_d"],
-            "lr_g": shared["lr_g"],
-            "magnitude": shared["magnitude"],
-            "metric": shared["metric"],
-            "phase": shared["phase"],
-            "sample_id": shared["sample_id"],
-            "time": shared["time"],
-        }
+        Return True when the epoch continues. A CUDA overlap step may keep the
+        log bytes until the next backward, unless this call is about to publish
+        a checkpoint. ``prepare`` writes those bytes before the file.
+        """
+
+        entry = self._recorder.entry(
+            self._recorder.share(runtime, local),
+            epoch=epoch,
+            logical_step=self.logical_step,
+        )
         self.step_log.append(entry)
         offer_step = not will_validate and not epoch_done
         step_metrics: dict[str, float] = {}
@@ -344,41 +316,22 @@ class MPSENetGANTrainer:
                 logical_step=self.logical_step,
                 stopping=getattr(self, "training_control", None),
             )
-        if runtime.device.type == "cuda" and runtime.world_size == 1:
-            self._mp_io = (entry, local, offer_step, step_metrics)
-            if offer_step:
-                return True
-            self._drain_mp_io()
-            return False
-        self.journal.write_metrics(entry)
-        self.journal.write_sample({**local, "logical_step": self.logical_step, "loss": local["generator"]})
+        defer_log = offer_step and runtime.device.type == "cuda" and runtime.world_size == 1 and self.accumulation == 1
+        if defer_log:
+            self._recorder.stage(self.journal, entry, local)
+        else:
+            self._recorder.write_now(self.journal, entry, local)
         if offer_step:
-            if step_metrics:
-                self._offer("step", metrics=step_metrics)
-            else:
-                self._offer("step")
+            self._offer("step", metrics=step_metrics or None)
             return True
         return False
 
     def _drain_mp_io(self) -> None:
-        """Write the previous step while the next signal backward is queued."""
+        """Flush the previous step's log. This does not offer a checkpoint."""
 
-        item = self._mp_io
-        if item is None:
-            return
-        self._mp_io = None
-        entry, local, offer_step, step_metrics = item
-        self.journal.write_metrics(entry)
-        self.journal.write_sample(
-            {**local, "logical_step": entry["logical_step"], "loss": local["generator"]}
-        )
-        if offer_step:
-            if step_metrics:
-                self._offer("step", metrics=step_metrics)
-            else:
-                self._offer("step")
+        self._recorder.flush(self.journal)
 
-    def official_step(self, batches: list[Batch], runtime: ProcessRuntime) -> dict[str, float]:
+    def official_step(self, batches: list[Any], runtime: ProcessRuntime) -> dict[str, float]:
         """Run one official GAN update. Both optimizers step, or neither is checkpointed."""
 
         self._in_official_step = True
@@ -453,46 +406,41 @@ class MPSENetGANTrainer:
 
         del phase
 
-    def _finish_boundary(
-        self,
-        runtime: ProcessRuntime,
-        component_id: str,
-    ) -> None:
-        """Validate, select best PESQ, step both schedulers, then run research evaluation."""
+    def _enter_phase(self, phase: str) -> None:
+        self.phase = phase
+        self._on_boundary_phase(phase)
+
+    def _finish_boundary(self, runtime: ProcessRuntime, component_id: str) -> None:
+        """Pending save already happened. Validate, select, schedule, research, then save."""
+
         if self.phase != _PENDING or self.boundary is None:
             raise RuntimeFailure(f"component {component_id}: there is no pending GAN boundary")
         boundary = self.boundary
         trainer_epoch = int(boundary["trainer_epoch"])
-        metrics: dict[str, float] = {}
-        if boundary["validate"] and not boundary["validation_done"]:
-            summary = self._validate(runtime, trainer_epoch, component_id)
-            metrics = scalar_metrics(summary)
-            decision = self._consider_best(trainer_epoch, summary)
-            self.history.append(decision)
-            self._write_best(runtime, self.lifecycle.output_directory, decision)
-            boundary["validation_done"] = True
-            boundary["selection_done"] = True
-            boundary["pesq"] = decision["pesq"]
-            boundary["pesq_status"] = decision["pesq_status"]
-            boundary["selected"] = decision["selected"]
-            if boundary["scheduler"]:
-                self.phase = "pending_scheduler"
-                self._on_boundary_phase(self.phase)
-        if boundary["scheduler"] and not boundary["scheduler_done"]:
-            self.scheduler_g.step()
-            self.scheduler_d.step()
+        metrics, stepped = apply_official_boundary(
+            boundary,
+            validate=lambda: self._validate(runtime, trainer_epoch, component_id),
+            consider_best=self._consider_best,
+            record_history=self.history.append,
+            write_best=lambda decision: publish_best(
+                runtime,
+                self.lifecycle.output_directory,
+                decision,
+                self.generator.unwrapped().export_for_inference(),
+                self.experiment_claim,
+            ),
+            scheduler_g=self.scheduler_g,
+            scheduler_d=self.scheduler_d,
+            optim_g=self.optim_g,
+            optim_d=self.optim_d,
+            data=self.data,
+            mark_phase=self._enter_phase,
+        )
+        if stepped:
             self.scheduler_steps += 1
-            boundary["scheduler_done"] = True
-            boundary["lr_g"] = float(self.optim_g.param_groups[0]["lr"])
-            boundary["lr_d"] = float(self.optim_d.param_groups[0]["lr"])
-        if boundary["epoch_done"]:
-            self.data.epoch = trainer_epoch + 1
-            self.data.update_index = 0
-        boundary["closed"] = True
         self.completed_boundaries.append(dict(boundary))
         self.boundary = None
-        self.phase = _IN_EPOCH
-        self._on_boundary_phase(self.phase)
+        self._enter_phase(_IN_EPOCH)
         if boundary["validate"]:
             observe_validation(
                 getattr(self, "training_control", None),
@@ -533,23 +481,6 @@ class MPSENetGANTrainer:
             self.best_logical_step = int(decision["logical_step"])
         return decision
 
-    def _write_best(self, runtime: ProcessRuntime, directory: Path, decision: dict[str, Any]) -> None:
-        error: str | None = None
-        if _rank(runtime) == 0 and decision["selected"]:
-            try:
-                write_best(
-                    directory,
-                    self.generator.unwrapped().export_for_inference(),
-                    decision,
-                    self.experiment_claim,
-                )
-            except (OSError, RuntimeError, TypeError) as exc:
-                error = f"{type(exc).__name__}: {exc}"
-        errors = runtime.gather_objects(error)
-        failure = next((item for item in errors if item), None)
-        if failure:
-            raise RuntimeFailure(f"best checkpoint write failed: {failure}")
-
     def _refuse_amp(self, runtime: ProcessRuntime) -> None:
         refuse_gan_amp(runtime)
 
@@ -563,16 +494,23 @@ class MPSENetGANTrainer:
                 f"does not match accumulation {self.accumulation}"
             )
 
-    def _offer(
-        self,
-        event: str,
-        metrics: dict[str, float] | None = None,
-    ) -> None:
-        """Offer this state to the selector. A GAN optimizer pair is not a save point."""
+    def _offer(self, event: str, metrics: dict[str, float] | None = None) -> None:
+        """Offer this completed state. A GAN optimizer pair is not a save point.
+
+        When the selector writes, the journal is flushed first. A declined
+        offer leaves a deferred log row untouched.
+        """
 
         if self._in_official_step:
             raise RuntimeFailure("refusing to checkpoint between the discriminator step and the generator step")
-        self.lifecycle.save_if_needed(event, logical_step=self.logical_step, metrics=metrics)
+
+        def prepare(_runtime: object) -> None:
+            self._recorder.flush(self.journal)
+
+        if metrics:
+            self.lifecycle.save_if_needed(event, logical_step=self.logical_step, metrics=metrics, prepare=prepare)
+        else:
+            self.lifecycle.save_if_needed(event, logical_step=self.logical_step, prepare=prepare)
 
     def _stop_requested(self, runtime: object | None = None) -> bool:
         """Agree a logical-step cap with a rank interrupt."""
@@ -583,40 +521,7 @@ class MPSENetGANTrainer:
         return self.max_epochs is not None and int(self.data.epoch) >= self.max_epochs
 
     def _result(self, reason: str) -> RunResult:
-        """Score the research end and finish. This path does not broadcast buffers."""
+        """Flush the log, score the research end, and finish."""
 
+        self._recorder.flush(self.journal)
         return finish_training_run(self, reason)
-
-
-def _shared_log(runtime: ProcessRuntime, local: dict[str, float]) -> dict[str, float | str]:
-    """Store rank 0's scalars on every rank so the checkpoint matches."""
-
-    gathered = runtime.gather_objects(dict(local))
-    shared = gathered[0]
-    if not isinstance(shared, dict):
-        raise RuntimeFailure("rank 0 did not return GAN metrics")
-    return shared
-
-
-def _require_disjoint(optim_g: torch.optim.Optimizer, optim_d: torch.optim.Optimizer) -> None:
-    """Refuse an optimizer pair that shares a parameter."""
-    generator_ids = {id(parameter) for group in optim_g.param_groups for parameter in group["params"]}
-    discriminator_ids = {id(parameter) for group in optim_d.param_groups for parameter in group["params"]}
-    if generator_ids & discriminator_ids:
-        raise BuildError("generator and discriminator optimizers share a parameter")
-    if not generator_ids or not discriminator_ids:
-        raise BuildError("MP-SENet GAN optimizers must each own parameters")
-
-
-def _positive_int(name: str, value: object) -> int:
-    """Require a positive integer."""
-    if isinstance(value, bool) or not isinstance(value, int) or value < 1:
-        raise BuildError(f"{name} must be a positive integer")
-    return value
-
-
-def _non_negative_int(name: str, value: object) -> int:
-    """Require an integer that is zero or greater."""
-    if isinstance(value, bool) or not isinstance(value, int) or value < 0:
-        raise BuildError(f"{name} must be an integer >= 0")
-    return value

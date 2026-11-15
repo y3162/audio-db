@@ -4,13 +4,13 @@ The generator is one ``src.se.build_model("mp_senet")`` MPNet. The
 discriminator is the existing ``MetricDiscriminator``. Neither module is
 reimplemented here, and the waveform L1 adapter is a different class.
 
-``MPSENetTask`` builds the generator and then the discriminator inside one
-``seed_model_init`` scope. Builder stage 0 does not keep that order, because
-other components share the stage. Each class therefore enters
+The independent reference task builds the generator and then the discriminator
+inside one ``seed_model_init`` scope. Builder stage 0 does not keep that order,
+because other components share the stage. Each class therefore enters
 ``seed_model_init`` on its own. The discriminator constructor builds a
 generator that it does not store, so the discriminator's random draws start
-where they start in ``MPSENetTask``. That discarded generator is not a second
-registered owner of the training parameters.
+where they start in that reference task. That discarded generator is not a
+second registered owner of the training parameters.
 """
 
 from __future__ import annotations
@@ -26,7 +26,7 @@ from src.se.models.mp_senet.model import MPNet
 from src.experiments.calc.rng import seed_model_init
 from src.experiments.calc.errors import TrainingError
 from src.experiments.official.mp_senet.discriminator import MetricDiscriminator
-from src.experiments.official.mp_senet.reference import official_center_istft_length
+from src.experiments.official.mp_senet.lengths import official_center_istft_length
 from src.experiments.calc.stft import mag_pha_istft, mag_pha_stft
 
 _SAMPLE_RATE = 16000
@@ -267,7 +267,7 @@ class MPSENetMetricDiscriminator(torch.nn.Module):
     """Existing metric discriminator, initialized after a discarded generator.
 
     The discarded ``build_model`` call is only there to consume the same
-    ``seed_model_init`` draws as ``MPSENetTask``. It is not registered and it
+    ``seed_model_init`` draws as the independent reference task. It is not registered and it
     is not the training generator.
     """
 

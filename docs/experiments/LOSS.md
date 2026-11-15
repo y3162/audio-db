@@ -69,11 +69,11 @@ MossFormerGAN の time 項は、この波形 L1 ではない。clean の real �
 
 ## モデルごとのグラフ
 
-公開係数は出荷 YAML と `src/experiments/training/official_objectives.py` にある。参照ステップの係数は `reference.py` に残り、学習経路はそれを読まない。
+公開係数は出荷 YAML と `src/experiments/training/official_objectives.py` にある。参照ステップの係数は、MP-SENet では `tests/numerics/reference/mp_senet_task.py`、他のモデルではその `reference.py` に残り、学習経路はそれを読まない。
 
 | モデル | Objective | 公開係数 | 検証 |
 |---|---|---|---|
-| MP-SENet | 信号と metric の 2 つ、および Discriminator | 信号は magnitude 0.9、phase 0.3（`diff`）、complex 0.1（内部 scale 2）、consistency 0.1（内部 scale 2）、time 0.2。metric は 0.05。Discriminator は real を 1 へ、PESQ があるときだけ fake をその目標へ | 参照タスクの式 |
+| MP-SENet | 信号と metric の 2 つ、および Discriminator | 信号は magnitude 0.9、phase 0.3（`diff`）、complex 0.1（内部 scale 2）、consistency 0.1（内部 scale 2）、time 0.2。metric は 0.05。Discriminator は real を 1 へ、PESQ があるときだけ fake をその目標へ | `validation_math.py` の公式報告。比較用 Task は同じ報告関数を呼ぶが、更新ループは独立 |
 | MossFormerGAN | Generator と Discriminator | RI 0.1、magnitude 0.9、time 0.2、GAN 0.05。Discriminator は real を 1 へ、fake を PESQ へ | 参照タスクの式 |
 | SEMamba++ | Generator と Discriminator | adversarial 1、matching 1（各族の feature matching は scale 2、reduction sum、その和へ重み）、mel 0.1、magnitude 0.9、phase 0.3（`matrix`）、complex 0.1（内部 scale 2）、consistency 0.1（内部 scale 2）。波形 L1 は和に入らない。mel の `0 * L1` は項の中に残る | 参照タスクの波形 L1 |
 | DeepFilterNet3 | spectral と local SNR | spectral の Objective 重みは 1。項の中は factor 500、complex factor 500、gamma 0.3、FFT 256/512/1024/2048、floor `1e-12`。local SNR の重みは `1e-3`。窓は 20 ms、energy floor は `1e-12`。FFT、hop、sample rate、SNR の上下限はモデルの context | 注入した Objective |

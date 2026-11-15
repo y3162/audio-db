@@ -35,7 +35,7 @@ from src.experiments.data.snapshot import (
     snapshot_hash,
 )
 from src.se.models.mp_senet.model import MPNet
-from src.experiments.official.mp_senet.reference import MPSENetTask
+from tests.numerics.reference.mp_senet_task import MPSENetTask
 from tests.numerics.support import tiny_config
 
 ROOT = Path(__file__).resolve().parents[2]

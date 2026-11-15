@@ -61,7 +61,7 @@ from src.se import build_model  # noqa: E402
 from src.experiments.calc.rng import seed_model_init  # noqa: E402
 from src.experiments.official.mp_senet.discriminator import MetricDiscriminator  # noqa: E402
 from src.experiments.calc.losses import discriminator_loss, generator_losses, metric_targets  # noqa: E402
-from src.experiments.official.mp_senet.reference import MPSENetTask  # noqa: E402
+from tests.numerics.reference.mp_senet_task import MPSENetTask  # noqa: E402
 from src.experiments.calc.stft import mag_pha_istft, mag_pha_stft  # noqa: E402
 
 LOSS_ATOL = 1e-5

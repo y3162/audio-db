@@ -1,17 +1,17 @@
 """Official MP-SENet validation for one epoch.
 
-Rank 0 scores the validation split with a shadow reference task and
-``metrics.aggregate_reports``. Every rank then receives that one summary.
+Rank 0 scores the validation split with a shadow generator and discriminator
+and ``metrics.aggregate_reports``. Every rank then receives that one summary.
 The training cursor and the RNG captured around the call are restored.
 
-The shadow task is a cache of architecture, seed, and the optimizer group
-seen on the first call. Each call copies the live generator and discriminator
-weights into it. ``invalidate`` drops the cache so a resumed process does not
-keep a task built before ``load_state_dict``.
+The shadow is a cache of architecture and seed. It has no optimizer and no
+scheduler. Each call copies the live generator and discriminator weights into
+it. ``invalidate`` drops the cache so a resumed process does not keep a
+shadow built before ``load_state_dict``.
 
 This module does not choose when validation runs. It does not step a
 scheduler, select a best PESQ, write a checkpoint, or call the research
-evaluator.
+evaluator. It does not construct the reference learning task.
 """
 
 from __future__ import annotations
@@ -21,11 +21,45 @@ from typing import Any
 import torch
 
 from src.experiments.calc.errors import TrainingError
+from src.experiments.calc.rng import seed_model_init
 from src.experiments.data import Batch
 from src.experiments.errors import RuntimeFailure
+from src.experiments.official.mp_senet.discriminator import MetricDiscriminator
 from src.experiments.official.mp_senet.metrics import aggregate_reports
-from src.experiments.official.mp_senet.reference import validation_model
+from src.experiments.official.mp_senet.models import network_config
+from src.experiments.official.mp_senet.validation_math import report_batch
 from src.experiments.runtime import PreparedModel, ProcessRuntime
+from src.se import build_model
+
+
+class _Shadow:
+    """Eval-mode weights for one report. Not a training task."""
+
+    def __init__(
+        self,
+        generator: torch.nn.Module,
+        discriminator: torch.nn.Module,
+        architecture: dict[str, Any],
+        device: torch.device,
+    ) -> None:
+        self.generator = generator
+        self.discriminator = discriminator
+        self.spec = architecture
+        self.device = device
+
+    def eval_mode(self) -> None:
+        self.generator.eval()
+        self.discriminator.eval()
+
+    def validation_report(self, batch: dict[str, Any]) -> dict[str, Any]:
+        return report_batch(
+            generator=self.generator,
+            discriminator=self.discriminator,
+            spec=self.spec,
+            device=self.device,
+            batch=batch,
+            official=True,
+        )
 
 
 class MPSENetOfficialValidator:
@@ -43,12 +77,14 @@ class MPSENetOfficialValidator:
         self.generator = generator
         self.discriminator = discriminator
         self.data = data
+        # Kept so a caller can see which optimizer group the live model uses.
+        # The shadow does not construct another optimizer from them.
         self.optim_g = optim_g
         self.scheduler_g = scheduler_g
-        self._shadow = None
+        self._shadow: _Shadow | None = None
 
     def invalidate(self) -> None:
-        """Drop the cached reference task. The next call builds a new one."""
+        """Drop the cached shadow. The next call builds a new one."""
 
         self._shadow = None
 
@@ -81,40 +117,43 @@ class MPSENetOfficialValidator:
         return shared
 
     def _rank0(self, trainer_epoch: int, runtime: ProcessRuntime, component_id: str) -> dict[str, Any]:
-        task = self._task(runtime)
+        shadow = self._shadow_for(runtime)
         reports: list[dict[str, Any]] = []
         for batch in self.data.validation_epoch(trainer_epoch):
             if not isinstance(batch, Batch):
                 raise RuntimeFailure(f"component {component_id}: validation did not return a batch")
             batch = runtime.move(batch)
-            report = task.validation_report({"clean": batch.targets, "noisy": batch.inputs})
+            report = shadow.validation_report({"clean": batch.targets, "noisy": batch.inputs})
             reports.append(report)
         if not reports:
             raise RuntimeFailure(f"component {component_id}: rank 0 validation produced no batches")
         return aggregate_reports(reports)
 
-    def _task(self, runtime: ProcessRuntime):
+    def _shadow_for(self, runtime: ProcessRuntime) -> _Shadow:
         if self._shadow is None:
-            group = self.optim_g.param_groups[0]
-            betas = group["betas"]
-            self._shadow = validation_model(
-                {
-                    "loss": "official",
-                    "model": dict(self.generator.unwrapped().architecture),
-                    "optimizer": {
-                        "betas": [float(betas[0]), float(betas[1])],
-                        "lr": float(group["lr"]),
-                        "weight_decay": float(group["weight_decay"]),
-                    },
-                    "scheduler": {"gamma": float(self.scheduler_g.gamma)},
-                    "seed": int(self.generator.unwrapped().seed),
-                },
-                runtime.device,
-            )
-        task = self._shadow
-        if task.discriminator is None:
-            raise RuntimeFailure("shadow MP-SENet task has no discriminator")
-        task.generator.load_state_dict(self.generator.unwrapped().generator.state_dict(), strict=True)
-        task.discriminator.load_state_dict(self.discriminator.unwrapped().discriminator.state_dict(), strict=True)
-        task.eval_mode()
-        return task
+            architecture = dict(self.generator.unwrapped().architecture)
+            seed = int(self.generator.unwrapped().seed)
+            self._shadow = _build_shadow(architecture, seed, runtime.device)
+        shadow = self._shadow
+        shadow.generator.load_state_dict(self.generator.unwrapped().generator.state_dict(), strict=True)
+        shadow.discriminator.load_state_dict(
+            self.discriminator.unwrapped().discriminator.state_dict(), strict=True
+        )
+        shadow.eval_mode()
+        return shadow
+
+
+def _build_shadow(architecture: dict[str, Any], seed: int, device: torch.device) -> _Shadow:
+    """Build eval modules under the same seed as the reference task, without an optimizer.
+
+    The discarded generator consumes the same initialization draws the metric
+    discriminator expects. Its weights are replaced before the report.
+    """
+
+    with seed_model_init(seed):
+        generator = build_model("mp_senet", network_config(architecture)).to(device)
+        if "disc_dim" in architecture:
+            discriminator = MetricDiscriminator(dim=int(architecture["disc_dim"])).to(device)
+        else:
+            discriminator = MetricDiscriminator().to(device)
+    return _Shadow(generator, discriminator, architecture, device)

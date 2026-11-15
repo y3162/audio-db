@@ -60,7 +60,7 @@ from src.experiments.data.snapshot import (
 )
 from src.experiments.calc.rng import set_determinism
 from src.experiments.calc.losses import metric_targets
-from src.experiments.official.mp_senet.reference import MPSENetTask
+from tests.numerics.reference.mp_senet_task import MPSENetTask
 
 ROOT = Path(__file__).resolve().parents[2]
 ARCH = {
@@ -716,7 +716,7 @@ def _compare_update(*, accumulation: int, length: int, stub: bool, sine: bool = 
     _capture(task.optim_d, old_box, "d")
     _capture(task.optim_g, old_box, "g")
     _seed_streams(21)
-    patcher = patch("src.experiments.official.mp_senet.reference.metric_targets", targets) if stub else nullpatch()
+    patcher = patch("tests.numerics.reference.mp_senet_task.metric_targets", targets) if stub else nullpatch()
     with patcher:
         old = task._official([{"clean": batch.targets.clone(), "noisy": batch.inputs.clone()} for batch in batches], accumulation)
     runtime = ProcessRuntime(device="cpu", precision="fp32")

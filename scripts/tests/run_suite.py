@@ -65,6 +65,7 @@ GPU_TARGETS = (
     "tests.numerics.test_model_tasks",
     "tests.experiments.test_cuda_amp",
     "tests.experiments.test_launcher.LauncherCudaTests",
+    "tests.experiments.test_mp_senet_completion",
 )
 
 # Long subprocess-heavy modules start first to avoid leaving one worker busy

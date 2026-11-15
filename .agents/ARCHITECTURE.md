@@ -1,6 +1,6 @@
 # 学習の不変条件
 
-学習式を「整理」で変えない。モデル固有の参照ステップは `src/experiments/official/<model>/reference.py` にあり、共有の STFT・スペクトル損失・scheduler は `src/experiments/calc/` にある。学習が backward する損失は YAML の Loss Term と Objective で組み立て、Trainer は注入された Objective を呼ぶ。参照ステップは自分の係数を持ち、テストが両方を比べる。第二の学習 CLI は作らない。仕様は `docs/experiments/LOSS.md`。
+学習式を「整理」で変えない。モデル固有の参照ステップは `src/experiments/official/<model>/reference.py` にある。MP-SENet の比較用学習 Task だけは `tests/numerics/reference/mp_senet_task.py` にあり、本番はそれを import しない。共有の STFT・スペクトル損失・scheduler は `src/experiments/calc/` にある。学習が backward する損失は YAML の Loss Term と Objective で組み立て、Trainer は注入された Objective を呼ぶ。参照ステップは自分の係数を持ち、テストが両方を比べる。第二の学習 CLI は作らない。仕様は `docs/experiments/LOSS.md`。
 
 ## Checkpoint
 
@@ -50,7 +50,7 @@
 
 損失の足し方と Optimizer の順序は、対応する `src/experiments/official/<model>/reference.py` の参照ステップと一致させる。係数の正本は実験 YAML の Objective である。検証の統計、順位、patience、DeepFilterNet3 の一連の損失、MP-SENet の GAN 対は、そのモデルの `metrics.py`、`selection.py`、`schedule.py`、`training_step.py` に置く。Trainer はいつ更新・検証・scheduler・保存を呼ぶかを持つ。対の中の Optimizer 順を `training_step.py` に置いたモデルでは、Trainer がその対の中身を持たない。MossFormerGAN の plateau の式は `reference.mossformer_validation_decision` にあり、重みの復帰と学習率の変更は Trainer が行う。意味が一致する終了処理、蓄積窓、rank 停止だけを `src/experiments/training/control.py` に置く。意味が違う `_prepare_run` と `_offer` は Trainer に残す。
 
-- MP-SENet GAN: Discriminator を先に更新し、同じ Generator forward のグラフで Generator を更新する。この対は `official/mp_senet/training_step.py` にあり、Trainer はそれをいつ呼ぶかだけを持つ。信号項と metric 項は別の Objective で、CUDA の重なり経路は信号、Discriminator、metric の順に backward する。`ExponentialLR` は epoch の micro-batch が尽きたときだけ進む。検証の式は参照タスクのままである。rank 0 の実行、RNG、学習カーソル、shadow は `official/mp_senet/validation.py` にあり、いつ検証するかは Trainer が持つ。`states["trainer"]` の検査は `official/mp_senet/state.py` が行い、値は Trainer だけが持つ。
+- MP-SENet GAN: Discriminator を先に更新し、同じ Generator forward のグラフで Generator を更新する。この対の入口は `official/mp_senet/training_step.py` にあり、CPU/DDP の順は `update_accumulated.py`、CUDA 単一 rank で蓄積 1 の PESQ 重なりは `update_cuda_overlap.py` にある。Trainer はそれをいつ呼ぶかだけを持つ。信号項と metric 項は別の Objective で、CUDA の重なり経路は信号、Discriminator、metric の順に backward する。`ExponentialLR` は epoch の micro-batch が尽きたときだけ進む。検証の式は `official/mp_senet/validation_math.py` にあり、参照学習 Task は使わない。rank 0 の実行、RNG、学習カーソル、shadow は `official/mp_senet/validation.py` にあり、いつ検証するかは Trainer が持つ。step の保存要求は両 Optimizer のあとの安全点で、ログの物理 I/O だけを次の CUDA backward に重ねてよい。`states["trainer"]` の検査は `official/mp_senet/state.py` が行い、値は Trainer だけが持つ。
 - MossFormerGAN: RI、magnitude、time、GAN は 1 回の再構成が作るスカラーを Context Term が読む。time は波形 L1 ではない。Objective が公開係数を掛ける。Generator の backward のあと Discriminator の backward。両 AdamW はその後。PESQ が無い micro-batch は分母に残り、損失 0 にはしない。plateau は 5 回で Generator の学習率を半分にし、10 回で止める。検証は参照タスクの式のままである。
 - TF-GridNet: `mr_l1_tfd` を重み 1 の Objective で包む。Adam、epoch 末の `ReduceLROnPlateau`、`valid.loss` の n-best。検証は注入した Objective の total である。
 - TF-Locoformer: 同じスペクトル損失、AdamW、`WarmupReduceLROnPlateau`。warmup は Optimizer 更新のあと。最初の更新は構築時の学習率。SI-SDR は監視だけで backward に入れない。検証は注入した Objective の total である。
