@@ -1,11 +1,10 @@
-"""Map a DeepFilterNet3 micro-batch onto ``component_losses`` argument order."""
+"""DeepFilterNet3 pair order. Clean is ``Batch.targets`` and noisy is ``Batch.inputs``."""
 
 from __future__ import annotations
 
 import torch
 
 from src.experiments.data import Batch
-
 
 def clean_noisy(batch: Batch) -> tuple[torch.Tensor, torch.Tensor]:
     """Return clean, then noisy.

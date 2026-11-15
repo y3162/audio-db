@@ -7,7 +7,7 @@ from tests.numerics.support import paired_dataset, tiny_config
 from tests.numerics.reference.mp_senet_task import MPSENetTask
 from tests.numerics.reference.tf_gridnet_task import TFGridNetTask
 from src.experiments.official.semambapp.reference import SEMambaTask
-from src.experiments.official.deepfilternet3.reference import DeepFilterNetTask
+from tests.numerics.reference.deepfilternet_task import DeepFilterNetTask
 from src.experiments.official.mossformergan.reference import MossFormerGANTask
 
 torch.set_num_threads(4)

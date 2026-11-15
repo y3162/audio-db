@@ -1,7 +1,14 @@
-"""Epoch validation. Each utterance is scored alone and averaged with equal weight."""
+"""DeepFilterNet3 validation, early stopping, and best-generator files.
+
+Each validation utterance is scored alone and averaged with equal weight.
+This module does not step the optimizer and does not offer a checkpoint.
+"""
 
 from __future__ import annotations
 
+import json
+import os
+from pathlib import Path
 from typing import Any
 
 import torch
@@ -9,12 +16,13 @@ import torch
 from src.experiments.calc.rng import capture_rank_rng, restore_rank_rng
 from src.experiments.data import Batch
 from src.experiments.errors import RuntimeFailure
-from src.experiments.official.deepfilternet3.update import loss_tensor
-from src.experiments.official.deepfilternet3.waveforms import clean_noisy
+from src.experiments.official.deepfilternet3.dataset import clean_noisy
+from src.experiments.official.deepfilternet3.loss import loss_tensor
 from src.experiments.runtime import ProcessRuntime
 from src.experiments.trainers import _rank
 from src.se.models.deepfilternet3.dsp import DFStream
 
+# --- Equal-weight validation. Rank 0 scores; every rank restores RNG and cursor. ---
 
 def evaluate(
     runtime: ProcessRuntime,
@@ -61,3 +69,39 @@ def evaluate(
     if not scores:
         raise RuntimeFailure(f"component {component_id}: validation produced no utterances")
     return sum(scores) / len(scores)
+
+
+# --- Patience on the equal-weight validation loss. ---
+
+def note_early_stop(metric: float | None, count: int, loss: float, patience: int) -> tuple[float, int, bool]:
+    """Reset the counter on a strict improvement. Stop at ``patience`` misses."""
+
+    if patience < 1:
+        raise RuntimeFailure("early_stopping_patience must be >= 1")
+    if metric is None or loss < metric:
+        return loss, 0, False
+    count += 1
+    return metric, count, count >= patience
+
+
+# --- Best generator and the rfft record. Rank 0 writes. ---
+
+def write_best(directory: Path, payload: dict[str, Any]) -> None:
+    target = directory / "valid.loss.best.pt"
+    temporary = directory / ".valid.loss.best.pt.tmp"
+    try:
+        torch.save(payload, temporary)
+        os.replace(temporary, target)
+    except Exception as exc:
+        temporary.unlink(missing_ok=True)
+        raise RuntimeFailure(f"best checkpoint failed: {exc}") from exc
+
+def write_rfft(directory: Path, record: dict[str, Any]) -> None:
+    path = Path(directory) / "rfft.json"
+    temporary = path.with_name(".rfft.json.tmp")
+    try:
+        temporary.write_text(json.dumps(record, sort_keys=True) + "\n", encoding="utf-8")
+        os.replace(temporary, path)
+    except Exception:
+        temporary.unlink(missing_ok=True)
+        raise

@@ -336,7 +336,7 @@ def _arm_stop_probe(probe: object, cls: type) -> None:
         probe.progress = SEMambaProgress.initial("optim_g", "optim_d", "probe")
         return
     if cls is DeepFilterNet3Trainer:
-        from src.experiments.official.deepfilternet3.state import DFProgress
+        from src.experiments.official.deepfilternet3.trainer import DFProgress
 
         probe.progress = DFProgress.initial("optimizer", 1)
         return

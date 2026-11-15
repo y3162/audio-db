@@ -633,7 +633,7 @@ def _official_df_losses(device):
 
 
 def _df_schedule():
-    from src.experiments.official.deepfilternet3.reference import deepfilter_cosine_schedules
+    from tests.numerics.reference.deepfilternet_task import deepfilter_cosine_schedules
     config = {
         "optimizer": {"lr": 1e-3, "weight_decay": 1e-12},
         "scheduler": {
@@ -647,7 +647,7 @@ def _df_schedule():
 def _df_loss(implementation, module, stream, params, clean, noisy, official_loss):
     import torch.nn.functional as F
     from src.se.models.deepfilternet3.dsp import vorbis_window
-    from src.experiments.official.deepfilternet3.reference import _local_snr_db, _multi_resolution_spectral, _vorbis_istft
+    from tests.numerics.reference.deepfilternet_task import _local_snr_db, _multi_resolution_spectral, _vorbis_istft
     stream.reset()
     clean_spec, _erb, _feat, clean_complex = _df_analyze(stream, params, clean)
     stream.reset()

@@ -30,16 +30,16 @@ from src.experiments.data.fixed_pair import MicroBatcher, SnapshotDataModule, Sn
 from src.experiments.data.online import Dfn3IndexSampler, Dfn3Protocol
 from src.experiments.data.sample import Batch
 from src.experiments.official.deepfilternet3.losses import official_deepfilternet_objective
-from src.experiments.official.deepfilternet3.schedule import schedule_index
-from src.experiments.official.deepfilternet3.selection import note_early_stop
+from src.experiments.official.deepfilternet3.evaluator import note_early_stop
+from src.experiments.official.deepfilternet3.trainer import schedule_index
 from src.experiments.official.deepfilternet3.trainer import DeepFilterNet3Trainer, _clean_noisy
-from src.experiments.official.deepfilternet3.training_step import component_losses
+from src.experiments.official.deepfilternet3.loss import component_losses
 from src.experiments.official.deepfilternet3.model import DeepFilterNet3Model
 from src.experiments.runtime import PreparePolicy, ProcessRuntime
 from tests.experiments.official_loss_yaml import DFN_COMPONENTS, DFN_INJECT
 from src.se.models.deepfilternet3.dsp import DFStream, _rfft_kernel, rfft_library_path
 from src.experiments.calc.batch_schedule import scheduled_batch_size
-from src.experiments.official.deepfilternet3.reference import DeepFilterNetTask, deepfilter_cosine_schedules
+from tests.numerics.reference.deepfilternet_task import DeepFilterNetTask, deepfilter_cosine_schedules
 
 _ARCH = {
     "conv_ch": 16,

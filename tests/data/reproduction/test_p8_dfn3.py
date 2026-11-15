@@ -283,7 +283,7 @@ class SnapshotTests(unittest.TestCase):
 class TrainerSmokeTests(unittest.TestCase):
     def test_one_deepfilternet_step_is_finite(self):
         from src.experiments.calc.rng import set_determinism
-        from src.experiments.official.deepfilternet3.reference import DeepFilterNetTask
+        from tests.numerics.reference.deepfilternet_task import DeepFilterNetTask
         from tests.numerics.support import accelerator_device, prepare_accelerator_numerics
         from tests.numerics.test_model_tasks import _base
 

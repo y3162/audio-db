@@ -67,7 +67,7 @@ def main() -> None:
     spectral_o.backward()
     grad_official = shared.grad.detach().clone()
     shared.grad = None
-    from src.experiments.official.deepfilternet3.reference import _multi_resolution_spectral
+    from tests.numerics.reference.deepfilternet_task import _multi_resolution_spectral
     spectral_i = _multi_resolution_spectral(shared, wave_o.detach())
     spectral_i.backward()
     delta = (grad_official - shared.grad).abs()
