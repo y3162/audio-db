@@ -27,6 +27,7 @@ from src.experiments.checkpoint import CheckpointError, _assert_replicated_state
 from src.experiments.config import load_experiment
 from src.experiments.official.deepfilternet3.trainer import DeepFilterNet3Trainer
 from src.experiments.official.mossformergan.trainer import MossFormerGANTrainer
+from src.experiments.official.mp_senet.state import MPTrainingProgress
 from src.experiments.official.mp_senet.trainer import MPSENetGANTrainer
 from src.experiments.provenance import judge_experiment_checkpoint
 from src.experiments.selectors import StandardSelector
@@ -313,6 +314,15 @@ class ProvenanceContractTests(unittest.TestCase):
                 self.assertEqual(hashlib.sha256(previous.read_bytes()).hexdigest(), digest)
 
 
+def _arm_stop_probe(probe: object, cls: type) -> None:
+    """Give a half-built trainer the counter its interrupt check reads."""
+
+    if cls is MPSENetGANTrainer:
+        probe.progress = MPTrainingProgress.initial("optim_g", "optim_d")
+        return
+    probe.logical_step = 0
+
+
 class StopBoundaryTests(unittest.TestCase):
     def test_trainers_observe_the_interrupt_flag(self) -> None:
         trainers = (
@@ -328,14 +338,14 @@ class StopBoundaryTests(unittest.TestCase):
             for cls in trainers:
                 probe = object.__new__(cls)
                 probe.stop_after_logical_steps = None
-                probe.logical_step = 0
+                _arm_stop_probe(probe, cls)
                 self.assertTrue(probe._stop_requested(None), cls.__name__)
             self.assertTrue(ranks_should_stop(None))
         finally:
             clear_interrupt()
         probe = object.__new__(MPSENetGANTrainer)
         probe.stop_after_logical_steps = None
-        probe.logical_step = 0
+        _arm_stop_probe(probe, MPSENetGANTrainer)
         self.assertFalse(probe._stop_requested(None))
 
     def test_sigterm_stops_after_a_finished_step_and_resume_keeps_metrics(self) -> None:

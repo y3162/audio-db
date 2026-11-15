@@ -10,7 +10,7 @@ from typing import Any
 
 import torch
 
-from src.experiments.errors import BuildError
+from src.experiments.errors import BuildError, RuntimeFailure
 from src.experiments.official.mp_senet.models import (
     MPSENetGANGenerator,
     MPSENetMetricDiscriminator,
@@ -77,6 +77,19 @@ def non_negative_int(name: str, value: object) -> int:
     if isinstance(value, bool) or not isinstance(value, int) or value < 0:
         raise BuildError(f"{name} must be an integer >= 0")
     return value
+
+
+def require_group_size(data: Any, accumulation: int, component_id: str) -> None:
+    """Refuse a data group whose width is not the GAN accumulation."""
+
+    group_size = getattr(data, "group_size", None)
+    if group_size is None:
+        return
+    if int(group_size) != accumulation:
+        raise RuntimeFailure(
+            f"component {component_id}: data group_size {group_size} "
+            f"does not match accumulation {accumulation}"
+        )
 
 
 def _require_disjoint(optim_g: torch.optim.Optimizer, optim_d: torch.optim.Optimizer) -> None:

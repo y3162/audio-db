@@ -1288,7 +1288,7 @@ def _mp_trainer_once(cmp, h, device, trainer_cls, gen_cls, disc_cls, policy_cls,
             "run_called": True,
             "logical_steps": int(result.logical_step),
             "scheduler_steps": int(sched_count["n"]),
-            "step_log": trainer.step_log,
+            "step_log": trainer.progress.step_log,
         }
     finally:
         runtime.shutdown()

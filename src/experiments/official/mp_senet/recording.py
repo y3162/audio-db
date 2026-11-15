@@ -1,9 +1,9 @@
 """Step log rows for MP-SENet.
 
-The trainer owns ``step_log`` and decides when a checkpoint may be offered.
-This module builds one JSON row, writes it through ``StepJournal``, and can
-hold that write until a later flush. The held row is not part of the
-checkpoint. A flush does not score research and does not save.
+The progress object owns ``step_log``. This module builds one JSON row,
+writes it through ``StepJournal``, and can hold that write until a later
+flush. The held row is not part of the checkpoint. A flush does not score
+research and does not save.
 
 CUDA overlap may flush the previous row while the next signal backward is
 still running. That row already describes the completed step. The trainer
@@ -81,6 +81,14 @@ class StepRecorder:
         entry, local = self._pending
         self._pending = None
         _write(journal, entry, local)
+
+    def publish(self, journal: StepJournal, entry: dict[str, Any], local: dict[str, Any], *, defer: bool) -> None:
+        """Stage the row when the next backward may overlap its write. Otherwise write it now."""
+
+        if defer:
+            self.stage(journal, entry, local)
+        else:
+            self.write_now(journal, entry, local)
 
 
 def _write(journal: StepJournal, entry: dict[str, Any], local: dict[str, Any]) -> None:

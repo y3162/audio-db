@@ -54,3 +54,23 @@ def consider_best_pesq(
     record["selected"] = True
     record["reason"] = "improved"
     return record
+
+
+def apply_pesq_selection(
+    progress: Any,
+    epoch: int,
+    summary: dict[str, Any],
+    *,
+    start_epoch: int,
+) -> dict[str, Any]:
+    """Decide the official PESQ rule and store a strict improvement on ``progress``."""
+
+    decision = consider_best_pesq(
+        epoch,
+        summary,
+        start_epoch=start_epoch,
+        best_pesq=progress.best_pesq,
+        logical_step=progress.logical_step,
+    )
+    progress.remember_best(decision)
+    return decision

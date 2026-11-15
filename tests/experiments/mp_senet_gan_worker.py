@@ -36,12 +36,12 @@ def main() -> None:
     result = experiment.run()
     trainer = experiment.get("trainer")
     payload = {
-        "average_calls": int(trainer._average_calls),
+        "average_calls": int(trainer._update.average_calls),
         "logical_step": int(result.logical_step),
         "optimizer_updates": dict(result.optimizer_updates),
         "rank": int(experiment._graph.runtime.rank),
         "stop_reason": result.stop_reason,
-        "synced_during_generator_backward": bool(trainer._generator_synced_during_backward),
+        "synced_during_generator_backward": bool(trainer._update.generator_synced_during_backward),
     }
     path = directory / f"worker-rank{payload['rank']}.json"
     path.write_text(json.dumps(payload, sort_keys=True), encoding="utf-8")

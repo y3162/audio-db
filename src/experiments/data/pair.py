@@ -93,6 +93,29 @@ def bind_trainer_data(trainer: object) -> None:
     check_publication(trainer)
 
 
+def bind_declared_audio(
+    trainer: object,
+    *,
+    data: object,
+    sample_rate: int,
+    teachers: tuple[str, ...],
+    experiment_claim: str,
+) -> None:
+    """Check an explicit audio contract, then the publication claim.
+
+    The official dataset table is keyed by the trainer class, so the instance
+    is still passed to publication. Progress counters are not read.
+    ``experiment_claim`` must be the claim stored on the trainer.
+    """
+
+    if getattr(trainer, "experiment_claim", None) != experiment_claim:
+        raise RuntimeFailure("experiment claim does not match the trainer")
+    if data is None or not teachers:
+        raise RuntimeFailure("trainer audio contract is incomplete")
+    require_audio_contract(data, sample_rate=int(sample_rate), teachers=tuple(teachers))
+    check_publication(trainer)
+
+
 def check_publication(trainer: object) -> None:
     """Refuse an official or leakage-safe claim that the opened data does not support.
 

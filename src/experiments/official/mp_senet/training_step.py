@@ -77,6 +77,22 @@ class MPSENetUpdate:
         self.metric_objective = metric_objective
         self.discriminator_objective = discriminator_objective
         self.accumulation = accumulation
+        self.average_calls = 0
+        self.generator_synced_during_backward = False
+
+    def note_generator_sync(self, enabled: bool) -> None:
+        """Remember the last DDP sync flag seen during generator backward.
+
+        The CUDA overlap path does not call this. The flag is not stored in
+        the checkpoint.
+        """
+
+        self.generator_synced_during_backward = bool(enabled)
+
+    def note_gradients_averaged(self) -> None:
+        """Count one gradient reduction, immediately before average_gradients."""
+
+        self.average_calls += 1
 
     def run(
         self,

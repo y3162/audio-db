@@ -212,6 +212,11 @@ def observe_validation(
     control.observe(MetricEvent("validation", step, metrics, expected_metrics=expected))
 
 
-def should_stop(trainer: object) -> bool:
-    control = getattr(trainer, "training_control", None)
+def control_requests_stop(control: object | None) -> bool:
+    """Return whether this stopping control has already decided to stop."""
+
     return control is not None and control.stopped
+
+
+def should_stop(trainer: object) -> bool:
+    return control_requests_stop(getattr(trainer, "training_control", None))

@@ -36,6 +36,7 @@ from src.experiments.data import Batch
 from src.experiments.errors import BuildError, CheckpointError, RuntimeFailure
 from src.experiments.official.mp_senet.waveform import MPSENetWaveformAdapter
 from src.experiments.official.mp_senet.models import MPSENetGANGenerator, MPSENetMetricDiscriminator
+from src.experiments.official.mp_senet.selection import apply_pesq_selection
 from src.experiments.official.mp_senet.trainer import (
     BEST_CHECKPOINT_START_EPOCH,
     LEAKAGE_SAFE_VALIDATION_INTERVAL,
@@ -74,6 +75,17 @@ ARCH = {
     "win_size": 400,
 }
 LENGTH = 1600
+
+
+def _select(trainer: object, epoch: int, summary: dict[str, object]) -> dict[str, object]:
+    """Apply the same PESQ decision the boundary uses, and store it on progress."""
+
+    return apply_pesq_selection(
+        trainer.progress,
+        epoch,
+        summary,
+        start_epoch=trainer.best_checkpoint_start_epoch,
+    )
 
 
 class MPSENetGANTests(unittest.TestCase):
@@ -250,12 +262,12 @@ class MPSENetGANTests(unittest.TestCase):
         try:
             trainer = experiment.get("trainer")
             with patch("src.evaluation.metrics.pesq.library_status", return_value="pesq is not installed"):
-                summary = trainer._validate(experiment._graph.runtime, 0, "trainer")
+                summary = trainer._validator.evaluate(experiment._graph.runtime, 0, "trainer")
             self.assertEqual(summary["pesq"]["status"], "unavailable")
             self.assertIsNone(summary["pesq"]["value"])
-            decision = trainer._consider_best(0, summary)
+            decision = _select(trainer, 0, summary)
             self.assertFalse(decision["selected"])
-            self.assertIsNone(trainer.best_pesq)
+            self.assertIsNone(trainer.progress.best_pesq)
             self.assertNotEqual(summary["pesq"]["value"], 0)
         finally:
             experiment.close()
@@ -290,7 +302,7 @@ class MPSENetGANTests(unittest.TestCase):
             raise
         trainer = experiment.get("trainer")
         self.assertEqual(result.logical_step, 1)
-        self.assertEqual(trainer.scheduler_steps, 0)
+        self.assertEqual(trainer.progress.scheduler_steps, 0)
         self.assertEqual(experiment.get("optim_g").param_groups[0]["lr"], OFFICIAL_LEARNING_RATE)
         self.assertEqual(experiment.get("optim_d").param_groups[0]["lr"], OFFICIAL_LEARNING_RATE)
         self.assertEqual(phases, ["pending_boundary", "in_epoch"])
@@ -311,14 +323,14 @@ class MPSENetGANTests(unittest.TestCase):
             experiment.close()
             raise
         trainer = experiment.get("trainer")
-        self.assertEqual(trainer.scheduler_steps, 1)
+        self.assertEqual(trainer.progress.scheduler_steps, 1)
         self.assertAlmostEqual(experiment.get("optim_g").param_groups[0]["lr"], OFFICIAL_LEARNING_RATE * OFFICIAL_GAMMA)
         self.assertAlmostEqual(experiment.get("optim_d").param_groups[0]["lr"], OFFICIAL_LEARNING_RATE * OFFICIAL_GAMMA)
         self.assertEqual(phases, ["pending_boundary", "pending_scheduler", "in_epoch"])
-        self.assertEqual(len(trainer.history), 1)
-        self.assertEqual(trainer.history[0]["pesq_status"], "ok")
-        self.assertEqual(trainer.history[0]["pesq"], -1.0)
-        self.assertTrue(trainer.history[0]["selected"])
+        self.assertEqual(len(trainer.progress.history), 1)
+        self.assertEqual(trainer.progress.history[0]["pesq_status"], "ok")
+        self.assertEqual(trainer.progress.history[0]["pesq"], -1.0)
+        self.assertTrue(trainer.progress.history[0]["selected"])
         self.assertTrue((directory / "best_generator.pt").is_file())
         stored = torch.load(directory / "best_generator.pt", map_location="cpu", weights_only=False)
         self.assertEqual(_max_diff(stored["generator"], experiment.get("generator").state_module.generator.state_dict()), 0.0)
@@ -328,24 +340,24 @@ class MPSENetGANTests(unittest.TestCase):
         experiment = build_experiment(load_experiment(_yaml(directory, steps=1, updates=2, best_start=40)))
         try:
             trainer = experiment.get("trainer")
-            early = trainer._consider_best(39, {"pesq": {"status": "ok", "value": 2.0}})
+            early = _select(trainer, 39, {"pesq": {"status": "ok", "value": 2.0}})
             self.assertFalse(early["selected"])
-            self.assertIsNone(trainer.best_pesq)
+            self.assertIsNone(trainer.progress.best_pesq)
             trainer.best_checkpoint_start_epoch = 0
-            missing = trainer._consider_best(0, {"pesq": {"status": "unavailable", "value": None}})
+            missing = _select(trainer, 0, {"pesq": {"status": "unavailable", "value": None}})
             self.assertFalse(missing["selected"])
-            self.assertIsNone(trainer.best_pesq)
-            first = trainer._consider_best(1, {"pesq": {"status": "ok", "value": 1.5}})
-            tie = trainer._consider_best(2, {"pesq": {"status": "ok", "value": 1.5}})
-            lower = trainer._consider_best(3, {"pesq": {"status": "ok", "value": 1.4}})
-            higher = trainer._consider_best(4, {"pesq": {"status": "ok", "value": 1.6}})
+            self.assertIsNone(trainer.progress.best_pesq)
+            first = _select(trainer, 1, {"pesq": {"status": "ok", "value": 1.5}})
+            tie = _select(trainer, 2, {"pesq": {"status": "ok", "value": 1.5}})
+            lower = _select(trainer, 3, {"pesq": {"status": "ok", "value": 1.4}})
+            higher = _select(trainer, 4, {"pesq": {"status": "ok", "value": 1.6}})
             self.assertTrue(first["selected"])
             self.assertFalse(tie["selected"])
             self.assertEqual(tie["reason"], "not_higher")
             self.assertFalse(lower["selected"])
             self.assertTrue(higher["selected"])
-            self.assertEqual(trainer.best_pesq, 1.6)
-            self.assertEqual(trainer.best_epoch, 4)
+            self.assertEqual(trainer.progress.best_pesq, 1.6)
+            self.assertEqual(trainer.progress.best_epoch, 4)
         finally:
             experiment.close()
 
@@ -487,9 +499,9 @@ class MPSENetGANTests(unittest.TestCase):
                 size = len(payload) if isinstance(payload, list) else None
                 phases.append((phase, size))
                 if phase == "after_discriminator_step":
-                    self.assertEqual(trainer._average_calls, 0)
+                    self.assertEqual(trainer._update.average_calls, 0)
                 if phase == "end_step":
-                    self.assertEqual(trainer._average_calls, 1)
+                    self.assertEqual(trainer._update.average_calls, 1)
 
             trainer._on_update_phase = hook
             trainer._drain_mp_io = lambda: drains.append("drain")
@@ -506,8 +518,8 @@ class MPSENetGANTests(unittest.TestCase):
             )
             self.assertEqual(drains, [])
             self.assertFalse(trainer._in_official_step)
-            self.assertEqual(trainer._average_calls, 1)
-            self.assertFalse(trainer._generator_synced_during_backward)
+            self.assertEqual(trainer._update.average_calls, 1)
+            self.assertFalse(trainer._update.generator_synced_during_backward)
         finally:
             runtime.shutdown()
 
@@ -533,17 +545,17 @@ class MPSENetGANTests(unittest.TestCase):
             trainer = experiment.get("trainer")
             runtime = experiment._graph.runtime
             cursor = (int(trainer.data.epoch), int(trainer.data.update_index))
-            summary = trainer._validate(runtime, 0, "trainer")
+            summary = trainer._validator.evaluate(runtime, 0, "trainer")
             self.assertEqual((int(trainer.data.epoch), int(trainer.data.update_index)), cursor)
-            self.assertEqual(trainer.scheduler_steps, 0)
-            self.assertIsNone(trainer.best_pesq)
+            self.assertEqual(trainer.progress.scheduler_steps, 0)
+            self.assertIsNone(trainer.progress.best_pesq)
             self.assertIsNotNone(trainer._validator._shadow)
             trainer.load_state_dict(trainer.state_dict())
             self.assertIsNone(trainer._validator._shadow)
-            again = trainer._validate(runtime, 0, "trainer")
+            again = trainer._validator.evaluate(runtime, 0, "trainer")
             self.assertEqual(again["pesq"], summary["pesq"])
-            self.assertEqual(trainer.scheduler_steps, 0)
-            self.assertIsNone(trainer.best_pesq)
+            self.assertEqual(trainer.progress.scheduler_steps, 0)
+            self.assertIsNone(trainer.progress.best_pesq)
             self.assertEqual((int(trainer.data.epoch), int(trainer.data.update_index)), cursor)
         finally:
             experiment.close()
@@ -571,13 +583,13 @@ class MPSENetGANTests(unittest.TestCase):
                     "stop_reason",
                 },
             )
-            trainer.logical_step = 4
-            trainer.stop_reason = "kept"
+            trainer.progress.logical_step = 4
+            trainer.progress.stop_reason = "kept"
             reduced = dict(payload)
             del reduced["stop_reason"]
             trainer.load_state_dict(reduced)
-            self.assertEqual(trainer.logical_step, payload["logical_step"])
-            self.assertEqual(trainer.stop_reason, "kept")
+            self.assertEqual(trainer.progress.logical_step, payload["logical_step"])
+            self.assertEqual(trainer.progress.stop_reason, "kept")
             self.assertTrue(trainer._restored)
             broken = dict(payload)
             broken["phase"] = "pending_scheduler"
@@ -585,6 +597,55 @@ class MPSENetGANTests(unittest.TestCase):
                 trainer.load_state_dict(broken)
         finally:
             runtime.shutdown()
+
+    def test_old_payload_round_trips_without_a_second_copy(self) -> None:
+        from src.experiments.official.mp_senet.state import MPTrainingProgress
+
+        stored = {
+            "best_epoch": 4,
+            "best_logical_step": 8,
+            "best_pesq": 1.5,
+            "boundary": {
+                "closed": False,
+                "epoch_done": True,
+                "lr_d": None,
+                "lr_g": None,
+                "pesq": None,
+                "pesq_status": None,
+                "scheduler": True,
+                "scheduler_done": False,
+                "selected": False,
+                "selection_done": False,
+                "trainer_epoch": 3,
+                "validate": True,
+                "validation_done": False,
+            },
+            "completed_boundaries": [],
+            "experiment_claim": "research",
+            "history": [{"epoch": 1, "selected": False}],
+            "logical_step": 8,
+            "optimizer_updates": {"optim_g": 8, "optim_d": 8},
+            "phase": "pending_boundary",
+            "scheduler_steps": 2,
+            "step_log": [{"logical_step": 8}],
+            "stop_reason": "initialized",
+            "ignored_extra": "not a checkpoint key",
+        }
+        progress = MPTrainingProgress.initial("optim_g", "optim_d")
+        progress.restore(stored, experiment_claim="research")
+        exported = progress.export(experiment_claim="research")
+        self.assertNotIn("ignored_extra", exported)
+        for key, value in stored.items():
+            if key == "ignored_extra":
+                continue
+            self.assertEqual(exported[key], value, key)
+        partial = dict(exported)
+        del partial["stop_reason"]
+        del partial["scheduler_steps"]
+        progress.stop_reason = "kept"
+        progress.restore(partial, experiment_claim="research")
+        self.assertEqual(progress.stop_reason, "kept")
+        self.assertEqual(progress.scheduler_steps, 0)
 
     def test_state_module_only_copies_the_payload(self) -> None:
         text = (ROOT / "src/experiments/official/mp_senet/state.py").read_text(encoding="utf-8")

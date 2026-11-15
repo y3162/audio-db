@@ -95,7 +95,7 @@ class CudaCheckpointSafePointTests(unittest.TestCase):
             trainer.journal = StepJournal(directory, runtime)
             trainer.journal.begin(restored=False, logical_step=0)
             trainer.lifecycle = _Lifecycle(directory, trainer)
-            trainer.logical_step = 1
+            trainer.progress.logical_step = 1
             continued = trainer._record_step(
                 _CudaView(),
                 _local(),
@@ -104,7 +104,7 @@ class CudaCheckpointSafePointTests(unittest.TestCase):
                 will_validate=False,
             )
             self.assertTrue(continued)
-            self.assertEqual(trainer.step_log[-1]["logical_step"], 1)
+            self.assertEqual(trainer.progress.step_log[-1]["logical_step"], 1)
             self.assertTrue(trainer.lifecycle.events, "step checkpoint was not requested at the safe point")
             self.assertEqual(trainer.lifecycle.events[0]["event"], "step")
             self.assertEqual(trainer.lifecycle.events[0]["logical_step"], 1)
@@ -331,7 +331,7 @@ class ValidationSeparationTests(unittest.TestCase):
             runtime = experiment._graph.runtime
             before = torch.random.get_rng_state().clone()
             cursor = (int(trainer.data.epoch), int(trainer.data.update_index))
-            summary = trainer._validate(runtime, 0, "trainer")
+            summary = trainer._validator.evaluate(runtime, 0, "trainer")
             self.assertTrue(torch.equal(before, torch.random.get_rng_state()))
             self.assertEqual((int(trainer.data.epoch), int(trainer.data.update_index)), cursor)
             shadow = trainer._validator._shadow
