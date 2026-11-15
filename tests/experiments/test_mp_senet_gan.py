@@ -595,6 +595,38 @@ class MPSENetGANTests(unittest.TestCase):
             broken["phase"] = "pending_scheduler"
             with self.assertRaises(RuntimeFailure):
                 trainer.load_state_dict(broken)
+            self.assertTrue(trainer._restored)
+            self.assertEqual(trainer.progress.logical_step, payload["logical_step"])
+        finally:
+            runtime.shutdown()
+
+    def test_load_state_dict_keeps_a_valid_trainer_when_the_payload_fails(self) -> None:
+        runtime = ProcessRuntime(device="cpu", precision="fp32")
+        try:
+            trainer, _gen, _disc = _manual_trainer(runtime, accumulation=1)
+            trainer.progress.logical_step = 3
+            trainer.progress.optimizer_updates["optim_g"] = 3
+            trainer.progress.optimizer_updates["optim_d"] = 3
+            trainer.progress.history.append({"epoch": 2, "inner": {"k": 1}})
+            before = trainer.state_dict()
+            updates = trainer.progress.optimizer_updates
+            history = trainer.progress.history
+            row = history[0]
+            trainer._validator._shadow = object()
+            shadow = trainer._validator._shadow
+            broken = dict(before)
+            broken["logical_step"] = 9
+            broken["optimizer_updates"] = {"optim_g": 1, "optim_d": "nope"}
+            broken["boundary"] = [1, 2]
+            with self.assertRaisesRegex(ValueError, "invalid literal for int"):
+                trainer.load_state_dict(broken)
+            self.assertFalse(trainer._restored)
+            self.assertIs(trainer._validator._shadow, shadow)
+            self.assertEqual(trainer.state_dict(), before)
+            self.assertIs(trainer.progress.optimizer_updates, updates)
+            self.assertIs(trainer.progress.history, history)
+            self.assertIs(trainer.progress.history[0], row)
+            self.assertEqual(row["inner"]["k"], 1)
         finally:
             runtime.shutdown()
 

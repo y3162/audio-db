@@ -37,6 +37,85 @@ def open_boundary(trainer_epoch: int, *, validate: bool, epoch_done: bool) -> di
     }
 
 
+@dataclass(frozen=True)
+class _DecodedProgress:
+    """Temporary decode of one payload. It is not stored on the live progress."""
+
+    logical_step: int
+    optimizer_updates: dict[str, int]
+    phase: str
+    history: list[Any]
+    completed_boundaries: list[Any]
+    step_log: list[Any]
+    boundary: dict[str, Any] | None
+    scheduler_steps: int
+    best_pesq: float | None
+    best_epoch: int | None
+    best_logical_step: int | None
+    stop_reason: str | None
+
+
+def _decode_progress(
+    state: dict[str, Any],
+    *,
+    experiment_claim: str,
+    optimizer_ids: tuple[str, str],
+) -> _DecodedProgress:
+    """Validate and copy a payload. This does not touch the live progress.
+
+    Optimizer counts stay on the ids stored in the payload. A payload that
+    omits a registered id is rejected instead of being lined up by position.
+    Extra ids are kept so an old payload still round-trips; ``complete_update``
+    does not add to them. Value conversion matches the pre-``8f54ab8``
+    ``int`` / ``float`` / ``dict`` calls, including their exception types.
+    """
+
+    logical_step = state.get("logical_step")
+    updates = state.get("optimizer_updates")
+    phase = state.get("phase")
+    if isinstance(logical_step, bool) or not isinstance(logical_step, int) or not isinstance(updates, dict):
+        raise RuntimeFailure("trainer state is invalid")
+    if phase not in _PHASES:
+        raise RuntimeFailure(f"trainer phase {phase!r} is invalid")
+    if state.get("experiment_claim") != experiment_claim:
+        raise RuntimeFailure("experiment claim does not match this trainer")
+    history = state.get("history")
+    completed = state.get("completed_boundaries")
+    step_log = state.get("step_log")
+    if not isinstance(history, list) or not isinstance(completed, list) or not isinstance(step_log, list):
+        raise RuntimeFailure("trainer history is invalid")
+    boundary = state.get("boundary")
+    best = state.get("best_pesq")
+    best_epoch = state.get("best_epoch")
+    best_step = state.get("best_logical_step")
+    if best_epoch is not None and (isinstance(best_epoch, bool) or not isinstance(best_epoch, int)):
+        raise RuntimeFailure("best_epoch is invalid")
+    if best_step is not None and (isinstance(best_step, bool) or not isinstance(best_step, int)):
+        raise RuntimeFailure("best_logical_step is invalid")
+    converted = {str(key): int(value) for key, value in updates.items()}
+    copied_boundary = None if boundary is None else dict(boundary)
+    scheduler_steps = int(state.get("scheduler_steps", 0))
+    best_pesq = None if best is None else float(best)
+    missing = [name for name in optimizer_ids if name not in converted]
+    if missing:
+        raise RuntimeFailure("trainer optimizer_updates does not include the registered optimizer ids")
+    stop_reason = state.get("stop_reason")
+    return _DecodedProgress(
+        logical_step=logical_step,
+        optimizer_updates=converted,
+        phase=phase,
+        history=list(history),
+        completed_boundaries=list(completed),
+        step_log=list(step_log),
+        boundary=copied_boundary,
+        scheduler_steps=scheduler_steps,
+        best_pesq=best_pesq,
+        best_epoch=best_epoch,
+        best_logical_step=best_step,
+        stop_reason=stop_reason if isinstance(stop_reason, str) else None,
+    )
+
+
 @dataclass
 class MPTrainingProgress:
     """Live MP-SENet counters. Checkpoint code sees them only through ``export``."""
@@ -98,11 +177,17 @@ class MPTrainingProgress:
         self.best_logical_step = None
 
     def complete_update(self) -> None:
-        """Count one finished GAN pair on the logical step and both optimizers."""
+        """Count one finished GAN pair on the logical step and the registered optimizers.
+
+        Extra ids restored from an old payload stay in the dict and are not
+        incremented. The two registered ids are addressed by name, so payload
+        order cannot swap their counts.
+        """
 
         self.logical_step += 1
-        for key in self.optimizer_updates:
-            self.optimizer_updates[key] += 1
+        generator_id, discriminator_id = self._optimizer_ids
+        self.optimizer_updates[generator_id] += 1
+        self.optimizer_updates[discriminator_id] += 1
 
     def append_step(self, entry: dict[str, Any]) -> None:
         self.step_log.append(entry)
@@ -199,44 +284,31 @@ class MPTrainingProgress:
         }
 
     def restore(self, state: dict[str, Any], *, experiment_claim: str) -> None:
-        """Replace the counters from a stored trainer dict. Invalid payloads raise."""
+        """Replace the counters from a stored trainer dict. Invalid payloads raise.
 
-        logical_step = state.get("logical_step")
-        updates = state.get("optimizer_updates")
-        phase = state.get("phase")
-        if isinstance(logical_step, bool) or not isinstance(logical_step, int) or not isinstance(updates, dict):
-            raise RuntimeFailure("trainer state is invalid")
-        if phase not in _PHASES:
-            raise RuntimeFailure(f"trainer phase {phase!r} is invalid")
-        if state.get("experiment_claim") != experiment_claim:
-            raise RuntimeFailure("experiment claim does not match this trainer")
-        history = state.get("history")
-        completed = state.get("completed_boundaries")
-        step_log = state.get("step_log")
-        if not isinstance(history, list) or not isinstance(completed, list) or not isinstance(step_log, list):
-            raise RuntimeFailure("trainer history is invalid")
-        boundary = state.get("boundary")
-        best = state.get("best_pesq")
-        best_epoch = state.get("best_epoch")
-        best_step = state.get("best_logical_step")
-        if best_epoch is not None and (isinstance(best_epoch, bool) or not isinstance(best_epoch, int)):
-            raise RuntimeFailure("best_epoch is invalid")
-        if best_step is not None and (isinstance(best_step, bool) or not isinstance(best_step, int)):
-            raise RuntimeFailure("best_logical_step is invalid")
-        self.logical_step = logical_step
-        self.optimizer_updates = {str(key): int(value) for key, value in updates.items()}
-        self.phase = phase
-        self.history = list(history)
-        self.completed_boundaries = list(completed)
-        self.step_log = list(step_log)
-        self.boundary = None if boundary is None else dict(boundary)
-        self.scheduler_steps = int(state.get("scheduler_steps", 0))
-        self.best_pesq = None if best is None else float(best)
-        self.best_epoch = best_epoch
-        self.best_logical_step = best_step
-        stop_reason = state.get("stop_reason")
-        if isinstance(stop_reason, str):
-            self.stop_reason = stop_reason
+        Decoding finishes before any field of this object is written. A
+        conversion or consistency error leaves the live counters and their
+        nested containers as they were.
+        """
+
+        decoded = _decode_progress(
+            state,
+            experiment_claim=experiment_claim,
+            optimizer_ids=self._optimizer_ids,
+        )
+        self.logical_step = decoded.logical_step
+        self.optimizer_updates = decoded.optimizer_updates
+        self.phase = decoded.phase
+        self.history = decoded.history
+        self.completed_boundaries = decoded.completed_boundaries
+        self.step_log = decoded.step_log
+        self.boundary = decoded.boundary
+        self.scheduler_steps = decoded.scheduler_steps
+        self.best_pesq = decoded.best_pesq
+        self.best_epoch = decoded.best_epoch
+        self.best_logical_step = decoded.best_logical_step
+        if decoded.stop_reason is not None:
+            self.stop_reason = decoded.stop_reason
 
     def _open_boundary(self) -> dict[str, Any]:
         boundary = self.boundary
