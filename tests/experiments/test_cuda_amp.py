@@ -152,6 +152,42 @@ class CudaAmpRuntimeTests(unittest.TestCase):
             ProcessRuntime(device="cpu", precision="fp16")
         self.assertIn("refusing to fall back", str(caught.exception))
 
+    def test_fp16_and_bf16_each_take_one_finite_step(self) -> None:
+        _require_devices(1)
+        torch.cuda.set_device(0)
+        cases = (
+            ("fp16", torch.float16, True),
+            ("bf16", torch.bfloat16, False),
+        )
+        for precision, dtype, scaled in cases:
+            runtime = ProcessRuntime(device="cuda", precision=precision)
+            self.assertEqual(runtime._autocast_dtype, dtype)
+            self.assertEqual(runtime._scaler is not None, scaled)
+            model = torch.nn.Linear(4, 1, bias=False).cuda()
+            with torch.no_grad():
+                model.weight.fill_(0.1)
+            before = model.weight.detach().float().clone()
+            optimizer = torch.optim.SGD(model.parameters(), lr=0.5)
+            inputs = torch.ones(2, 4, device="cuda")
+            targets = torch.zeros(2, 1, device="cuda")
+            optimizer.zero_grad(set_to_none=True)
+            with runtime.autocast():
+                prediction = model(inputs)
+                self.assertEqual(prediction.dtype, dtype)
+                loss = torch.nn.functional.mse_loss(prediction.float(), targets)
+            runtime.backward(loss)
+            if precision == "bf16":
+                runtime.clip_repeated(model.parameters(), 10.0)
+            else:
+                runtime.clip(model.parameters(), 10.0, optimizer=optimizer)
+            result = runtime.step(optimizer)
+            runtime.end_step()
+            self.assertTrue(result.applied, precision)
+            moved = torch.max(torch.abs(model.weight.detach().float() - before)).item()
+            self.assertGreater(moved, 0.0, precision)
+            self.assertTrue(torch.isfinite(model.weight.detach().float()).all(), precision)
+            runtime.shutdown()
+
 
 class CudaWorldTests(unittest.TestCase):
     def test_c1_fp32_resume_matches_and_restores_cuda_rng(self) -> None:
