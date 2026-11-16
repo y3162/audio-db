@@ -43,9 +43,13 @@ from src.experiments.stopping import observe_validation, should_stop
 from src.experiments.training.control import (
     close_training_run,
     finite_gradient_report,
+    connected_zero,
+    gather_row_counts,
+    micro_rows,
     open_grouped_window,
     stop_after_step,
-    window_divisor,
+    weight_loss,
+    window_scale,
 )
 from src.experiments.training.objectives import call_objective, coerce_spectral_objective, term_floats
 from src.experiments.trainers import _close_epoch_view, _rank
@@ -722,19 +726,32 @@ class GridNetUpdate:
         total: torch.Tensor | None = None
         sample_ids: list[str] = []
         term_acc: dict[str, float] = {}
-        divisor = window_divisor(self.accumulation, len(planned))
+        counts = [micro_rows(batches) for batches in planned]
+        scale = window_scale(
+            counts,
+            gather_row_counts(runtime, counts),
+            accumulation=self.accumulation,
+            world_size=int(runtime.world_size),
+        )
         for offset, batches in enumerate(planned):
             sync = offset == len(planned) - 1
             sample_ids.extend(batch.sample_id for batch in batches)
             with runtime.sync_gradients([self.model], enabled=sync):
                 with runtime.autocast():
-                    micro, terms = _forward_loss(self.model, self.objective, batches, component_id, runtime)
-                micro = micro / divisor
+                    if counts[offset] == 0:
+                        micro = connected_zero(self.model.parameters, component_id)
+                        terms = {}
+                    else:
+                        micro, terms = _forward_loss(self.model, self.objective, batches, component_id, runtime)
+                micro = weight_loss(micro, scale, offset)
                 runtime.backward(micro)
             detached = micro.detach()
             total = detached if total is None else total + detached
+            logged = scale if isinstance(scale, int) else scale[offset]
             for name, value in terms.items():
-                term_acc[name] = term_acc.get(name, 0.0) + value / divisor
+                term_acc[name] = term_acc.get(name, 0.0) + (
+                    value / logged if isinstance(scale, int) else value * logged
+                )
         if total is None:
             raise RuntimeFailure(f"component {component_id}: loss is not finite")
         if not apply_optimizer:

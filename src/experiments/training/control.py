@@ -31,11 +31,14 @@ from __future__ import annotations
 from collections.abc import Callable, Mapping
 from typing import Any
 
+import torch
+
 from src.experiments.data import Batch
 from src.experiments.errors import RuntimeFailure
 from src.experiments.results import RunResult
 from src.experiments.stopping import control_requests_stop
 from src.experiments.trainers import _close_epoch_view
+from src.experiments.training.sample_weight import sample_scales
 
 
 def stop_after_step(
@@ -206,6 +209,72 @@ def finite_gradient_report(
         "sample_id": sample_id,
         "status": "ok",
     }
+
+
+def micro_rows(batches: list[Batch]) -> int:
+    """Rows in one micro-batch. A missing tensor counts as no samples."""
+
+    total = 0
+    for batch in batches:
+        inputs = getattr(batch, "inputs", None)
+        if isinstance(inputs, torch.Tensor) and inputs.ndim >= 1:
+            total += int(inputs.shape[0])
+    return total
+
+
+def gather_row_counts(runtime: Any, local: list[int]) -> list[list[int]]:
+    """One row-count list per rank. World size 1 does not gather."""
+
+    if int(runtime.world_size) == 1:
+        return [list(local)]
+    gathered = runtime.gather_objects(list(local))
+    return [list(row) for row in gathered]
+
+
+def window_scale(
+    local: list[int],
+    rank_counts: list[list[int]],
+    *,
+    accumulation: int,
+    world_size: int,
+) -> int | list[float]:
+    """Integer divisor when every micro-batch has the same positive row count.
+
+    The integer is ``window_divisor``. A full window therefore still divides
+    by ``accumulation`` itself. Any other window uses
+    ``n_i * world_size / n_global`` so the averaged local means are the mean
+    over the rows that window actually holds.
+    """
+
+    if not local or any(len(row) != len(local) for row in rank_counts):
+        raise RuntimeFailure("ranks disagree on the number of micro-batches in this window")
+    width = local[0]
+    if width > 0 and all(count == width for row in rank_counts for count in row):
+        return window_divisor(accumulation, len(local))
+    n_global = sum(count for row in rank_counts for count in row)
+    return sample_scales(local, world_size=world_size, n_global=n_global)
+
+
+def weight_loss(loss: torch.Tensor, scale: int | list[float], offset: int) -> torch.Tensor:
+    """Apply ``window_scale``. An int divides. A list multiplies that micro-batch."""
+
+    if isinstance(scale, int):
+        return loss / scale
+    return loss * scale[offset]
+
+
+def connected_zero(parameters: Any, component_id: str) -> torch.Tensor:
+    """A zero loss that still reaches every trainable parameter."""
+
+    total: torch.Tensor | None = None
+    for parameter in parameters:
+        if not getattr(parameter, "requires_grad", False):
+            continue
+        term = parameter.reshape(-1)[:1].sum() * 0
+        total = term if total is None else total + term
+    if total is None:
+        raise RuntimeFailure(f"component {component_id}: empty micro-batch has no trainable parameters")
+    return total
 
 
 def window_divisor(accumulation: int, window: int) -> int:

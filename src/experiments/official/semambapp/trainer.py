@@ -41,11 +41,14 @@ from src.experiments.trainers import _close_epoch_view
 from src.experiments.training.control import (
     finish_training_run,
     finite_gradient_report,
+    gather_row_counts,
+    micro_rows,
     open_flat_window,
     restore_fields,
     snapshot_fields,
     stop_after_step,
-    window_divisor,
+    weight_loss,
+    window_scale,
 )
 from src.experiments.training.objectives import call_objective
 
@@ -851,7 +854,13 @@ class SEMambaUpdate:
             raise RuntimeFailure(
                 f"official step received {len(batches)} micro-batches, accumulation is {self.accumulation}"
             )
-        divisor = window_divisor(self.accumulation, len(batches))
+        row_counts = [micro_rows([batch]) for batch in batches]
+        scale = window_scale(
+            row_counts,
+            gather_row_counts(runtime, row_counts),
+            accumulation=self.accumulation,
+            world_size=int(runtime.world_size),
+        )
         counts = runtime.gather_objects(len(batches))
         if any(item != len(batches) for item in counts):
             raise RuntimeFailure("ranks disagree on the number of micro-batches")
@@ -893,7 +902,7 @@ class SEMambaUpdate:
             self.sync_trace.append("discriminator_sync" if last else "discriminator_nosync")
             with runtime.sync_gradients([self.mrd, self.cqt], enabled=last):
                 loss = self._discriminator_loss(runtime, clean, audio.detach())
-                _backward_if_finite(runtime, loss / divisor, "discriminator loss")
+                _backward_if_finite(runtime, weight_loss(loss, scale, index), "discriminator loss")
             term = loss.detach()
             discriminator_total = term if discriminator_total is None else discriminator_total + term
             self.mrd_forwards += 1
@@ -932,12 +941,12 @@ class SEMambaUpdate:
                         parts = self._generator_forward(runtime, clean, noisy, preview=False)
                         self.generator_reforward_forwards += 1
                         generator_total += self._generator_backward(
-                            runtime, clean, parts, component_totals, divisor
+                            runtime, clean, parts, component_totals, scale, index
                         )
                 else:
                     self.sync_trace.append("generator_backward_retained")
                     generator_total += self._generator_backward(
-                        runtime, clean, parts, component_totals, divisor
+                        runtime, clean, parts, component_totals, scale, index
                     )
         finally:
             for parameter in frozen:
@@ -1061,7 +1070,8 @@ class SEMambaUpdate:
         clean: torch.Tensor,
         parts: dict[str, torch.Tensor],
         components: dict[str, Any],
-        divisor: int,
+        scale: int | list[float],
+        offset: int,
     ) -> torch.Tensor:
         error: str | None = None
         total: torch.Tensor | None = None
@@ -1101,7 +1111,7 @@ class SEMambaUpdate:
             raise RuntimeFailure("generator loss failed: " + "; ".join(item for item in errors if item))
         if total is None or terms is None:
             raise RuntimeFailure("generator loss is missing")
-        _backward_if_finite(runtime, total / divisor, "generator loss")
+        _backward_if_finite(runtime, weight_loss(total, scale, offset), "generator loss")
         for name, value in terms.items():
             current = components.get(name, 0.0)
             components[name] = current + value.detach()

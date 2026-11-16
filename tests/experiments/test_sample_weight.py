@@ -9,7 +9,16 @@ import torch
 from src.experiments.data.sample import SampleRef
 from src.experiments.data.fixed_pair import MicroBatcher
 from src.experiments.data.tensor import TensorPairData
-from src.experiments.training.control import open_flat_window_at, open_grouped_window, window_divisor
+from src.experiments.data.sample import Batch
+from src.experiments.execution.runtime import PreparePolicy, PreparedModel, ProcessRuntime
+from src.experiments.official.tf_gridnet.trainer import GridNetUpdate
+from src.experiments.training.control import (
+    open_flat_window_at,
+    open_grouped_window,
+    window_divisor,
+    window_scale,
+)
+from src.experiments.training.objectives import ObjectiveOutput
 from src.experiments.training.sample_weight import sample_scales, window_is_uniform
 
 
@@ -34,6 +43,15 @@ class ScaleTests(unittest.TestCase):
         self.assertAlmostEqual(weighted + other_weighted, (4 * 4 + 1 * 1 + 2 * 9) / 7 * 2)
         self.assertEqual(sample_scales([0], world_size=2, n_global=5), [0.0])
         self.assertEqual(sample_scales([3], world_size=1, n_global=0), [0.0])
+
+    def test_equal_rows_keep_the_integer_divisor(self) -> None:
+        accumulation = 2
+        scale = window_scale([4, 4], [[4, 4]], accumulation=accumulation, world_size=1)
+        self.assertIs(scale, accumulation)
+        short = window_scale([4], [[4]], accumulation=accumulation, world_size=1)
+        self.assertEqual(short, 1)
+        mixed = window_scale([2, 1], [[2, 1]], accumulation=accumulation, world_size=1)
+        self.assertEqual(mixed, [2 / 3, 1 / 3])
 
 
 class TailBatchTests(unittest.TestCase):
@@ -92,6 +110,74 @@ class OfficialWindowTests(unittest.TestCase):
         _, _, _, batches = open_flat_window_at(data, accumulation, "trainer")
         self.assertEqual(len(batches), 1)
         self.assertEqual(batches[0].sample_id, "ex-4")
+
+
+class _Rows(torch.nn.Module):
+    def __init__(self) -> None:
+        super().__init__()
+        self.weight = torch.nn.Parameter(torch.ones(2))
+
+    def forward(self, inputs: torch.Tensor) -> torch.Tensor:
+        if int(inputs.shape[0]) == 0:
+            raise AssertionError("empty micro-batch was forwarded")
+        return inputs * self.weight
+
+
+class _Mean(torch.nn.Module):
+    def forward(self, context: dict[str, torch.Tensor]) -> ObjectiveOutput:
+        value = torch.nn.functional.mse_loss(context["estimate"], context["target"])
+        return ObjectiveOutput(value, (("mse", value, 1.0),))
+
+
+def _batch(rows: int, sample_id: str) -> Batch:
+    generator = torch.Generator().manual_seed(rows + len(sample_id))
+    inputs = torch.randn(rows, 2, generator=generator)
+    return Batch(inputs=inputs, targets=inputs + 0.1, sample_id=sample_id, realization_id=sample_id)
+
+
+class OfficialScaleTests(unittest.TestCase):
+    def _update(self) -> tuple[GridNetUpdate, ProcessRuntime, torch.nn.Parameter]:
+        module = _Rows()
+        prepared = PreparedModel(
+            component_id="model",
+            module=module,
+            parameters=tuple(module.parameters()),
+            state_module=module,
+            policy=PreparePolicy(),
+        )
+        runtime = ProcessRuntime(device="cpu", precision="fp32")
+        update = GridNetUpdate(
+            prepared, _Mean(), torch.optim.SGD(module.parameters(), lr=0.1), accumulation=2, grad_clip=1.0,
+        )
+        return update, runtime, module.weight
+
+    def test_mixed_rows_match_the_sample_mean_and_an_empty_row_is_not_forwarded(self) -> None:
+        update, runtime, weight = self._update()
+        wide = _batch(2, "wide")
+        narrow = _batch(1, "narrow")
+        empty = Batch(
+            inputs=torch.empty(0, 2),
+            targets=torch.empty(0, 2),
+            sample_id="empty",
+            realization_id="empty",
+        )
+        update.run([[wide], [narrow]], runtime, "trainer", apply_optimizer=False)
+        mixed = weight.grad.detach().clone()
+        weight.grad = None
+        update.run([[wide], [empty]], runtime, "trainer", apply_optimizer=False)
+        kept = weight.grad.detach().clone()
+
+        def _mean_grad(batch: Batch) -> torch.Tensor:
+            alone = _Rows()
+            alone.weight.data.copy_(weight.data)
+            loss = torch.nn.functional.mse_loss(alone(batch.inputs), batch.targets)
+            loss.backward()
+            assert alone.weight.grad is not None
+            return alone.weight.grad.detach().clone()
+
+        expected = _mean_grad(wide) * (2 / 3) + _mean_grad(narrow) * (1 / 3)
+        self.assertLess(torch.max(torch.abs(mixed - expected)).item(), 1e-6)
+        self.assertLess(torch.max(torch.abs(kept - _mean_grad(wide))).item(), 1e-6)
 
 
 if __name__ == "__main__":

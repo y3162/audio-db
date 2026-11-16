@@ -50,11 +50,14 @@ from src.experiments.stopping import control_requests_stop, observe_validation
 from src.experiments.training.control import (
     close_training_run,
     finite_gradient_report,
+    gather_row_counts,
+    micro_rows,
     open_flat_window_at,
     restore_fields,
     snapshot_fields,
     stop_after_step,
-    window_divisor,
+    weight_loss,
+    window_scale,
 )
 from src.experiments.training.objectives import call_objective
 from src.experiments.training.official_objectives import require_mp_senet
@@ -908,7 +911,13 @@ def accumulated_step(
 ) -> dict[str, float]:
     """Discriminator micro-batches, one discriminator step, then the generator."""
 
-    divisor = window_divisor(update.accumulation, len(batches))
+    row_counts = [micro_rows([batch]) for batch in batches]
+    scale = window_scale(
+        row_counts,
+        gather_row_counts(runtime, row_counts),
+        accumulation=update.accumulation,
+        world_size=int(runtime.world_size),
+    )
     phase_hook("zero_grad")
     update.optim_d.zero_grad(set_to_none=True)
     update.optim_g.zero_grad(set_to_none=True)
@@ -950,7 +959,8 @@ def accumulated_step(
                     loss = call_objective(
                         update.discriminator_objective,
                         {"real_score": real, "fake_score": fake, "ones": ones, "pesq_target": targets},
-                    ).total / divisor
+                    ).total
+                    loss = weight_loss(loss, scale, index)
                 except (TrainingError, RuntimeError, ValueError) as exc:
                     disc_error = f"{type(exc).__name__}: {exc}"
                 disc_errors = runtime.gather_objects(disc_error)
@@ -961,7 +971,12 @@ def accumulated_step(
                 if loss is None:
                     raise RuntimeFailure("discriminator loss is missing")
                 backward_if_finite(runtime, loss, "discriminator loss")
-                discriminator_total += float(loss.detach()) * divisor
+                raw_disc = loss.detach()
+                if isinstance(scale, int):
+                    discriminator_total += float(raw_disc) * scale
+                else:
+                    factor = scale[index]
+                    discriminator_total += float(raw_disc) / factor if factor else 0.0
         if apply_optimizer:
             discriminator_result = runtime.step(update.optim_d)
         phase_hook("after_discriminator_step", stored)
@@ -971,7 +986,7 @@ def accumulated_step(
         try:
             for parameter in frozen:
                 parameter.requires_grad_(False)
-            for clean, parts in stored:
+            for index, (clean, parts) in enumerate(stored):
                 ones = torch.ones(clean.shape[0], device=clean.device)
                 gen_error: str | None = None
                 total: torch.Tensor | None = None
@@ -989,7 +1004,7 @@ def accumulated_step(
                         "metric": metric_out.terms["metric"],
                         "time": signal.terms["time"],
                     }
-                    total = total_tensor / divisor
+                    total = weight_loss(total_tensor, scale, index)
                 except (TrainingError, RuntimeError, ValueError) as exc:
                     gen_error = f"{type(exc).__name__}: {exc}"
                 gen_errors = runtime.gather_objects(gen_error)
@@ -1050,6 +1065,13 @@ def cuda_overlapped_step(
     phase_hook("zero_grad")
     update.optim_d.zero_grad(set_to_none=True)
     update.optim_g.zero_grad(set_to_none=True)
+    rows = [micro_rows([batch])]
+    scale = window_scale(
+        rows,
+        gather_row_counts(runtime, rows),
+        accumulation=update.accumulation,
+        world_size=int(runtime.world_size),
+    )
     clean, noisy = waveforms(batch, runtime)
     if not inputs_ready(clean, noisy, update.generator.unwrapped().n_fft):
         raise RuntimeFailure("a rank rejected its micro-batch before the generator forward")
@@ -1066,7 +1088,7 @@ def cuda_overlapped_step(
     )
     ones = torch.ones(clean.shape[0], device=clean.device)
     signal = call_objective(update.signal_objective, signal_context(parts, clean))
-    backward_if_finite(runtime, signal.total / update.accumulation, "generator signal loss", retain_graph=True)
+    backward_if_finite(runtime, weight_loss(signal.total, scale, 0), "generator signal loss", retain_graph=True)
     # Previous-step log I/O overlaps the rest of the PESQ thread.
     # The callback must not offer a checkpoint.
     drain_previous()
@@ -1077,7 +1099,8 @@ def cuda_overlapped_step(
         loss_d = call_objective(
             update.discriminator_objective,
             {"real_score": real, "fake_score": fake, "ones": ones, "pesq_target": targets},
-        ).total / update.accumulation
+        ).total
+        loss_d = weight_loss(loss_d, scale, 0)
     except (TrainingError, RuntimeFailure, RuntimeError, ValueError) as exc:
         raise RuntimeFailure(f"discriminator forward failed: {type(exc).__name__}: {exc}") from exc
     backward_if_finite(runtime, loss_d, "discriminator loss")
@@ -1094,7 +1117,7 @@ def cuda_overlapped_step(
             metric_out = call_objective(update.metric_objective, {"metric": metric, "ones": ones})
         except (TrainingError, RuntimeFailure, RuntimeError, ValueError) as exc:
             raise RuntimeFailure(f"generator loss failed: {type(exc).__name__}: {exc}") from exc
-        backward_if_finite(runtime, metric_out.total / update.accumulation, "generator metric loss")
+        backward_if_finite(runtime, weight_loss(metric_out.total, scale, 0), "generator metric loss")
     finally:
         for parameter in frozen:
             parameter.requires_grad_(True)
@@ -1105,7 +1128,9 @@ def cuda_overlapped_step(
         [
             signal.terms["complex"].detach(),
             signal.terms["consistency"].detach(),
-            loss_d.detach() * update.accumulation,
+            (loss_d.detach() * scale) if isinstance(scale, int) else (
+                loss_d.detach() / scale[0] if scale[0] else loss_d.detach()
+            ),
             total.detach(),
             signal.terms["magnitude"].detach(),
             metric_out.terms["metric"].detach(),

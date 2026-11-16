@@ -37,10 +37,14 @@ from src.experiments.runtime import PreparedModel, ProcessRuntime, require_prepa
 from src.experiments.stopping import observe_validation, should_stop
 from src.experiments.trainers import _close_epoch_view, _rank
 from src.experiments.training.control import (
+    connected_zero,
     finish_training_run,
     finite_gradient_report,
+    gather_row_counts,
+    micro_rows,
     stop_requested,
-    window_divisor,
+    weight_loss,
+    window_scale,
 )
 from src.se.models.deepfilternet3.dsp import DFStream
 
@@ -873,16 +877,26 @@ def run_accumulation(
     span = accumulation if remaining >= accumulation else remaining
     if span < 1:
         raise RuntimeFailure(f"component {component_id}: update {index} is past the epoch")
-    divisor = window_divisor(accumulation, span)
-    for offset in range(span):
+    pieces = [view.batch(index + offset) for offset in range(span)]
+    counts = [micro_rows(batches) for batches in pieces]
+    scale = window_scale(
+        counts,
+        gather_row_counts(runtime, counts),
+        accumulation=accumulation,
+        world_size=int(runtime.world_size),
+    )
+    for offset, batches in enumerate(pieces):
         sync = offset == span - 1
-        batches = view.batch(index + offset)
         sample_ids.extend(batch.sample_id for batch in batches)
         with runtime.sync_gradients([model], enabled=sync):
             with runtime.autocast():
-                micro = forward_loss(stream, model, objective, batches, component_id, runtime)
-            runtime.backward(micro / divisor)
-        detached = (micro / divisor).detach()
+                if counts[offset] == 0:
+                    micro = connected_zero(model.parameters, component_id)
+                else:
+                    micro = forward_loss(stream, model, objective, batches, component_id, runtime)
+            weighted = weight_loss(micro, scale, offset)
+            runtime.backward(weighted)
+        detached = weighted.detach()
         total = detached if total is None else total + detached
     if total is None or not bool(torch.isfinite(total).all()):
         raise RuntimeFailure(f"component {component_id}: loss is not finite")
