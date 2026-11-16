@@ -6,6 +6,7 @@ Argument names and type annotations are not treated as dependencies.
 
 from __future__ import annotations
 
+import inspect
 import logging
 import random
 from dataclasses import dataclass, replace
@@ -23,6 +24,23 @@ from src.experiments.execution.runtime import PreparedModel, ProcessRuntime
 from src.experiments.calc.rng import set_determinism
 
 _LOGGER = logging.getLogger(__name__)
+
+
+def _required_accumulation(config: ExperimentConfig, world_size: int) -> int:
+    """Derive the trainer accumulation from the YAML batch names and this world."""
+
+    from src.experiments.calc.batch import exact_accumulation
+    from src.experiments.calc.errors import TrainingError
+
+    spec = config.components[config.entry]
+    try:
+        return exact_accumulation(
+            spec.kwargs["global_batch_size"],
+            spec.kwargs["micro_batch_size"],
+            world_size,
+        )
+    except (KeyError, TrainingError) as exc:
+        raise BuildError(f"component {config.entry}: {exc}") from exc
 
 _STAGE = {
     "module": 0,
@@ -67,6 +85,7 @@ class ExperimentBuilder:
 
         self.components = None
         self._validate(config)
+        self._accumulation_steps = _required_accumulation(config, runtime.world_size)
         set_determinism(config.deterministic, cuda=runtime.device.type == "cuda")
         _seed(config.seed)
         registry = ComponentRegistry()
@@ -244,7 +263,7 @@ class ExperimentBuilder:
         spec = config.components[component_id]
         if spec.class_path is None:
             raise BuildError(f"component {component_id}: missing class")
-        kwargs = dict(spec.kwargs)
+        kwargs = self._batch_kwargs(spec)
         kwargs.update(self._resolve_inject(spec, registry, component_id))
         if spec.parameters_of is not None:
             kwargs["params"] = self._parameter_argument(spec, registry, component_id)
@@ -260,6 +279,32 @@ class ExperimentBuilder:
         except (AttributeError, TypeError) as exc:
             raise BuildError(f"component {component_id}: cannot attach component id: {exc}") from exc
         return obj
+
+    def _batch_kwargs(self, spec: ComponentConfig) -> dict[str, Any]:
+        """Turn the YAML batch names into the constructor arguments.
+
+        The resolved document keeps ``global_batch_size`` and
+        ``micro_batch_size``. Constructors still receive ``accumulation``,
+        ``batch_size``, or ``micro_batch`` when they declare those parameters.
+        """
+
+        kwargs = dict(spec.kwargs)
+        cls = self._factory.resolve(spec.class_path or "")
+        parameters = inspect.signature(cls).parameters
+        accepts_keywords = any(item.kind == inspect.Parameter.VAR_KEYWORD for item in parameters.values())
+        if spec.role == "trainer":
+            kwargs.pop("global_batch_size", None)
+            kwargs.pop("micro_batch_size", None)
+            if "accumulation" in parameters or accepts_keywords:
+                kwargs["accumulation"] = self._accumulation_steps
+            return kwargs
+        if "micro_batch_size" in kwargs:
+            width = kwargs.pop("micro_batch_size")
+            if "batch_size" in parameters and "micro_batch" not in parameters:
+                kwargs["batch_size"] = width
+            elif "micro_batch" in parameters or accepts_keywords:
+                kwargs["micro_batch"] = width
+        return kwargs
 
     def _resolve_inject(
         self,

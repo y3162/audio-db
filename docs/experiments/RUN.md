@@ -44,7 +44,7 @@ VoiceBank の公式設定は `data/db/snapshots-voicebank-float-v1/` の snapsho
   --resource-db data/db/resource.duckdb
 ```
 
-旧 checkpoint の再開互換性は保証しない。
+旧 checkpoint の再開互換性は保証しない。実験 YAML のバッチ名は `global_batch_size` と `micro_batch_size` である。`accumulation_steps = global_batch_size / (micro_batch_size * world_size)` が正の整数でないと拒否する。`accumulation`、`batch_size`、`micro_batch` は受けない。起動と再開の `metadata.json` に、その launch の実効バッチを残す。
 
 ## 実行
 

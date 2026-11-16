@@ -451,6 +451,8 @@ def _write_yaml(
     stop = "" if stop_after is None else f"      stop_after_logical_steps: {stop_after}\n"
     clip = "" if grad_clip is None else f"      grad_clip: {grad_clip}\n"
     world = "" if world_size is None else f"    world_size: {world_size}\n"
+    resolved_world = 1 if world_size is None else world_size
+    global_batch = batch_size * resolved_world * accumulation
     scale = "" if init_scale is None else f"    init_scale: {init_scale}\n"
     if model == "dropout":
         model_class = "tests.experiments.support.DropoutLinear"
@@ -503,7 +505,7 @@ components:
     kwargs:
       features: {features}
       examples: {examples}
-      batch_size: {batch_size}
+      micro_batch_size: {batch_size}
   optimizer:
     role: optimizer
     class: torch.optim.SGD
@@ -514,7 +516,8 @@ components:
     class: {trainer}
     kwargs:
       max_logical_steps: {steps}
-      accumulation: {accumulation}
+      global_batch_size: {global_batch}
+      micro_batch_size: {batch_size}
 {stop}{clip}{trainer_kwargs}    inject:
       model: {{ref: model}}
       loss: {{ref: loss}}

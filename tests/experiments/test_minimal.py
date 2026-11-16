@@ -243,8 +243,8 @@ class MinimalExperimentTests(unittest.TestCase):
         directory = Path(self.enterContext(self._directory()))
         source = _config_text(directory, 2)
         stopped = source.read_text(encoding="utf-8").replace(
-            "max_logical_steps: 2, accumulation: 1",
-            "max_logical_steps: 2, accumulation: 1, stop_after_logical_steps: 1",
+            "max_logical_steps: 2, global_batch_size: 4, micro_batch_size: 4",
+            "max_logical_steps: 2, global_batch_size: 4, micro_batch_size: 4, stop_after_logical_steps: 1",
         )
         source.write_text(stopped, encoding="utf-8")
         first = build_experiment(load_experiment(source))

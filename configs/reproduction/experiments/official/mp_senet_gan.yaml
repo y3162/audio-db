@@ -128,7 +128,7 @@ components:
     role: other
     class: src.experiments.data.MicroBatcher
     kwargs:
-      micro_batch: 2
+      micro_batch_size: 2
       group_size: 1
   data:
     role: data
@@ -247,7 +247,8 @@ components:
     class: src.experiments.official.mp_senet.trainer.MPSENetGANTrainer
     kwargs:
       max_logical_steps: 1157200
-      accumulation: 1
+      global_batch_size: 2
+      micro_batch_size: 2
       experiment_claim: official_faithful
       validation_interval: 5000
       best_checkpoint_start_epoch: 40

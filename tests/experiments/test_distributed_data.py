@@ -637,6 +637,7 @@ runtime:
     device: cpu
     precision: fp32
     timeout_seconds: {timeout_seconds}
+    world_size: 2
 output:
   directory: {directory / "run"}
 components:
@@ -670,7 +671,7 @@ components:
     role: other
     class: src.experiments.data.MicroBatcher
     kwargs:
-      micro_batch: {micro}
+      micro_batch_size: {micro}
       group_size: {group}
   data:
     role: data
@@ -693,7 +694,8 @@ components:
     class: {trainer}
     kwargs:
       max_logical_steps: {steps}
-      accumulation: {group}
+      global_batch_size: {micro * 2 * group}
+      micro_batch_size: {micro}
 {stop}    inject:
       model: {{ref: model}}
       loss: {{ref: loss}}

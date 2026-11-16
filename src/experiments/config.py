@@ -298,6 +298,7 @@ def _parse_document(raw: dict[str, Any]) -> ExperimentConfig:
         raise ConfigError(f"entry {entry} is not a component")
     if entry_spec.ref is not None or entry_spec.role != "trainer":
         raise ConfigError(f"entry {entry} must have role trainer")
+    _require_batch_names(components, entry, runtime_kwargs)
     return ExperimentConfig(
         schema=SCHEMA,
         seed=seed,
@@ -312,6 +313,50 @@ def _parse_document(raw: dict[str, Any]) -> ExperimentConfig:
         initialize=initialize,
         publication=publication,
     )
+
+
+_RETIRED_BATCH_KEYS = ("accumulation", "batch_size", "micro_batch")
+
+
+def _require_batch_names(
+    components: dict[str, ComponentConfig],
+    entry: str,
+    runtime_kwargs: dict[str, Any],
+) -> None:
+    """Require the two batch names. The old names are not aliases."""
+
+    from src.experiments.calc.batch import exact_accumulation
+    from src.experiments.calc.errors import TrainingError
+
+    for component_id, spec in components.items():
+        if spec.ref is not None:
+            continue
+        for key in _RETIRED_BATCH_KEYS:
+            if key in spec.kwargs:
+                raise ConfigError(
+                    f"component {component_id}: {key} is not a batch name; "
+                    "set global_batch_size and micro_batch_size"
+                )
+    trainer = components[entry]
+    global_batch = trainer.kwargs.get("global_batch_size")
+    micro_batch = trainer.kwargs.get("micro_batch_size")
+    if isinstance(global_batch, bool) or not isinstance(global_batch, int) or global_batch < 1:
+        raise ConfigError("trainer global_batch_size must be a positive integer")
+    if isinstance(micro_batch, bool) or not isinstance(micro_batch, int) or micro_batch < 1:
+        raise ConfigError("trainer micro_batch_size must be a positive integer")
+    for component_id, spec in components.items():
+        if spec.ref is not None or "micro_batch_size" not in spec.kwargs:
+            continue
+        other = spec.kwargs["micro_batch_size"]
+        if other != micro_batch:
+            raise ConfigError(f"component {component_id}: micro_batch_size does not match the trainer")
+    world = runtime_kwargs.get("world_size")
+    if world is None:
+        return
+    try:
+        exact_accumulation(global_batch, micro_batch, world)
+    except TrainingError as exc:
+        raise ConfigError(str(exc)) from exc
 
 
 def _parse_runtime(raw: object) -> tuple[str, dict[str, Any]]:
@@ -772,15 +817,21 @@ def structural_sha256(config: ExperimentConfig, *, ignore_global_batch: bool = F
     Optimizer and scheduler hyperparameters are left out. Resume restores the
     checkpoint and then writes the current YAML values over those fields.
     Loss coefficients, class paths, and shapes stay in the hash. With
-    ``ignore_global_batch``, per-rank ``batch_size`` and runtime ``world_size``
-    are left out so an epoch-boundary world-size change can keep the product.
+    ``ignore_global_batch``, per-rank ``micro_batch_size`` and runtime
+    ``world_size`` are left out, and the derived ``accumulation_steps`` stays,
+    so an epoch-boundary world-size change can keep the global batch.
     """
 
     payload = _config_payload(config)
+    if ignore_global_batch:
+        _record_accumulation_steps(payload)
     for spec in payload["components"].values():
         kwargs = spec.get("kwargs")
         if not isinstance(kwargs, dict):
             continue
+        if ignore_global_batch:
+            kwargs.pop("micro_batch_size", None)
+            kwargs.pop("batch_size", None)
         if spec.get("role") == "optimizer":
             for key in _OPTIMIZER_HYPERPARAMETERS:
                 kwargs.pop(key, None)
@@ -791,11 +842,37 @@ def structural_sha256(config: ExperimentConfig, *, ignore_global_batch: bool = F
         elif spec.get("role") == "scheduler":
             for key in _SCHEDULER_HYPERPARAMETERS:
                 kwargs.pop(key, None)
-        elif ignore_global_batch and spec.get("role") == "data":
-            kwargs.pop("batch_size", None)
     if ignore_global_batch and isinstance(payload["runtime"].get("kwargs"), dict):
         payload["runtime"]["kwargs"].pop("world_size", None)
     return _sha256(payload)
+
+
+def _record_accumulation_steps(payload: dict[str, Any]) -> None:
+    """Put the derived accumulation into a world-size-insensitive hash."""
+
+    from src.experiments.calc.batch import exact_accumulation
+
+    runtime = payload.get("runtime")
+    runtime_kwargs = runtime.get("kwargs") if isinstance(runtime, dict) else None
+    world = 1
+    if isinstance(runtime_kwargs, dict):
+        value = runtime_kwargs.get("world_size", 1)
+        if isinstance(value, int) and not isinstance(value, bool) and value >= 1:
+            world = value
+    for spec in payload["components"].values():
+        if not isinstance(spec, dict) or spec.get("role") != "trainer":
+            continue
+        kwargs = spec.get("kwargs")
+        if not isinstance(kwargs, dict):
+            continue
+        if "global_batch_size" not in kwargs or "micro_batch_size" not in kwargs:
+            continue
+        payload["accumulation_steps"] = exact_accumulation(
+            kwargs["global_batch_size"],
+            kwargs["micro_batch_size"],
+            world,
+        )
+        return
 
 
 def _config_payload(config: ExperimentConfig) -> dict[str, Any]:

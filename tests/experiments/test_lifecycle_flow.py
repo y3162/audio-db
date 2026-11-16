@@ -27,7 +27,7 @@ def _components(*, steps: int = 1) -> dict[str, object]:
         "data": {
             "role": "data",
             "class": "src.experiments.data.TensorPairData",
-            "kwargs": {"features": 4, "examples": 8, "batch_size": 4},
+            "kwargs": {"features": 4, "examples": 8, "micro_batch_size": 4},
         },
         "optimizer": {
             "role": "optimizer",
@@ -38,7 +38,7 @@ def _components(*, steps: int = 1) -> dict[str, object]:
         "trainer": {
             "role": "trainer",
             "class": "src.experiments.trainers.StandardTrainer",
-            "kwargs": {"max_logical_steps": steps, "accumulation": 1},
+            "kwargs": {"max_logical_steps": steps, "global_batch_size": 4, "micro_batch_size": 4},
             "inject": {
                 "model": {"ref": "model"},
                 "loss": {"ref": "loss"},

@@ -2,7 +2,7 @@
 
 import unittest
 
-from src.experiments.calc.batch import plan_batches
+from src.experiments.calc.batch import exact_accumulation, plan_batches
 from src.experiments.calc.errors import TrainingError
 
 
@@ -27,6 +27,14 @@ class BatchPlanTests(unittest.TestCase):
     def test_single_process_cpu_keeps_the_global_batch(self):
         planned = plan_batches(8, 3, 1)
         self.assertEqual((planned.micro_batch_size, planned.accumulation_steps, planned.world_size), (2, 4, 1))
+
+    def test_exact_accumulation_refuses_a_remainder(self):
+        self.assertEqual(exact_accumulation(8, 4, 2), 1)
+        self.assertEqual(exact_accumulation(8, 1, 2), 4)
+        with self.assertRaises(TrainingError):
+            exact_accumulation(8, 3, 2)
+        with self.assertRaises(TrainingError):
+            exact_accumulation(4, True, 1)
 
     def test_non_positive_sizes_are_rejected(self):
         with self.assertRaises(TrainingError):

@@ -29,6 +29,26 @@ class BatchPlan:
         }
 
 
+def exact_accumulation(global_batch_size: int, micro_batch_size: int, world_size: int) -> int:
+    """Return ``global / (micro * world)`` when that value is a positive integer."""
+
+    if isinstance(global_batch_size, bool) or not isinstance(global_batch_size, int):
+        raise TrainingError("global_batch_size must be a positive integer")
+    if isinstance(micro_batch_size, bool) or not isinstance(micro_batch_size, int):
+        raise TrainingError("micro_batch_size must be a positive integer")
+    if isinstance(world_size, bool) or not isinstance(world_size, int):
+        raise TrainingError("world_size must be a positive integer")
+    if global_batch_size < 1 or micro_batch_size < 1 or world_size < 1:
+        raise TrainingError("batch sizes and world_size must be positive")
+    denom = micro_batch_size * world_size
+    if global_batch_size % denom != 0:
+        raise TrainingError(
+            "accumulation_steps = global_batch_size / (micro_batch_size * world_size) "
+            f"is not a positive integer ({global_batch_size} / ({micro_batch_size} * {world_size}))"
+        )
+    return global_batch_size // denom
+
+
 def plan_batches(
     global_batch_size: int,
     micro_batch_size_per_gpu: int,

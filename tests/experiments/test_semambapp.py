@@ -346,7 +346,7 @@ class SEMambaPPAlgorithmTests(unittest.TestCase):
             for accumulation, count in ((1, 2), (2, 2)):
                 target = root / f"gloo-{accumulation}"
                 completed = _torchrun(
-                    _yaml(target, steps=1, count=count, group_size=accumulation, accumulation=accumulation, validation_interval=0)
+                    _yaml(target, steps=1, count=count, group_size=accumulation, accumulation=accumulation, world=2, validation_interval=0)
                 )
                 self.assertEqual(completed.returncode, 0, completed.stderr[-2500:])
                 payload = torch.load(target / "archive/step_00000001.pt", map_location="cpu", weights_only=False)
@@ -367,7 +367,7 @@ class SEMambaPPAlgorithmTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as directory:
             target = Path(directory) / "poison"
             completed = _torchrun(
-                _yaml(target, steps=1, count=1, poison_rank=1),
+                _yaml(target, steps=1, count=1, poison_rank=1, world=2),
                 timeout=180,
             )
             self.assertNotEqual(completed.returncode, 0)
@@ -614,6 +614,7 @@ def _yaml(
     count: int,
     group_size: int = 1,
     accumulation: int = 1,
+    world: int = 1,
     validation_interval: int = 0,
     stop_after: int | None = None,
     best_start: int = 40,
@@ -642,6 +643,7 @@ runtime:
   kwargs:
     device: {device}
     precision: fp32
+    world_size: {world}
 output:
   directory: {directory}
 components:
@@ -754,7 +756,8 @@ components:
     class: src.experiments.official.semambapp.trainer.SEMambaPPTrainer
     kwargs:
       max_logical_steps: {steps}
-      accumulation: {accumulation}
+      global_batch_size: {world * accumulation}
+      micro_batch_size: 1
       validation_interval: {validation_interval}
       best_checkpoint_start_epoch: {best_start}
       claim_label: {claim}

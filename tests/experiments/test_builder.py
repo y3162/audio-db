@@ -38,6 +38,7 @@ class BuilderTests(unittest.TestCase):
                 "trainer": {
                     "role": "trainer",
                     "class": "tests.experiments.support.CaptureTrainer",
+                    "kwargs": {"global_batch_size": 1, "micro_batch_size": 1},
                     "inject": {
                         "loss": {"ref": "loss"},
                         "loss_for_log": {"ref": "loss_for_log"},
@@ -145,6 +146,7 @@ class BuilderTests(unittest.TestCase):
                 "trainer": {
                     "role": "trainer",
                     "class": "tests.experiments.support.Marker",
+                    "kwargs": {"global_batch_size": 1, "micro_batch_size": 1},
                 }
             },
         }
@@ -280,7 +282,7 @@ class BuilderTests(unittest.TestCase):
     def test_a_stateless_trainer_is_omitted_unless_save_is_explicit(self) -> None:
         path = write_config(
             self._tmp(),
-            {"trainer": {"role": "trainer", "class": "tests.experiments.support.CaptureTrainer"}},
+            {"trainer": {"role": "trainer", "class": "tests.experiments.support.CaptureTrainer", "kwargs": {"global_batch_size": 1, "micro_batch_size": 1}}},
         )
         experiment = build_experiment(load_experiment(path))
         assert experiment._graph is not None
@@ -291,6 +293,7 @@ class BuilderTests(unittest.TestCase):
                 "trainer": {
                     "role": "trainer",
                     "class": "tests.experiments.support.CaptureTrainer",
+                    "kwargs": {"global_batch_size": 1, "micro_batch_size": 1},
                     "state": {"save": True},
                 }
             },
@@ -340,6 +343,7 @@ class BuilderTests(unittest.TestCase):
                 "  trainer:",
                 "    role: trainer",
                 "    class: tests.experiments.support.NullTrainer",
+                "    kwargs: {global_batch_size: 1, micro_batch_size: 1}",
                 "",
             ]
         )

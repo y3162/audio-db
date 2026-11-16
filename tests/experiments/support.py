@@ -209,7 +209,11 @@ def write_config(
 
 
 def null_trainer() -> dict[str, object]:
-    return {"role": "trainer", "class": "tests.experiments.support.NullTrainer"}
+    return {
+        "role": "trainer",
+        "class": "tests.experiments.support.NullTrainer",
+        "kwargs": {"global_batch_size": 1, "micro_batch_size": 1},
+    }
 
 
 class InspectTrainer:

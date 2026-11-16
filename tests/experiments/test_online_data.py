@@ -748,7 +748,7 @@ components:
     role: other
     class: src.experiments.data.MicroBatcher
     kwargs:
-      micro_batch: 1
+      micro_batch_size: 1
       group_size: 1
   data:
     role: data
@@ -770,7 +770,8 @@ components:
     class: src.experiments.trainers.StandardTrainer
     kwargs:
       max_logical_steps: {steps}
-      accumulation: 1
+      global_batch_size: 1
+      micro_batch_size: 1
 {stop}    inject:
       model: {{ref: model}}
       loss: {{ref: loss}}

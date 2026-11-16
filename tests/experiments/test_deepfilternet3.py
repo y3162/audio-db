@@ -477,6 +477,7 @@ runtime:
   kwargs:
     device: cpu
     precision: fp32
+    world_size: {world_batch}
 output:
   directory: {directory}
 components:
@@ -526,7 +527,7 @@ components:
     role: other
     class: src.experiments.data.MicroBatcher
     kwargs:
-      micro_batch: 1
+      micro_batch_size: 1
       group_size: 1
       keep_partial: true
   data:
@@ -553,7 +554,8 @@ components:
     class: src.experiments.official.deepfilternet3.trainer.DeepFilterNet3Trainer
     kwargs:
       max_logical_steps: 2
-      accumulation: 1
+      global_batch_size: {world_batch}
+      micro_batch_size: 1
       grad_clip: 1.0
       max_epochs: 120
       early_stopping_patience: 25

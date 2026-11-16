@@ -404,6 +404,8 @@ class StopBoundaryTests(unittest.TestCase):
                         class: tests.experiments.phase4j_support.InterruptProbe
                         kwargs:
                           max_logical_steps: 30
+                          global_batch_size: 1
+                          micro_batch_size: 1
                     """
                 ),
                 encoding="utf-8",

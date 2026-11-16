@@ -182,14 +182,15 @@ class Phase4IDeclarationTests(unittest.TestCase):
         self.assertEqual(moss.components["optim_g"].parameters_of[0].component, "generator")
         self.assertEqual(moss.components["optim_d"].parameters_of[0].component, "discriminator")
         self.assertTrue(moss.components["generator"].prepare.sync_batchnorm)
-        self.assertEqual(moss.components["trainer"].kwargs["accumulation"], 2)
+        self.assertEqual(moss.components["trainer"].kwargs["global_batch_size"], 2)
+        self.assertEqual(moss.components["trainer"].kwargs["micro_batch_size"], 1)
         self.assertEqual(moss.selector_kwargs["interval"], 5786)
         grid = configs["tf_gridnet"]
         self.assertEqual(grid.components["optimizer"].class_path, "torch.optim.Adam")
         self.assertEqual(grid.components["scheduler"].class_path, "torch.optim.lr_scheduler.ReduceLROnPlateau")
         self.assertEqual(grid.components["model"].prepare.distribute, "ddp")
         self.assertEqual(grid.components["sampler"].kwargs["global_batch"], 4)
-        self.assertEqual(grid.components["batcher"].kwargs["micro_batch"], 2)
+        self.assertEqual(grid.components["batcher"].kwargs["micro_batch_size"], 2)
         loco = configs["tf_locoformer"]
         self.assertEqual(loco.components["optimizer"].class_path, "torch.optim.AdamW")
         self.assertEqual(loco.components["scheduler"].class_path, "src.experiments.calc.optim.WarmupReduceLROnPlateau")
@@ -198,7 +199,7 @@ class Phase4IDeclarationTests(unittest.TestCase):
             "tf_locoformer.dns.accept_recipe.research_valid_fixed@1",
         )
         self.assertEqual(loco.components["sampler"].kwargs["global_batch"], 4)
-        self.assertEqual(loco.components["batcher"].kwargs["micro_batch"], 1)
+        self.assertEqual(loco.components["batcher"].kwargs["micro_batch_size"], 1)
         dfn = configs["deepfilternet3"]
         self.assertTrue(dfn.components["model"].prepare.find_unused_parameters)
         self.assertFalse(dfn.components["model"].prepare.sync_batchnorm)

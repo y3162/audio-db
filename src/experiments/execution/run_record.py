@@ -19,7 +19,13 @@ from src.experiments.errors import CheckpointError
 RECORD_FORMAT = "audio-db-run-record-v1"
 
 
-def publish_run_record(directory: Path, config: ExperimentConfig, *, resume: bool) -> None:
+def publish_run_record(
+    directory: Path,
+    config: ExperimentConfig,
+    *,
+    resume: bool,
+    world_size: int,
+) -> None:
     """Write ``config.yaml`` and append one launch to ``metadata.json``.
 
     The run id is chosen once. A later launch keeps it and appends history.
@@ -35,6 +41,7 @@ def publish_run_record(directory: Path, config: ExperimentConfig, *, resume: boo
     config_path = directory / "config.yaml"
     started_at = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
     launch = {
+        "batch": _recorded_batch(config, world_size),
         "config_sha256": digest,
         "extends_chain": list(config.extends_chain),
         "resume": resume,
@@ -78,6 +85,22 @@ def publish_run_record(directory: Path, config: ExperimentConfig, *, resume: boo
         }
     _atomic_text(config_path, text)
     _atomic_text(meta_path, json.dumps(meta, indent=2, sort_keys=True) + "\n")
+
+
+def _recorded_batch(config: ExperimentConfig, world_size: int) -> dict[str, int]:
+    """The effective batch for this launch. Resume writes the same fields again."""
+
+    from src.experiments.calc.batch import exact_accumulation
+
+    trainer = config.components[config.entry]
+    global_batch = int(trainer.kwargs["global_batch_size"])
+    micro_batch = int(trainer.kwargs["micro_batch_size"])
+    return {
+        "accumulation_steps": exact_accumulation(global_batch, micro_batch, world_size),
+        "global_batch_size": global_batch,
+        "micro_batch_size": micro_batch,
+        "world_size": int(world_size),
+    }
 
 
 def record_batch_probe(directory: Path, report: dict[str, object]) -> None:

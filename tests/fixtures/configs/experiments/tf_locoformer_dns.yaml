@@ -92,7 +92,7 @@ components:
     role: other
     class: src.experiments.data.MicroBatcher
     kwargs:
-      micro_batch: 1
+      micro_batch_size: 1
       group_size: 1
   data:
     role: data
@@ -141,7 +141,8 @@ components:
     class: src.experiments.official.tf_locoformer.trainer.TFLocoformerTrainer
     kwargs:
       max_logical_steps: 1
-      accumulation: 1
+      global_batch_size: 1
+      micro_batch_size: 1
       grad_clip: 5.0
       keep_nbest: 5
       max_epochs: 150

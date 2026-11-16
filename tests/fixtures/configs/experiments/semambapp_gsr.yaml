@@ -149,7 +149,7 @@ components:
     role: other
     class: src.experiments.data.MicroBatcher
     kwargs:
-      micro_batch: 1
+      micro_batch_size: 1
       group_size: 1
   data:
     role: data
@@ -292,7 +292,8 @@ components:
     class: src.experiments.official.semambapp.trainer.SEMambaPPTrainer
     kwargs:
       max_logical_steps: 1
-      accumulation: 1
+      global_batch_size: 1
+      micro_batch_size: 1
       grad_clip: null
       validation_interval: 0
       best_checkpoint_start_epoch: 40

@@ -140,6 +140,7 @@ def _components(trainer: str, *, updates: int | None = None, selection: bool = F
     trainer_spec: dict[str, object] = {
         "role": "trainer",
         "class": trainer,
+        "kwargs": {"global_batch_size": 4, "micro_batch_size": 4},
         "inject": {
             "model": {"ref": "model"},
             "loss": {"ref": "loss"},
@@ -148,7 +149,11 @@ def _components(trainer: str, *, updates: int | None = None, selection: bool = F
         },
     }
     if updates is not None:
-        trainer_spec["kwargs"] = {"updates": updates}
+        trainer_spec["kwargs"] = {
+            "updates": updates,
+            "global_batch_size": 4,
+            "micro_batch_size": 4,
+        }
     components: dict[str, object] = {
         "model": {
             "role": "module",
@@ -160,7 +165,7 @@ def _components(trainer: str, *, updates: int | None = None, selection: bool = F
         "data": {
             "role": "data",
             "class": "src.experiments.data.TensorPairData",
-            "kwargs": {"features": 8, "examples": 32, "batch_size": 4},
+            "kwargs": {"features": 8, "examples": 32, "micro_batch_size": 4},
         },
         "optimizer": {
             "role": "optimizer",

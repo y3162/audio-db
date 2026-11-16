@@ -687,9 +687,8 @@ def _global_batch_maintained(
         previous = _config_with_hash(directory, saved_hash)
         if previous is None:
             return False
-    saved_acc = _accumulation(previous)
-    live_acc = _accumulation(config)
-    if saved_acc is None or live_acc is None:
+    live_acc = _accumulation(config, new_world)
+    if live_acc is None:
         return False
     blobs = payload.get("states")
     if not isinstance(blobs, dict):
@@ -707,10 +706,13 @@ def _global_batch_maintained(
             return False
         if isinstance(saved_world, bool) or not isinstance(saved_world, int) or saved_world < 1:
             return False
+        saved_acc = _accumulation(previous, saved_world)
+        if saved_acc is None:
+            return False
         spec = config.components.get(str(state_id))
         if spec is None or spec.role != "data":
             return False
-        live_batch = spec.kwargs.get("batch_size")
+        live_batch = spec.kwargs.get("micro_batch_size")
         if isinstance(live_batch, bool) or not isinstance(live_batch, int) or live_batch < 1:
             return False
         if saved_batch * saved_world * saved_acc != live_batch * int(new_world) * live_acc:
@@ -719,16 +721,22 @@ def _global_batch_maintained(
     return found
 
 
-def _accumulation(config: ExperimentConfig) -> int | None:
-    for component_id in sorted(config.components):
-        spec = config.components[component_id]
-        if spec.role != "trainer":
+def _accumulation(config: ExperimentConfig, world_size: int) -> int | None:
+    from src.experiments.calc.batch import exact_accumulation
+    from src.experiments.calc.errors import TrainingError
+
+    for spec in config.components.values():
+        if spec.role != "trainer" or spec.ref is not None:
             continue
-        value = spec.kwargs.get("accumulation", 1)
-        if isinstance(value, bool) or not isinstance(value, int) or value < 1:
+        try:
+            return exact_accumulation(
+                spec.kwargs["global_batch_size"],
+                spec.kwargs["micro_batch_size"],
+                world_size,
+            )
+        except (KeyError, TrainingError):
             return None
-        return value
-    return 1
+    return None
 
 
 def _rank_width_resize(blob: dict[str, Any], target: Any) -> bool:

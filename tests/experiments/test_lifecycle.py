@@ -96,6 +96,7 @@ class LifecycleTests(unittest.TestCase):
                 "trainer": {
                     "role": "trainer",
                     "class": "tests.experiments.support.CaptureTrainer",
+                    "kwargs": {"global_batch_size": 1, "micro_batch_size": 1},
                     "inject": {"model": {"ref": "model"}, "optimizer": {"ref": "optimizer"}},
                 },
             },
@@ -186,7 +187,7 @@ class LifecycleTests(unittest.TestCase):
                 "data": {
                     "role": "data",
                     "class": "src.experiments.data.TensorPairData",
-                    "kwargs": {"features": 8, "examples": 32, "batch_size": 4},
+                    "kwargs": {"features": 8, "examples": 32, "micro_batch_size": 4},
                 },
                 "optim_g": {
                     "role": "optimizer",
@@ -201,7 +202,7 @@ class LifecycleTests(unittest.TestCase):
                 "trainer": {
                     "role": "trainer",
                     "class": "tests.experiments.test_lifecycle.BoundGeneratorPair",
-                    "kwargs": {"max_logical_steps": 2},
+                    "kwargs": {"max_logical_steps": 2, "global_batch_size": 4, "micro_batch_size": 4},
                     "inject": {
                         "generator": {"ref": "generator"},
                         "discriminator": {"ref": "discriminator"},
@@ -243,7 +244,7 @@ class LifecycleTests(unittest.TestCase):
                 "data": {
                     "role": "data",
                     "class": "src.experiments.data.TensorPairData",
-                    "kwargs": {"features": 8, "examples": 16, "batch_size": 4},
+                    "kwargs": {"features": 8, "examples": 16, "micro_batch_size": 4},
                 },
                 "optim_experts": {
                     "role": "optimizer",
@@ -262,7 +263,7 @@ class LifecycleTests(unittest.TestCase):
                 "trainer": {
                     "role": "trainer",
                     "class": "tests.experiments.test_lifecycle.BoundExperts",
-                    "kwargs": {"max_logical_steps": 2},
+                    "kwargs": {"max_logical_steps": 2, "global_batch_size": 4, "micro_batch_size": 4},
                     "inject": {
                         "experts": [{"ref": "expert_a"}, {"ref": "expert_b"}],
                         "router": {"ref": "router"},

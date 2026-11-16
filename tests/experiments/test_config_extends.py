@@ -44,7 +44,7 @@ components:
     kwargs:
       features: 8
       examples: 8
-      batch_size: 4
+      micro_batch_size: 4
   optimizer:
     role: optimizer
     class: torch.optim.SGD
@@ -53,7 +53,7 @@ components:
   trainer:
     role: trainer
     class: src.experiments.trainers.StandardTrainer
-    kwargs: {{max_logical_steps: 1, accumulation: 1}}
+    kwargs: {{max_logical_steps: 1, global_batch_size: 4, micro_batch_size: 4}}
     inject:
       model: {{ref: model}}
       loss: {{ref: loss}}
@@ -83,6 +83,19 @@ class ExtendsTests(unittest.TestCase):
     def _root(self) -> Path:
         return Path(self._tmp.name)
 
+    def test_retired_batch_names_are_rejected(self) -> None:
+        path = self._root() / "old.yaml"
+        text = _PARENT.format(directory="runs/old").replace(
+            "      micro_batch_size: 4\n",
+            "      batch_size: 4\n",
+            1,
+        )
+        _write(path, text)
+        with self.assertRaises(ConfigError) as caught:
+            load_experiment(path)
+        self.assertIn("batch_size", str(caught.exception))
+        self.assertIn("global_batch_size", str(caught.exception))
+
     def test_shipped_document_has_no_parent(self) -> None:
         path = ROOT / "tests/fixtures/configs/experiments/linear_supervised.yaml"
         config = load_experiment(path)
@@ -98,8 +111,8 @@ class ExtendsTests(unittest.TestCase):
         _write(
             parent,
             _PARENT.format(directory="runs/extend").replace(
-                "      batch_size: 4\n",
-                "      batch_size: 4\n      tags: [a, b]\n",
+                "      micro_batch_size: 4\n",
+                "      micro_batch_size: 4\n      tags: [a, b]\n",
             ),
         )
         _write(
@@ -326,6 +339,15 @@ class ExtendsTests(unittest.TestCase):
         self.assertEqual(len(meta["run_id"]), 32)
         self.assertEqual(len(meta["launches"]), 1)
         self.assertEqual(meta["launches"][0]["resume"], False)
+        self.assertEqual(
+            meta["launches"][0]["batch"],
+            {
+                "accumulation_steps": 1,
+                "global_batch_size": 4,
+                "micro_batch_size": 4,
+                "world_size": 1,
+            },
+        )
         self.assertEqual(meta["source_hashes"], [_sha(parent), _sha(child)])
         self.assertFalse((out / "config_history").exists())
 
@@ -342,7 +364,8 @@ class ExtendsTests(unittest.TestCase):
                     "    kwargs:",
                     "      __replace__: true",
                     "      max_logical_steps: 2",
-                    "      accumulation: 1",
+                    "      global_batch_size: 4",
+                    "      micro_batch_size: 4",
                 )
             )
             + "\n",

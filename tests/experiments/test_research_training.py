@@ -103,8 +103,8 @@ class ResearchTrainingTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
             text = _selection_text(root, mode="min", steps=1, updates=2)
-            text = text.replace("      micro_batch: 1\n", "      micro_batch: 1\n      group_size: 2\n", 1)
-            text = text.replace("      accumulation: 1\n", "      accumulation: 2\n", 1)
+            text = text.replace("      micro_batch_size: 1\n", "      micro_batch_size: 1\n      group_size: 2\n", 1)
+            text = text.replace("      global_batch_size: 1\n", "      global_batch_size: 2\n", 1)
             result = build_experiment(load_experiment(_write(root, text))).run()
             self.assertEqual(result.stop_reason, "completed")
             self.assertEqual(result.logical_step, 1)

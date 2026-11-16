@@ -95,6 +95,7 @@ class ProgressTests(unittest.TestCase):
                 "trainer": {
                     "role": "trainer",
                     "class": "tests.experiments.test_progress.NoCounterTrainer",
+                    "kwargs": {"global_batch_size": 1, "micro_batch_size": 1},
                     "inject": {"model": {"ref": "model"}},
                 },
             },
@@ -117,7 +118,7 @@ class ProgressTests(unittest.TestCase):
                 "data": {
                     "role": "data",
                     "class": "src.experiments.data.TensorPairData",
-                    "kwargs": {"features": 4, "examples": 8, "batch_size": 4},
+                    "kwargs": {"features": 4, "examples": 8, "micro_batch_size": 4},
                 },
                 "optimizer": {
                     "role": "optimizer",
@@ -128,7 +129,7 @@ class ProgressTests(unittest.TestCase):
                 "trainer": {
                     "role": "trainer",
                     "class": "src.experiments.trainers.StandardTrainer",
-                    "kwargs": {"max_logical_steps": 1, "accumulation": 1},
+                    "kwargs": {"max_logical_steps": 1, "global_batch_size": 4, "micro_batch_size": 4},
                     "inject": {
                         "model": {"ref": "model"},
                         "loss": {"ref": "loss"},
@@ -157,6 +158,7 @@ class ProgressTests(unittest.TestCase):
                 "trainer": {
                     "role": "trainer",
                     "class": "tests.experiments.test_progress.EventTrainer",
+                    "kwargs": {"global_batch_size": 1, "micro_batch_size": 1},
                     "state": {"save": False},
                     "inject": {"model": {"ref": "model"}},
                 },

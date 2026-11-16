@@ -557,7 +557,14 @@ class SelectorTests(_Base):
                     load_experiment(path)
         # The trainer no longer owns a save period.
         old = directory / "old.yaml"
-        old.write_text(text.replace("      accumulation: 1\n", "      accumulation: 1\n      checkpoint_interval: 1\n"), encoding="utf-8")
+        old.write_text(
+            text.replace(
+                "      global_batch_size: 4\n      micro_batch_size: 4\n",
+                "      global_batch_size: 4\n      micro_batch_size: 4\n      checkpoint_interval: 1\n",
+                1,
+            ),
+            encoding="utf-8",
+        )
         with self.assertRaises(BuildError):
             build_experiment(load_experiment(old))
 
@@ -943,7 +950,7 @@ components:
     kwargs:
       features: 8
       examples: 32
-      batch_size: 4
+      micro_batch_size: 4
   optimizer:
     role: optimizer
     class: torch.optim.AdamW
@@ -960,7 +967,8 @@ components:
     class: {trainer}
     kwargs:
       max_logical_steps: {steps}
-      accumulation: 1
+      global_batch_size: 4
+      micro_batch_size: 4
 {extra}{stop}    inject:
       model: {{ref: model}}
       loss: {{ref: loss}}

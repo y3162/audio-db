@@ -290,7 +290,7 @@ components:
     kwargs:
       features: 4
       examples: 16
-      batch_size: 4
+      micro_batch_size: 4
   optimizer:
     role: optimizer
     class: torch.optim.AdamW
@@ -301,7 +301,8 @@ components:
     class: tests.experiments.support.FaultTrainer
     kwargs:
       max_logical_steps: {steps}
-      accumulation: 1
+      global_batch_size: 4
+      micro_batch_size: 4
       fault: none
       step: 0
       rank: 0

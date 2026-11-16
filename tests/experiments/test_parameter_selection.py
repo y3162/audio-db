@@ -46,7 +46,7 @@ components:
   data:
     role: data
     class: src.experiments.data.TensorPairData
-    kwargs: {{features: 4, examples: 4, batch_size: 2}}
+    kwargs: {{features: 4, examples: 4, micro_batch_size: 2}}
   optimizer:
     role: optimizer
     class: torch.optim.SGD
@@ -55,7 +55,7 @@ components:
   trainer:
     role: trainer
     class: src.experiments.trainers.StandardTrainer
-    kwargs: {{max_logical_steps: 1, accumulation: 1}}
+    kwargs: {{max_logical_steps: 1, global_batch_size: 2, micro_batch_size: 2}}
     inject:
       model: {{ref: model}}
       loss: {{ref: loss}}

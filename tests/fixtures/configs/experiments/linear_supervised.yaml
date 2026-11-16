@@ -27,7 +27,7 @@ components:
     kwargs:
       features: 8
       examples: 32
-      batch_size: 4
+      micro_batch_size: 4
   optimizer:
     role: optimizer
     class: torch.optim.AdamW
@@ -36,7 +36,7 @@ components:
   trainer:
     role: trainer
     class: src.experiments.trainers.StandardTrainer
-    kwargs: {max_logical_steps: 4, accumulation: 1}
+    kwargs: {max_logical_steps: 4, global_batch_size: 4, micro_batch_size: 4}
     inject:
       model: {ref: model}
       loss: {ref: loss}

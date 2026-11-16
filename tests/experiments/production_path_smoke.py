@@ -87,9 +87,9 @@ def _mp(spec: dict) -> dict:
     _point(config, spec, fixed=True)
     config["components"]["sampler"]["kwargs"]["max_epoch_samples"] = 1
     config["components"]["trainer"]["kwargs"].update(
-        {"experiment_claim": "research", "validation_interval": 1, "max_logical_steps": 1, "accumulation": 1}
+        {"experiment_claim": "research", "validation_interval": 1, "max_logical_steps": 1, "global_batch_size": 1, "micro_batch_size": 1}
     )
-    config["components"]["batcher"]["kwargs"] = {"micro_batch": 1, "group_size": 1}
+    config["components"]["batcher"]["kwargs"] = {"micro_batch_size": 1, "group_size": 1}
     return config
 
 
@@ -109,11 +109,11 @@ def _moss(spec: dict) -> dict:
         {
             "experiment_claim": "research",
             "max_logical_steps": 2,
-            "accumulation": 1,
+            "global_batch_size": 1, "micro_batch_size": 1,
             "validate_on_epoch_end": True,
         }
     )
-    config["components"]["batcher"]["kwargs"] = {"micro_batch": 1, "group_size": 1}
+    config["components"]["batcher"]["kwargs"] = {"micro_batch_size": 1, "group_size": 1}
     return config
 
 
@@ -142,9 +142,9 @@ def _semamba(spec: dict) -> dict:
     }
     config["components"]["protocol"]["class"] = "src.experiments.data.FixedPairProtocol"
     config["components"]["trainer"]["kwargs"].update(
-        {"claim_label": "research", "validation_interval": 1, "max_logical_steps": 1, "accumulation": 1}
+        {"claim_label": "research", "validation_interval": 1, "max_logical_steps": 1, "global_batch_size": 1, "micro_batch_size": 1}
     )
-    config["components"]["batcher"]["kwargs"] = {"micro_batch": 1, "group_size": 1}
+    config["components"]["batcher"]["kwargs"] = {"micro_batch_size": 1, "group_size": 1}
     return config
 
 
@@ -177,9 +177,11 @@ def _grid(spec: dict) -> dict:
             "validation_scope": "per_rank",
         }
     )
-    config["components"]["batcher"]["kwargs"] = {"micro_batch": 1, "group_size": 1}
+    config["components"]["batcher"]["kwargs"] = {"micro_batch_size": 1, "group_size": 1}
     config["components"]["trainer"]["kwargs"]["max_logical_steps"] = 1
     config["components"]["trainer"]["kwargs"]["max_epochs"] = 1
+    config["components"]["trainer"]["kwargs"]["global_batch_size"] = 1
+    config["components"]["trainer"]["kwargs"]["micro_batch_size"] = 1
     return config
 
 
@@ -220,9 +222,11 @@ def _loco(spec: dict) -> dict:
             "validation_scope": "per_rank",
         }
     )
-    config["components"]["batcher"]["kwargs"] = {"micro_batch": 1, "group_size": 1}
+    config["components"]["batcher"]["kwargs"] = {"micro_batch_size": 1, "group_size": 1}
     config["components"]["trainer"]["kwargs"]["max_logical_steps"] = 1
     config["components"]["trainer"]["kwargs"]["max_epochs"] = 1
+    config["components"]["trainer"]["kwargs"]["global_batch_size"] = 1
+    config["components"]["trainer"]["kwargs"]["micro_batch_size"] = 1
     config["components"]["trainer"]["kwargs"]["validation_profile"] = "research"
     return config
 
@@ -262,9 +266,11 @@ def _dfn_wave() -> dict:
     config["components"]["data"] = {
         "role": "data",
         "class": "src.experiments.data.pair.WavePairData",
-        "kwargs": {"root": str(root), "sample_rate": 48000, "teacher": "official_mixed_target", "batch_size": 1},
+        "kwargs": {"root": str(root), "sample_rate": 48000, "teacher": "official_mixed_target", "micro_batch_size": 1},
     }
     config["components"]["trainer"]["kwargs"]["batch_schedule"] = None
+    config["components"]["trainer"]["kwargs"]["global_batch_size"] = 1
+    config["components"]["trainer"]["kwargs"]["micro_batch_size"] = 1
     config["components"]["trainer"]["kwargs"]["max_logical_steps"] = 1
     config["components"]["trainer"]["kwargs"]["max_epochs"] = 1
     return config

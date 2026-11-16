@@ -322,7 +322,7 @@ components:
   trainer:
     role: trainer
     class: src.experiments.trainers.StandardTrainer
-    kwargs: {max_logical_steps: 1}
+    kwargs: {max_logical_steps: 1, global_batch_size: 1, micro_batch_size: 1}
 """,
                 encoding="utf-8",
             )

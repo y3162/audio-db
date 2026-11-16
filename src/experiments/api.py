@@ -270,7 +270,12 @@ class Experiment:
                 from src.experiments.errors import ConfigError
                 from src.experiments.execution.run_record import publish_run_record
 
-                publish_run_record(self._directory, self.config, resume=resume)
+                publish_run_record(
+                    self._directory,
+                    self.config,
+                    resume=resume,
+                    world_size=int(getattr(runtime, "world_size", 1)),
+                )
             except (OSError, CheckpointError, ConfigError) as exc:
                 error = str(exc)
         gather = getattr(runtime, "gather_objects", None)
@@ -393,7 +398,12 @@ def preflight_experiment(experiment: Experiment, directory: str | Path | None = 
     if int(getattr(runtime, "rank", 0)) == 0:
         from src.experiments.execution.run_record import publish_run_record, record_batch_probe
 
-        publish_run_record(target, experiment.config, resume=False)
+        publish_run_record(
+            target,
+            experiment.config,
+            resume=False,
+            world_size=int(getattr(runtime, "world_size", 1)),
+        )
         record_batch_probe(target, batch_probe)
         temporary = target / ".preflight.json.tmp"
         temporary.write_text(json.dumps(payload, indent=2, sort_keys=True) + "\n", encoding="utf-8")

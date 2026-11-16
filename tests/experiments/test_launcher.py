@@ -691,6 +691,7 @@ runtime:
     device: {device}
     precision: fp32
     timeout_seconds: 60
+    world_size: {nproc}
 output:
   directory: {directory / "run"}
 components:
@@ -710,7 +711,7 @@ components:
     kwargs:
       features: 8
       examples: 32
-      batch_size: 4
+      micro_batch_size: 4
   optimizer:
     role: optimizer
     class: torch.optim.AdamW
@@ -721,7 +722,8 @@ components:
     class: tests.experiments.support.FaultTrainer
     kwargs:
       max_logical_steps: {STEPS}
-      accumulation: 1
+      global_batch_size: {4 * nproc}
+      micro_batch_size: 4
       fault: {fault}
       step: {step}
       rank: {rank}

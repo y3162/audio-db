@@ -927,6 +927,7 @@ def _scripted_text(
 ) -> str:
     epochs = "null" if max_epochs is None else str(max_epochs)
     stop = "" if stop_after is None else f"      stop_after_logical_steps: {stop_after}\n"
+    world = 2 if distribute == "ddp" else 1
     return f"""schema: audio-db-experiment/v1
 checkpoint:
   selector:
@@ -942,6 +943,7 @@ runtime:
     device: cpu
     precision: fp32
     timeout_seconds: 60
+    world_size: {world}
 output:
   directory: {directory}
 components:
@@ -966,7 +968,7 @@ components:
     class: tests.experiments.tf_gridnet_data.ScriptedChunkData
     kwargs:
       updates_per_epoch: {updates}
-      micro_batch: 1
+      micro_batch_size: 1
       length: 32
       seed: 17
       valid_sizes: [[2, 1], [2]]
@@ -998,7 +1000,8 @@ components:
     class: src.experiments.official.tf_locoformer.trainer.TFLocoformerTrainer
     kwargs:
       max_logical_steps: {steps}
-      accumulation: 1
+      global_batch_size: {world}
+      micro_batch_size: 1
       grad_clip: 5.0
       keep_nbest: 5
       max_epochs: {epochs}
@@ -1081,7 +1084,7 @@ components:
     role: other
     class: src.experiments.data.MicroBatcher
     kwargs:
-      micro_batch: 1
+      micro_batch_size: 1
       group_size: 1
   data:
     role: data
@@ -1121,7 +1124,8 @@ components:
     class: src.experiments.official.tf_locoformer.trainer.TFLocoformerTrainer
     kwargs:
       max_logical_steps: 200
-      accumulation: 1
+      global_batch_size: 1
+      micro_batch_size: 1
       grad_clip: 5.0
       keep_nbest: 5
       max_epochs: 1

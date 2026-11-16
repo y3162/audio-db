@@ -1024,6 +1024,7 @@ def _yaml_text(
     timeout: int = 60,
 ) -> str:
     stop = "" if stop_after is None else f"      stop_after_logical_steps: {stop_after}\n"
+    world = 2 if distribute == "ddp" else 1
     # Synthetic waves are not the official VoiceBank snapshot. The algorithm
     # tests keep running as research; official_faithful is refused without it.
     claim = "research" if profile == "official_faithful" else profile
@@ -1043,6 +1044,7 @@ runtime:
     device: cpu
     precision: fp32
     timeout_seconds: {timeout}
+    world_size: {world}
 output:
   directory: {directory}
 components:
@@ -1061,7 +1063,7 @@ components:
     class: tests.experiments.mp_senet_gan_data.WavePairData
     kwargs:
       updates_per_epoch: {updates}
-      micro_batch: 1
+      micro_batch_size: 1
       length: {LENGTH}
       seed: 17
       profile: {profile}
@@ -1102,7 +1104,8 @@ components:
     class: src.experiments.official.mp_senet.trainer.MPSENetGANTrainer
     kwargs:
       max_logical_steps: {steps}
-      accumulation: {accumulation}
+      global_batch_size: {world * accumulation}
+      micro_batch_size: 1
       experiment_claim: {claim}
       validation_interval: {validation_interval}
       best_checkpoint_start_epoch: {best_start}
@@ -1184,7 +1187,7 @@ components:
     role: other
     class: src.experiments.data.MicroBatcher
     kwargs:
-      micro_batch: 1
+      micro_batch_size: 1
       group_size: 1
   data:
     role: data
@@ -1232,7 +1235,8 @@ components:
     class: src.experiments.official.mp_senet.trainer.MPSENetGANTrainer
     kwargs:
       max_logical_steps: 1
-      accumulation: 1
+      global_batch_size: 1
+      micro_batch_size: 1
       experiment_claim: {claim}
       validation_interval: 100
       best_checkpoint_start_epoch: 40

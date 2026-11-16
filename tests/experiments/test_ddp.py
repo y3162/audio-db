@@ -189,6 +189,7 @@ class DistributedTrainingTests(unittest.TestCase):
             optimizer="adamw",
             model="dropout",
             scheduler=True,
+            world_size=1,
             filename="resume.yaml",
         )
         continuous = _torchrun(continuous_config)
@@ -396,6 +397,7 @@ class DistributedTrainingTests(unittest.TestCase):
             features=4,
             accumulation=1,
             optimizer="sgd",
+            world_size=1,
             filename="single.yaml",
         )
         refused_mid = _cli(grown, "--resume", str(mid_saved))
@@ -410,6 +412,7 @@ class DistributedTrainingTests(unittest.TestCase):
             features=4,
             accumulation=1,
             optimizer="sgd",
+            world_size=1,
             filename="same.yaml",
         )
         refused_batch = _cli(same_width, "--resume", str(saved))
@@ -433,6 +436,7 @@ class DistributedTrainingTests(unittest.TestCase):
             features=4,
             accumulation=1,
             optimizer="sgd",
+            world_size=1,
         )
         first = _cli(single)
         self.assertEqual(first.returncode, 0, first.stderr + first.stdout)
@@ -521,7 +525,7 @@ def _write_yaml(
     scheduler: bool = False,
     distribute: str = "ddp",
     include_model: bool = True,
-    world_size: int | None = None,
+    world_size: int = 2,
     filename: str = "experiment.yaml",
     selector: str | None = None,
 ) -> Path:
@@ -533,7 +537,8 @@ def _write_yaml(
     else:
         selector_block = f"    class: {selector}\n"
     stop = "" if stop_after is None else f"      stop_after_logical_steps: {stop_after}\n"
-    world = "" if world_size is None else f"    world_size: {world_size}\n"
+    world = f"    world_size: {world_size}\n"
+    global_batch = batch_size * world_size * accumulation
     if model == "dropout":
         model_block = f"""  model:
     role: module
@@ -587,13 +592,14 @@ def _write_yaml(
     kwargs:
       features: {features}
       examples: {examples}
-      batch_size: {batch_size}
+      micro_batch_size: {batch_size}
 {optimizer_block}{scheduler_block}  trainer:
     role: trainer
     class: {trainer}
     kwargs:
       max_logical_steps: {steps}
-      accumulation: {accumulation}
+      global_batch_size: {global_batch}
+      micro_batch_size: {batch_size}
 {stop}{trainer_kwargs}    inject:
       model: {{ref: model}}
       loss: {{ref: loss}}
@@ -606,6 +612,8 @@ def _write_yaml(
     class: {trainer}
     kwargs:
       max_logical_steps: {steps}
+      global_batch_size: {global_batch}
+      micro_batch_size: {batch_size}
 """
     text = f"""schema: audio-db-experiment/v1
 checkpoint:

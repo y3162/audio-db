@@ -51,7 +51,7 @@ def _yaml(directory: Path, *, steps: int, stop_after: int | None, interval: int)
             kwargs:
               features: 8
               examples: 32
-              batch_size: 4
+              micro_batch_size: 4
           optimizer:
             role: optimizer
             class: torch.optim.AdamW
@@ -68,7 +68,8 @@ def _yaml(directory: Path, *, steps: int, stop_after: int | None, interval: int)
             class: src.experiments.trainers.StandardTrainer
             kwargs:
               max_logical_steps: {steps}
-              accumulation: 1
+              global_batch_size: 4
+              micro_batch_size: 4
               stop_after_logical_steps: {stop}
             inject:
               model: {{ref: model}}

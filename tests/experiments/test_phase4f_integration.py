@@ -131,7 +131,8 @@ class Phase4FDeclarationTests(unittest.TestCase):
         self.assertEqual(moss.components["optim_d"].parameters_of[0].component, "discriminator")
         self.assertEqual(moss.components["optim_g"].kwargs["lr"], 0.0005)
         self.assertEqual(moss.components["optim_d"].kwargs["lr"], 0.001)
-        self.assertEqual(moss.components["trainer"].kwargs["accumulation"], 2)
+        self.assertEqual(moss.components["trainer"].kwargs["global_batch_size"], 2)
+        self.assertEqual(moss.components["trainer"].kwargs["micro_batch_size"], 1)
         self.assertTrue(moss.components["generator"].prepare.sync_batchnorm)
         self.assertEqual(moss.components["generator"].prepare.distribute, "ddp")
         grid = configs["tf_gridnet"]
@@ -140,14 +141,14 @@ class Phase4FDeclarationTests(unittest.TestCase):
         self.assertEqual(grid.components["scheduler"].class_path, "torch.optim.lr_scheduler.ReduceLROnPlateau")
         self.assertEqual(grid.components["model"].prepare.distribute, "ddp")
         self.assertEqual(grid.components["sampler"].kwargs["global_batch"], 4)
-        self.assertEqual(grid.components["batcher"].kwargs["micro_batch"], 2)
+        self.assertEqual(grid.components["batcher"].kwargs["micro_batch_size"], 2)
         loco = configs["tf_locoformer"]
         self.assertEqual(loco.components["optimizer"].class_path, "torch.optim.AdamW")
         self.assertEqual(loco.components["scheduler"].class_path, "src.experiments.calc.optim.WarmupReduceLROnPlateau")
         self.assertEqual(loco.components["trainer"].kwargs["validation_profile"], "tf_locoformer.dns.accept_recipe.research_valid_fixed@1")
         self.assertEqual(loco.components["model"].prepare.distribute, "ddp")
         self.assertEqual(loco.components["sampler"].kwargs["global_batch"], 4)
-        self.assertEqual(loco.components["batcher"].kwargs["micro_batch"], 1)
+        self.assertEqual(loco.components["batcher"].kwargs["micro_batch_size"], 1)
 
     def test_committed_chunk_batches_reject_world_size_one(self) -> None:
         grid = load_experiment(OFFICIAL["tf_gridnet"])
@@ -155,11 +156,11 @@ class Phase4FDeclarationTests(unittest.TestCase):
         grid_sampler = ChunkSampler(object(), global_batch=grid.components["sampler"].kwargs["global_batch"])
         loco_sampler = ChunkSampler(object(), global_batch=loco.components["sampler"].kwargs["global_batch"])
         grid_batch = MicroBatcher(
-            micro_batch=grid.components["batcher"].kwargs["micro_batch"],
+            micro_batch=grid.components["batcher"].kwargs["micro_batch_size"],
             group_size=grid.components["batcher"].kwargs["group_size"],
         )
         loco_batch = MicroBatcher(
-            micro_batch=loco.components["batcher"].kwargs["micro_batch"],
+            micro_batch=loco.components["batcher"].kwargs["micro_batch_size"],
             group_size=loco.components["batcher"].kwargs["group_size"],
         )
         with self.assertRaises(DataError):

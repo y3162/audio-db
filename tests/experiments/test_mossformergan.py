@@ -144,6 +144,8 @@ def _clone_grads(module: torch.nn.Module) -> list[torch.Tensor | None]:
 def _yaml(directory: Path, **kwargs: object) -> Path:
     updates = int(kwargs.get("updates", 4))
     accumulation = int(kwargs.get("accumulation", 2))
+    world = int(kwargs.get("world", 1))
+    global_batch = world * accumulation
     steps = int(kwargs.get("steps", 1))
     length = int(kwargs.get("length", LENGTH))
     partial = "true" if kwargs.get("partial", False) else "false"
@@ -168,6 +170,7 @@ runtime:
   kwargs:
     device: {device}
     precision: fp32
+    world_size: {world}
     timeout_seconds: {timeout}
 output:
   directory: {directory}
@@ -237,7 +240,8 @@ components:
     class: src.experiments.official.mossformergan.trainer.MossFormerGANTrainer
     kwargs:
       max_logical_steps: {steps}
-      accumulation: {accumulation}
+      global_batch_size: {global_batch}
+      micro_batch_size: 1
       grad_clip: 10.0
       experiment_claim: research
       validate_on_epoch_end: {validate}
@@ -904,7 +908,8 @@ class MossFormerGANAlgorithmTests(unittest.TestCase):
         self.assertEqual(components["optim_g"].kwargs["lr"], 0.0005)
         self.assertEqual(components["optim_d"].kwargs["lr"], 0.001)
         self.assertEqual(components["optim_g"].kwargs["weight_decay"], 0.01)
-        self.assertEqual(components["trainer"].kwargs["accumulation"], 2)
+        self.assertEqual(components["trainer"].kwargs["global_batch_size"], 2)
+        self.assertEqual(components["trainer"].kwargs["micro_batch_size"], 1)
         self.assertEqual(components["trainer"].kwargs["max_logical_steps"], 1)
         self.assertEqual(components["trainer"].kwargs["grad_clip"], 10.0)
         self.assertTrue(components["generator"].prepare.sync_batchnorm)
@@ -938,6 +943,7 @@ class MossFormerGANAlgorithmTests(unittest.TestCase):
                 steps=1,
                 updates=1,
                 accumulation=1,
+                world=2,
                 validate=True,
                 distribute="ddp",
                 timeout=300,
@@ -964,6 +970,7 @@ class MossFormerGANAlgorithmTests(unittest.TestCase):
                 steps=4,
                 updates=2,
                 accumulation=2,
+                world=2,
                 validate=False,
                 distribute="ddp",
                 timeout=300,
