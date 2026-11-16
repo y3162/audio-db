@@ -13,7 +13,8 @@
 | `latest.pt` | Latest。常に 1 つ | 共通基盤 |
 | `latest.data_provenance.json` | Latest の来歴の sidecar | 共通基盤 |
 | `archive/<name>.pt` と sidecar | Archive。名前と保持数は Selector が決める | 共通基盤 |
-| `metrics.jsonl` | logical step ごとの記録 | Trainer |
+| `metrics.jsonl` | logical step ごとの記録。学習ログの正本 | Trainer |
+| `tensorboard/` | `metrics.jsonl` の有限スカラーから作ったイベント。再開の入力にはしない | rank 0 |
 | `status.json`、`complete.json` | 実行状態と完了の印 | 学習プロセス、または Launcher |
 | `launch.json`、`failure.rank<N>.json` | Launcher の記録 | Launcher、各 rank |
 | `gpu_memory.jsonl`、`gpu_memory.json` | デバイス全体の GPU メモリの時系列と最大値。意味は [Launcher](LAUNCHER.md) | Launcher |
@@ -124,7 +125,7 @@ checkpoint:
 - `complete.json` がある。完了した実験は再開しない。
 - `latest.pt` より前の step の Archive から続けようとした。続けると、その先の記録と Latest を黙って捨てることになるためである。古い状態から始めるときは、次節の新しい実験にする。
 
-Trainer の検証履歴と Selector・停止ポリシーの状態は checkpoint から復元する。記録された評価状態に整合させるため、停止した logical step より後の `metrics.jsonl` の行は再開時に巻き戻す。
+Trainer の検証履歴と Selector・停止ポリシーの状態は checkpoint から復元する。記録された評価状態に整合させるため、停止した logical step より後の `metrics.jsonl` の行は再開時に巻き戻す。巻き戻したあと、`tensorboard/` はその JSONL から作り直す。イベントファイルは読まない。
 
 ## 新しい実験の初期化
 

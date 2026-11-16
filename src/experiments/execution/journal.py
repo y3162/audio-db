@@ -13,6 +13,7 @@ from pathlib import Path
 from typing import Any
 
 from src.experiments.errors import CheckpointError, RuntimeFailure
+from src.experiments.execution.tensorboard import append_tensorboard, rebuild_tensorboard
 
 
 def rank_of(runtime: Any) -> int:
@@ -85,6 +86,7 @@ class StepJournal:
         self.runtime = runtime
         self.rank = rank_of(runtime)
         self.world_size = int(getattr(runtime, "world_size", 1))
+        self._tb_writer: Any = None
 
     @property
     def metrics_path(self) -> Path:
@@ -127,11 +129,13 @@ class StepJournal:
                     raise RuntimeFailure("sample log does not match the trainer log")
                 if self.rank != 0:
                     losses = sample_losses
+            self._sync_tensorboard()
             return losses
         if self.rank == 0:
             self.metrics_path.write_text("", encoding="utf-8")
         if samples and self.sample_path is not None:
             self.sample_path.write_text("", encoding="utf-8")
+        self._sync_tensorboard()
         return []
 
     def begin_sidecar(self, name: str, *, restored: bool, keep_lines: int | None = None) -> Path:
@@ -150,6 +154,27 @@ class StepJournal:
     def write_metrics(self, record: dict[str, Any]) -> None:
         if self.rank == 0:
             append_jsonl(self.metrics_path, record)
+            self._tb_writer = append_tensorboard(self.directory, record, self._tb_writer)
+
+    def close(self) -> None:
+        writer = self._tb_writer
+        self._tb_writer = None
+        if writer is not None:
+            writer.close()
+
+    def _sync_tensorboard(self) -> None:
+        """Rebuild rank 0's events from the JSONL this call just rewound."""
+
+        if self.rank != 0:
+            return
+        self.close()
+        rebuild_tensorboard(self.directory)
+
+    def __del__(self) -> None:
+        try:
+            self.close()
+        except Exception:
+            return
 
     def write_sample(self, record: dict[str, Any]) -> None:
         if self.sample_path is not None:

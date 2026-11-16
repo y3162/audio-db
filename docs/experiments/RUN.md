@@ -179,7 +179,8 @@ DB の準備は学習 CLI とは別である。
 
 ## 出力の見方
 
-- `metrics.jsonl`: logical step ごとの損失
+- `metrics.jsonl`: logical step ごとの損失。学習ログの正本
+- `tensorboard/`: `metrics.jsonl` から作った TensorBoard のイベント。再開は JSONL を巻き戻したあと、このディレクトリを作り直す
 - `status.json`、`launch.json`、`failure.rank<N>.json`: 実行状態と失敗の記録
 - `latest.pt`、`archive/*.pt`: `audio-db-experiment-v1` の checkpoint
 - `gpu_memory.jsonl`、`gpu_memory.json`: Launcher が書いた、デバイス全体の GPU メモリの時系列と最大値。`CUDA_VISIBLE_DEVICES` が空、または間隔が 0 のときは無い。見方は [Launcher](LAUNCHER.md)

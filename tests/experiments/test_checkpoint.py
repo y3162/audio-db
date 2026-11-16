@@ -148,6 +148,7 @@ class ResumeTests(_Base):
             "metadata.json",
             "metrics.jsonl",
             "status.json",
+            "tensorboard",
         ]
         for out in (continuous_out, interrupted_out):
             self.assertEqual(_status(out), "COMPLETED")
