@@ -5,11 +5,9 @@ is one of the 12,396 utterances. ``snr_shift_db`` is not in that file. It is
 the protocol value of the dataset being registered, so every SNR shares the
 same cases.
 
-The build id still records ``source_recipes_sha256`` of the measurement input
-that produced these gains (``9502da7b…``). That digest is not the hash of the
-JSONL. Replacing it would mint a new build id and new case ids for the same
-spans and gains. Registration reads VCTK, DEMAND48, Babble, and SSN. It does
-not read published VoiceBank+DEMAND pairs.
+The build id records ``recipe_sha256``, the SHA-256 of the JSONL bytes that
+were actually read. The path is not an input. Registration reads VCTK,
+DEMAND48, Babble, and SSN. It does not read published VoiceBank+DEMAND pairs.
 """
 
 from __future__ import annotations
@@ -33,6 +31,7 @@ from src.experiments.data.ids import (
     case_content_hash,
     case_set_id_for,
     catalog_id_for,
+    check_sha256,
     dataset_id_for,
     digest,
     material_members_key,
@@ -54,9 +53,6 @@ GENERATOR = "voicebank_snr_shift"
 GENERATOR_VERSION = 1
 RECIPE_VERSION = 1
 RECIPE_PATH = ROOT / "configs" / "data" / "voicebank_snr" / "v1.jsonl"
-# SHA-256 of the measurement input whose parameters were exported into the
-# JSONL. It is an input of the published build id, not a hash of the JSONL.
-MEASURED_SOURCE_SHA256 = "9502da7b24b81bed04781c1e66726945dfcb3024045111df8bbb5839e0d01c14"
 DB_PATH = DATA / "db" / "reproduction-voicebank-snr-v1.duckdb"
 STAGING = DATA / "staging" / "reproduction-voicebank-snr-v1"
 EXPECTED_COUNTS = {"train": 10700, "valid": 872, "test": 824}
@@ -392,8 +388,15 @@ def hash_headers(
 def build_voicebank_snr_graph(
     records: Sequence[dict[str, Any]],
     shifts: Sequence[int | float] = CANONICAL_SHIFTS,
+    *,
+    recipe_sha256: str,
 ) -> Any:
-    """Shared cases, one protocol and dataset per shift, plus the blocked parent."""
+    """Shared cases, one protocol and dataset per shift, plus the blocked parent.
+
+    ``recipe_sha256`` is the SHA-256 of the JSONL that supplied ``records``.
+    Callers pass the digest of the file they read. This function does not open
+    a recipe path.
+    """
 
     from src.experiments.data.db.graph import Graph
 
@@ -403,7 +406,7 @@ def build_voicebank_snr_graph(
     ordered = _assign_indexes(list(records))
     catalog, catalog_rows, assets = _assets_from_records(ordered)
     materials = _materials(ordered)
-    build = _build(materials)
+    build = _build(materials, recipe_sha256)
     protocols = _protocols(requested)
     anchor = next(protocol["protocol_id"] for protocol in protocols if protocol["name"] == "voicebank.snr_shift.no")
     requested_names = {dataset_name(shift) for shift in requested}
@@ -522,10 +525,12 @@ def register_voicebank_snr(
         selected = parse_shifts(shifts)
     else:
         selected = parse_shifts(",".join(str(item) for item in shifts))
-    rows = load_recipes(recipes or RECIPE_PATH)
+    recipe_path = Path(recipes) if recipes is not None else RECIPE_PATH
+    recipe_sha256 = sha256_file(recipe_path)
+    rows = load_recipes(recipe_path)
     header_for = hash_headers(rows, corpora or DEFAULT_CORPORA, workers=workers)
     records = records_from_recipes(rows, header_for)
-    graph = build_voicebank_snr_graph(records, selected)
+    graph = build_voicebank_snr_graph(records, selected, recipe_sha256=recipe_sha256)
     validate_graph(graph)
     staging_path = Path(staging) if staging is not None else STAGING
     database_path = Path(database) if database is not None else DB_PATH
@@ -894,7 +899,8 @@ def _materials(records: Sequence[dict[str, Any]]) -> dict[str, dict[str, Any]]:
     return materials
 
 
-def _build(materials: dict[str, dict[str, Any]]) -> dict[str, Any]:
+def _build(materials: dict[str, dict[str, Any]], recipe_sha256: str) -> dict[str, Any]:
+    digest_value = check_sha256(recipe_sha256, "recipe_sha256")
     inputs = {}
     for material in materials.values():
         inputs[f"{material['split_role']}.{material['role']}"] = material["material_set_id"]
@@ -903,7 +909,7 @@ def _build(materials: dict[str, dict[str, Any]]) -> dict[str, Any]:
         "sample_rate": SAMPLE_RATE,
         "peak_factors": list(VOICEBANK_SNR_MIX_V1["peak_factors"]),
         "quantization": VOICEBANK_SNR_MIX_V1["official_quantization"],
-        "source_recipes_sha256": MEASURED_SOURCE_SHA256,
+        "recipe_sha256": digest_value,
     }
     return {
         "build_id": build_id_for(

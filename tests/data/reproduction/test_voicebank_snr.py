@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import hashlib
+import json
 import shutil
 import tempfile
 import unittest
@@ -30,12 +31,13 @@ from src.experiments.data.mix.voicebank_snr import (
     render_case,
     render_components,
 )
+from src.data.recipe import sha256_file
+from src.experiments.data.build import voicebank_snr as voicebank_builder
 from src.experiments.data.build.voicebank_snr import (
     EXPECTED_COUNTS,
     RECIPE_PATH,
     assert_population,
     build_voicebank_snr_graph,
-    concatenated_realization_sha256,
     dataset_name,
     dump_recipe_line,
     load_recipes,
@@ -169,25 +171,53 @@ class VoicebankSnrTests(unittest.TestCase):
         finally:
             shutil.rmtree(root)
 
-    def test_published_recipe_keeps_ids(self) -> None:
+    def test_build_id_follows_jsonl_bytes(self) -> None:
+        self.assertFalse(hasattr(voicebank_builder, "MEASURED_SOURCE_SHA256"))
         rows = load_recipes(RECIPE_PATH)
-        graph = build_voicebank_snr_graph(records_from_recipes(rows, stub_headers(rows)))
-        documents = [case["doc_json"] for case in graph.cases]
-        self.assertEqual(
-            concatenated_realization_sha256(documents),
-            "9f39b32546f2ec9c99f468f21143a759ad72daec29a528de82db987530191e6c",
-        )
-        self.assertEqual(graph.builds[0]["build_id"], "a152ccdf3dd23f8063be6331c9f74a8c5e8e3596922a43dac58b188c4dfcf208")
-        ids = {row["name"]: row["dataset_id"] for row in graph.datasets}
-        self.assertEqual(ids["voicebank.snr_shift.no"], "9afa1659db79a0377597989e89087f74dfe5a3b575b406c184541baff89cb6ec")
-        self.assertEqual(ids["voicebank.snr_shift.minus_15db"], "81cb8da3b3bcd8b972ca424efc942a94f1145696801fe0c74db92e58da089fbf")
-        self.assertEqual(ids["voicebank.snr_shift.published"], "7c603344d3e7dd54600074109d503bf4a03be5d362978f96199b90d86235c239")
-        self.assertEqual(len(set(ids.values())), len(ids))
+        recipe_sha = sha256_file(RECIPE_PATH)
+        records = records_from_recipes(rows, stub_headers(rows))
+        graph = build_voicebank_snr_graph(records, recipe_sha256=recipe_sha)
+        again = build_voicebank_snr_graph(records, recipe_sha256=recipe_sha)
+        params = graph.builds[0]["params_json"]
+        self.assertEqual(params["recipe_sha256"], recipe_sha)
+        self.assertNotIn("source_recipes_sha256", params)
+        self.assertEqual(graph.builds[0]["build_id"], again.builds[0]["build_id"])
+        self.assertEqual(len(graph.builds[0]["build_id"]), 64)
         protocols = {case["protocol_id"] for case in graph.cases}
         self.assertEqual(protocols, {"08fe93a6f16ad272a5309b4dd663422c185df1cf3f7b3732b8cf18a40ff629f0"})
+        case_ids = [case["case_id"] for case in graph.cases]
+        self.assertEqual(len(set(case_ids)), 12396)
         for dataset in graph.datasets:
             self.assertFalse(dataset["selection_uses_test"])
-        self.assertEqual(len({case["case_id"] for case in graph.cases}), 12396)
+            if dataset["declared_status"] != "ready":
+                continue
+            bound = [item["case_set_id"] for item in dataset["bindings"] if item["case_set_id"]]
+            self.assertEqual(bound, [row["case_set_id"] for row in graph.case_sets])
+        root = Path(tempfile.mkdtemp(prefix="voicebank-recipe-hash-"))
+        try:
+            copied = root / "nested" / "other-name.jsonl"
+            copied.parent.mkdir(parents=True)
+            copied.write_bytes(RECIPE_PATH.read_bytes())
+            copied_rows = load_recipes(copied)
+            copied_graph = build_voicebank_snr_graph(
+                records_from_recipes(copied_rows, stub_headers(copied_rows)),
+                recipe_sha256=sha256_file(copied),
+            )
+            self.assertEqual(copied_graph.builds[0]["build_id"], graph.builds[0]["build_id"])
+            public = [json.loads(line) for line in copied.read_text(encoding="utf-8").splitlines()]
+            public[0]["official_snr_db"] = 17 if public[0]["official_snr_db"] != 17 else 16
+            changed = root / "changed.jsonl"
+            changed.write_text("".join(dump_recipe_line(row) + "\n" for row in public), encoding="utf-8")
+            self.assertNotEqual(sha256_file(changed), recipe_sha)
+            changed_loaded = load_recipes(changed)
+            changed_graph = build_voicebank_snr_graph(
+                records_from_recipes(changed_loaded, stub_headers(changed_loaded)),
+                recipe_sha256=sha256_file(changed),
+            )
+            self.assertNotEqual(changed_graph.builds[0]["build_id"], graph.builds[0]["build_id"])
+            self.assertNotIn("source_recipes_sha256", changed_graph.builds[0]["params_json"])
+        finally:
+            shutil.rmtree(root)
 
     def test_population_counts(self) -> None:
         rows = []
@@ -390,7 +420,8 @@ def _graph_from_wavs(corpora: Path, *, shared: bool | str, shifts: tuple = (0, -
                 "noise": _asset(noise_rel, noise, channel=0, start=start, end=start + speech["frames"], speaker=None, key=Path(noise_rel).stem, kind=kind, name=kind),
             }
         )
-    return build_voicebank_snr_graph(records, shifts)
+    recipe_sha = hashlib.sha256(b"synthetic-voicebank-snr-test").hexdigest()
+    return build_voicebank_snr_graph(records, shifts, recipe_sha256=recipe_sha)
 
 
 def _recipe(utterance: str = "p286_001", speaker: str = "p286", split: str = "valid") -> dict:

@@ -36,6 +36,15 @@
 - TSUBAME で 30 分程度以上のジョブは、投入前に明示的な指示が必要。`h_rt` を 30 分未満にして回避しない。優先度は指示がなければ最低（`qsub` / `qrsh` は `-p -5`）。
 - Mock、実モデルのスモーク、公式出力との一致を混ぜて「検証済み」と書かない。
 
+## コードベースの調査（Codegraph）
+
+- 構造の把握、シンボル探索、呼び出し経路の追跡、編集前の影響範囲では、Grep / Glob / Read の逐次探索より先に Codegraph を使う。
+- 第一候補は、利用できる MCP の `codegraph_explore` である。MCP の名前空間はエージェントごとに違うので、特定の名前に依存しない。MCP が使えないときは CLI の `codegraph explore` を使う。
+- 返ったシンボル由来のソースは Read 済みとして扱い、同じ箇所をすぐ開き直さない。正確性の検証、編集に必要な文脈、最新状態の確認は制限しない。
+- MCP も CLI も使えない、インデックスが無い、結果が空・不完全・不正確、静的解析で追えない、編集や検証に追加のソースが要る、ときは Read / Grep / Glob に移る。Codegraph の結果だけで、呼び出し関係や影響範囲が完全だと断定しない。
+- `codegraph init` とフル再構築（`codegraph index`）は、ユーザーが明示したときだけ行う。インデックスが無ければ作らず、通常の検索に移る。
+- 呼び方、フォールバック、インデックスの扱いは `.agents/OPERATIONS.md` の「Codegraph」。
+
 ## 作業別に読むファイル
 
 | 作業 | 読む |
@@ -44,9 +53,10 @@
 | 依存方向、損失の順序、checkpoint | `.agents/ARCHITECTURE.md` |
 | DB、コーパス、評価セット、欠損の扱い | `.agents/DATA.md` |
 | 環境、GPU、学習の起動、テスト、公式コード | `.agents/OPERATIONS.md` |
+| コードの構造・呼び出し・編集前の影響範囲 | `.agents/OPERATIONS.md`（Codegraph）、上記 `.agents/` と `docs/` |
 | 学習中の研究評価とモデル選択 | `.agents/ARCHITECTURE.md`、`docs/experiments/EVALUATION.md` |
 
-DB・評価・音声生成・データ形式に触れる前は `.agents/DATA.md` を読む。学習の式、checkpoint、Trainer を変える前は `.agents/ARCHITECTURE.md` を読む。仕様の本文は、各ファイルが指す `docs/` を読む。
+DB・評価・音声生成・データ形式に触れる前は `.agents/DATA.md` を読む。学習の式、checkpoint、Trainer を変える前は `.agents/ARCHITECTURE.md` を読む。実装を読む・変える前は、上記のとおり Codegraph を先に使う。仕様の本文は、各ファイルが指す `docs/` を読む。
 
 ## ルールの更新
 
