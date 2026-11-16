@@ -51,3 +51,4 @@ class Batch:
     realization_ids: tuple[str, ...] = ()
     teacher_kind: str | None = None
     sample_rate: int | None = None
+    spans: tuple[tuple[int, int, int, int], ...] | None = None

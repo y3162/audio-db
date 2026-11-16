@@ -83,6 +83,8 @@ MP-SENet の CUDA 重なり経路（world size 1、蓄積 1）は、信号、Dis
 
 SEMamba++ の蓄積 1 は Generator グラフを再利用する。蓄積 2 以上は Discriminator のあと Generator を再 forward する。CQT 族を足してから MRD 族を足す。
 
+ASR-guided SEMamba++ v1（`configs/research/asr_guided_se/semambapp/v1/`）は `research` だけを受ける。3 スイッチが off のときは上の Objective をそのまま呼ぶ。誤り重みが on のときだけ、magnitude、phase（`matrix`）、complex、consistency、mel を、パディングを除いた `sum(valid * w * l) / sum(valid * w)` に替える。`w = 1 + alpha * m` で、`alpha = 0` は全ゼロの誤りマスクと同じである。adversarial、matching、Discriminator は替えない。TDT が on のときは項名 `tdt` を係数 1 で足す。係数 1 は乗算しない。既に `tdt` がある Objective は拒否する。
+
 DeepFilterNet3 の分解能ループの中の加算は spectral 項の中に残す。8 個の独立した項には分けない。
 
 ## 数値の確認

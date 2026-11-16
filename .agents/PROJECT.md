@@ -6,7 +6,7 @@
 
 | 場所 | 責務 | 入口 |
 |---|---|---|
-| `src/asr/` | ASR の推論。Parakeet、Whisper、Wav2Vec2、HuBERT、WavLM | `load_recognizer()` → `transcribe()` |
+| `src/asr/` | ASR の推論。Parakeet、Whisper、Wav2Vec2、HuBERT、WavLM。`nvidia/parakeet-tdt-0.6b-v2` だけは TDT v2 の固定デコードを適用し、失敗は上げる。TDT 損失は `src/asr/models/parakeet_tdt.py` にあり、`import src.asr` では読まない | `load_recognizer()` → `transcribe()` |
 | `src/evaluation/` | 名前付き評価セット → 必要なら波形生成 → SE → ASR → 指標 | `python -m src.evaluation.cli` |
 | `src/data/` | コーパス走査、レシピ、ステージング、評価用 DuckDB | `make db-init`、`make db-ingest` |
 | `src/experiments/` | 唯一の学習基盤。YAML から組み立て、`audio-db-experiment-v1` を保存して再開する | `python -m src.experiments.launcher`（起動と監視）、`python -m src.experiments.cli`（学習プロセス、preflight） |
@@ -18,6 +18,7 @@
 | `src/experiments/evaluation/` | 研究用の波形評価。学習カーソル、重み、Optimizer を動かさない | YAML の `evaluator` |
 | `src/experiments/selection/` | 研究用の best 判定。推論重みの書き出しは判定の外 | YAML の `other` と `state.save: true` |
 | `src/experiments/data/` | 再現用 DB、スナップショット、サンプリング、オンデマンド描画。学習ループは持たない | `python -m src.experiments.data.cli` |
+| `src/research/` | 公式の Model と Trainer を変えない研究手法。ASR-guided SE v1 は `src/research/asr_guided_se/semambapp/v1/`。3 スイッチ以外は SEMamba++ と共通 | YAML の `class` |
 | `src/models/` | 6 モデルの公式 Model、Trainer、参照ステップ、モデル固有の検証統計と選択。MP-SENet の GAN 対、CPU/DDP 更新、CUDA 重なり、進捗の `MPTrainingProgress` は `src/models/mp_senet/trainer.py` にある。公式検証の式と rank 0 の手続きは `src/models/mp_senet/evaluator.py` にある。DeepFilterNet3 の cosine、蓄積、epoch 境界は `src/models/deepfilternet3/trainer.py` にあり、損失手順は `loss.py`、等重み検証は `evaluator.py` にある。比較用学習 Task は `tests/numerics/reference/deepfilternet_task.py` にあり、本番は import しない。TF-GridNet の進捗、蓄積更新、遅延 step ログ、epoch 境界は `src/models/tf_gridnet/trainer.py` にあり、検証と n-best は `evaluator.py` にある。比較用学習 Task は `tests/numerics/reference/tf_gridnet_task.py` にあり、本番は import しない。TF-Locoformer の進捗、`step_batch`、`step_validation`、蓄積更新、epoch 境界は `src/models/tf_locoformer/trainer.py` にある。検証と n-best の書き出しは `evaluator.py` にある。比較用学習 Task は `tests/numerics/reference/tf_locoformer_task.py` にあり、本番は import しない。SEMamba++ の進捗、D のあと G の更新、ExponentialLR の境界は `src/models/semambapp/trainer.py` にある。検証の shadow は `evaluator.py` にある。比較用学習 Task は `tests/numerics/reference/semamba_task.py` にあり、本番は import しない。MossFormerGAN の micro-batch、両 AdamW、plateau は `src/models/mossformergan/trainer.py` にある。`consume_micro_batch` は Trainer の入口のままである。検証と plateau 判定は `evaluator.py`、generator 項は `loss.py` にある。比較用学習 Task は `tests/numerics/reference/mossformer_task.py` にあり、本番は import しない。比較用の MP-SENet 学習 Task は `tests/numerics/reference/mp_senet_task.py` にあり、本番は import しない。推論の入口は `load_enhancer()` と `build_model()`。他の実験から個別に import する | `load_enhancer()`、`build_model()`、YAML の `class` |
 | `src/experiments/calc/` | 手法を共有する STFT、スペクトル損失、scheduler、RNG。CLI ではない | テストと Trainer が呼ぶ |
 
@@ -32,7 +33,7 @@ YAML から参照する公式モデル・Trainer の `src/models/<model>/model.p
 - `transcribe()` は `eval()`、全パラメータ `requires_grad=False`、`torch.inference_mode()`。
 - `enhance()` は推論専用。`build_model()` は学習可能な `nn.Module` を返すだけで、損失も更新順も含まない。
 - 学習は `enhance()` と `transcribe()` を呼ばない。
-- `src/asr/` は他の `src/` を import しない。`src/models` の推論モジュールは `src.experiments` を import しない。各モデルの Trainer と学習用 `model.py` は `src.experiments` を使う。
+- `src/asr/` は他の `src/` を import しない。`src/models` の推論モジュールは `src.experiments` を import しない。各モデルの Trainer と学習用 `model.py` は `src.experiments` を使う。`src/research/` は公式 Model と Trainer を継承し、公式の `network.py` と `trainer.py` は変えない。研究の推論登録は `src/models/api.py` から遅延 import する。
 - `src/evaluation/` は `src/models`、`src/asr`、`src/data` を使う。再現用 DB パッケージは import しない。
 - テスト（`tests/`）は `data/` の下に書かない。本番データを作る処理は `src/` と Make ターゲットに置く。
 - `src/experiments/data/` の DB と準備は `src/data/recipe` を使う。`src/models`、`src/asr`、`src/evaluation`、Trainer は import しない。

@@ -55,6 +55,8 @@
 | `.venvs/semambapp` | SEMamba++ の fused CUDA |
 | `.venvs/deepfilternet` | 公式 `libdf`。独立実装の実行時依存ではない |
 
+ASR-guided SE の TDT 損失と SEMamba++ を同じプロセスで動かす環境は、この checkout には作っていない。`.venvs/asr` の numba は 0.61.0、`.venvs/se` の numba は 0.68.1 で、lock を足し合わせない。公式 venv は変更しない。実 Parakeet は `.venvs/asr`、SE の学習確認は `.venvs/se` で分ける。このホストの `/usr/local/cuda` は 11.0 で、Numba 0.61 はそのままでは TDT カーネルをコンパイルしない。`.venvs/asr` に入っている `nvidia/cuda_nvcc` と `nvidia/cuda_runtime` を `CUDA_HOME` と `LD_LIBRARY_PATH` で見せると、A100（8.0）向けにコンパイルできる。venv 自体は変えない。
+
 `src/se/official/` は Git 管理外。独立実装はここを import しない。テストの公式比較だけが読む。
 
 ## GPU

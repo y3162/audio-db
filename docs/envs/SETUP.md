@@ -29,6 +29,8 @@ make setup PLATFORM=shinoda_lab
 
 依存の正本は `requirements/<role>.in` と、そこから作った `requirements/<role>.lock.txt` である。通常の `make setup` は lock を更新しない。lock を作り直すときだけ `scripts/setup/compile_locks.sh` を実行する。
 
+ASR-guided SEMamba++ v1 の TDT 損失は NeMo と Numba、Generator は `mamba-ssm` と nnAudio を同じプロセスで使う。その統合環境は作っていない。`.venvs/asr` の numba 0.61.0 と `.venvs/se` の numba 0.68.1 は同時に満たせないので、lock を足した requirements は置かない。公式の 5 環境は変更しない。Parakeet の確認は `.venvs/asr`、SE の更新確認は `.venvs/se` で行う。Numba がシステムの CUDA 11.0 を掴むホストでは、TDT カーネルの確認のときだけ `CUDA_HOME` を `.venvs/asr` の `nvidia/cuda_nvcc` にし、その `nvvm/lib64` と `lib64`、および `nvidia/cuda_runtime/lib` を `LD_LIBRARY_PATH` の先頭に置く。
+
 SE 学習ログを TensorBoard で確認できるよう、`.venvs/se` に `tensorboard==2.20.0` を含める。TSUBAME と SHINODA-LAB のどちらも `make setup PLATFORM=...` で構築される同じ lock を使う。
 
 ## 部分実行

@@ -70,6 +70,17 @@ class SemambaExample:
     bandwidth_length_padded: bool
 
 
+@dataclass(frozen=True)
+class SemambaUtterance:
+    """Cropped example plus the peak-normalized utterance it was cut from."""
+
+    example: SemambaExample
+    full_clean: np.ndarray
+    full_degraded: np.ndarray
+    content_length: int
+    full_length: int
+
+
 def sample_seed(
     protocol_id: str,
     snapshot_hash: str,
@@ -340,10 +351,30 @@ def peak_and_crop(
     segment: int = SEGMENT_SIZE,
 ) -> tuple[np.ndarray, np.ndarray, int, bool, float, float]:
     """Normalize each full waveform, then take the same crop or tail pad."""
+    clean_f, degraded_f, clean_peak, degraded_peak = _peak_pair(clean, degraded)
+    cropped_clean, cropped_degraded, start, padded = _crop_peak_normalized(
+        clean_f, degraded_f, rng, segment
+    )
+    return cropped_clean, cropped_degraded, start, padded, clean_peak, degraded_peak
+
+
+def _peak_pair(
+    clean: np.ndarray,
+    degraded: np.ndarray,
+) -> tuple[np.ndarray, np.ndarray, float, float]:
     if clean.shape != degraded.shape:
         raise ReproductionError("clean and degraded lengths differ before the peak norm")
     clean_f, clean_peak = independent_peak(np.reshape(clean, -1))
     degraded_f, degraded_peak = independent_peak(np.reshape(degraded, -1))
+    return clean_f, degraded_f, clean_peak, degraded_peak
+
+
+def _crop_peak_normalized(
+    clean_f: np.ndarray,
+    degraded_f: np.ndarray,
+    rng: np.random.Generator,
+    segment: int,
+) -> tuple[np.ndarray, np.ndarray, int, bool]:
     length = int(clean_f.shape[-1])
     if length >= segment:
         start = int(rng.integers(0, length - segment + 1))
@@ -352,18 +383,9 @@ def peak_and_crop(
             degraded_f[start : start + segment],
             start,
             False,
-            clean_peak,
-            degraded_peak,
         )
     pad = segment - length
-    return (
-        np.pad(clean_f, (0, pad)),
-        np.pad(degraded_f, (0, pad)),
-        0,
-        True,
-        clean_peak,
-        degraded_peak,
-    )
+    return np.pad(clean_f, (0, pad)), np.pad(degraded_f, (0, pad)), 0, True
 
 
 def render_example(
@@ -376,6 +398,26 @@ def render_example(
     rng: np.random.Generator,
 ) -> SemambaExample:
     """One 16 kHz, 48,000-sample pair. ``speech[speech_index]`` is the teacher source."""
+    return render_utterance(
+        speech,
+        noise,
+        rir,
+        speech_index=speech_index,
+        split=split,
+        rng=rng,
+    ).example
+
+
+def render_utterance(
+    speech,
+    noise,
+    rir,
+    *,
+    speech_index: int,
+    split: str,
+    rng: np.random.Generator,
+) -> SemambaUtterance:
+    """Same draw as ``render_example``, keeping the peak-normalized full waveforms."""
     if split not in ("train", "valid", "test"):
         raise ReproductionError(f"unknown split {split}")
     if not speech or not noise or not rir:
@@ -392,12 +434,13 @@ def render_example(
         used,
         rng,
     )
-    cropped_clean, cropped_degraded, start, padded, clean_peak, degraded_peak = peak_and_crop(
-        clean, degraded, rng, SEGMENT_SIZE
+    full_clean, full_degraded, clean_peak, degraded_peak = _peak_pair(clean, degraded)
+    cropped_clean, cropped_degraded, start, padded = _crop_peak_normalized(
+        full_clean, full_degraded, rng, SEGMENT_SIZE
     )
     if cropped_clean.shape != (SEGMENT_SIZE,) or cropped_degraded.shape != cropped_clean.shape:
         raise ReproductionError("SEMamba++ crop did not return 48000 aligned samples")
-    return SemambaExample(
+    example = SemambaExample(
         clean=np.ascontiguousarray(cropped_clean, dtype=np.float32),
         degraded=np.ascontiguousarray(cropped_degraded, dtype=np.float32),
         sample_rate=SAMPLE_RATE,
@@ -412,6 +455,15 @@ def render_example(
         full_clean_peak=clean_peak,
         full_degraded_peak=degraded_peak,
         bandwidth_length_padded=bandwidth_padded,
+    )
+    full_length = int(full_clean.shape[-1])
+    content_length = full_length if padded else int(SEGMENT_SIZE)
+    return SemambaUtterance(
+        example=example,
+        full_clean=np.ascontiguousarray(full_clean, dtype=np.float32),
+        full_degraded=np.ascontiguousarray(full_degraded, dtype=np.float32),
+        content_length=content_length,
+        full_length=full_length,
     )
 
 

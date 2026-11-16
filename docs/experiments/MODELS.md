@@ -205,6 +205,8 @@ Generator と Discriminator を別コンポーネントに持つモデルは、�
 
 `official_faithful` のまま幅や層数だけを変えると、MP-SENet と MossFormerGAN はその差異を記録して構築する。チャネルがヘッド数で割れない指定は、これまでどおり拒否する。DeepFilterNet3 の `dfn3.online.official@1` と SEMamba++ の `semambapp.gsr.official@1` は、構造とは別に閉じたままである。
 
+ASR-guided SEMamba++ v1 の宣言は `configs/research/asr_guided_se/semambapp/v1/` にある。`all_off.yaml` が共通条件で、他の 7 ファイルは 3 スイッチ、出力ディレクトリ、凍結 ASR の注入だけを変える。投影幅 128、合わせる hop、TDT の係数は YAML のキーではない。ASR 特徴が off の Generator は公式 SEMamba++ と同じ state_dict である。on のときだけ `asr_proj` と `asr_fuse` が増える。推論名は `asr_guided_semambapp_v1` で、公式名 `semambapp` は変えない。fusion の無い checkpoint は Parakeet を読まない。
+
 ## 公式 checkpoint
 
 公式値を明示した構築は、キーを省略して公開既定値で構築した state_dict と一致する。初期化の乱数順は変えない。GAN のコンストラクタが捨てる一時モジュールも残す。

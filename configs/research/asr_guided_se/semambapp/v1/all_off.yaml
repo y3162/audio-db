@@ -1,0 +1,318 @@
+# ASR-guided SEMamba++ v1, all three research switches off.
+# This is the shared training condition. The other seven files extend it and
+# change only the switches, the output directory, and the frozen ASR inject.
+# It is experiment_claim research. It does not reproduce a published SEMamba++
+# score and it does not use the reference repository's LibriSpeech+DEMAND data.
+# max_logical_steps is 1. Raise it in a copy when a real run is requested.
+# device is cpu and scan_backend is reference so launching this file does not
+# take a shared GPU. A CUDA run is the same document with device cuda.
+schema: audio-db-experiment/v1
+seed: 1234
+deterministic: true
+entry: trainer
+runtime:
+  class: src.experiments.runtime.ProcessRuntime
+  kwargs:
+    device: cpu
+    precision: fp32
+output:
+  directory: runs/asr-guided-se/semambapp-v1/all-off
+checkpoint:
+  selector:
+    class: src.experiments.selectors.StandardSelector
+    kwargs:
+      latest_every: 1
+components:
+  guidance:
+    role: other
+    class: src.research.asr_guided_se.semambapp.v1.config.GuidanceV1
+    kwargs:
+      asr_features_enabled: false
+      encoder_layer: 15
+      error_weight_enabled: false
+      error_weight_alpha: 0.0
+      tdt_loss_enabled: false
+  generator:
+    role: module
+    class: src.research.asr_guided_se.semambapp.v1.model.GuidedSEMambaPPGenerator
+    kwargs:
+      seed: 1234
+      hid_feature: 48
+      num_tfmamba: 4
+      d_state: 16
+      d_conv: 4
+      expand: 2
+      norm_epsilon: 1.0e-5
+      input_channel: 2
+      output_channel: 1
+      n_fft: 400
+      scan_backend: reference
+      hop: 100
+      win: 400
+      sampling_rate: 16000
+      mrd_channels: 32
+      mrd_resolutions:
+        - [1024, 120, 600]
+        - [2048, 240, 1200]
+        - [512, 50, 240]
+      cqt_channels: 128
+      cqt_hops: [512, 256, 256]
+      cqt_octaves: [8, 8, 8]
+      cqt_bins_per_octave: [12, 24, 36]
+    prepare:
+      trainable: true
+      distribute: ddp
+    inject:
+      guidance: {ref: guidance}
+  mrd:
+    role: module
+    class: src.models.semambapp.models.SEMambaPPMRD
+    kwargs:
+      seed: 1234
+      hid_feature: 48
+      num_tfmamba: 4
+      d_state: 16
+      d_conv: 4
+      expand: 2
+      norm_epsilon: 1.0e-5
+      input_channel: 2
+      output_channel: 1
+      n_fft: 400
+      scan_backend: reference
+      hop: 100
+      win: 400
+      sampling_rate: 16000
+      mrd_channels: 32
+      mrd_resolutions:
+        - [1024, 120, 600]
+        - [2048, 240, 1200]
+        - [512, 50, 240]
+      cqt_channels: 128
+      cqt_hops: [512, 256, 256]
+      cqt_octaves: [8, 8, 8]
+      cqt_bins_per_octave: [12, 24, 36]
+    prepare:
+      trainable: true
+      distribute: ddp
+  cqt:
+    role: module
+    class: src.models.semambapp.models.SEMambaPPCQTDiscriminator
+    kwargs:
+      seed: 1234
+      hid_feature: 48
+      num_tfmamba: 4
+      d_state: 16
+      d_conv: 4
+      expand: 2
+      norm_epsilon: 1.0e-5
+      input_channel: 2
+      output_channel: 1
+      n_fft: 400
+      scan_backend: reference
+      hop: 100
+      win: 400
+      sampling_rate: 16000
+      mrd_channels: 32
+      mrd_resolutions:
+        - [1024, 120, 600]
+        - [2048, 240, 1200]
+        - [512, 50, 240]
+      cqt_channels: 128
+      cqt_hops: [512, 256, 256]
+      cqt_octaves: [8, 8, 8]
+      cqt_bins_per_octave: [12, 24, 36]
+    prepare:
+      trainable: true
+      distribute: ddp
+  source:
+    role: other
+    class: src.experiments.data.SnapshotSource
+    kwargs:
+      snapshot: semambapp.gsr.smoke@1
+      snapshot_root: data/db/snapshots
+      split: train
+  protocol:
+    role: other
+    class: src.experiments.data.SemambaProtocol
+    kwargs:
+      sample_rate: 16000
+      window: 48000
+    inject:
+      source: {ref: source}
+  sampler:
+    role: other
+    class: src.experiments.data.OrderSampler
+    kwargs:
+      seed: 1234
+      order: per_rank_independent_v1
+      validation_scope: rank0
+      validation_batch: 1
+    inject:
+      source: {ref: source}
+      protocol: {ref: protocol}
+  batcher:
+    role: other
+    class: src.experiments.data.MicroBatcher
+    kwargs:
+      micro_batch_size: 1
+      group_size: 1
+  data:
+    role: data
+    class: src.experiments.data.SnapshotDataModule
+    kwargs:
+      prefetch: false
+    inject:
+      source: {ref: source}
+      sampler: {ref: sampler}
+      protocol: {ref: protocol}
+      batcher: {ref: batcher}
+  optim_g:
+    role: optimizer
+    class: torch.optim.AdamW
+    parameters_of: generator
+    kwargs:
+      lr: 0.0002
+      betas: [0.8, 0.99]
+      weight_decay: 0.01
+  optim_d:
+    role: optimizer
+    class: torch.optim.AdamW
+    parameters_of:
+      - mrd
+      - cqt
+    kwargs:
+      lr: 0.0002
+      betas: [0.8, 0.99]
+      weight_decay: 0.01
+  scheduler_g:
+    role: scheduler
+    class: torch.optim.lr_scheduler.ExponentialLR
+    kwargs:
+      gamma: 0.99
+    inject:
+      optimizer: {ref: optim_g}
+  scheduler_d:
+    role: scheduler
+    class: torch.optim.lr_scheduler.ExponentialLR
+    kwargs:
+      gamma: 0.99
+    inject:
+      optimizer: {ref: optim_d}
+  adversarial_loss:
+    role: loss
+    class: src.experiments.losses.SummedLeastSquaresGenerator
+    kwargs:
+      name: adversarial
+      first: fake_cqt
+      second: fake_mrd
+  matching_loss:
+    role: loss
+    class: src.experiments.losses.PairedFeatureMatching
+    kwargs:
+      name: matching
+      scale: 2.0
+      reduction: sum
+      first_real: real_cqt_features
+      first_fake: fake_cqt_features
+      second_real: real_mrd_features
+      second_fake: fake_mrd_features
+  mel_loss:
+    role: loss
+    class: src.experiments.losses.SlaneyLogMelLoss
+    kwargs:
+      name: mel
+      n_mels: [40, 80, 160, 320]
+      windows: [256, 512, 1024, 2048]
+      clamp: 1.0e-5
+  magnitude_loss:
+    role: loss
+    class: src.experiments.losses.MagnitudeMSE
+    kwargs:
+      name: magnitude
+      estimate: generated_mag
+      target: clean_mag
+  phase_loss:
+    role: loss
+    class: src.experiments.losses.PhaseLoss
+    kwargs:
+      name: phase
+      mode: matrix
+  complex_loss:
+    role: loss
+    class: src.experiments.losses.ScaledComplexMSE
+    kwargs:
+      name: complex
+      scale: 2.0
+      estimate: generated_complex
+      target: clean_complex
+  consistency_loss:
+    role: loss
+    class: src.experiments.losses.ScaledComplexMSE
+    kwargs:
+      name: consistency
+      scale: 2.0
+      estimate: recomputed_complex
+      target: generated_complex
+  generator_objective:
+    role: loss
+    class: src.experiments.losses.WeightedObjective
+    kwargs:
+      weights:
+        adversarial: 1.0
+        matching: 1.0
+        mel: 0.1
+        magnitude: 0.9
+        phase: 0.3
+        complex: 0.1
+        consistency: 0.1
+    inject:
+      terms:
+        - {ref: adversarial_loss}
+        - {ref: matching_loss}
+        - {ref: mel_loss}
+        - {ref: magnitude_loss}
+        - {ref: phase_loss}
+        - {ref: complex_loss}
+        - {ref: consistency_loss}
+  discriminator_term:
+    role: loss
+    class: src.experiments.losses.SummedLeastSquaresDiscriminator
+    kwargs:
+      name: discriminator
+      first_real: real_cqt
+      first_fake: fake_cqt
+      second_real: real_mrd
+      second_fake: fake_mrd
+  discriminator_objective:
+    role: loss
+    class: src.experiments.losses.WeightedObjective
+    kwargs:
+      weights:
+        discriminator: 1.0
+    inject:
+      terms:
+        - {ref: discriminator_term}
+  trainer:
+    role: trainer
+    class: src.research.asr_guided_se.semambapp.v1.trainer.GuidedSEMambaPPTrainer
+    kwargs:
+      max_logical_steps: 1
+      global_batch_size: 1
+      micro_batch_size: 1
+      grad_clip: null
+      validation_interval: 0
+      best_checkpoint_start_epoch: 40
+      claim_label: research
+      experiment_claim: research
+    inject:
+      generator: {ref: generator}
+      mrd: {ref: mrd}
+      cqt: {ref: cqt}
+      data: {ref: data}
+      optim_g: {ref: optim_g}
+      optim_d: {ref: optim_d}
+      scheduler_g: {ref: scheduler_g}
+      scheduler_d: {ref: scheduler_d}
+      generator_objective: {ref: generator_objective}
+      discriminator_objective: {ref: discriminator_objective}
+      guidance: {ref: guidance}

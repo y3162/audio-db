@@ -1096,6 +1096,12 @@ class SnapshotDataModule:
         if isinstance(rate, bool) or not isinstance(rate, int) or rate < 1:
             raise DataError("pipeline sample_rate is missing")
         batch = replace(self.batcher.collate(rendered), teacher_kind=kinds[0], sample_rate=rate)
+        span_for = getattr(self.protocol, "span_for", None)
+        if callable(span_for):
+            batch = replace(
+                batch,
+                spans=tuple(span_for(sample) for _noisy, _clean, _valid, sample in rendered),
+            )
         check_training_batch(batch, sample_rate=rate, teachers=(kinds[0],))
         return batch
 

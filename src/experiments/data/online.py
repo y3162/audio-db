@@ -7,6 +7,8 @@ Neither constructs ``OnlineDFN3TrainingData`` or ``OnlineSemambaTrainingData``.
 from __future__ import annotations
 
 import threading
+from collections import OrderedDict
+from dataclasses import replace
 from typing import Any
 
 import numpy as np
@@ -29,7 +31,8 @@ from src.experiments.data.protocols.online_dfn3 import (
 from src.experiments.data.protocols.online_semamba import (
     SAMPLE_RATE as SEMAMBA_RATE,
     SEGMENT_SIZE,
-    render_example,
+    SemambaUtterance,
+    render_utterance,
     sample_seed as semamba_sample_seed,
 )
 
@@ -451,6 +454,8 @@ class SemambaProtocol:
         self.seed: int | None = None
         self._clips: dict[str, tuple[SemambaClip, ...]] = {}
         self._clip_lock = threading.Lock()
+        self._utterances: OrderedDict[str, SemambaUtterance] = OrderedDict()
+        self._utterance_lock = threading.Lock()
 
     def prepare(self) -> None:
         rule = self._rule()
@@ -460,6 +465,7 @@ class SemambaProtocol:
             raise DataError("SEMamba++ dataset teacher is not dry_clean")
         self.teacher = "dry_clean"
         self._clips.clear()
+        self._utterances.clear()
 
     def material_count(self, split: str) -> int:
         ids = self.source.material_ids(f"{split}.speech")
@@ -484,6 +490,50 @@ class SemambaProtocol:
         )
 
     def render(self, sample: SampleRef) -> tuple[np.ndarray, np.ndarray, int]:
+        example = self._realize(sample).example
+        return (
+            np.array(example.degraded, dtype=np.float32, copy=True),
+            np.array(example.clean, dtype=np.float32, copy=True),
+            SEGMENT_SIZE,
+        )
+
+    def span_for(self, sample: SampleRef) -> tuple[int, int, int, int]:
+        """Crop start, content length, window, and full peak-normalized length."""
+
+        utterance = self._realize(sample)
+        return (
+            int(utterance.example.crop_start),
+            int(utterance.content_length),
+            SEGMENT_SIZE,
+            int(utterance.full_length),
+        )
+
+    def utterance_for(self, sample: SampleRef) -> SemambaUtterance:
+        return _copy_utterance(self._realize(sample))
+
+    def utterance_for_id(self, realization_id: str) -> SemambaUtterance:
+        with self._utterance_lock:
+            cached = self._utterances.get(realization_id)
+            if cached is not None:
+                self._utterances.move_to_end(realization_id)
+                return _copy_utterance(cached)
+        return _copy_utterance(self._realize(_sample_from_realization(self, realization_id)))
+
+    def _realize(self, sample: SampleRef) -> SemambaUtterance:
+        with self._utterance_lock:
+            cached = self._utterances.get(sample.realization_id)
+            if cached is not None:
+                self._utterances.move_to_end(sample.realization_id)
+                return cached
+        utterance = self._render_utterance(sample)
+        with self._utterance_lock:
+            self._utterances[sample.realization_id] = utterance
+            self._utterances.move_to_end(sample.realization_id)
+            while len(self._utterances) > 32:
+                self._utterances.popitem(last=False)
+            return self._utterances[sample.realization_id]
+
+    def _render_utterance(self, sample: SampleRef) -> SemambaUtterance:
         split, epoch, seed = _placement(sample)
         if sample.index < 0 or sample.index >= self.material_count(split):
             raise DataError(f"{split} sample {sample.index} is outside the dataset")
@@ -500,7 +550,7 @@ class SemambaProtocol:
                     )
                 )
             )
-            example = render_example(
+            return render_utterance(
                 self._role(split, "speech"),
                 self._role(split, "noise"),
                 self._role(split, "rir"),
@@ -518,11 +568,6 @@ class SemambaProtocol:
             if exc.__class__.__name__ in {"LibsndfileError", "NoBackendError"}:
                 raise DataError(str(exc)) from exc
             raise
-        return (
-            np.ascontiguousarray(example.degraded, dtype=np.float32),
-            np.ascontiguousarray(example.clean, dtype=np.float32),
-            SEGMENT_SIZE,
-        )
 
     def teacher_kind(self, sample: SampleRef) -> str:
         return _teacher(self.source, sample, "dry_clean")
@@ -604,6 +649,45 @@ def _from_plan(
                     )
         ranks.append(tuple(rows))
     return tuple(ranks)
+
+
+def _copy_utterance(utterance: SemambaUtterance) -> SemambaUtterance:
+    example = utterance.example
+    return SemambaUtterance(
+        example=replace(
+            example,
+            clean=np.array(example.clean, dtype=np.float32, copy=True),
+            degraded=np.array(example.degraded, dtype=np.float32, copy=True),
+        ),
+        full_clean=np.array(utterance.full_clean, dtype=np.float32, copy=True),
+        full_degraded=np.array(utterance.full_degraded, dtype=np.float32, copy=True),
+        content_length=int(utterance.content_length),
+        full_length=int(utterance.full_length),
+    )
+
+
+def _sample_from_realization(protocol: SemambaProtocol, realization_id: str) -> SampleRef:
+    parts = realization_id.rsplit(":", 5)
+    if len(parts) != 6:
+        raise DataError("online realization id is invalid")
+    protocol_id, snapshot_hash, seed_text, split, epoch_text, index_text = parts
+    if protocol_id != protocol._protocol_id() or snapshot_hash != protocol.source.snapshot_hash:
+        raise DataError("realization does not belong to this protocol")
+    try:
+        seed = int(seed_text)
+        epoch = int(epoch_text)
+        index = int(index_text)
+    except ValueError as exc:
+        raise DataError("online realization id is invalid") from exc
+    return online_sample(
+        protocol_id=protocol_id,
+        snapshot_hash=snapshot_hash,
+        seed=seed,
+        split=split,
+        epoch=epoch,
+        index=index,
+        case_id=None,
+    )
 
 
 def _placement(sample: SampleRef) -> tuple[str, int, int]:

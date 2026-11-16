@@ -1,0 +1,16 @@
+extends: all_off.yaml
+output:
+  directory: runs/asr-guided-se/semambapp-v1/tdt
+components:
+  guidance:
+    kwargs:
+      tdt_loss_enabled: true
+  trainer:
+    inject:
+      asr: {ref: asr}
+  asr:
+    role: other
+    class: src.research.asr_guided_se.asr.FrozenParakeet
+    kwargs:
+      model_id: nvidia/parakeet-tdt-0.6b-v2
+      tdt_loss: true

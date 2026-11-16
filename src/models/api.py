@@ -121,6 +121,20 @@ from .semambapp.inference import build as _build_semamba, load as _load_semamba
 registry.register(ModelSpec('semambapp', _build_semamba, _load_semamba, 16000,
                             aliases=('semamba++', 'se_mamba_pp'), variants=('semambapp',)))
 
+
+def _build_guided(config, variant=None):
+    from src.research.asr_guided_se.semambapp.v1.inference import build
+    return build(config, variant)
+
+
+def _load_guided(checkpoint, device, config, variant):
+    from src.research.asr_guided_se.semambapp.v1.inference import load
+    return load(checkpoint, device, config, variant)
+
+
+registry.register(ModelSpec('asr_guided_semambapp_v1', _build_guided, _load_guided, 16000,
+                            variants=('v1',)))
+
 from .tf_locoformer.inference import build as _build_loco, load as _load_loco
 registry.register(ModelSpec('tf_locoformer', _build_loco, _load_loco, 16000,
                             aliases=('tf-locoformer',), variants=('dns',)))
