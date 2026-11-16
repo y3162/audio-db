@@ -118,7 +118,8 @@ checkpoint:
 
 - 構造が違う。クラス、損失係数、形状、データ計画が変わった YAML は再開しない。Optimizer と Scheduler の学習率、betas、weight decay、eps、momentum、gamma、step size などは、状態を戻したあと現在の YAML の値を書く。Checkpoint に残った学習率は優先しない。
 - 出力ディレクトリが違う。再開元は、その実験のディレクトリ直下か `archive/` にあるファイルだけである。
-- world size、Dataset の同一性、データ計画の `plan_hash` が違う。
+- world size が違う。例外は epoch の境界で、`batch_size * world_size * accumulation` が保存時と同じときである。そのとき per-rank の `batch_size` だけを合わせてよい。`update_index` が 0 でも、その epoch を終えた回数と一致しても境界である。終えた epoch は次の epoch の先頭として読み、増えた rank は既存 rank の RNG をコピーしない。`batch_size` を identity に持たないデータは、この例外に入らない。
+- Dataset の同一性、または同じ world size でのデータ計画 `plan_hash` が違う。境界で rank 幅だけが変わった計画は、保存時の `plan_hash` と一致しなくてよい。
 - `provenance_sha256` を持つ checkpoint の sidecar が欠けている、またはハッシュが違う。
 - `complete.json` がある。完了した実験は再開しない。
 - `latest.pt` より前の step の Archive から続けようとした。続けると、その先の記録と Latest を黙って捨てることになるためである。古い状態から始めるときは、次節の新しい実験にする。

@@ -19,6 +19,7 @@ from torch import nn
 from src.experiments.checkpoint import DirectoryLock
 from src.experiments.data import TensorPairData
 from src.experiments.calc.rng import set_determinism
+from src.experiments.errors import StateError
 
 ROOT = Path(__file__).resolve().parents[2]
 
@@ -41,6 +42,42 @@ class DistributedDataTests(unittest.TestCase):
             seen.extend(per_rank[1])
         self.assertEqual(seen, [f"ex-{index}" for index in range(16)])
         self.assertEqual(data.update_index, 0)
+
+    def test_a_finished_epoch_accepts_another_world_with_the_same_global_batch(self) -> None:
+        source = TensorPairData(features=4, examples=16, batch_size=4, seed=3)
+        source.setup(_CpuRuntime(2, 0))
+        saved = source.state_dict()
+        saved["epoch"] = 0
+        saved["update_index"] = 2
+        resumed = TensorPairData(features=4, examples=16, batch_size=8, seed=3)
+        resumed.setup(_CpuRuntime(1, 0))
+        resumed.load_state_dict(saved)
+        self.assertEqual((resumed.epoch, resumed.update_index), (1, 0))
+        started = dict(saved)
+        started["update_index"] = 0
+        at_start = TensorPairData(features=4, examples=16, batch_size=8, seed=3)
+        at_start.setup(_CpuRuntime(1, 0))
+        at_start.load_state_dict(started)
+        self.assertEqual((at_start.epoch, at_start.update_index), (0, 0))
+
+    def test_a_mid_epoch_world_change_and_a_different_global_batch_are_refused(self) -> None:
+        source = TensorPairData(features=4, examples=16, batch_size=4, seed=3)
+        source.setup(_CpuRuntime(2, 0))
+        saved = source.state_dict()
+        saved["update_index"] = 1
+        resumed = TensorPairData(features=4, examples=16, batch_size=8, seed=3)
+        resumed.setup(_CpuRuntime(1, 0))
+        with self.assertRaisesRegex(StateError, "epoch boundary"):
+            resumed.load_state_dict(saved)
+        saved["update_index"] = 2
+        narrow = TensorPairData(features=4, examples=16, batch_size=4, seed=3)
+        narrow.setup(_CpuRuntime(1, 0))
+        with self.assertRaisesRegex(StateError, "global batch"):
+            narrow.load_state_dict(saved)
+        other = TensorPairData(features=4, examples=32, batch_size=8, seed=3)
+        other.setup(_CpuRuntime(1, 0))
+        with self.assertRaisesRegex(StateError, "does not match"):
+            other.load_state_dict(saved)
 
 
 class DistributedTrainingTests(unittest.TestCase):
@@ -330,10 +367,103 @@ class DistributedTrainingTests(unittest.TestCase):
         self.assertNotEqual(launched.returncode, 0)
         self.assertIn("does not match WORLD_SIZE", launched.stderr + launched.stdout)
 
+    def test_world_size_changes_only_at_an_epoch_boundary(self) -> None:
+        directory = Path(self.enterContext(self._directory()))
+        config = _write_yaml(
+            directory,
+            steps=4,
+            stop_after=2,
+            batch_size=4,
+            examples=16,
+            features=4,
+            accumulation=1,
+            optimizer="sgd",
+        )
+        interrupted = _torchrun(config, timeout=60)
+        self.assertEqual(interrupted.returncode, 0, interrupted.stderr + interrupted.stdout)
+        output = directory / "run"
+        self.assertEqual(_status(output), "INTERRUPTED")
+        saved = output / "archive/step_00000002.pt"
+        payload = torch.load(saved, map_location="cpu", weights_only=False)
+        self.assertEqual(payload["world_size"], 2)
+        self.assertEqual(payload["states"]["data"]["update_index"], 2)
+        mid_saved = output / "archive/step_00000001.pt"
+        grown = _write_yaml(
+            directory,
+            steps=4,
+            batch_size=8,
+            examples=16,
+            features=4,
+            accumulation=1,
+            optimizer="sgd",
+            filename="single.yaml",
+        )
+        refused_mid = _cli(grown, "--resume", str(mid_saved))
+        self.assertNotEqual(refused_mid.returncode, 0)
+        self.assertIn("world size", refused_mid.stderr)
+        self.assertIn("epoch boundary", refused_mid.stderr)
+        same_width = _write_yaml(
+            directory,
+            steps=4,
+            batch_size=4,
+            examples=16,
+            features=4,
+            accumulation=1,
+            optimizer="sgd",
+            filename="same.yaml",
+        )
+        refused_batch = _cli(same_width, "--resume", str(saved))
+        self.assertNotEqual(refused_batch.returncode, 0)
+        self.assertIn("global batch", refused_batch.stderr)
+        resumed = _cli(grown, "--resume", str(saved))
+        self.assertEqual(resumed.returncode, 0, resumed.stderr + resumed.stdout)
+        self.assertEqual(_status(output), "COMPLETED")
+        continued = torch.load(output / "archive/step_00000004.pt", map_location="cpu", weights_only=False)
+        self.assertEqual(continued["world_size"], 1)
+        self.assertEqual(continued["logical_step"], 4)
+        self.assertGreaterEqual(continued["states"]["data"]["epoch"], 1)
+
+        wider = Path(self.enterContext(self._directory()))
+        single = _write_yaml(
+            wider,
+            steps=4,
+            stop_after=2,
+            batch_size=8,
+            examples=16,
+            features=4,
+            accumulation=1,
+            optimizer="sgd",
+        )
+        first = _cli(single)
+        self.assertEqual(first.returncode, 0, first.stderr + first.stdout)
+        pair = _write_yaml(
+            wider,
+            steps=4,
+            batch_size=4,
+            examples=16,
+            features=4,
+            accumulation=1,
+            optimizer="sgd",
+            filename="pair.yaml",
+        )
+        second = _torchrun(pair, "--resume", str(wider / "run" / "archive/step_00000002.pt"), timeout=60)
+        self.assertEqual(second.returncode, 0, second.stderr + second.stdout)
+        expanded = torch.load(wider / "run" / "archive/step_00000004.pt", map_location="cpu", weights_only=False)
+        self.assertEqual(expanded["world_size"], 2)
+        self.assertEqual(len(expanded["rng_by_rank"]), 2)
+        self.assertEqual(expanded["logical_step"], 4)
+
     def _directory(self):
         import tempfile
 
         return tempfile.TemporaryDirectory()
+
+
+class _CpuRuntime:
+    def __init__(self, world_size: int, rank: int) -> None:
+        self.world_size = world_size
+        self.rank = rank
+        self.device = torch.device("cpu")
 
 
 def _sgd_reference(*, steps: int, batch_size: int, examples: int, features: int, accumulation: int) -> dict[str, torch.Tensor]:

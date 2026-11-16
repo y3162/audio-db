@@ -12,6 +12,7 @@ from pathlib import Path
 from typing import Any
 
 from src.evaluation.envinfo import git_metadata
+from src.experiments.data.identity import global_micro_batch_identity
 from src.evaluation.provenance import (
     FORMAT,
     PROVENANCE_NAME,
@@ -51,14 +52,15 @@ def build_provenance(dataset: Any, config: dict[str, Any], process: Any) -> dict
     git_info = git_metadata()
     git_commit = git_info.get("commit") or "unknown"
     git_dirty = git_info.get("dirty")
-    identity = _json_object(dataset.identity(), "dataset identity")
+    identity = global_micro_batch_identity(_json_object(dataset.identity(), "dataset identity"))
     parts = _parts(dataset)
+    # world_size and ddp_mode stay on the document. They are not part of the
+    # run identity: an epoch boundary may change the process count when
+    # batch_size * world_size stays the same.
     hashed = {
         "model_name": model_name,
         "seed": config.get("seed"),
         "loss": config.get("loss"),
-        "world_size": world_size,
-        "ddp_mode": ddp_mode,
         "identity": identity,
     }
     if virtual:

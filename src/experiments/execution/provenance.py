@@ -208,7 +208,11 @@ def _document(
     digest = config_sha256(config) if config_digest is None else config_digest
     # The run identity follows the structure. An optimizer or scheduler
     # hyperparameter written over a restored checkpoint is the same data run.
-    structural = structural_sha256(config) if config_digest is None else config_digest
+    # Per-rank batch width is not part of that identity when the product
+    # batch_size * world_size stays the same.
+    structural = (
+        structural_sha256(config, ignore_global_batch=True) if config_digest is None else config_digest
+    )
     training_config = {
         "model": {"name": _model_name(config)},
         "seed": config.seed,

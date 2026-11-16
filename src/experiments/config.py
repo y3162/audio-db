@@ -766,12 +766,14 @@ def config_sha256(config: ExperimentConfig) -> str:
     return _sha256(_config_payload(config))
 
 
-def structural_sha256(config: ExperimentConfig) -> str:
+def structural_sha256(config: ExperimentConfig, *, ignore_global_batch: bool = False) -> str:
     """Hash everything resume must not change.
 
     Optimizer and scheduler hyperparameters are left out. Resume restores the
     checkpoint and then writes the current YAML values over those fields.
-    Loss coefficients, class paths, shapes, and the data plan stay in the hash.
+    Loss coefficients, class paths, and shapes stay in the hash. With
+    ``ignore_global_batch``, per-rank ``batch_size`` and runtime ``world_size``
+    are left out so an epoch-boundary world-size change can keep the product.
     """
 
     payload = _config_payload(config)
@@ -789,6 +791,10 @@ def structural_sha256(config: ExperimentConfig) -> str:
         elif spec.get("role") == "scheduler":
             for key in _SCHEDULER_HYPERPARAMETERS:
                 kwargs.pop(key, None)
+        elif ignore_global_batch and spec.get("role") == "data":
+            kwargs.pop("batch_size", None)
+    if ignore_global_batch and isinstance(payload["runtime"].get("kwargs"), dict):
+        payload["runtime"]["kwargs"].pop("world_size", None)
     return _sha256(payload)
 
 

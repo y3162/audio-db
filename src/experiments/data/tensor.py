@@ -147,16 +147,37 @@ class TensorPairData:
         }
 
     def load_state_dict(self, state: dict[str, object]) -> None:
-        if state.get("identity") != self.identity() or state.get("world_size") != self.world_size:
-            raise StateError("data state does not match this data module")
-        if state.get("plan_hash") != self.plan_hash:
-            raise StateError("data plan_hash does not match this data module")
         epoch = state.get("epoch")
         update_index = state.get("update_index")
         if isinstance(epoch, bool) or not isinstance(epoch, int) or epoch < 0:
             raise StateError("data epoch is invalid")
         if isinstance(update_index, bool) or not isinstance(update_index, int) or update_index < 0:
             raise StateError("data update_index is invalid")
+        saved_identity = state.get("identity")
+        saved_world = state.get("world_size")
+        if saved_identity == self.identity() and saved_world == self.world_size:
+            if state.get("plan_hash") != self.plan_hash:
+                raise StateError("data plan_hash does not match this data module")
+            self.epoch = epoch
+            self.update_index = update_index
+            return
+        if not _same_data_except_rank_width(saved_identity, self.identity()):
+            raise StateError("data state does not match this data module")
+        if not isinstance(saved_identity, dict) or not isinstance(saved_world, int) or isinstance(saved_world, bool):
+            raise StateError("data state does not match this data module")
+        saved_batch = saved_identity.get("batch_size")
+        if (
+            isinstance(saved_batch, bool)
+            or not isinstance(saved_batch, int)
+            or saved_batch * saved_world != self.batch_size * self.world_size
+        ):
+            raise StateError("global batch is not maintained")
+        finished = tensor_epoch_updates(saved_identity, saved_world)
+        if update_index != 0 and (finished is None or update_index != finished):
+            raise StateError("world size can change only at an epoch boundary")
+        if finished is not None and finished > 0 and update_index == finished:
+            epoch += 1
+            update_index = 0
         self.epoch = epoch
         self.update_index = update_index
 
@@ -171,6 +192,38 @@ class TensorPairData:
         digest.update(str(self.world_size).encode("utf-8"))
         digest.update(b"drop_last" if self.drop_last else b"keep_tail")
         return digest.hexdigest()
+
+
+def tensor_epoch_updates(identity: dict[str, object], world_size: int) -> int | None:
+    """Return how many updates the saved identity had in one epoch."""
+
+    examples = identity.get("examples")
+    batch = identity.get("batch_size")
+    drop_last = identity.get("drop_last", False)
+    if isinstance(examples, bool) or not isinstance(examples, int) or examples < 1:
+        return None
+    if isinstance(batch, bool) or not isinstance(batch, int) or batch < 1:
+        return None
+    if isinstance(world_size, bool) or not isinstance(world_size, int) or world_size < 1:
+        return None
+    stride = batch * world_size
+    if drop_last is True:
+        return examples // stride
+    if drop_last is False:
+        return (examples + stride - 1) // stride
+    return None
+
+
+def _same_data_except_rank_width(saved: object, live: object) -> bool:
+    if not isinstance(saved, dict) or not isinstance(live, dict):
+        return False
+    left = dict(saved)
+    right = dict(live)
+    left.pop("batch_size", None)
+    left.pop("world_size", None)
+    right.pop("batch_size", None)
+    right.pop("world_size", None)
+    return left == right
 
 
 def _positive(name: str, value: object) -> int:

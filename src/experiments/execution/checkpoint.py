@@ -638,6 +638,142 @@ def _payload(
     }
 
 
+def _structure_matches(previous: ExperimentConfig, config: ExperimentConfig, world_changed: bool) -> bool:
+    if structural_sha256(previous) == structural_sha256(config):
+        return True
+    if not world_changed:
+        return False
+    return structural_sha256(previous, ignore_global_batch=True) == structural_sha256(
+        config, ignore_global_batch=True
+    )
+
+
+def _cursor_at_epoch_boundary(payload: dict[str, Any]) -> bool:
+    from src.experiments.data.tensor import tensor_epoch_updates
+
+    blobs = payload.get("states")
+    if not isinstance(blobs, dict):
+        return False
+    found = False
+    for blob in blobs.values():
+        if not isinstance(blob, dict) or "plan_hash" not in blob:
+            continue
+        found = True
+        index = blob.get("update_index")
+        if isinstance(index, bool) or not isinstance(index, int) or index < 0:
+            return False
+        if index == 0:
+            continue
+        identity = blob.get("identity")
+        world = blob.get("world_size")
+        if not isinstance(identity, dict) or isinstance(world, bool) or not isinstance(world, int):
+            return False
+        finished = tensor_epoch_updates(identity, world)
+        if finished is None or index != finished:
+            return False
+    return found
+
+
+def _global_batch_maintained(
+    payload: dict[str, Any],
+    config: ExperimentConfig,
+    new_world: int,
+    directory: Path,
+) -> bool:
+    saved_hash = payload.get("config_sha256")
+    if saved_hash == config_sha256(config):
+        previous = config
+    else:
+        previous = _config_with_hash(directory, saved_hash)
+        if previous is None:
+            return False
+    saved_acc = _accumulation(previous)
+    live_acc = _accumulation(config)
+    if saved_acc is None or live_acc is None:
+        return False
+    blobs = payload.get("states")
+    if not isinstance(blobs, dict):
+        return False
+    found = False
+    for state_id, blob in blobs.items():
+        if not isinstance(blob, dict) or "plan_hash" not in blob:
+            continue
+        identity = blob.get("identity")
+        saved_world = blob.get("world_size")
+        if not isinstance(identity, dict):
+            return False
+        saved_batch = identity.get("batch_size")
+        if isinstance(saved_batch, bool) or not isinstance(saved_batch, int) or saved_batch < 1:
+            return False
+        if isinstance(saved_world, bool) or not isinstance(saved_world, int) or saved_world < 1:
+            return False
+        spec = config.components.get(str(state_id))
+        if spec is None or spec.role != "data":
+            return False
+        live_batch = spec.kwargs.get("batch_size")
+        if isinstance(live_batch, bool) or not isinstance(live_batch, int) or live_batch < 1:
+            return False
+        if saved_batch * saved_world * saved_acc != live_batch * int(new_world) * live_acc:
+            return False
+        found = True
+    return found
+
+
+def _accumulation(config: ExperimentConfig) -> int | None:
+    for component_id in sorted(config.components):
+        spec = config.components[component_id]
+        if spec.role != "trainer":
+            continue
+        value = spec.kwargs.get("accumulation", 1)
+        if isinstance(value, bool) or not isinstance(value, int) or value < 1:
+            return None
+        return value
+    return 1
+
+
+def _rank_width_resize(blob: dict[str, Any], target: Any) -> bool:
+    """True when this data state is an epoch-boundary change of rank width.
+
+    Validation has already required ``batch_size * world_size * accumulation``
+    to stay the same. The live plan hash includes the new width, so equality
+    with the saved hash is not meaningful here.
+    """
+
+    from src.experiments.data.tensor import tensor_epoch_updates
+
+    identity = getattr(target, "identity", None)
+    live = identity() if callable(identity) else None
+    saved = blob.get("identity")
+    if not isinstance(live, dict) or not isinstance(saved, dict):
+        return False
+    left = dict(saved)
+    right = dict(live)
+    saved_batch = left.pop("batch_size", None)
+    left.pop("world_size", None)
+    live_batch = right.pop("batch_size", None)
+    live_world = right.pop("world_size", None)
+    if left != right:
+        return False
+    saved_world = blob.get("world_size")
+    if isinstance(saved_batch, bool) or not isinstance(saved_batch, int):
+        return False
+    if isinstance(live_batch, bool) or not isinstance(live_batch, int):
+        return False
+    if isinstance(saved_world, bool) or not isinstance(saved_world, int):
+        return False
+    if isinstance(live_world, bool) or not isinstance(live_world, int):
+        return False
+    if saved_batch == live_batch and saved_world == live_world:
+        return False
+    index = blob.get("update_index")
+    if index == 0:
+        return True
+    if isinstance(index, bool) or not isinstance(index, int):
+        return False
+    finished = tensor_epoch_updates(saved, saved_world)
+    return finished is not None and index == finished
+
+
 def _validate_resume(
     payload: dict[str, Any],
     states: StateRegistry,
@@ -648,10 +784,19 @@ def _validate_resume(
     directory: Path,
     selector: Selector,
 ) -> None:
-    if payload.get("world_size") != runtime.world_size:
-        raise CheckpointError(
-            f"checkpoint world size {payload.get('world_size')} does not match {runtime.world_size}"
-        )
+    saved_world = payload.get("world_size")
+    world_changed = saved_world != runtime.world_size
+    if world_changed:
+        if not _cursor_at_epoch_boundary(payload):
+            raise CheckpointError(
+                f"checkpoint world size {saved_world} does not match {runtime.world_size}; "
+                "a world size change is only allowed at an epoch boundary"
+            )
+        if not _global_batch_maintained(payload, config, runtime.world_size, directory):
+            raise CheckpointError(
+                f"checkpoint world size {saved_world} does not match {runtime.world_size} "
+                "and the global batch is not maintained"
+            )
     rng = payload.get("rng_by_rank")
     if not isinstance(rng, list) or len(rng) != payload["world_size"]:
         raise CheckpointError("rng_by_rank length does not match world size")
@@ -680,7 +825,7 @@ def _validate_resume(
     saved_hash = payload.get("config_sha256")
     if saved_hash != config_sha256(config):
         previous = _config_with_hash(directory, saved_hash)
-        if previous is None or structural_sha256(previous) != structural_sha256(config):
+        if previous is None or not _structure_matches(previous, config, world_changed):
             raise CheckpointError("checkpoint structure does not match this experiment")
     saved_selector = payload.get("selector")
     if not isinstance(saved_selector, dict) or set(saved_selector) != {"class", "kwargs", "state"} or not isinstance(saved_selector.get("state"), dict):
@@ -902,7 +1047,11 @@ def _apply_resume(payload: dict[str, Any], states: StateRegistry, runtime: Any, 
     index = int(getattr(runtime, "rank", 0))
     ranks = payload["rng_by_rank"]
     if index >= len(ranks):
-        raise CheckpointError("rng_by_rank has no blob for this rank")
+        # A new rank at an epoch boundary keeps the seed this process already
+        # drew. Copying another rank's RNG would repeat its data order.
+        if int(payload.get("world_size") or 0) == int(getattr(runtime, "world_size", 0)):
+            raise CheckpointError("rng_by_rank has no blob for this rank")
+        return
     rank = ranks[index]
     if not isinstance(rank, dict):
         raise CheckpointError(f"rng_by_rank[{index}] is not a mapping")
@@ -976,6 +1125,8 @@ def _require_plan_hashes(payload: dict[str, Any], states: StateRegistry) -> None
         if getattr(owner, "kind", None) != "data":
             continue
         blob = blobs[state_id]
+        if isinstance(blob, dict) and _rank_width_resize(blob, owner.target):
+            continue
         saved = blob.get("plan_hash") if isinstance(blob, dict) else None
         recompute = getattr(owner.target, "plan_hash_for_state", None)
         if callable(recompute) and isinstance(blob, dict):

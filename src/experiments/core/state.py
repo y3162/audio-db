@@ -69,12 +69,10 @@ class RuntimeState:
     def load_state_dict(self, state: dict[str, Any]) -> None:
         # Checkpoints written before CUDA support omit device and mean CPU.
         saved_device = state.get("device", "cpu")
-        if (
-            state.get("world_size") != self.runtime.world_size
-            or state.get("precision") != self.runtime.precision
-            or saved_device != self.runtime.device.type
-        ):
+        if state.get("precision") != self.runtime.precision or saved_device != self.runtime.device.type:
             raise StateError("runtime state does not match this process")
+        # A different world size is accepted here. Resume validation allows it
+        # only at an epoch boundary, and the process world is the one that continues.
         saved_scaler = state.get("grad_scaler")
         if self.runtime.precision != "fp16":
             if saved_scaler is not None:
