@@ -231,10 +231,10 @@ def _protocols() -> tuple[dict[str, Any], dict[str, Any]]:
             "id": "seeded_rank_shuffle",
             "class": "algorithm_change",
             "text": (
-                "per_rank_independent_v1 builds a seeded permutation per rank and then "
-                "applies a drop_last DistributedSampler. Official shuffles are unseeded. "
+                "per_rank_independent_v1 builds one seeded permutation and strides it "
+                "across ranks without copying a sample. Official shuffles are unseeded. "
                 "world_size 1 still reshuffles each epoch; the official 1-GPU loader does not. "
-                "The official sampler pads (drop_last=False) before the loader drops a short batch."
+                "The official sampler pads before the loader drops a short batch."
             ),
             "ref": "train.py",
         },

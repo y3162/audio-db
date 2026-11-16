@@ -397,6 +397,16 @@ def plan_semamba_epoch(
                 covered.extend(sample.index for sample in micro.samples)
     overlap = sorted({index for index in covered if covered.count(index) > 1})
     missing = sorted(set(range(count)) - set(covered))
+    if overlap:
+        raise ReproductionError(
+            "semamba plan repeated samples in one epoch: "
+            + ", ".join(str(index) for index in overlap[:8])
+        )
+    if split == "train" and not drop_last and missing:
+        raise ReproductionError(
+            "semamba plan omitted samples in one epoch: "
+            + ", ".join(str(index) for index in missing[:8])
+        )
     stats = {
         "order_policy": POLICY,
         "order_params": {

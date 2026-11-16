@@ -143,18 +143,30 @@ class OrderTests(unittest.TestCase):
         self.assertGreater(len(covered) - len(set(covered)), 0)
         self.assertNotIn(10, covered)
 
-    def test_per_rank_independent_can_overlap(self):
+    def test_per_rank_independent_uses_each_sample_once(self):
+        for size, world in ((8, 2), (11, 4), (3, 4)):
+            found = []
+            for rank in range(world):
+                found.extend(
+                    rank_order(
+                        "per_rank_independent_v1", size, seed=1, epoch=0, world_size=world, rank=rank,
+                    )
+                )
+            self.assertEqual(sorted(found), list(range(size)))
         left = rank_order("per_rank_independent_v1", 8, seed=1, epoch=0, world_size=2, rank=0)
-        right = rank_order("per_rank_independent_v1", 8, seed=1, epoch=0, world_size=2, rank=1)
-        self.assertEqual(len(left), 4)
-        self.assertEqual(len(right), 4)
-        self.assertTrue(set(left) & set(right) or set(left) | set(right) != set(range(8)))
         again = rank_order("per_rank_independent_v1", 8, seed=1, epoch=0, world_size=2, rank=0)
         self.assertEqual(left, again)
+        solo = rank_order("per_rank_independent_v1", 8, seed=1, epoch=0, world_size=1, rank=0)
+        self.assertEqual(sorted(solo), list(range(8)))
 
     def test_rank_orders_do_not_drop_or_duplicate_when_divisible(self):
         size = 16
-        for policy in ("global_shuffle_stride_v1", "torch_distributed_sampler_v1", "fixed_single_shuffle_v1"):
+        for policy in (
+            "global_shuffle_stride_v1",
+            "torch_distributed_sampler_v1",
+            "fixed_single_shuffle_v1",
+            "per_rank_independent_v1",
+        ):
             found = []
             for rank in range(4):
                 found.extend(rank_order(policy, size, seed=2, epoch=1, world_size=4, rank=rank))

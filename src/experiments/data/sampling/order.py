@@ -64,15 +64,15 @@ POLICY_NOTES: dict[str, dict[str, str]] = {
     "per_rank_independent_v1": {
         "matches": "distribution",
         "detail": (
-            "Each rank builds one permutation L_r with mix_seed('per_rank', "
-            "training_seed, rank). Epoch order follows torch_distributed_sampler_v1 "
-            "and indexes L_r, so ranks can overlap or omit samples. Official "
-            "SEMamba++ shuffling is unseeded; the seed is audio-db determinism "
-            "and is not an official random sequence. Official DistributedSampler "
-            "uses drop_last=False and the DataLoader then uses drop_last=True. "
-            "This policy truncates with drop_last=True before batching, so the "
-            "official sampler's padded tail is not reproduced. world_size 1 still "
-            "reshuffles every epoch; the official 1-GPU loader does not."
+            "One permutation is built from mix_seed('per_rank', training_seed, 0) "
+            "and reindexed by the epoch shuffle used for world_size 1. Ranks then "
+            "take a stride of that list. A tail that does not fill every rank goes "
+            "to the first ranks, one sample each, and is not copied. Each real "
+            "sample is used once in the epoch. world_size 1 keeps the previous "
+            "permutation. Official SEMamba++ shuffling is unseeded; this seed is "
+            "audio-db determinism and is not an official random sequence. "
+            "world_size 1 still reshuffles every epoch; the official 1-GPU loader "
+            "does not."
         ),
     },
     "dfn3_online_ceil_v1": {
@@ -177,7 +177,13 @@ def order_params(policy: str, seed: int) -> dict[str, int | bool | str]:
     if policy == "rank_mod_fixed_v1":
         return {"sampler_seed": 0, "epoch_added": True, "pad": "none", "training_seed_used": False}
     if policy == "per_rank_independent_v1":
-        return {"training_seed": seed, "sampler_seed": 0, "list": "mix_seed per_rank"}
+        return {
+            "training_seed": seed,
+            "sampler_seed": 0,
+            "list": "mix_seed per_rank rank 0",
+            "shard": "cover_once",
+            "pad": "none",
+        }
     if policy == "espnet_chunk_v1":
         return {
             "rng": "numpy.RandomState(epoch + seed) per rank",
@@ -319,8 +325,16 @@ def sampler_batch_count(num_samples: int, batch_size: int) -> int:
 
 
 def _per_rank_independent(size: int, seed: int, epoch: int, world_size: int, rank: int) -> list[int]:
+    """One global permutation, then a stride that does not copy samples.
+
+    ``world_size`` 1 is the historical permutation: rank 0's list, indexed by
+    the epoch shuffle. Larger worlds stride that same list. Leftovers go to
+    the first ranks once each.
+    """
+
     generator = torch.Generator()
-    generator.manual_seed(mix_seed("per_rank", seed, rank))
+    generator.manual_seed(mix_seed("per_rank", seed, 0))
     local = torch.randperm(size, generator=generator).tolist()
-    positions = _torch_distributed(size, world_size, rank, epoch, sampler_seed=0)
-    return [local[position] for position in positions]
+    positions = _torch_distributed(size, 1, 0, epoch, sampler_seed=0)
+    full = [local[position] for position in positions]
+    return _cover_stride(full, world_size, rank)

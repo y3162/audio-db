@@ -395,12 +395,9 @@ class PlanTests(unittest.TestCase):
                 indexes = _indexes(plan, rank)
                 self.assertEqual(len(indexes), 16 // world)
                 covered.extend(indexes)
-            if world == 1:
-                self.assertEqual(sorted(covered), list(range(16)))
-                self.assertEqual(plan.stats["overlap"], [])
-                self.assertEqual(plan.stats["missing"], [])
-            else:
-                self.assertTrue(set(covered) != set(range(16)) or len(covered) != len(set(covered)))
+            self.assertEqual(sorted(covered), list(range(16)))
+            self.assertEqual(plan.stats["overlap"], [])
+            self.assertEqual(plan.stats["missing"], [])
             later = _plan(16, micro=2, world=world, epoch=1, accumulation=1)
             self.assertNotEqual(_indexes(plan, 0), _indexes(later, 0))
         kept = _plan(10, micro=4, world=1, epoch=0, accumulation=1)
@@ -410,7 +407,12 @@ class PlanTests(unittest.TestCase):
         self.assertFalse(kept.stats["order_params"]["drop_last"])
         known = _plan(8, micro=2, world=2, epoch=0, accumulation=1, seed=1)
         known_indexes = _indexes(known, 0) + _indexes(known, 1)
-        self.assertTrue(set(known_indexes) != set(range(8)) or len(known_indexes) != len(set(known_indexes)))
+        self.assertEqual(sorted(known_indexes), list(range(8)))
+        short = _plan(5, micro=2, world=4, epoch=0, accumulation=1, seed=1)
+        short_indexes = []
+        for rank in range(4):
+            short_indexes.extend(_indexes(short, rank))
+        self.assertEqual(sorted(short_indexes), list(range(5)))
         grouped = _plan(8, micro=2, world=1, epoch=0, accumulation=2)
         self.assertEqual(grouped.updates, 2)
         self.assertEqual(len(grouped.rank_groups[0][0].micro_batches), 2)
