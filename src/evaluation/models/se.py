@@ -1,6 +1,6 @@
-"""Run speech enhancement through the existing src.se API.
+"""Run speech enhancement through the existing src.models API.
 
-Model-specific inference stays in src.se. This module loads an enhancer once
+Model-specific inference stays in src.models. This module loads an enhancer once
 and sets a per-utterance torch seed immediately before enhance().
 """
 
@@ -20,8 +20,8 @@ class MockEnhancer:
     """Identity copy used to exercise the pipeline without a checkpoint.
 
     This is not a speech enhancement model and its scores are not model quality.
-    Input checks match src.se.core.audio.validate_audio. That module is not
-    imported here, because importing src.se loads every enhancement model.
+    Input checks match src.models.core.audio.validate_audio. That module is not
+    imported here, because importing src.models loads every enhancement model.
     """
 
     def enhance(self, waveform: torch.Tensor, sample_rate: int) -> torch.Tensor:
@@ -49,7 +49,7 @@ def load_evaluation_enhancer(model: ModelConfig, device: str, loader=None):
     if model.name == MOCK_MODEL:
         return MockEnhancer()
     if loader is None:
-        from src.se import load_enhancer as loader
+        from src.models import load_enhancer as loader
 
     checkpoint = model.checkpoints if model.checkpoints is not None else model.checkpoint
     return loader(

@@ -7,7 +7,7 @@ import torch
 ROOT = Path(__file__).resolve().parents[3]
 sys.path.insert(0, str(ROOT))
 from src.experiments.calc.dataset import load_recipe_dataset
-from src.se.models.semambapp.inference import build, _enhance_16k
+from src.models.semambapp.inference import build, _enhance_16k
 from tests.numerics.reference.semamba_quality import score_waveform
 
 out = Path(sys.argv[1])

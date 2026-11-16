@@ -32,8 +32,8 @@ from src.experiments.data.publication import (
 )
 from src.experiments.data.sampling.order import resolve_order_policy
 from src.experiments.errors import BuildError, RuntimeFailure
-from src.experiments.official.mossformergan.trainer import MossFormerGANTrainer
-from src.experiments.official.mp_senet.trainer import MPSENetGANTrainer
+from src.models.mossformergan.trainer import MossFormerGANTrainer
+from src.models.mp_senet.trainer import MPSENetGANTrainer
 from tests.experiments.test_mp_senet_gan import _yaml_text
 
 ROOT = Path(__file__).resolve().parents[2]

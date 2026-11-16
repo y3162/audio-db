@@ -27,9 +27,9 @@ from src.experiments.losses import (
     WaveformL1,
     WeightedObjective,
 )
-from src.experiments.official.deepfilternet3.losses import official_deepfilternet_objective
-from src.experiments.official.deepfilternet3.model import DeepFilterNet3Model
-from src.experiments.official.deepfilternet3.loss import component_losses
+from src.models.deepfilternet3.losses import official_deepfilternet_objective
+from src.models.deepfilternet3.model import DeepFilterNet3Model
+from src.models.deepfilternet3.loss import component_losses
 from src.experiments.training.official_objectives import (
     MP_METRIC,
     MP_SIGNAL,
@@ -382,7 +382,7 @@ components:
 
 class ResearchExtensionTests(unittest.TestCase):
     def test_tf_gridnet_trainer_accepts_a_yaml_waveform_term(self) -> None:
-        trainer_source = (ROOT / "src/experiments/official/tf_gridnet/trainer.py").read_text(encoding="utf-8")
+        trainer_source = (ROOT / "src/models/tf_gridnet/trainer.py").read_text(encoding="utf-8")
         self.assertNotIn("WaveformL1", trainer_source)
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)

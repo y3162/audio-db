@@ -9,7 +9,7 @@ from pathlib import Path
 
 import torch
 
-from src.se.models.deepfilternet3.dsp import _rfft_kernel, rfft_library_path
+from src.models.deepfilternet3.dsp import _rfft_kernel, rfft_library_path
 
 
 class RealFftKernelTest(unittest.TestCase):
@@ -56,7 +56,7 @@ class RealFftKernelTest(unittest.TestCase):
 
 
 def _transform(kernel, waveform):
-    from src.se.models.deepfilternet3.dsp import _ptr
+    from src.models.deepfilternet3.dsp import _ptr
 
     bins = waveform.numel() // 2 + 1
     real = torch.empty(bins, dtype=torch.float32)

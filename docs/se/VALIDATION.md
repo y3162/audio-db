@@ -12,7 +12,7 @@
 |---|---|
 | `.venvs/lab` | Python 3.13.9、PyTorch 2.6.0+cu124、torchaudio 2.6.0+cu124、NumPy 2.5.4。ホスト turing。CPU の初期比較と、後述の CPU/CUDA 自己差の一部 |
 | `.venvs/ref` | Python 3.10.12、PyTorch 2.6.0+cu124、torchaudio 2.6.0+cu124、NumPy 1.26.4。追加は `einops==0.8.2`、`rotary-embedding-torch==0.8.3`、`torchdiffeq==0.2.5`、`x-transformers==2.14.2`、`omegaconf==2.3.0`、`librosa==0.10.2.post1`、`yamlargparse==1.31.1`、`pydub==0.25.1`、`maturin==1.4.0`。`libdf` は Rust 1.76.0 で `pyDF` をビルドした wheel `DeepFilterLib-0.5.7rc0`（`CARGO_TARGET_DIR=data/results/se-repro/cargo-target`）。公式ツリーは編集していない。GPU は `CUDA_VISIBLE_DEVICES=1` の Quadro RTX 5000 |
-| `.venvs/semamba` | スクリプトの注記は Python 3.10、PyTorch 2.6.0+cu124、`causal-conv1d==1.7.0`、`mamba-ssm==2.3.2.post1`。公開 wheel `mamba_ssm-2.3.2.post1+cu12torch2.6cxx11abiFALSE` は `std::__cxx11::basic_string` を参照し、この PyTorch（CXX11 ABI false）では `selective_scan_cuda` がロードできなかった。`.venvs/cuda-nvcc`（conda-forge `cuda-nvcc=12.9`）で sm_75 だけをソースビルドした。`src/se` はこの環境を import しない |
+| `.venvs/semamba` | スクリプトの注記は Python 3.10、PyTorch 2.6.0+cu124、`causal-conv1d==1.7.0`、`mamba-ssm==2.3.2.post1`。公開 wheel `mamba_ssm-2.3.2.post1+cu12torch2.6cxx11abiFALSE` は `std::__cxx11::basic_string` を参照し、この PyTorch（CXX11 ABI false）では `selective_scan_cuda` がロードできなかった。`.venvs/cuda-nvcc`（conda-forge `cuda-nvcc=12.9`）で sm_75 だけをソースビルドした。`src/models` はこの環境を import しない |
 
 2026-10-31 の最終比較の作業開始 HEAD は `6ea86f3`。ホスト turing。GPU 0 は他ユーザーが使用中のため、比較は GPU 1・2・3（Quadro RTX 5000、ドライバ 535.274.02）。
 
@@ -99,7 +99,7 @@ CUDA_VISIBLE_DEVICES="" .venvs/se/bin/python tests/se/reference/run_semamba.py
 CUDA_VISIBLE_DEVICES=1 .venvs/semambapp/bin/python tests/se/reference/run_semamba_cuda.py 1 5 20
 ```
 
-`tests/se/reference/run_df.py` と `run_df_api.py` は `libdf` と `src.se` の両方を読む。`src.se` は TF-Locoformer 経由で `rotary_embedding_torch` を import する。`.venvs/deepfilternet` は `libdf` 用で、`requirements/deepfilternet.in` に `rotary-embedding-torch` が無い。`.venvs/se` と `.venvs/official` は NumPy 2.5.4 で、`libdf` は NumPy 1.26.4 の `.venvs/deepfilternet` に分けている。測定時の `.venvs/ref` は NumPy 1.26.4 に両方を入れていた。現行の役割名では同じコマンドを書けない。
+`tests/se/reference/run_df.py` と `run_df_api.py` は `libdf` と `src.models` の両方を読む。`src.models` は TF-Locoformer 経由で `rotary_embedding_torch` を import する。`.venvs/deepfilternet` は `libdf` 用で、`requirements/deepfilternet.in` に `rotary-embedding-torch` が無い。`.venvs/se` と `.venvs/official` は NumPy 2.5.4 で、`libdf` は NumPy 1.26.4 の `.venvs/deepfilternet` に分けている。測定時の `.venvs/ref` は NumPy 1.26.4 に両方を入れていた。現行の役割名では同じコマンドを書けない。
 
 通常の CPU テストは次である。この実行結果を上の表の一致とは呼ばない。
 
@@ -138,7 +138,7 @@ SEMamba++ の独立実装について、CPU と CUDA の自己差は記録が無
 - SEMamba++ の既定スキャンは PyTorch の漸化式のままである。`scan_backend: fused` は任意指定で、融合カーネルへの置き換えはしていない。
 - TF-Locoformer の公開重みについて、以前の `docs/se/MODELS.md` は「CPU の最大絶対誤差 0、空の Quadro RTX 5000 では 20 秒まで `1e-5` 未満」と書いていた。device 以外の sample rate、長さの一覧、seed、比較相手、チェックポイントをこの記録は特定できない。`tests/se/test_tf_locoformer.py` が公式 standalone separator と比べて最大絶対誤差 0 を要求するのは、公開重みではなく小さいランダム重み（`n_layers=1`、`emb_dim=16`、`n_fft=64`）の CPU で、スペクトル `(2, 12, 33)` と長さ 512 の波形、seed 3 である。同じファイルの CUDA 側は、空いている GPU での長さ 1600 の有限値であり、20 秒の公式比較ではない。
 - SI-SDR、相関、時間ずれの数値は残っていない。判定に使ったのは最大絶対誤差である。SI-SDR は誤差 0 でも分母を 1e-12 で下駄上げするため、完全一致でも有限値になる、という記録がある。
-- 設定ローダは YAML を読める（`src/se/core/config.py`。PyYAML は `requirements/se.in` の `pyyaml==6.0.3`）。`tests/se` に YAML を読むテストは無い。
+- 設定ローダは YAML を読める（`src/models/core/config.py`。PyYAML は `requirements/se.in` の `pyyaml==6.0.3`）。`tests/se` に YAML を読むテストは無い。
 - `tests/se/test_independence.py` が公式ツリー無しの一時コピーで見るのは MP-SENet と TF-GridNet だけである。DeepFilterNet3、MossFormerGAN、SEMamba++ については、当時の一時コピーで import、チェックポイント読み込み、短音声 `enhance` が完了したという記録がある。TF-Locoformer の同様の記録は無い。
 - 初期の MP-SENet 記録にある元リポジトリ commit `d91b88c2fc5469597ba0114f1c5b759c3ebac28d` と、現行ピン `89932cfe90d1dacb8e170e4a331d762462c21792` の関係は未確認である。
 - DeepFilterNet3 の分析・合成だけを通した 48 kHz、長さ 4800 の正弦（遅延 480 サンプルを除く）の最大絶対誤差は 4.17e-7。公式 `libdf` との波形差ではない。同一発話の再実行差は 0、という記録がある。

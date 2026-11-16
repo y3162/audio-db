@@ -5,7 +5,7 @@ from __future__ import annotations
 import unittest
 
 from src.experiments.errors import RuntimeFailure
-from src.experiments.official.semambapp.trainer import SEMambaProgress
+from src.models.semambapp.trainer import SEMambaProgress
 
 
 def _progress() -> SEMambaProgress:

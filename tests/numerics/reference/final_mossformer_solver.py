@@ -30,12 +30,12 @@ from solver import Solver  # noqa: E402
 from utils.misc import pesq_loss  # noqa: E402
 from src.experiments.data import Batch  # noqa: E402
 from tests.numerics.reference.common import NoCheckpoints  # noqa: E402
-from src.experiments.official.mossformergan.models import (  # noqa: E402
+from src.models.mossformergan.models import (  # noqa: E402
     MossFormerGANDiscriminator,
     MossFormerGANGenerator,
 )
 from tests.numerics.reference.mossformer_task import MossFormerGANTask  # noqa: E402
-from src.experiments.official.mossformergan.trainer import MossFormerGANTrainer  # noqa: E402
+from src.models.mossformergan.trainer import MossFormerGANTrainer  # noqa: E402
 from src.experiments.training.official_objectives import (  # noqa: E402
     mossformer_discriminator_objective,
     mossformer_generator_objective,

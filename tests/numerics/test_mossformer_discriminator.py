@@ -1,7 +1,7 @@
 """Regression checks for the released-width MossFormerGAN scorer."""
 import unittest
 import torch
-from src.experiments.official.mossformergan.discriminator import Discriminator
+from src.models.mossformergan.discriminator import Discriminator
 from tests.numerics.reference.mossformer_task import _uncompress, _istft
 
 class MossFormerDiscriminatorTests(unittest.TestCase):

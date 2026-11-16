@@ -22,12 +22,12 @@ from src.experiments.checkpoint import FORMAT
 from src.experiments.config import load_experiment
 from src.experiments.data import ChunkSampler, MicroBatcher
 from src.experiments.errors import CheckpointError, DataError, ExperimentError
-from src.experiments.official.mossformergan.models import MossFormerGANGenerator
-from src.experiments.official.mp_senet.models import MPSENetGANGenerator
-from src.experiments.official.tf_gridnet.model import TFGridNetModel
-from src.experiments.official.tf_locoformer.model import TFLocoformerModel
-from src.se import load_enhancer
-from src.se.models.mossformergan.inference import _enhance_chunk
+from src.models.mossformergan.models import MossFormerGANGenerator
+from src.models.mp_senet.models import MPSENetGANGenerator
+from src.models.tf_gridnet.model import TFGridNetModel
+from src.models.tf_locoformer.model import TFLocoformerModel
+from src.models import load_enhancer
+from src.models.mossformergan.inference import _enhance_chunk
 from src.experiments.calc.rng import set_determinism
 from tests.experiments.test_mp_senet_gan import ARCH, _yaml as mp_yaml
 from tests.experiments.test_mossformergan import _yaml as moss_yaml
@@ -232,7 +232,7 @@ class Phase4FCheckpointAndExportTests(unittest.TestCase):
 
     def _execute(self, config: Path, *, resume: Path | None = None, pesq: bool = False) -> None:
         if pesq:
-            with patch("src.experiments.official.mossformergan.loss.metric_targets", _pesq_stub):
+            with patch("src.models.mossformergan.loss.metric_targets", _pesq_stub):
                 Experiment(load_experiment(config)).run(resume=resume)
             return
         Experiment(load_experiment(config)).run(resume=resume)

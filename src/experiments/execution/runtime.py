@@ -482,6 +482,19 @@ class ProcessRuntime:
         host.copy_(value.detach().to(dtype=torch.float32), non_blocking=True)
         return host
 
+    def read_host_scalar(self, value: torch.Tensor) -> float:
+        """Queue a host copy and wait for it.
+
+        :meth:`host_scalar` leaves the copy in flight so :meth:`step` can
+        overlap it. A probe that does not call :meth:`step` has to wait
+        itself. Reading the pinned tensor before that wait sees an empty buffer.
+        """
+
+        host = self.host_scalar(value)
+        if value.device.type == "cuda":
+            torch.cuda.current_stream(value.device).synchronize()
+        return float(host)
+
     def step(self, optimizer: torch.optim.Optimizer) -> StepResult:
         """Apply one optimizer update, or skip it on every rank.
 

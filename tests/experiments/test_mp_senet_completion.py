@@ -26,7 +26,7 @@ from src.experiments.api import build_experiment
 from src.experiments.config import load_experiment
 from src.experiments.errors import RuntimeFailure
 from src.experiments.execution.journal import StepJournal
-from src.experiments.official.mp_senet.evaluator import aggregate_reports
+from src.models.mp_senet.evaluator import aggregate_reports
 from src.experiments.runtime import ProcessRuntime
 from tests.experiments.test_mp_senet_gan import _manual_trainer, _yaml_text
 from tests.numerics.reference.mp_senet_task import MPSENetTask
@@ -196,7 +196,7 @@ class CudaCheckpointSafePointTests(unittest.TestCase):
         text = text.replace("interval: 1", "interval: 2")
         (directory / "experiment.yaml").write_text(text, encoding="utf-8")
         seen: list[tuple[object, ...]] = []
-        from src.experiments.official.mp_senet.trainer import MPSENetGANTrainer
+        from src.models.mp_senet.trainer import MPSENetGANTrainer
 
         original_drain = MPSENetGANTrainer._drain_mp_io
         original_offer = MPSENetGANTrainer._offer
@@ -374,7 +374,7 @@ class ValidationSeparationTests(unittest.TestCase):
                     modules.extend(alias.name for alias in node.names)
                 for module in modules:
                     self.assertFalse(module == "tests" or module.startswith("tests."), f"{path} imports {module}")
-        package = root / "src/experiments/official/mp_senet"
+        package = root / "src/models/mp_senet"
         for path in package.rglob("*.py"):
             text = path.read_text(encoding="utf-8")
             self.assertNotIn("MPSENetTask", text, path.name)
@@ -398,8 +398,8 @@ class ValidationSeparationTests(unittest.TestCase):
         )
         for name in removed:
             self.assertFalse((package / name).exists(), name)
-        from src.experiments.official.mp_senet.evaluator import MPSENetOfficialValidator
-        from src.experiments.official.mp_senet.trainer import (
+        from src.models.mp_senet.evaluator import MPSENetOfficialValidator
+        from src.models.mp_senet.trainer import (
             MPSENetUpdate,
             OfficialBoundary,
             StepRecorder,

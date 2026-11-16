@@ -325,6 +325,7 @@ class CheckpointManager:
         _validate_resume(
             payload, registry, runtime, config, self._components, source, self.directory, self.selector
         )
+        self.refuse_rewind(payload.get("logical_step"))
 
     def restore(
         self,

@@ -5,7 +5,7 @@ from __future__ import annotations
 import unittest
 
 from src.experiments.errors import RuntimeFailure
-from src.experiments.official.deepfilternet3.trainer import DFProgress
+from src.models.deepfilternet3.trainer import DFProgress
 
 
 def _tables(steps: int) -> tuple[list[float], list[float]]:

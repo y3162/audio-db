@@ -1,7 +1,7 @@
 import tempfile, traceback, gc
 from pathlib import Path
 import torch
-from src.se import load_enhancer
+from src.models import load_enhancer
 from tests.numerics.test_model_tasks import _base, _updated
 from tests.numerics.support import paired_dataset, tiny_config
 from tests.numerics.reference.mp_senet_task import MPSENetTask

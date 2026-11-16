@@ -6,7 +6,7 @@ from pathlib import Path
 import torch
 import torchaudio.functional as AF
 
-from src.se import load_enhancer
+from src.models import load_enhancer
 
 ROOT = Path(__file__).resolve().parents[2]
 MP = ROOT / 'data/checkpoints/mp-senet/g_best_vb'

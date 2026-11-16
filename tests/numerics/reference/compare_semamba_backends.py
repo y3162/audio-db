@@ -6,7 +6,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[3]))
 import torch
 import torch.nn.functional as F
 from mamba_ssm.modules.mamba_simple import Mamba
-from src.se.models.semambapp.network import SelectiveSSM
+from src.models.semambapp.network import SelectiveSSM
 
 # Fixed before running: outputs atol=2e-5, rtol=2e-4; gradients atol=2e-5,
 # rtol=3e-4. Norm-relative error and cosine accompany elementwise tolerance.

@@ -5,7 +5,7 @@ from __future__ import annotations
 import unittest
 
 from src.experiments.errors import RuntimeFailure
-from src.experiments.official.mossformergan.trainer import MossProgress
+from src.models.mossformergan.trainer import MossProgress
 
 
 class MossRestoreTests(unittest.TestCase):

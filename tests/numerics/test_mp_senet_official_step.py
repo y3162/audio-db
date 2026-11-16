@@ -15,9 +15,9 @@ from types import SimpleNamespace
 
 import torch
 
-from src.se import build_model
+from src.models import build_model
 from src.experiments.calc.rng import seed_model_init, set_determinism
-from src.experiments.official.mp_senet.model import MetricDiscriminator
+from src.models.mp_senet.model import MetricDiscriminator
 from src.experiments.calc.losses import discriminator_loss, generator_losses, metric_targets
 from src.experiments.calc.stft import mag_pha_istft, mag_pha_stft
 

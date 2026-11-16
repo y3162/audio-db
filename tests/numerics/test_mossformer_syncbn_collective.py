@@ -35,7 +35,7 @@ import torch.distributed as dist
 import torch.nn as nn
 
 from src.experiments.calc.distributed import ProcessInfo
-from src.experiments.official.mossformergan.discriminator import Discriminator
+from src.models.mossformergan.discriminator import Discriminator
 from tests.numerics.reference.mossformer_task import MossFormerGANTask
 from tests.numerics.support import cpu_process, free_tcp_port, pin_repo_root_for_spawn
 

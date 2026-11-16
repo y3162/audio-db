@@ -949,8 +949,8 @@ def _compare_saved_grads(model: str, left: dict, right: dict, left_module, right
 
 def _semamba_trainer(sem, device) -> None:
     from tests.numerics.reference.common import NoCheckpoints as CheckpointManager
-    from src.experiments.official.semambapp.models import SEMambaPPCQTDiscriminator, SEMambaPPGenerator, SEMambaPPMRD
-    from src.experiments.official.semambapp.trainer import SEMambaPPTrainer
+    from src.models.semambapp.models import SEMambaPPCQTDiscriminator, SEMambaPPGenerator, SEMambaPPMRD
+    from src.models.semambapp.trainer import SEMambaPPTrainer
     from src.experiments.runtime import PreparePolicy, ProcessRuntime
 
     report = {"call_label": "OFFICIAL_COMPONENT_STEP", "official_function": "train", "official_file": str(SEMAMBA_TRAIN), "run_called": False}
@@ -1154,8 +1154,8 @@ def _grad_max_from_dicts(left: dict, right: dict) -> float:
 
 def _mp_trainer(cmp, h, device) -> None:
     from tests.numerics.reference.common import NoCheckpoints as CheckpointManager
-    from src.experiments.official.mp_senet.models import MPSENetGANGenerator, MPSENetMetricDiscriminator
-    from src.experiments.official.mp_senet.trainer import MPSENetGANTrainer
+    from src.models.mp_senet.models import MPSENetGANGenerator, MPSENetMetricDiscriminator
+    from src.models.mp_senet.trainer import MPSENetGANTrainer
     from src.experiments.runtime import PreparePolicy, ProcessRuntime
 
     report = {"call_label": "OFFICIAL_COMPONENT_STEP", "official_function": "train", "official_file": str(MP_TRAIN), "run_called": False}

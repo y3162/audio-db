@@ -132,7 +132,7 @@ MOSS_INJECT = """\
 DFN_COMPONENTS = """\
   spectral_loss:
     role: loss
-    class: src.experiments.official.deepfilternet3.losses.DeepFilterNetSpectralLoss
+    class: src.models.deepfilternet3.losses.DeepFilterNetSpectralLoss
     kwargs:
       name: spectral
       factor: 500.0
@@ -142,7 +142,7 @@ DFN_COMPONENTS = """\
       magnitude_floor: 1.0e-12
   local_snr_loss:
     role: loss
-    class: src.experiments.official.deepfilternet3.losses.LocalSNRLoss
+    class: src.models.deepfilternet3.losses.LocalSNRLoss
     kwargs:
       name: local_snr
       milliseconds: 20

@@ -13,7 +13,7 @@ import os
 from pathlib import Path
 
 _ROOT = Path(__file__).resolve().parents[1]
-_TRACKED = _ROOT / "src/se/models/deepfilternet3/libdf_rfft.so"
+_TRACKED = _ROOT / "src/models/deepfilternet3/libdf_rfft.so"
 _BUILT = _ROOT / "build/df-rfft/release/libdf_rfft.so"
 
 

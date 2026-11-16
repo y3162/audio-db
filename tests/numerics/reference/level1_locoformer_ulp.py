@@ -19,7 +19,7 @@ sys.path.insert(0, str(ROOT))
 OUT = Path(os.environ.get("AUDIO_DB_NUMERICS_OUT", "/tmp/audio-db-level1-20261111/locoformer"))
 
 from src.experiments.calc.spectral import multi_resolution_l1  # noqa: E402
-from src.se.models.tf_locoformer.model import TFLocoformer  # noqa: E402
+from src.models.tf_locoformer.network import TFLocoformer  # noqa: E402
 from tests.numerics.reference.common import environment, gap, grad_report, optim_report, weight_report  # noqa: E402
 from tests.numerics.reference.compare_tf_gridnet import _official_loss_class  # noqa: E402
 from tests.se.test_tf_locoformer import OFFICIAL  # noqa: E402

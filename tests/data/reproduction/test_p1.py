@@ -459,7 +459,7 @@ class ReproductionTests(unittest.TestCase):
                     modules = [alias.name for alias in node.names]
                 elif isinstance(node, ast.ImportFrom) and node.module:
                     modules = [node.module]
-                if any(name.startswith(("src.se", "src.asr", "src.evaluation", "src.training")) for name in modules):
+                if any(name.startswith(("src.models", "src.asr", "src.evaluation", "src.training")) for name in modules):
                     reproduction.append(f"{path}:{modules}")
         self.assertEqual(reproduction, [])
         script = (

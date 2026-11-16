@@ -108,8 +108,8 @@ def main():
     _install_stub()
     sys.path.insert(0, str(ROOT / 'src/se/official/semambapp'))
     from model.semambapp import SEMambapp
-    from src.se.models.semambapp.network import SEMambaPP
-    from src.se import load_enhancer
+    from src.models.semambapp.network import SEMambaPP
+    from src.models import load_enhancer
 
     config = {
         'model_cfg': {'hid_feature': 48, 'num_tfmamba': 4, 'd_state': 16, 'd_conv': 4,

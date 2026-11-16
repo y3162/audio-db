@@ -166,7 +166,7 @@ def check_native(report: Report) -> None:
             "import json\n"
             "import os\n"
             "os.environ.pop('DF_RFFT_LIBRARY', None)\n"
-            "from src.se.models.deepfilternet3.dsp import _rfft_unnormalized, rfft_runtime_record\n"
+            "from src.models.deepfilternet3.dsp import _rfft_unnormalized, rfft_runtime_record\n"
             "import torch\n"
             "record = rfft_runtime_record()\n"
             "y = _rfft_unnormalized(torch.zeros(320))\n"
@@ -237,7 +237,7 @@ def check_models(report: Report) -> None:
     ]
     code = (
         "import sys\n"
-        "from src.se import load_enhancer\n"
+        "from src.models import load_enhancer\n"
         "name, path, config, variant = sys.argv[1:5]\n"
         "kwargs = {}\n"
         "if config: kwargs['config'] = config\n"
@@ -286,7 +286,7 @@ def check_api(report: Report) -> None:
         report.add("NOT_TESTED", "api.se", "se environment missing", required=False)
         return
     code = (
-        "from src.se import available_enhancers\n"
+        "from src.models import available_enhancers\n"
         "names = available_enhancers()\n"
         "assert set(names) >= {'mp_senet', 'tf_gridnet', 'tf_locoformer', 'deepfilternet3', 'mossformergan', 'semambapp'}\n"
         "import src.data.corpora_catalog, src.evaluation.metrics.pesq, src.asr\n"

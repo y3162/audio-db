@@ -402,7 +402,8 @@ class WeightedTrainerTests(unittest.TestCase):
         try:
             experiment = build_experiment(load_experiment(_experiment_config(base / "ok", spec, steps=1)))
             experiment.run()
-            self.assertEqual(closes, [0])
+            # Preflight opens epoch 0 and closes it, then the training step does the same.
+            self.assertEqual(closes, [0, 0])
             closes.clear()
             failed = build_experiment(
                 load_experiment(_experiment_config(base / "bad", spec, steps=1, loss="tests.experiments.support.BoomLoss"))

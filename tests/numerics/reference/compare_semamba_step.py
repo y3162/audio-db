@@ -40,8 +40,8 @@ from model.discriminator import MultiScaleSubbandCQTDiscriminator as OfficialCQT
 from model.loss import MultiScaleMelSpectrogramLoss, phase_losses  # noqa: E402
 from model.semambapp import SEMambapp  # noqa: E402
 from model.stfts import mag_phase_istft, mag_phase_stft  # noqa: E402
-from src.se.models.semambapp.network import SEMambaPP  # noqa: E402
-from src.experiments.official.semambapp.discriminator import (  # noqa: E402
+from src.models.semambapp.network import SEMambaPP  # noqa: E402
+from src.models.semambapp.discriminator import (  # noqa: E402
     MultiResolutionDiscriminator,
     MultiScaleSubbandCQTDiscriminator,
 )

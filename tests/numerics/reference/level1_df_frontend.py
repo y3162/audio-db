@@ -28,8 +28,8 @@ def _max_abs(left: np.ndarray, right: np.ndarray) -> float:
 
 def main() -> None:
     import libdf
-    from src.se import build_model
-    from src.se.models.deepfilternet3.dsp import DFStream
+    from src.models import build_model
+    from src.models.deepfilternet3.dsp import DFStream
 
     OUT.mkdir(parents=True, exist_ok=True)
     params = build_model("deepfilternet3", None).params

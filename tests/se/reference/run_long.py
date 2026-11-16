@@ -78,7 +78,7 @@ def compare_mossformer(device, seconds, seed):
     sys.path.insert(0, str(root))
     from clearvoice.models.mossformer_gan_se.generator import MossFormerGAN_SE_16K
     from clearvoice.utils.decode import decode_one_audio_mossformergan_se_16k
-    from src.se import load_enhancer
+    from src.models import load_enhancer
 
     class Args:
         mode = 'inference'

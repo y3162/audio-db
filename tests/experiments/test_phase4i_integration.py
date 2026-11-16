@@ -26,9 +26,9 @@ from src.experiments.api import Experiment
 from src.experiments.checkpoint import FORMAT
 from src.experiments.config import load_experiment
 from src.experiments.errors import ExperimentError
-from src.experiments.official.deepfilternet3.model import DeepFilterNet3Model
-from src.experiments.official.semambapp.models import SEMambaPPGenerator, scan_execution
-from src.se import load_enhancer
+from src.models.deepfilternet3.model import DeepFilterNet3Model
+from src.models.semambapp.models import SEMambaPPGenerator, scan_execution
+from src.models import load_enhancer
 from src.experiments.calc.rng import set_determinism
 from src.experiments.data.snapshot import published_snapshot_directories
 from tests.experiments.test_deepfilternet3 import _ARCH as DFN_ARCH
@@ -40,7 +40,7 @@ from tests.experiments.test_tf_gridnet_training import _scripted_yaml as grid_ya
 from tests.experiments.test_tf_locoformer_training import _scripted_yaml as loco_yaml
 
 ROOT = Path(__file__).resolve().parents[2]
-TRACKED_RFFT = ROOT / "src/se/models/deepfilternet3/libdf_rfft.so"
+TRACKED_RFFT = ROOT / "src/models/deepfilternet3/libdf_rfft.so"
 LOCAL_RFFT = ROOT / "build/df-rfft/release/libdf_rfft.so"
 SNAPSHOTS = ROOT / "data/db/snapshots"
 OFFICIAL = {
@@ -107,7 +107,7 @@ def _probe_rfft(library: str) -> dict[str, object]:
     code = (
         "import json, os\n"
         "os.environ['DF_RFFT_LIBRARY'] = %r\n"
-        "from src.se.models.deepfilternet3.dsp import _rfft_kernel, rfft_library_path\n"
+        "from src.models.deepfilternet3.dsp import _rfft_kernel, rfft_library_path\n"
         "try:\n"
         "    kernel = _rfft_kernel()\n"
         "    abi = None if kernel is None else int(kernel.df_rfft_abi())\n"
@@ -364,7 +364,8 @@ class Phase4ICheckpointTests(unittest.TestCase):
             saved = (directory / "metrics.jsonl").read_bytes()
             with self.assertRaises(ExperimentError) as caught:
                 Experiment(load_experiment(directory / "experiment.yaml")).run(resume=directory / "missing.pt")
-            self.assertIn("complete.json", str(caught.exception))
+            self.assertIn("checkpoint not found", str(caught.exception))
+            self.assertTrue((directory / "complete.json").is_file())
             self.assertEqual((directory / "metrics.jsonl").read_bytes(), saved)
 
     def test_saved_checkpoints_keep_the_experiment_contract(self) -> None:

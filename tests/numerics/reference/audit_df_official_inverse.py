@@ -20,7 +20,7 @@ sys.path.insert(0, str(ROOT / ".venvs/tsubame-libdf"))
 sys.path.insert(0, str(ROOT / "src/se/official/deepfilternet/DeepFilterNet"))
 
 from libdf import DF  # noqa: E402
-from src.se.models.deepfilternet3.dsp import vorbis_window  # noqa: E402
+from src.models.deepfilternet3.dsp import vorbis_window  # noqa: E402
 from tests.numerics.reference.deepfilternet_task import _vorbis_istft  # noqa: E402
 
 

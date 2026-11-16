@@ -22,10 +22,10 @@ if libdf_dir not in sys.path:
     sys.path.insert(0, libdf_dir)
 
 from src.experiments.data import Batch  # noqa: E402
-from src.experiments.official.deepfilternet3.model import DeepFilterNet3Model  # noqa: E402
+from src.models.deepfilternet3.model import DeepFilterNet3Model  # noqa: E402
 from tests.numerics.reference.deepfilternet_task import DeepFilterNetTask  # noqa: E402
-from src.experiments.official.deepfilternet3.losses import official_deepfilternet_objective  # noqa: E402
-from src.experiments.official.deepfilternet3.trainer import DeepFilterNet3Trainer  # noqa: E402
+from src.models.deepfilternet3.losses import official_deepfilternet_objective  # noqa: E402
+from src.models.deepfilternet3.trainer import DeepFilterNet3Trainer  # noqa: E402
 from src.experiments.runtime import PreparePolicy, ProcessRuntime  # noqa: E402
 from tests.numerics.reference.compare_deepfilternet import _resample, _task_config  # noqa: E402
 from tests.numerics.reference.common import NoCheckpoints, optim_report, weight_report  # noqa: E402

@@ -277,8 +277,8 @@ class ProvenanceJudgmentTests(unittest.TestCase):
         self.assertEqual(canonical_bytes(document), canonical_bytes(json.loads(canonical_bytes(document))))
 
     def test_evaluation_package_imports_only_its_allowed_packages(self) -> None:
-        """Evaluation uses src.se, src.asr, and src.data. The reproduction database lives in src.experiments."""
-        allowed = ("src.evaluation", "src.se", "src.asr", "src.data")
+        """Evaluation uses src.models, src.asr, and src.data. The reproduction database lives in src.experiments."""
+        allowed = ("src.evaluation", "src.models", "src.asr", "src.data")
         offenders = []
         for path in (ROOT / "src" / "evaluation").rglob("*.py"):
             tree = ast.parse(path.read_text(encoding="utf-8"))

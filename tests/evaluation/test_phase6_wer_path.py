@@ -1,7 +1,7 @@
 """Phase 6 checks the existing evaluation path with a fixed mock ASR.
 
 Corpus WER is the micro aggregate. The mock ASR does not score audio quality.
-One real MP-SENet checkpoint is loaded through src.se.load_enhancer. The other
+One real MP-SENet checkpoint is loaded through src.models.load_enhancer. The other
 model loaders are checked only as far as the evaluation adapter's call.
 """
 
@@ -20,7 +20,7 @@ from src.evaluation.models.se import MockEnhancer, load_evaluation_enhancer
 from src.evaluation.pipeline import execute
 from src.evaluation.provenance import is_confirmed_independent, judge_independence
 from src.evaluation.results.reader import read_jsonl
-from src.se.api import build_model, registry
+from src.models.api import build_model, registry
 from tests.evaluation.support import experiment_config
 from tests.suite_resources import apply_intra_threads
 

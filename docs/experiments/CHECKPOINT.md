@@ -147,7 +147,7 @@ initialize:
 
 ## 公開パスとクラス識別
 
-現在の仕様では YAML の `class` に安定して維持する公開 import パスを書く。旧 YAML との互換性は保証しない。Experiment の共通構築、実行、Trainer、損失は `src.experiments` 直下の公開モジュール、データ供給は `src.experiments.data`、公式モデルと Trainer は `src.experiments.official.<model>.model` / `models` / `trainer`、共有 scheduler は `src.experiments.calc.optim`、外部ライブラリはその公開パスを使う。公式モジュールは公開モジュールに直接実装を置いている。推論は `src.se` と `src.asr`、評価は `src.evaluation` の API と CLI を使う。公開モジュール上の monkeypatch は実装モジュールのグローバル参照を書き換えない。
+現在の仕様では YAML の `class` に安定して維持する公開 import パスを書く。旧 YAML との互換性は保証しない。Experiment の共通構築、実行、Trainer、損失は `src.experiments` 直下の公開モジュール、データ供給は `src.experiments.data`、公式モデルと Trainer は `src.models.<model>.model` / `models` / `trainer`、共有 scheduler は `src.experiments.calc.optim`、外部ライブラリはその公開パスを使う。公式モジュールは公開モジュールに直接実装を置いている。推論は `src.models` と `src.asr`、評価は `src.evaluation` の API と CLI を使う。公開モジュール上の monkeypatch は実装モジュールのグローバル参照を書き換えない。
 
 Selector と StopPolicy は具象クラス自身に `checkpoint_class_id` を宣言する。ID は YAML に指定する公開クラスパスと一致させ、実装の移動では変えない。継承による暗黙の ID 再利用、無効な ID、同じプロセス内で異なるクラスによる ID の重複を拒否する。Selector は ID・設定・状態を保存し、StopPolicy は ID と状態を TrainingControl の状態に含める。保存前に rank 間でも照合する。Model、Optimizer、Scheduler、Trainer、DataModule のクラスは設定の公開パスと `config_sha256` で識別し、各 state ID と state 構造を検証する。`output`、`checkpoint` と `stop_after_logical_steps` はハッシュ対象外で、Selector の設定は別途照合する。
 

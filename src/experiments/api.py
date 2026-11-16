@@ -111,6 +111,8 @@ class Experiment:
                 self.build()
             if self._graph is None or self._checkpoint is None or self._directory is None:
                 raise BuildError("experiment is not built")
+            if resume is not None:
+                self._checkpoint.validate_resume(Path(resume))
             self._publish_run_record(resume=resume is not None)
             from src.experiments.execution.lifecycle import Lifecycle
 
@@ -129,8 +131,6 @@ class Experiment:
             self._lifecycle = lifecycle
             trainer.runtime = self._graph.runtime  # type: ignore[attr-defined]
             trainer.lifecycle = lifecycle  # type: ignore[attr-defined]
-            if resume is not None:
-                self._checkpoint.validate_resume(Path(resume))
             from src.experiments.execution.preflight import run_batch_probe
 
             self._record_probe(run_batch_probe(self))

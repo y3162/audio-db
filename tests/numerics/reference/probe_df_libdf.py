@@ -58,7 +58,7 @@ def main():
         im['generator'] = copy.deepcopy(om['generator'])
     initial={n:p.detach().clone() for n,p in om['generator'].named_parameters()}
     stream=OfficialStream(official._params)
-    from src.se.models.deepfilternet3.dsp import DFStream
+    from src.models.deepfilternet3.dsp import DFStream
     params=official._params
     local=DFStream(params.sr,params.fft_size,params.hop_size,params.nb_erb,params.nb_df,
                    params.min_nb_freqs,params.norm_tau,torch.device('cpu'))

@@ -11,7 +11,7 @@ sys.path[:0] = [str(ROOT), str(ROOT / 'src/se/official/semambapp')]
 from model.semambapp import SEMambapp
 from model.stfts import mag_phase_stft, mag_phase_istft
 from src.evaluation.audio.render import render_recipe
-from src.se.models.semambapp.inference import build, _enhance_16k
+from src.models.semambapp.inference import build, _enhance_16k
 from tests.numerics.reference.compare_semamba_step import _cfg
 
 db = ROOT / 'data/db/semamba-voicebank-test-20261101-compat.duckdb'

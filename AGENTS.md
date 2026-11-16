@@ -24,7 +24,7 @@
 - 公式 WER は、対象発話の全件で必須の WER が揃ったときだけ確定する。成功した発話だけを黙って集計しない。欠けた値を 0 や 100% で補わない。揃っていない値は暫定（`wer_provisional`）として区別する。
 - `na`・`unavailable`・skip を 0 として扱わない。部分音声に全文テキストを対応させた WER を計算しない。
 - CHiME3 の CH0 を clean 参照とみなさない。CHiME3 real と元 WSJ を、時間整合したペアとみなさない。
-- `src/se/` と `src/asr/` は他の `src/` を import しない。`transcribe()` と `enhance()` は推論専用。
+- `src/asr/` は他の `src/` を import しない。`transcribe()` は推論専用。`src/models` の推論（`api`、`core`、各モデルの `inference` とネットワーク）は `src.experiments` を import しない。`enhance()` は推論専用。各モデルの Trainer は `src.experiments` を使う。
 - 独立 SE は `src/se/official/` に実行時依存しない。ESPnet 全体をコピーしない。
 - チェックポイントのパスをライブラリに固定しない。
 - 学習 checkpoint は `audio-db-experiment-v1`。`audio-db-training-v1` は読まない。

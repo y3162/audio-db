@@ -290,7 +290,7 @@ class GateAndTrainerTests(unittest.TestCase):
             opened.close()
 
     def test_pipeline_modules_do_not_import_duckdb_or_training(self):
-        forbidden = ("duckdb", "src.training", "src.se", "src.asr", "src.evaluation")
+        forbidden = ("duckdb", "src.training", "src.models", "src.asr", "src.evaluation")
         offenders = []
         roots = [
             ROOT / "src" / "experiments" / "data" / "sampling",

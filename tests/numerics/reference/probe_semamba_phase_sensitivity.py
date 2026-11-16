@@ -4,7 +4,7 @@ import sys
 from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parents[3]))
 import torch
-from src.se.models.semambapp.network import SelectiveSSM
+from src.models.semambapp.network import SelectiveSSM
 from src.experiments.calc.spectral import matrix_phase_losses
 from tests.numerics.reference.run_semamba_official_batch import _load, _waves
 from tests.numerics.reference.compare_semamba_quality import _require_environment

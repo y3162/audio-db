@@ -2,7 +2,7 @@
 import unittest
 import os
 import torch
-from src.se.models.semambapp.inference import _enhance_16k
+from src.models.semambapp.inference import _enhance_16k
 
 
 class IdentitySpectrum(torch.nn.Module):
@@ -12,7 +12,7 @@ class IdentitySpectrum(torch.nn.Module):
 
 class SemambaLengthTest(unittest.TestCase):
     def test_fused_backend_cpu_fallback_and_checkpoint_keys(self):
-        from src.se.models.semambapp.network import SelectiveSSM
+        from src.models.semambapp.network import SelectiveSSM
 
         torch.manual_seed(4)
         reference = SelectiveSSM(8, 3, 4, 2)
@@ -22,13 +22,13 @@ class SemambaLengthTest(unittest.TestCase):
         torch.testing.assert_close(reference(x), fused(x))
         with self.assertRaises(ValueError):
             SelectiveSSM(8, scan_backend='invalid')
-        from src.se.models.semambapp.network import _fused_xz
+        from src.models.semambapp.network import _fused_xz
         projected = _fused_xz(fused, x)
         self.assertEqual(tuple(projected.stride()), (x.shape[1], x.shape[0] * x.shape[1], 1))
 
     @unittest.skipUnless(os.environ.get('SEMAMBA_TEST_FUSED_CUDA') == '1', 'explicit CUDA extension test')
     def test_fused_scan_forward_backward_cuda(self):
-        from src.se.models.semambapp.network import SelectiveSSM
+        from src.models.semambapp.network import SelectiveSSM
 
         torch.manual_seed(5)
         reference = SelectiveSSM(8, 3, 4, 2).cuda()
@@ -61,7 +61,7 @@ class SemambaLengthTest(unittest.TestCase):
     def test_checkpointed_scan_matches_the_eager_scan(self):
         from torch.utils.checkpoint import checkpoint
 
-        from src.se.models.semambapp.network import _selective_scan
+        from src.models.semambapp.network import _selective_scan
 
         torch.manual_seed(0)
         arguments = tuple(

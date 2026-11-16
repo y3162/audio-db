@@ -253,7 +253,7 @@ def validate_registered_models(models: list[ModelConfig]) -> None:
     """Resolve aliases against the SE registry. Mock models stay local."""
     if not any(model.name != MOCK_MODEL for model in models):
         return
-    from src.se import model_metadata
+    from src.models import model_metadata
 
     for model in models:
         if model.name == MOCK_MODEL:

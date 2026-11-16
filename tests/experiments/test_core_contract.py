@@ -14,12 +14,12 @@ from src.experiments.evaluation.boundary import ResearchSession
 from src.experiments.execution.checkpoint import FORMAT, SCHEMA_VERSION
 from src.experiments.execution.direct import DirectSession
 from src.experiments.execution.selector import EVENTS
-from src.experiments.official.deepfilternet3.trainer import DeepFilterNet3Trainer
-from src.experiments.official.mossformergan.trainer import MossFormerGANTrainer
-from src.experiments.official.mp_senet.trainer import MPSENetGANTrainer
-from src.experiments.official.semambapp.trainer import SEMambaPPTrainer
-from src.experiments.official.tf_gridnet.trainer import TFGridNetTrainer
-from src.experiments.official.tf_locoformer.trainer import TFLocoformerTrainer
+from src.models.deepfilternet3.trainer import DeepFilterNet3Trainer
+from src.models.mossformergan.trainer import MossFormerGANTrainer
+from src.models.mp_senet.trainer import MPSENetGANTrainer
+from src.models.semambapp.trainer import SEMambaPPTrainer
+from src.models.tf_gridnet.trainer import TFGridNetTrainer
+from src.models.tf_locoformer.trainer import TFLocoformerTrainer
 
 
 class CoreContractTests(unittest.TestCase):
@@ -49,12 +49,12 @@ class CoreContractTests(unittest.TestCase):
         root = Path(__file__).resolve().parents[2]
         paths = [
             root / "src/experiments/training/trainers.py",
-            root / "src/experiments/official/tf_gridnet/trainer.py",
-            root / "src/experiments/official/tf_locoformer/trainer.py",
-            root / "src/experiments/official/deepfilternet3/trainer.py",
-            root / "src/experiments/official/mp_senet/trainer.py",
-            root / "src/experiments/official/semambapp/trainer.py",
-            root / "src/experiments/official/mossformergan/trainer.py",
+            root / "src/models/tf_gridnet/trainer.py",
+            root / "src/models/tf_locoformer/trainer.py",
+            root / "src/models/deepfilternet3/trainer.py",
+            root / "src/models/mp_senet/trainer.py",
+            root / "src/models/semambapp/trainer.py",
+            root / "src/models/mossformergan/trainer.py",
         ]
         forbidden = ("CheckpointManager", "lifecycle.checkpoint", "checkpoint.directory", "checkpoint.offer")
         for path in paths:

@@ -1,6 +1,6 @@
 # 評価パイプライン
 
-データセット、音声強調（SE）、音声認識（ASR）、評価指標を組み合わせて実験するための実行基盤です。SE の推論本体は `src.se.load_enhancer()` のままです。このパッケージはモデルを学習しません。コーパスの取り込みも、`corpora.audio_files` の再作成もしません。
+データセット、音声強調（SE）、音声認識（ASR）、評価指標を組み合わせて実験するための実行基盤です。SE の推論本体は `src.models.load_enhancer()` のままです。このパッケージはモデルを学習しません。コーパスの取り込みも、`corpora.audio_files` の再作成もしません。
 
 全コーパスの推論や論文用の WER 比較は、この基盤の対象外です。合成音声と Mock でパイプラインが通ることと、チェックポイントがあるときの短い実モデル実行を分けて扱います。
 
@@ -13,7 +13,7 @@ src/evaluation/
 ├── pipeline.py            # 段階の接続
 ├── datasets/              # DuckDB の評価セット / synthetic
 ├── audio/                 # 読み込み、レシピの波形生成、平均二乗 SNR
-├── models/                # SE は src.se、ASR は src.asr を呼ぶ
+├── models/                # SE は src.models、ASR は src.asr を呼ぶ
 ├── metrics/               # WER / PESQ / STOI / ESTOI / SI-SDR
 └── results/               # JSONL・CSV・再開用のレコード
 
@@ -26,7 +26,7 @@ examples/manifests/          # DuckDB へ登録する Manifest の例
 tests/evaluation/
 ```
 
-`src/data/` と `src/se/` の処理は複製していません。波形のデコードは torchaudio、データベースの列定義は `src.data.models.audio_file` を使います。
+`src/data/` と `src/models/` の処理は複製していません。波形のデコードは torchaudio、データベースの列定義は `src.data.models.audio_file` を使います。
 
 ## 処理の段階
 
@@ -200,7 +200,7 @@ models:
     checkpoint: data/checkpoints/mp-senet/g_best_vb
 ```
 
-`name` と `variant` は `src.se` の registry で検証します。チェックポイントが無いモデルに、別の重みは割り当てません。複数 variant があるモデルは variant を必須にします。
+`name` と `variant` は `src.models` の registry で検証します。チェックポイントが無いモデルに、別の重みは割り当てません。複数 variant があるモデルは variant を必須にします。
 
 モデルは発話ごとにロードし直しません。発話の一部だけが未完了のとき、そのモデルを 1 回だけロードします。複数モデルは 1 つずつ処理し、終わったら参照を捨てます。
 

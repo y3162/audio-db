@@ -1,6 +1,6 @@
 """SEMamba++ generator and discriminator updates.
 
-The generator is the independent network in ``src.se``. The loss weights match
+The generator is the independent network in ``src.models``. The loss weights match
 the published training config: adversarial 1, feature matching 1 (the matching
 term itself is the sum of per-map L1 means scaled by 2), mel 0.1, magnitude
 0.9, phase 0.3, complex 0.1, consistency 0.1. The waveform L1 term is commented
@@ -24,12 +24,12 @@ import torch
 import torch.nn.functional as F
 from torch.nn.parallel import DistributedDataParallel
 
-from src.se import build_model
+from src.models import build_model
 from src.experiments.calc.distributed import ProcessInfo, unwrap, wrap_module
 from src.experiments.calc.rng import seed_model_init
 from src.experiments.calc.scope import accumulation_scope
 from src.experiments.calc.errors import TrainingError
-from src.experiments.official.semambapp.discriminator import MultiResolutionDiscriminator, MultiScaleSubbandCQTDiscriminator
+from src.models.semambapp.discriminator import MultiResolutionDiscriminator, MultiScaleSubbandCQTDiscriminator
 from src.experiments.calc.optim import build_optimizer, build_scheduler, clip_gradients, step_scheduler
 from src.experiments.calc.spectral import (
     compressed_complex_losses,

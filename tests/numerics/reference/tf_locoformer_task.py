@@ -20,7 +20,7 @@ from typing import Any
 import torch
 from torch.nn.parallel import DistributedDataParallel
 
-from src.se import build_model
+from src.models import build_model
 from src.experiments.calc.distributed import ProcessInfo, unwrap, wrap_module
 from src.experiments.calc.rng import seed_model_init
 from src.experiments.calc.scope import accumulation_scope

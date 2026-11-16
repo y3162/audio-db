@@ -29,15 +29,15 @@ from src.experiments.config import load_experiment
 from src.experiments.data.fixed_pair import MicroBatcher, SnapshotDataModule, SnapshotSource
 from src.experiments.data.online import Dfn3IndexSampler, Dfn3Protocol
 from src.experiments.data.sample import Batch
-from src.experiments.official.deepfilternet3.losses import official_deepfilternet_objective
-from src.experiments.official.deepfilternet3.evaluator import note_early_stop
-from src.experiments.official.deepfilternet3.trainer import schedule_index
-from src.experiments.official.deepfilternet3.trainer import DeepFilterNet3Trainer, _clean_noisy
-from src.experiments.official.deepfilternet3.loss import component_losses
-from src.experiments.official.deepfilternet3.model import DeepFilterNet3Model
+from src.models.deepfilternet3.losses import official_deepfilternet_objective
+from src.models.deepfilternet3.evaluator import note_early_stop
+from src.models.deepfilternet3.trainer import schedule_index
+from src.models.deepfilternet3.trainer import DeepFilterNet3Trainer, _clean_noisy
+from src.models.deepfilternet3.loss import component_losses
+from src.models.deepfilternet3.model import DeepFilterNet3Model
 from src.experiments.runtime import PreparePolicy, ProcessRuntime
 from tests.experiments.official_loss_yaml import DFN_COMPONENTS, DFN_INJECT
-from src.se.models.deepfilternet3.dsp import DFStream, _rfft_kernel, rfft_library_path
+from src.models.deepfilternet3.dsp import DFStream, _rfft_kernel, rfft_library_path
 from src.experiments.calc.batch_schedule import scheduled_batch_size
 from tests.numerics.reference.deepfilternet_task import DeepFilterNetTask, deepfilter_cosine_schedules
 
@@ -483,7 +483,7 @@ output:
 components:
   model:
     role: module
-    class: src.experiments.official.deepfilternet3.model.DeepFilterNet3Model
+    class: src.models.deepfilternet3.model.DeepFilterNet3Model
     kwargs:
       seed: 7
       variant: deepfilternet3
@@ -551,7 +551,7 @@ components:
       amsgrad: true
 {DFN_COMPONENTS}  trainer:
     role: trainer
-    class: src.experiments.official.deepfilternet3.trainer.DeepFilterNet3Trainer
+    class: src.models.deepfilternet3.trainer.DeepFilterNet3Trainer
     kwargs:
       max_logical_steps: 2
       global_batch_size: {world_batch}

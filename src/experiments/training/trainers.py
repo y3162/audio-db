@@ -2,7 +2,7 @@
 
 ``StandardTrainer`` performs forward, loss, backward, and one optimizer
 update per logical step. Official speech-enhancement loops live under
-``src/experiments/official/``.
+``src/models/``.
 """
 
 from __future__ import annotations
@@ -341,7 +341,7 @@ class StandardTrainer:
             with runtime.sync_gradients([self.model], enabled=sync):
                 with runtime.autocast():
                     if count == 0:
-                        micro = self._zero_loss(component_id)
+                        micro = self._empty_loss(batches, component_id, runtime)
                     else:
                         micro = self._forward_loss(batches, component_id, runtime)
                     if uniform:
@@ -353,6 +353,27 @@ class StandardTrainer:
             detached = micro.detach()
             total = detached if total is None else total + detached
         return total, sample_ids, window
+
+    def _empty_loss(self, batches: list[Batch], component_id: str, runtime: ProcessRuntime) -> torch.Tensor:
+        """A finite zero that still runs the module forward.
+
+        DDP decides which parameters join the all-reduce during forward.
+        A zero built outside the module does not enter that collective, so
+        the rank that still has audio waits forever. The task loss is not
+        used: mean reduction of an empty tensor is NaN.
+        """
+
+        total: torch.Tensor | None = None
+        for batch in batches:
+            batch = _batch_on_device(batch, runtime.device)
+            prediction = self.model(batch.inputs)
+            if not isinstance(prediction, torch.Tensor):
+                raise RuntimeFailure(f"component {component_id}: model did not return a tensor")
+            value = prediction.reshape(-1).sum() * 0
+            total = value if total is None else total + value
+        if total is None:
+            return self._zero_loss(component_id)
+        return total
 
     def _zero_loss(self, component_id: str) -> torch.Tensor:
         total: torch.Tensor | None = None

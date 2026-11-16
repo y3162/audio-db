@@ -1,4 +1,4 @@
-"""Waveform L1 training for SE models whose forward is already in ``src.se``.
+"""Waveform L1 training for SE models whose forward is already in ``src.models``.
 
 This is not an official training reproduction. The loss is time-domain L1,
 there is no discriminator, and the official multi-stage or GAN objectives are
@@ -13,7 +13,7 @@ import torch
 import torch.nn.functional as F
 from torch.nn.parallel import DistributedDataParallel
 
-from src.se import build_model
+from src.models import build_model
 from src.experiments.calc.distributed import ProcessInfo, unwrap, wrap_module
 from src.experiments.calc.rng import seed_model_init
 from src.experiments.calc.scope import accumulation_scope

@@ -13,9 +13,9 @@ WITH_ENV := $(ROOT)/scripts/setup/with_env.sh
 PYTHON ?= $(shell if [ -x $(ROOT)/.venvs/se/bin/python ]; then echo $(ROOT)/.venvs/se/bin/python; else echo python; fi)
 SETUP_PY := $(shell if [ -x $(ROOT)/.venvs/se/bin/python ]; then echo $(ROOT)/.venvs/se/bin/python; else uv python find 3.12; fi)
 
-DF_RFFT_MANIFEST := src/se/models/deepfilternet3/rfft_kernel/Cargo.toml
+DF_RFFT_MANIFEST := src/models/deepfilternet3/rfft_kernel/Cargo.toml
 DF_RFFT_TARGET ?= $(CURDIR)/build/df-rfft
-DF_RFFT_SO := src/se/models/deepfilternet3/libdf_rfft.so
+DF_RFFT_SO := src/models/deepfilternet3/libdf_rfft.so
 
 LINK_FLAGS :=
 ifneq ($(strip $(DRY_RUN)),)

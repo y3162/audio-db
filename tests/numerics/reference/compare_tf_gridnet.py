@@ -31,7 +31,7 @@ torch.backends.cudnn.allow_tf32 = False
 ROOT = Path(__file__).resolve().parents[3]
 sys.path.insert(0, str(ROOT))
 
-from src.se import build_model, load_enhancer  # noqa: E402
+from src.models import build_model, load_enhancer  # noqa: E402
 from src.experiments.calc.spectral import multi_resolution_l1  # noqa: E402
 from tests.numerics.reference.tf_gridnet_task import TFGridNetTask  # noqa: E402
 from tests.se.test_tf_gridnet import reference_v1  # noqa: E402
@@ -197,7 +197,7 @@ def main() -> None:
     }
     official, independent = _pair(device)
     report["parameters"] = sum(parameter.numel() for parameter in independent.parameters())
-    from src.experiments.official.tf_gridnet.model import TFGridNetModel
+    from src.models.tf_gridnet.model import TFGridNetModel
 
     yaml_model = TFGridNetModel(seed=7, architecture=ARCHITECTURE, variant="ms-snsd")
     yaml_model.generator.load_state_dict(official.state_dict(), strict=True)
@@ -208,7 +208,7 @@ def main() -> None:
         yaml_wave = yaml_model(probe_wave)
         official_wave, independent_wave = _enhance(official, independent, probe_wave)
     report["yaml_model_forward"] = {
-        "class": "src.experiments.official.tf_gridnet.model.TFGridNetModel",
+        "class": "src.models.tf_gridnet.model.TFGridNetModel",
         "versus_official": gap(official_wave, yaml_wave),
         "versus_build_model": gap(independent_wave, yaml_wave),
     }

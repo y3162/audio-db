@@ -18,7 +18,7 @@ sys.path.insert(0, str(ROOT))
 sys.path.insert(0, str(SE))
 
 from models.mossformer_gan.generator import SyncANet  # noqa: E402
-from src.experiments.official.mossformergan.models import MossFormerGANGenerator  # noqa: E402
+from src.models.mossformergan.models import MossFormerGANGenerator  # noqa: E402
 
 OUT = Path(os.environ.get("AUDIO_DB_NUMERICS_OUT", "/tmp/audio-db-level1-20261111/moss"))
 

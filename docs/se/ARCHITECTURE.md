@@ -1,9 +1,9 @@
 # 音声強調 API
 
-`src.se` は推論と、学習前の `nn.Module` 構築だけを公開する。学習は `src/experiments/` だけが行う。`enhance` は推論専用で、損失も更新順も含まない。`src/se` は他の `src/` を import しない。
+`src.models` は推論 API と、各モデルのネットワーク、Trainer、Evaluator を持つ。共有の学習 runtime は `src/experiments/` にある。`enhance` は推論専用で、損失も更新順も含まない。推論モジュールは `src.experiments` を import しない。
 
 ```python
-from src.se import available_enhancers, build_model, load_enhancer, model_metadata
+from src.models import available_enhancers, build_model, load_enhancer, model_metadata
 
 print(available_enhancers())
 model = build_model("mp_senet")
@@ -49,4 +49,4 @@ print(model_metadata("tf_gridnet"))
 | MossFormerGAN | `model` | 16 kHz、`n_fft=400`、periodic Hamming。10 秒超は 10 秒窓、ストライド 75%。エネルギー正規化は発話全体で一度 |
 | SEMamba++ | `generator` | 16 kHz、`n_fft=400`、hop 100、Hann。既定のスキャンは PyTorch。`scan_backend: fused` のときだけ CUDA 上で `mamba_ssm` を使う |
 
-新規のモデルは、独立した `nn.Module` と前後処理を足し、`src/se/core/registry.py` の `ModelSpec` へ登録する。
+新規のモデルは、独立した `nn.Module` と前後処理を足し、`src/models/core/registry.py` の `ModelSpec` へ登録する。

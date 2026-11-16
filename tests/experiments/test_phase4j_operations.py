@@ -25,22 +25,22 @@ from src.evaluation.provenance import canonical_bytes, judge_checkpoint
 from src.experiments.api import Experiment
 from src.experiments.checkpoint import CheckpointError, _assert_replicated_states
 from src.experiments.config import load_experiment
-from src.experiments.official.deepfilternet3.trainer import DeepFilterNet3Trainer
-from src.experiments.official.mossformergan.trainer import MossFormerGANTrainer
-from src.experiments.official.mp_senet.trainer import MPTrainingProgress
-from src.experiments.official.mp_senet.trainer import MPSENetGANTrainer
+from src.models.deepfilternet3.trainer import DeepFilterNet3Trainer
+from src.models.mossformergan.trainer import MossFormerGANTrainer
+from src.models.mp_senet.trainer import MPTrainingProgress
+from src.models.mp_senet.trainer import MPSENetGANTrainer
 from src.experiments.provenance import judge_experiment_checkpoint
 from src.experiments.selectors import StandardSelector
-from src.experiments.official.semambapp.trainer import SEMambaPPTrainer
+from src.models.semambapp.trainer import SEMambaPPTrainer
 from src.experiments.signals import clear_interrupt, ranks_should_stop, request_interrupt
-from src.experiments.official.tf_gridnet.trainer import TFGridNetTrainer
-from src.experiments.official.tf_locoformer.trainer import TFLocoformerTrainer
-from src.se.models.deepfilternet3.dsp import _rfft_kernel, rfft_runtime_record
+from src.models.tf_gridnet.trainer import TFGridNetTrainer
+from src.models.tf_locoformer.trainer import TFLocoformerTrainer
+from src.models.deepfilternet3.dsp import _rfft_kernel, rfft_runtime_record
 from tests.experiments.test_ddp import _torchrun, _write_yaml
 
 ROOT = Path(__file__).resolve().parents[2]
 LOCAL_RFFT = ROOT / "build" / "df-rfft" / "release" / "libdf_rfft.so"
-TRACKED_RFFT = ROOT / "src" / "se" / "models" / "deepfilternet3" / "libdf_rfft.so"
+TRACKED_RFFT = ROOT / "src" / "models" / "deepfilternet3" / "libdf_rfft.so"
 
 
 class NativeLibraryTests(unittest.TestCase):
@@ -55,7 +55,7 @@ class NativeLibraryTests(unittest.TestCase):
                 "-c",
                 "import json, os\n"
                 "os.environ.pop('DF_RFFT_LIBRARY', None)\n"
-                "from src.se.models.deepfilternet3.dsp import rfft_runtime_record\n"
+                "from src.models.deepfilternet3.dsp import rfft_runtime_record\n"
                 "print(json.dumps(rfft_runtime_record(), sort_keys=True))\n",
             ],
             cwd=ROOT,
@@ -119,6 +119,7 @@ class ProvenanceContractTests(unittest.TestCase):
                 accumulation=1,
                 optimizer="sgd",
                 distribute="none",
+                world_size=1,
                 stop_after=1,
             )
             first = Experiment(load_experiment(config))
@@ -149,6 +150,7 @@ class ProvenanceContractTests(unittest.TestCase):
                 accumulation=1,
                 optimizer="sgd",
                 distribute="none",
+                world_size=1,
             )
             second = Experiment(load_experiment(resumed_config))
             resumed = second.run(resume=step1)
@@ -180,6 +182,7 @@ class ProvenanceContractTests(unittest.TestCase):
                 accumulation=1,
                 optimizer="sgd",
                 distribute="none",
+                world_size=1,
             )
             Experiment(load_experiment(config)).run()
             output = directory / "run"
@@ -222,6 +225,7 @@ class ProvenanceContractTests(unittest.TestCase):
                 accumulation=1,
                 optimizer="sgd",
                 distribute="none",
+                world_size=1,
             )
             experiment = Experiment(load_experiment(config))
             experiment.run()
@@ -321,27 +325,27 @@ def _arm_stop_probe(probe: object, cls: type) -> None:
         probe.progress = MPTrainingProgress.initial("optim_g", "optim_d")
         return
     if cls is TFGridNetTrainer:
-        from src.experiments.official.tf_gridnet.trainer import GridNetProgress
+        from src.models.tf_gridnet.trainer import GridNetProgress
 
         probe.progress = GridNetProgress.initial("optimizer")
         return
     if cls is TFLocoformerTrainer:
-        from src.experiments.official.tf_locoformer.trainer import LocoformerProgress
+        from src.models.tf_locoformer.trainer import LocoformerProgress
 
         probe.progress = LocoformerProgress.initial("optimizer", "probe")
         return
     if cls is SEMambaPPTrainer:
-        from src.experiments.official.semambapp.trainer import SEMambaProgress
+        from src.models.semambapp.trainer import SEMambaProgress
 
         probe.progress = SEMambaProgress.initial("optim_g", "optim_d", "probe")
         return
     if cls is DeepFilterNet3Trainer:
-        from src.experiments.official.deepfilternet3.trainer import DFProgress
+        from src.models.deepfilternet3.trainer import DFProgress
 
         probe.progress = DFProgress.initial("optimizer", 1)
         return
     if cls is MossFormerGANTrainer:
-        from src.experiments.official.mossformergan.trainer import MossProgress
+        from src.models.mossformergan.trainer import MossProgress
 
         probe.progress = MossProgress.initial("optim_g", "optim_d", "research")
         return

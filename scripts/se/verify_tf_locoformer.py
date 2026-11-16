@@ -107,7 +107,7 @@ def _inference(args) -> list[dict]:
         }]
     import sys
 
-    from src.se import build_model
+    from src.models import build_model
 
     root = str(OFFICIAL)
     if root not in sys.path:
@@ -228,7 +228,7 @@ def _frontend(separator, waveform: torch.Tensor) -> torch.Tensor:
 
 
 def _train_step(device_name: str, batch: int, chunk: int) -> dict:
-    from src.se.models.tf_locoformer.model import TFLocoformer
+    from src.models.tf_locoformer.network import TFLocoformer
     from src.experiments.calc.initialization import apply_espnet_initialization
     from src.experiments.calc.spectral import multi_resolution_l1
 

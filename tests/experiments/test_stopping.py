@@ -157,7 +157,7 @@ class StoppingIntegrationTests(unittest.TestCase):
         from src.experiments.api import build_experiment
         from src.experiments.config import load_experiment
         from src.experiments.errors import CheckpointError
-        from src.experiments.official.tf_gridnet.trainer import TFGridNetTrainer
+        from src.models.tf_gridnet.trainer import TFGridNetTrainer
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
             full = self._config(root / 'full')

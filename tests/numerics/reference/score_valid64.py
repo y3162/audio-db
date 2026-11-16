@@ -22,7 +22,7 @@ sys.path.insert(0, str(ROOT))
 sys.path.insert(0, str(ROOT / "src/se/official/semambapp"))
 
 from model.semambapp import SEMambapp
-from src.se.models.semambapp.network import SEMambaPP
+from src.models.semambapp.network import SEMambaPP
 from src.experiments.calc.dataset import load_recipe_dataset
 from src.experiments.calc.stft import semamba_mag_phase_istft, semamba_mag_phase_stft
 from tests.numerics.reference.compare_semamba_step import _cfg, _flat, _official_parts

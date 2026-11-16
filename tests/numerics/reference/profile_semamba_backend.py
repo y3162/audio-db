@@ -7,7 +7,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parents[3]))
 import torch
 from torch.profiler import profile, ProfilerActivity
-from src.se.models.semambapp.network import SelectiveSSM
+from src.models.semambapp.network import SelectiveSSM
 from tests.numerics.reference.compare_semamba_quality import _require_environment
 from tests.numerics.reference.run_semamba_official_batch import _load, _update, _waves, _slice
 

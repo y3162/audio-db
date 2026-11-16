@@ -1,7 +1,7 @@
 """Evaluation pipeline for speech enhancement.
 
 Stages (dataset, mixing, enhancement, recognition, metrics, results) are
-independent. Speech enhancement models are loaded with src.se.load_enhancer.
+independent. Speech enhancement models are loaded with src.models.load_enhancer.
 This package does not train models and does not modify the corpus database.
 """
 

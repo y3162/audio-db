@@ -18,12 +18,12 @@ from src.experiments.errors import DataError, RuntimeFailure
 
 ROOT = Path(__file__).resolve().parents[2]
 _TRAINERS = (
-    "src/experiments/official/mp_senet/trainer.py",
-    "src/experiments/official/mossformergan/trainer.py",
-    "src/experiments/official/semambapp/trainer.py",
-    "src/experiments/official/tf_gridnet/trainer.py",
-    "src/experiments/official/tf_locoformer/trainer.py",
-    "src/experiments/official/deepfilternet3/trainer.py",
+    "src/models/mp_senet/trainer.py",
+    "src/models/mossformergan/trainer.py",
+    "src/models/semambapp/trainer.py",
+    "src/models/tf_gridnet/trainer.py",
+    "src/models/tf_locoformer/trainer.py",
+    "src/models/deepfilternet3/trainer.py",
 )
 
 

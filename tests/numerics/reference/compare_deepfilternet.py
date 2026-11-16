@@ -32,7 +32,7 @@ import torchaudio.functional as AF
 ROOT = Path(__file__).resolve().parents[3]
 sys.path.insert(0, str(ROOT))
 
-from src.se import build_model, load_enhancer  # noqa: E402
+from src.models import build_model, load_enhancer  # noqa: E402
 from tests.numerics.reference.deepfilternet_task import DeepFilterNetTask, deepfilter_cosine_schedules  # noqa: E402
 from tests.numerics.reference.common import (  # noqa: E402
     configured_steps,
@@ -293,7 +293,7 @@ def _manual_loss(module, task, mr, local_loss, local_snr, clean, noisy):
         _multi_resolution_spectral,
         _vorbis_istft,
     )
-    from src.se.models.deepfilternet3.dsp import vorbis_window
+    from src.models.deepfilternet3.dsp import vorbis_window
 
     task.stream.reset()
     clean_spec, _clean_erb, _clean_feat, clean_complex = task._analyze_features(clean)
@@ -356,7 +356,7 @@ def _enhanced_wave(task, clean, noisy):
 
 def _manual_wave(module, task, clean, noisy):
     from tests.numerics.reference.deepfilternet_task import _vorbis_istft
-    from src.se.models.deepfilternet3.dsp import vorbis_window
+    from src.models.deepfilternet3.dsp import vorbis_window
 
     task.stream.reset()
     noisy_spec, noisy_erb, noisy_feat, _noisy_complex = task._analyze_features(noisy)

@@ -143,7 +143,7 @@ initialize:
 | `src/experiments/core/` | コンポーネントの生成、依存の解決、状態の登録 |
 | `src/experiments/execution/` | CPU/GPU/DDP、checkpoint、Selector、再開、中断、来歴、実行状態、プロファイリング |
 | `src/experiments/training/` | 共通の Trainer と損失 |
-| `src/experiments/official/<model>/` | そのモデルの公式 Model、Trainer、参照ステップ |
+| `src/models/<model>/` | そのモデルの公式 Model、Trainer、参照ステップ |
 | `src/experiments/calc/` | 共有する STFT、スペクトル損失、scheduler、RNG |
 | `src/experiments/data/` | スナップショットとオンデマンド描画。学習ループは持たない |
 
@@ -161,14 +161,14 @@ class: src.experiments.trainers.StandardTrainer
 
 ## コンポーネント
 
-公式手法の Model、Trainer、参照ステップは `src/experiments/official/<model>/` にある。YAML は既存の `class`、`inject`、`ref`、`parameters_of` でつなぐ。
+公式手法の Model、Trainer、参照ステップは `src/models/<model>/` にある。YAML は既存の `class`、`inject`、`ref`、`parameters_of` でつなぐ。
 
 ```yaml
-class: src.experiments.official.mp_senet.trainer.MPSENetGANTrainer
+class: src.models.mp_senet.trainer.MPSENetGANTrainer
 ```
 
 ```yaml
-class: src.experiments.official.mp_senet.models.MPSENetGANGenerator
+class: src.models.mp_senet.models.MPSENetGANGenerator
 ```
 
 DB の準備は学習 CLI とは別である。

@@ -1,6 +1,6 @@
 """DeepFilterNet3 training step.
 
-The network is ``DfNet`` from ``src.se``. Each batch builds ERB and deep-filter
+The network is ``DfNet`` from ``src.models``. Each batch builds ERB and deep-filter
 features on a fresh ``DFStream``, so utterances do not share STFT or
 normalization state.
 
@@ -36,13 +36,13 @@ import torch
 import torch.nn.functional as F
 from torch.nn.parallel import DistributedDataParallel
 
-from src.se import build_model
-from src.se.models.deepfilternet3.dsp import DFStream
+from src.models import build_model
+from src.models.deepfilternet3.dsp import DFStream
 from src.experiments.calc.distributed import ProcessInfo, unwrap, wrap_module
 from src.experiments.calc.rng import seed_model_init
 from src.experiments.calc.scope import accumulation_scope
 from src.experiments.calc.errors import TrainingError
-from src.se.models.deepfilternet3.dsp import vorbis_window
+from src.models.deepfilternet3.dsp import vorbis_window
 from src.experiments.calc.optim import build_optimizer, build_scheduler, clip_gradients, step_scheduler
 from src.experiments.calc.stft import centered_stft
 

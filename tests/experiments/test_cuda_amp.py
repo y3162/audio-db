@@ -779,6 +779,7 @@ class SEMambaCudaTests(unittest.TestCase):
                         scan_backend=backend,
                         device="cuda",
                         deterministic=False,
+                        world=2,
                     )
                     completed = _torchrun_python(config, python=python, devices=_DEVICES_TWO, timeout=300)
                     self.assertEqual(completed.returncode, 0, f"{backend} accum {accumulation}\n{completed.stderr[-2500:]}")
@@ -821,6 +822,7 @@ class Phase4JCudaTests(unittest.TestCase):
                 timeout=180,
                 device="cuda",
                 deterministic=False,
+                world=2,
             )
             ran = _moss_nccl(success, "run", timeout=240)
             self.assertEqual(ran.returncode, 0, ran.stderr[-2500:] + ran.stdout[-800:])
@@ -846,6 +848,7 @@ class Phase4JCudaTests(unittest.TestCase):
                 timeout=180,
                 device="cuda",
                 deterministic=False,
+                world=2,
             )
             skip = _moss_nccl(skipped, "skip", timeout=240)
             self.assertEqual(skip.returncode, 0, skip.stderr[-2500:])
@@ -869,6 +872,7 @@ class Phase4JCudaTests(unittest.TestCase):
                 timeout=180,
                 device="cuda",
                 deterministic=False,
+                world=2,
             )
             sequenced = _moss_nccl(sequence, "sequence", timeout=300)
             self.assertEqual(sequenced.returncode, 0, sequenced.stderr[-2500:])
@@ -893,6 +897,7 @@ class Phase4JCudaTests(unittest.TestCase):
                 timeout=180,
                 device="cuda",
                 deterministic=False,
+                world=2,
             )
             failed = _moss_nccl(partial, "run", timeout=240, fail_phase="after_generator_step")
             self.assertNotEqual(failed.returncode, 0)
@@ -923,6 +928,7 @@ class Phase4JCudaTests(unittest.TestCase):
                 scan_backend="fused",
                 device="cuda",
                 deterministic=False,
+                world=2,
             )
             second = _yaml(
                 root / "b",
@@ -933,6 +939,7 @@ class Phase4JCudaTests(unittest.TestCase):
                 scan_backend="fused",
                 device="cuda",
                 deterministic=False,
+                world=2,
             )
             stopped = _yaml(
                 root / "stop",
@@ -944,6 +951,7 @@ class Phase4JCudaTests(unittest.TestCase):
                 scan_backend="fused",
                 device="cuda",
                 deterministic=False,
+                world=2,
             )
             for config in (first, second, stopped):
                 completed = _torchrun_worker(config, devices=_DEVICES_TWO, timeout=240, python=python)
@@ -957,6 +965,7 @@ class Phase4JCudaTests(unittest.TestCase):
                 scan_backend="fused",
                 device="cuda",
                 deterministic=False,
+                world=2,
             )
             resumed = _torchrun_worker(
                 continued,
@@ -1105,6 +1114,7 @@ class Phase4ICudaTests(unittest.TestCase):
                 validation_interval=0,
                 device="cuda",
                 deterministic=False,
+                world=2,
             )
             interrupted = _yaml(
                 root / "interrupted",
@@ -1115,6 +1125,7 @@ class Phase4ICudaTests(unittest.TestCase):
                 stop_after=1,
                 device="cuda",
                 deterministic=False,
+                world=2,
             )
             first = _torchrun_worker(continuous, devices=_DEVICES_TWO, timeout=300)
             self.assertEqual(first.returncode, 0, first.stderr[-2500:])
@@ -1128,6 +1139,7 @@ class Phase4ICudaTests(unittest.TestCase):
                 validation_interval=0,
                 device="cuda",
                 deterministic=False,
+                world=2,
             )
             resumed = _torchrun_worker(
                 resumed_config,

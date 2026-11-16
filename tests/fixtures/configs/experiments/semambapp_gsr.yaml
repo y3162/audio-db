@@ -31,7 +31,7 @@ checkpoint:
 components:
   generator:
     role: module
-    class: src.experiments.official.semambapp.models.SEMambaPPGenerator
+    class: src.models.semambapp.models.SEMambaPPGenerator
     kwargs:
       seed: 1234
       hid_feature: 48
@@ -61,7 +61,7 @@ components:
       distribute: ddp
   mrd:
     role: module
-    class: src.experiments.official.semambapp.models.SEMambaPPMRD
+    class: src.models.semambapp.models.SEMambaPPMRD
     kwargs:
       seed: 1234
       hid_feature: 48
@@ -91,7 +91,7 @@ components:
       distribute: ddp
   cqt:
     role: module
-    class: src.experiments.official.semambapp.models.SEMambaPPCQTDiscriminator
+    class: src.models.semambapp.models.SEMambaPPCQTDiscriminator
     kwargs:
       seed: 1234
       hid_feature: 48
@@ -289,7 +289,7 @@ components:
         - {ref: discriminator_term}
   trainer:
     role: trainer
-    class: src.experiments.official.semambapp.trainer.SEMambaPPTrainer
+    class: src.models.semambapp.trainer.SEMambaPPTrainer
     kwargs:
       max_logical_steps: 1
       global_batch_size: 1

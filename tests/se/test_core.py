@@ -2,10 +2,10 @@ import tempfile
 from pathlib import Path
 import unittest
 import torch
-from src.se import build_model, load_enhancer, model_metadata
-from src.se.core.checkpoint import checkpoint_paths
-from src.se.core.config import load_config
-from src.se.core.registry import ModelRegistry, ModelSpec
+from src.models import build_model, load_enhancer, model_metadata
+from src.models.core.checkpoint import checkpoint_paths
+from src.models.core.config import load_config
+from src.models.core.registry import ModelRegistry, ModelSpec
 
 ROOT = Path(__file__).resolve().parents[2]
 

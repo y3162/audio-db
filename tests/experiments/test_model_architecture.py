@@ -15,23 +15,23 @@ import torch
 
 from src.experiments.config import config_sha256, load_experiment
 from src.experiments.errors import BuildError
-from src.experiments.official.deepfilternet3.model import DeepFilterNet3Model
-from src.experiments.official.mossformergan.models import (
+from src.models.deepfilternet3.model import DeepFilterNet3Model
+from src.models.mossformergan.models import (
     OFFICIAL_ARCHITECTURE as MOSS_OFFICIAL,
     MossFormerGANGenerator,
     require_official_architecture as require_moss,
 )
-from src.experiments.official.mp_senet.models import (
+from src.models.mp_senet.models import (
     OFFICIAL_ARCHITECTURE as MP_OFFICIAL,
     MPSENetGANGenerator,
     MPSENetMetricDiscriminator,
     architecture_config as mp_architecture,
     require_official_architecture as require_mp,
 )
-from src.experiments.official.semambapp.models import SEMambaPPGenerator, SEMambaPPMRD
-from src.experiments.official.tf_gridnet.model import TFGridNetModel
-from src.experiments.official.tf_locoformer.model import TFLocoformerModel
-from src.se import build_model
+from src.models.semambapp.models import SEMambaPPGenerator, SEMambaPPMRD
+from src.models.tf_gridnet.model import TFGridNetModel
+from src.models.tf_locoformer.model import TFLocoformerModel
+from src.models import build_model
 
 ROOT = Path(__file__).resolve().parents[2]
 

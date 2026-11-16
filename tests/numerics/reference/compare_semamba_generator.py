@@ -18,7 +18,7 @@ sys.path.insert(0, str(ROOT))
 sys.path.insert(0, str(OFFICIAL))
 
 from model.semambapp import SEMambapp  # noqa: E402
-from src.se.models.semambapp.network import SEMambaPP  # noqa: E402
+from src.models.semambapp.network import SEMambaPP  # noqa: E402
 
 
 def _cfg(width: int, layers: int, state: int, conv: int, expand: int) -> dict:

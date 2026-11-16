@@ -8,7 +8,7 @@ from pathlib import Path
 
 import torch
 
-from src.se import build_model, load_enhancer
+from src.models import build_model, load_enhancer
 from src.experiments.calc.rng import seed_model_init, set_determinism
 from src.experiments.calc.errors import TrainingError
 from tests.numerics.reference.deepfilternet_task import DeepFilterNetTask, deepfilter_cosine_schedules

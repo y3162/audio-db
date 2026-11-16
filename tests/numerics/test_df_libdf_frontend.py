@@ -12,7 +12,7 @@ import numpy as np
 import torch
 
 ROOT = Path(__file__).resolve().parents[2]
-KERNEL = ROOT / "src/se/models/deepfilternet3/libdf_rfft.so"
+KERNEL = ROOT / "src/models/deepfilternet3/libdf_rfft.so"
 
 
 def _libdf():
@@ -35,7 +35,7 @@ class DeepFilterFrontendTest(unittest.TestCase):
             self.libdf = _libdf()
         except ImportError as error:
             self.skipTest(f"libdf is not importable: {error}")
-        from src.se.models.deepfilternet3.dsp import DFStream
+        from src.models.deepfilternet3.dsp import DFStream
         self.stream = DFStream(48000, 960, 480, 32, 96, 2, 1.0, torch.device("cpu"))
 
     def test_analysis_and_features_match_libdf(self):

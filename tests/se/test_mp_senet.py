@@ -7,7 +7,7 @@ from pathlib import Path
 
 import torch
 
-from src.se import available_enhancers, build_model, load_enhancer
+from src.models import available_enhancers, build_model, load_enhancer
 
 ROOT = Path(__file__).resolve().parents[2]
 CHECKPOINTS = ROOT / 'data/checkpoints/mp-senet'
@@ -22,7 +22,7 @@ def reference_model():
         spec.loader.exec_module(module)
         return module
     transformer = load('reference_transformer', OFFICIAL / 'models/transformer.py')
-    from src.se.models.mp_senet.sigmoid import LearnableSigmoid2d
+    from src.models.mp_senet.sigmoid import LearnableSigmoid2d
     names = ['models', 'models.transformer', 'utils', 'pesq', 'joblib']
     previous = {name: sys.modules.get(name) for name in names}
     try:
@@ -60,7 +60,7 @@ class MPTests(unittest.TestCase):
 
     def test_input_too_small_to_square_is_returned_like_silence(self):
         # 1e-30 squared underflows float32. The RMS scale would be infinite and the output NaN.
-        from src.se.api import _MPEnhancer
+        from src.models.api import _MPEnhancer
         config = types.SimpleNamespace(sampling_rate=16000, n_fft=400, hop_size=100, win_size=400, compress_factor=0.3)
         enhancer = _MPEnhancer(None, config, torch.device('cpu'))
         tiny = torch.full((1001,), 1e-30)

@@ -20,7 +20,7 @@ ROOT = Path(__file__).resolve().parents[3]
 
 
 def _load_selective():
-    path = ROOT / "src/se/models/semambapp/network.py"
+    path = ROOT / "src/models/semambapp/network.py"
     spec = importlib.util.spec_from_file_location("audio_db_semamba_network", path)
     module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)

@@ -16,7 +16,7 @@ sys.path.insert(0, str(ROOT))
 sys.path.insert(0, str(ROOT / 'src/se/official/semambapp'))
 from model.semambapp import SEMambapp
 from model.stfts import mag_phase_istft, mag_phase_stft
-from src.se import load_enhancer
+from src.models import load_enhancer
 from tests.se.reference.metrics import compare, format_row
 
 CONFIG = {

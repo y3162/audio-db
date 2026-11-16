@@ -11,10 +11,10 @@ from src.experiments.data.fixed_pair import MicroBatcher
 from src.experiments.data.tensor import TensorPairData
 from src.experiments.data.sample import Batch
 from src.experiments.execution.runtime import PreparePolicy, PreparedModel, ProcessRuntime
-from src.experiments.official.mossformergan.trainer import MicroBatch, MossProgress, PairGuard
-from src.experiments.official.mp_senet.trainer import accumulated_step
-from src.experiments.official.semambapp.trainer import SEMambaUpdate
-from src.experiments.official.tf_gridnet.trainer import GridNetUpdate
+from src.models.mossformergan.trainer import MicroBatch, MossProgress, PairGuard
+from src.models.mp_senet.trainer import accumulated_step
+from src.models.semambapp.trainer import SEMambaUpdate
+from src.models.tf_gridnet.trainer import GridNetUpdate
 from src.experiments.training.control import (
     open_flat_window_at,
     open_grouped_window,

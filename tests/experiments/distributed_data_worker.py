@@ -80,6 +80,11 @@ def _probe_pipeline(runtime: ProcessRuntime, item: dict[str, Any]) -> dict[str, 
         epoch = 0
         view = primary.train_epoch(epoch, start_update=0)
         groups = _groups(primary, epoch)
+        # Epoch plans pad a short rank with an empty micro-batch so every rank
+        # takes the same number of steps. The sampler sequence has no empty
+        # row, because an empty row is not a copied sample.
+        if len(groups) < view.updates and primary.batcher.keep_partial:
+            groups = groups + ((),) * (view.updates - len(groups))
         if view.updates != len(groups):
             raise RuntimeError(f"{item['name']} update count {view.updates} != {len(groups)}")
         if view.updates < 1:

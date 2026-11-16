@@ -1,7 +1,7 @@
 """Unsupported model names must fail at the public SE entry points."""
 import unittest
 
-from src.se import available_enhancers, build_model, load_enhancer
+from src.models import available_enhancers, build_model, load_enhancer
 
 
 class RemovedModelsTests(unittest.TestCase):

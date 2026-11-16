@@ -1,6 +1,6 @@
 """MossFormerGAN SE 16 kHz training step.
 
-The generator is ``SyncANet`` from ``src.se``. Preprocessing matches the
+The generator is ``SyncANet`` from ``src.models``. Preprocessing matches the
 released solver: energy normalization of the noisy waveform, Hamming window
 with ``periodic=False``, ``center=True``, and magnitude compression 0.3.
 The loss is ``0.1 * RI + 0.9 * magnitude + 0.2 * time + 0.05 * GAN``.
@@ -47,12 +47,12 @@ import torch.distributed as dist
 import torch.nn.functional as F
 from torch.nn.parallel import DistributedDataParallel
 
-from src.se import build_model
+from src.models import build_model
 from src.experiments.calc.distributed import ProcessInfo, unwrap, wrap_module
 from src.experiments.calc.rng import seed_model_init
 from src.experiments.calc.scope import accumulation_scope
 from src.experiments.calc.errors import TrainingError
-from src.experiments.official.mossformergan.discriminator import Discriminator
+from src.models.mossformergan.discriminator import Discriminator
 from src.experiments.calc.losses import metric_targets
 from src.experiments.calc.optim import build_optimizer, build_scheduler, clip_gradients, step_scheduler
 from src.experiments.calc.stft import centered_stft

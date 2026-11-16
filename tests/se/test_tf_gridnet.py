@@ -5,7 +5,7 @@ import types
 import unittest
 
 import torch
-from src.se import build_model, load_enhancer
+from src.models import build_model, load_enhancer
 
 ROOT = Path(__file__).resolve().parents[2]
 REF = ROOT / 'src/se/official/espnet/espnet2/enh/separator/tfgridnetv3_separator.py'

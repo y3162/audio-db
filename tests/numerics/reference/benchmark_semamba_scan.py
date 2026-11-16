@@ -9,7 +9,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[3]))
 import torch
-from src.se.models.semambapp.inference import build
+from src.models.semambapp.inference import build
 
 backend = sys.argv[1]
 warmup = len(sys.argv) > 2 and sys.argv[2] == 'warmup'

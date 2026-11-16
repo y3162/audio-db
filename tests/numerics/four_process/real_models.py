@@ -124,8 +124,8 @@ class SEMambaPP:
             generator, band, resolution = _official_semamba(arch, device)
             self._mel = _official_mel(device)
         else:
-            from src.se.models.semambapp.network import SEMambaPP as Independent
-            from src.experiments.official.semambapp.discriminator import MultiResolutionDiscriminator, MultiScaleSubbandCQTDiscriminator
+            from src.models.semambapp.network import SEMambaPP as Independent
+            from src.models.semambapp.discriminator import MultiResolutionDiscriminator, MultiScaleSubbandCQTDiscriminator
             generator = Independent(arch).to(device)
             band = MultiScaleSubbandCQTDiscriminator(self.sample_rate).to(device)
             resolution = MultiResolutionDiscriminator().to(device)
@@ -220,8 +220,8 @@ class MossFormerGAN:
         if implementation == "official":
             generator, discriminator = _official_moss(device)
         else:
-            from src.se import build_model
-            from src.experiments.official.mossformergan.discriminator import Discriminator
+            from src.models import build_model
+            from src.models.mossformergan.discriminator import Discriminator
             generator = build_model(
                 "mossformergan", {"n_fft": 400, "win_len": 400, "hop": 100, "num_channel": 64}, variant="se_16k"
             ).to(device)
@@ -319,8 +319,8 @@ class DeepFilterNet3:
         }
 
     def build(self, implementation, device):
-        from src.se.models.deepfilternet3.dsp import DFStream
-        from src.se.models.deepfilternet3.inference import build
+        from src.models.deepfilternet3.dsp import DFStream
+        from src.models.deepfilternet3.inference import build
         independent = build(None).to(device)
         params = independent.params
         self._stream = DFStream(
@@ -646,7 +646,7 @@ def _df_schedule():
 
 def _df_loss(implementation, module, stream, params, clean, noisy, official_loss):
     import torch.nn.functional as F
-    from src.se.models.deepfilternet3.dsp import vorbis_window
+    from src.models.deepfilternet3.dsp import vorbis_window
     from tests.numerics.reference.deepfilternet_task import _local_snr_db, _multi_resolution_spectral, _vorbis_istft
     stream.reset()
     clean_spec, _erb, _feat, clean_complex = _df_analyze(stream, params, clean)

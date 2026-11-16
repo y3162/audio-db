@@ -27,16 +27,16 @@ from tests.experiments.official_loss_yaml import SPECTRAL_OBJECTIVE
 from src.experiments.config import load_experiment
 from src.experiments.errors import BuildError, RuntimeFailure
 from src.experiments.losses import OFFICIAL_WINDOWS, MultiResolutionL1Loss
-from src.experiments.official.tf_gridnet.model import TFGridNetModel
+from src.models.tf_gridnet.model import TFGridNetModel
 from src.experiments.runtime import PreparedModel, ProcessRuntime
-from src.experiments.official.tf_gridnet.evaluator import (
+from src.models.tf_gridnet.evaluator import (
     early_stop,
     rank_validation_loss,
     weighted_validation_loss,
     write_nbest,
 )
-from src.experiments.official.tf_gridnet.trainer import TFGridNetTrainer
-from src.se.models.tf_gridnet.model import TFGridNet
+from src.models.tf_gridnet.trainer import TFGridNetTrainer
+from src.models.tf_gridnet.network import TFGridNet
 from src.experiments.calc.average import average_state_dicts
 from src.experiments.calc.optim import clip_gradients
 from src.experiments.calc.spectral import multi_resolution_l1
@@ -65,7 +65,7 @@ class TFGridNetDeclarationTests(unittest.TestCase):
         model = config.components["model"]
         loss = config.components["loss"]
         trainer = config.components["trainer"]
-        self.assertEqual(model.class_path, "src.experiments.official.tf_gridnet.model.TFGridNetModel")
+        self.assertEqual(model.class_path, "src.models.tf_gridnet.model.TFGridNetModel")
         self.assertEqual(model.kwargs["variant"], "ms-snsd")
         self.assertEqual(model.kwargs["init"], "xavier_uniform")
         self.assertEqual(model.kwargs["architecture"]["n_fft"], 512)
@@ -83,14 +83,14 @@ class TFGridNetDeclarationTests(unittest.TestCase):
         self.assertEqual(scheduler.kwargs["mode"], "min")
         self.assertEqual(scheduler.kwargs["factor"], 0.7)
         self.assertEqual(scheduler.kwargs["patience"], 1)
-        self.assertEqual(trainer.class_path, "src.experiments.official.tf_gridnet.trainer.TFGridNetTrainer")
+        self.assertEqual(trainer.class_path, "src.models.tf_gridnet.trainer.TFGridNetTrainer")
         self.assertEqual(trainer.kwargs["grad_clip"], 5.0)
         self.assertEqual(trainer.kwargs["keep_nbest"], 5)
         self.assertEqual(trainer.kwargs["early_stopping_patience"], 5)
         self.assertEqual(config.components["data"].class_path, "src.experiments.data.SnapshotDataModule")
         self.assertEqual(config.components["sampler"].class_path, "src.experiments.data.ChunkSampler")
         self.assertEqual(config.components["source"].kwargs["snapshot"], "tf_gridnet.ms_snsd.espnet_recipe@1")
-        text = (ROOT / "src/experiments/official/tf_gridnet/trainer.py").read_text(encoding="utf-8")
+        text = (ROOT / "src/models/tf_gridnet/trainer.py").read_text(encoding="utf-8")
         self.assertNotIn("OnDemandChunkData", text)
         self.assertNotIn("valid.si_snr.best", text)
         self.assertNotIn("valid.si_snr.ave", text)
@@ -537,7 +537,7 @@ output:
 components:
   model:
     role: module
-    class: src.experiments.official.tf_gridnet.model.TFGridNetModel
+    class: src.models.tf_gridnet.model.TFGridNetModel
     kwargs:
       seed: 0
       variant: ms-snsd
@@ -579,7 +579,7 @@ components:
       optimizer: {{ref: optimizer}}
 {SPECTRAL_OBJECTIVE}  trainer:
     role: trainer
-    class: src.experiments.official.tf_gridnet.trainer.TFGridNetTrainer
+    class: src.models.tf_gridnet.trainer.TFGridNetTrainer
     kwargs:
       max_logical_steps: {steps}
       global_batch_size: {world}
@@ -619,7 +619,7 @@ output:
 components:
   model:
     role: module
-    class: src.experiments.official.tf_gridnet.model.TFGridNetModel
+    class: src.models.tf_gridnet.model.TFGridNetModel
     kwargs:
       seed: 0
       variant: ms-snsd
@@ -696,7 +696,7 @@ components:
       optimizer: {{ref: optimizer}}
 {SPECTRAL_OBJECTIVE}  trainer:
     role: trainer
-    class: src.experiments.official.tf_gridnet.trainer.TFGridNetTrainer
+    class: src.models.tf_gridnet.trainer.TFGridNetTrainer
     kwargs:
       max_logical_steps: 200
       global_batch_size: 1

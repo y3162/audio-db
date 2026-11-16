@@ -13,8 +13,8 @@ from typing import Any
 from src.experiments.errors import RuntimeFailure
 
 SNAPSHOT_CLASS = "src.experiments.data.SnapshotDataModule"
-MP_TRAINER = "src.experiments.official.mp_senet.trainer.MPSENetGANTrainer"
-MOSS_TRAINER = "src.experiments.official.mossformergan.trainer.MossFormerGANTrainer"
+MP_TRAINER = "src.models.mp_senet.trainer.MPSENetGANTrainer"
+MOSS_TRAINER = "src.models.mossformergan.trainer.MossFormerGANTrainer"
 
 _RESAMPLE = {
     "tool": "soxr",

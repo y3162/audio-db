@@ -14,13 +14,13 @@ import torch
 import torch.nn.functional as F
 from torch.nn.parallel import DistributedDataParallel
 
-from src.se import build_model
+from src.models import build_model
 from src.experiments.calc.distributed import ProcessInfo, unwrap, wrap_module
 from src.experiments.calc.rng import seed_model_init
 from src.experiments.calc.scope import accumulation_scope
 from src.experiments.calc.errors import TrainingError
-from src.experiments.official.mp_senet.model import MetricDiscriminator
-from src.experiments.official.mp_senet.dataset import (
+from src.models.mp_senet.model import MetricDiscriminator
+from src.models.mp_senet.dataset import (
     official_center_istft_length,
     require_discriminator_resolution as _require_discriminator_resolution,
 )
@@ -161,7 +161,7 @@ class MPSENetTask:
         does not build an optimizer.
         """
 
-        from src.experiments.official.mp_senet.evaluator import report_batch
+        from src.models.mp_senet.evaluator import report_batch
 
         discriminator = None if self.discriminator is None else unwrap(self.discriminator)
         return report_batch(

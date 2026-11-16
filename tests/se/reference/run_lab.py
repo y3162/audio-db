@@ -15,7 +15,7 @@ import torch
 ROOT = Path(__file__).resolve().parents[3]
 sys.path.insert(0, str(ROOT))
 
-from src.se import load_enhancer
+from src.models import load_enhancer
 from tests.se.reference.metrics import compare, format_row
 
 OFFICIAL_MP = ROOT / 'src/se/official/mp-senet'
@@ -32,7 +32,7 @@ def _load_py(name, path):
 
 def mp_reference():
     transformer = _load_py('reference_transformer', OFFICIAL_MP / 'models/transformer.py')
-    from src.se.models.mp_senet.sigmoid import LearnableSigmoid2d
+    from src.models.mp_senet.sigmoid import LearnableSigmoid2d
     names = ['models', 'models.transformer', 'utils', 'pesq', 'joblib', 'librosa']
     previous = {name: sys.modules.get(name) for name in names}
     try:

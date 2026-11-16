@@ -192,6 +192,18 @@ class DistributedTrainingTests(unittest.TestCase):
             world_size=1,
             filename="resume.yaml",
         )
+        same_world = _write_yaml(
+            interrupted_dir,
+            steps=4,
+            batch_size=4,
+            examples=32,
+            features=8,
+            accumulation=1,
+            optimizer="adamw",
+            model="dropout",
+            scheduler=True,
+            filename="same-world.yaml",
+        )
         continuous = _torchrun(continuous_config)
         self.assertEqual(continuous.returncode, 0, continuous.stderr + continuous.stdout)
         interrupted = _torchrun(interrupted_config)
@@ -212,7 +224,7 @@ class DistributedTrainingTests(unittest.TestCase):
         copied_path = output / "copied_rng.pt"
         torch.save(copied, copied_path)
         _copy_provenance_sidecar(saved, copied_path)
-        copied_run = _torchrun(resume_config, "--resume", str(copied_path))
+        copied_run = _torchrun(same_world, "--resume", str(copied_path))
         self.assertNotEqual(copied_run.returncode, 0)
         self.assertIn("belongs to rank", copied_run.stderr + copied_run.stdout)
         short = dict(payload)
@@ -221,7 +233,7 @@ class DistributedTrainingTests(unittest.TestCase):
         short_path = output / "short_rng.pt"
         torch.save(short, short_path)
         _copy_provenance_sidecar(saved, short_path)
-        short_run = _torchrun(resume_config, "--resume", str(short_path))
+        short_run = _torchrun(same_world, "--resume", str(short_path))
         self.assertNotEqual(short_run.returncode, 0)
         self.assertIn("rng_by_rank", short_run.stderr + short_run.stdout)
         for name in ("metrics.jsonl", "samples-rank0.jsonl", "samples-rank1.jsonl"):
@@ -233,7 +245,7 @@ class DistributedTrainingTests(unittest.TestCase):
                     )
                     + "\n"
                 )
-        resumed = _torchrun(resume_config, "--resume", str(saved))
+        resumed = _torchrun(same_world, "--resume", str(saved))
         self.assertEqual(resumed.returncode, 0, resumed.stderr + resumed.stdout)
         self.assertEqual(_status(output), "COMPLETED")
         left = torch.load(continuous_dir / "run" / "archive/step_00000004.pt", map_location="cpu", weights_only=False)

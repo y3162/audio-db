@@ -9,7 +9,7 @@ from pathlib import Path
 
 import torch
 
-from src.se import load_enhancer
+from src.models import load_enhancer
 from src.experiments.calc.rng import set_determinism
 from src.experiments.calc.waveform import WaveformTask
 from tests.numerics.support import paired_dataset, tiny_config

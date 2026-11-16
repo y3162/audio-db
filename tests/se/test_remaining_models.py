@@ -4,7 +4,7 @@ from pathlib import Path
 
 import torch
 
-from src.se import available_enhancers, load_enhancer
+from src.models import available_enhancers, load_enhancer
 
 ROOT = Path(__file__).resolve().parents[2]
 DFN = ROOT / 'data/checkpoints/deepfilternet3/DeepFilterNet3'

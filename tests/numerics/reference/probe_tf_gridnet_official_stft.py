@@ -53,7 +53,7 @@ def main():
         from espnet2.enh.separator.tfgridnet_separator import TFGridNet
         from tests.numerics.reference.compare_tf_gridnet import ARCHITECTURE, _adam, _step, _official_loss_class
         from tests.numerics.reference.common import environment, optim_report
-        from src.se import build_model
+        from src.models import build_model
         torch.manual_seed(3)
         official = TFGridNet(input_dim=0, n_srcs=1, use_builtin_complex=True, **ARCHITECTURE).to(args.device)
         independent = build_model('tf_gridnet', ARCHITECTURE, variant='ms-snsd').to(args.device)

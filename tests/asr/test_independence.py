@@ -15,7 +15,7 @@ import src.asr
 import sys
 names = set(sys.modules)
 assert not any(name == "src.evaluation" or name.startswith("src.evaluation.") for name in names)
-assert not any(name == "src.se" or name.startswith("src.se.") for name in names)
+assert not any(name == "src.models" or name.startswith("src.models.") for name in names)
 for blocked in ("nemo", "whisper", "transformers"):
     assert blocked not in names, blocked
 """

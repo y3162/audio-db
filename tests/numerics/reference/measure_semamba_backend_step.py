@@ -8,7 +8,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[3]))
 import torch
 from tests.numerics.reference.run_semamba_official_batch import _load, _update, _waves, _slice, _generator_state
 from tests.numerics.reference.compare_semamba_quality import _require_environment
-from src.se.models.semambapp.network import SelectiveSSM
+from src.models.semambapp.network import SelectiveSSM
 from src.experiments.calc.rng import seed_training_stream
 
 side, directory = sys.argv[1], Path(sys.argv[2])

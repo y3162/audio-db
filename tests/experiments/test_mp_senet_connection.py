@@ -20,7 +20,7 @@ import yaml
 from src.experiments.api import build_experiment
 from src.experiments.config import load_experiment
 from src.experiments.errors import BuildError, CheckpointError, RuntimeFailure, StateError
-from src.experiments.official.mp_senet.waveform import MPSENetWaveformAdapter
+from src.models.mp_senet.waveform import MPSENetWaveformAdapter
 from src.experiments.runtime import PreparedModel
 from src.experiments.data.ids import canonical_text, digest
 from src.experiments.data.snapshot import (
@@ -34,7 +34,7 @@ from src.experiments.data.snapshot import (
     load_snapshot,
     snapshot_hash,
 )
-from src.se.models.mp_senet.model import MPNet
+from src.models.mp_senet.network import MPNet
 from tests.numerics.reference.mp_senet_task import MPSENetTask
 from tests.numerics.support import tiny_config
 
@@ -66,7 +66,7 @@ class MPSENetConnectionTests(unittest.TestCase):
     def test_committed_yaml_declares_the_connection(self) -> None:
         config = load_experiment(ROOT / "tests/fixtures/configs/experiments/mp_senet_l1.yaml")
         model = config.components["model"]
-        self.assertEqual(model.class_path, "src.experiments.official.mp_senet.waveform.MPSENetWaveformAdapter")
+        self.assertEqual(model.class_path, "src.models.mp_senet.waveform.MPSENetWaveformAdapter")
         self.assertEqual(model.kwargs["sampling_rate"], 16000)
         self.assertEqual(config.components["loss"].class_path, "torch.nn.L1Loss")
         self.assertEqual(config.components["optimizer"].class_path, "torch.optim.AdamW")
@@ -124,9 +124,9 @@ class MPSENetConnectionTests(unittest.TestCase):
                 raise AssertionError("inference entry was called")
 
             with (
-                patch("src.se.load_enhancer", rejected),
-                patch("src.se.api.load_enhancer", rejected),
-                patch("src.se.api._MPEnhancer._enhance_one", rejected),
+                patch("src.models.load_enhancer", rejected),
+                patch("src.models.api.load_enhancer", rejected),
+                patch("src.models.api._MPEnhancer._enhance_one", rejected),
             ):
                 enhanced = adapter(batch.inputs)
             self.assertEqual(tuple(enhanced.shape), tuple(batch.inputs.shape))
@@ -345,7 +345,7 @@ output:
 components:
   model:
     role: module
-    class: src.experiments.official.mp_senet.waveform.MPSENetWaveformAdapter
+    class: src.models.mp_senet.waveform.MPSENetWaveformAdapter
     kwargs:
       dense_channel: 4
       num_tsconformers: 1

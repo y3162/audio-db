@@ -50,7 +50,7 @@ checkpoint:
 components:
   generator:
     role: module
-    class: src.experiments.official.mp_senet.models.MPSENetGANGenerator
+    class: src.models.mp_senet.models.MPSENetGANGenerator
     kwargs:
       seed: 1234
       dense_channel: 64
@@ -68,7 +68,7 @@ components:
     prepare: {trainable: true, distribute: ddp}
   metric_discriminator:
     role: module
-    class: src.experiments.official.mp_senet.models.MPSENetMetricDiscriminator
+    class: src.models.mp_senet.models.MPSENetMetricDiscriminator
     kwargs:
       seed: 1234
       dense_channel: 64
@@ -244,7 +244,7 @@ components:
     class: src.experiments.losses.MPSENetDiscriminatorObjective
   trainer:
     role: trainer
-    class: src.experiments.official.mp_senet.trainer.MPSENetGANTrainer
+    class: src.models.mp_senet.trainer.MPSENetGANTrainer
     kwargs:
       max_logical_steps: 1157200
       global_batch_size: 2

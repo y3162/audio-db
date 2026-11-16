@@ -4,7 +4,7 @@ import sys
 from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parents[3]))
 import torch
-from src.se import load_enhancer
+from src.models import load_enhancer
 
 root = Path(__file__).resolve().parents[3]
 waves = torch.load(sys.argv[1], map_location='cpu', weights_only=False)

@@ -45,7 +45,7 @@ from src.experiments.data.protocols.online_semamba import (
     render_example,
     vad_power,
 )
-from src.se.models.semambapp.network import SelectiveSSM
+from src.models.semambapp.network import SelectiveSSM
 
 DISTRIBUTION_SEED = 20261107
 DISTRIBUTION_N = 4000

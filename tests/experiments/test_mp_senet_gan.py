@@ -34,10 +34,10 @@ from tests.experiments.official_loss_yaml import MP_COMPONENTS, MP_INJECT
 from src.experiments.config import load_experiment
 from src.experiments.data import Batch
 from src.experiments.errors import BuildError, CheckpointError, RuntimeFailure
-from src.experiments.official.mp_senet.waveform import MPSENetWaveformAdapter
-from src.experiments.official.mp_senet.models import MPSENetGANGenerator, MPSENetMetricDiscriminator
-from src.experiments.official.mp_senet.evaluator import apply_pesq_selection
-from src.experiments.official.mp_senet.trainer import (
+from src.models.mp_senet.waveform import MPSENetWaveformAdapter
+from src.models.mp_senet.models import MPSENetGANGenerator, MPSENetMetricDiscriminator
+from src.models.mp_senet.evaluator import apply_pesq_selection
+from src.models.mp_senet.trainer import (
     BEST_CHECKPOINT_START_EPOCH,
     LEAKAGE_SAFE_VALIDATION_INTERVAL,
     OFFICIAL_CHECKPOINT_INTERVAL,
@@ -524,7 +524,7 @@ class MPSENetGANTests(unittest.TestCase):
             runtime.shutdown()
 
     def test_update_module_does_not_take_the_trainer(self) -> None:
-        from src.experiments.official.mp_senet.trainer import (
+        from src.models.mp_senet.trainer import (
             MPSENetUpdate,
             accumulated_step,
             cuda_overlapped_step,
@@ -633,7 +633,7 @@ class MPSENetGANTests(unittest.TestCase):
             runtime.shutdown()
 
     def test_old_payload_round_trips_without_a_second_copy(self) -> None:
-        from src.experiments.official.mp_senet.trainer import MPTrainingProgress
+        from src.models.mp_senet.trainer import MPTrainingProgress
 
         stored = {
             "best_epoch": 4,
@@ -682,7 +682,7 @@ class MPSENetGANTests(unittest.TestCase):
         self.assertEqual(progress.scheduler_steps, 0)
 
     def test_state_module_only_copies_the_payload(self) -> None:
-        from src.experiments.official.mp_senet.trainer import MPTrainingProgress
+        from src.models.mp_senet.trainer import MPTrainingProgress
 
         text = inspect.getsource(MPTrainingProgress)
         self.assertNotIn("MPSENetGANTrainer", text)
@@ -691,7 +691,7 @@ class MPSENetGANTests(unittest.TestCase):
         self.assertNotIn("save_if_needed", text)
 
     def test_validator_module_does_not_take_the_trainer(self) -> None:
-        from src.experiments.official.mp_senet.evaluator import MPSENetOfficialValidator, _Shadow, _build_shadow
+        from src.models.mp_senet.evaluator import MPSENetOfficialValidator, _Shadow, _build_shadow
 
         text = "\n".join(inspect.getsource(item) for item in (MPSENetOfficialValidator, _Shadow, _build_shadow))
         self.assertNotIn("MPSENetGANTrainer", text)
@@ -761,7 +761,7 @@ def _manual_trainer(runtime: ProcessRuntime, accumulation: int) -> tuple[object,
             del epoch
             return iter(())
 
-    from src.experiments.official.mp_senet.trainer import MPSENetGANTrainer
+    from src.models.mp_senet.trainer import MPSENetGANTrainer
 
     trainer = MPSENetGANTrainer(
         prepared_g,
@@ -1050,12 +1050,12 @@ output:
 components:
   generator:
     role: module
-    class: src.experiments.official.mp_senet.models.MPSENetGANGenerator
+    class: src.models.mp_senet.models.MPSENetGANGenerator
     kwargs: {{seed: 7, {arch}}}
     prepare: {{trainable: true, distribute: {distribute}}}
   metric_discriminator:
     role: module
-    class: src.experiments.official.mp_senet.models.MPSENetMetricDiscriminator
+    class: src.models.mp_senet.models.MPSENetMetricDiscriminator
     kwargs: {{seed: 7, {arch}}}
     prepare: {{trainable: true, distribute: {distribute}}}
   data:
@@ -1101,7 +1101,7 @@ components:
       optimizer: {{ref: optim_d}}
 {MP_COMPONENTS}  trainer:
     role: trainer
-    class: src.experiments.official.mp_senet.trainer.MPSENetGANTrainer
+    class: src.models.mp_senet.trainer.MPSENetGANTrainer
     kwargs:
       max_logical_steps: {steps}
       global_batch_size: {world * accumulation}
@@ -1145,12 +1145,12 @@ output:
 components:
   generator:
     role: module
-    class: src.experiments.official.mp_senet.models.MPSENetGANGenerator
+    class: src.models.mp_senet.models.MPSENetGANGenerator
     kwargs: {{seed: 7, {arch}}}
     prepare: {{trainable: true, distribute: none}}
   metric_discriminator:
     role: module
-    class: src.experiments.official.mp_senet.models.MPSENetMetricDiscriminator
+    class: src.models.mp_senet.models.MPSENetMetricDiscriminator
     kwargs: {{seed: 7, {arch}}}
     prepare: {{trainable: true, distribute: none}}
   source:
@@ -1232,7 +1232,7 @@ components:
       optimizer: {{ref: optim_d}}
 {MP_COMPONENTS}  trainer:
     role: trainer
-    class: src.experiments.official.mp_senet.trainer.MPSENetGANTrainer
+    class: src.models.mp_senet.trainer.MPSENetGANTrainer
     kwargs:
       max_logical_steps: 1
       global_batch_size: 1

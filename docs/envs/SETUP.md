@@ -44,9 +44,9 @@ make test-setup
 
 `make setup` は `db-init`、`db-ingest`、`db-bootstrap` を呼ばない。役割の導入のあと `build_df_rfft` が `make df-rfft` と同じ Cargo ロックで `build/df-rfft/release/libdf_rfft.so` を作り、続けて `python -m src.data.link_corpora --allow-partial` と `scripts/setup/doctor.py` を実行する。`link_corpora` は `data/corpora` へのシンボリックリンクだけで、無いソースは記録して残りを結び、既存のリンクは上書きしない。DuckDB は作らない。最後の診断を、別の `make doctor` で再実行してよい。
 
-追跡中の `src/se/models/deepfilternet3/libdf_rfft.so` と内容が違うときは置き換えない。環境変数 `DF_RFFT_LIBRARY` が空で追跡ファイルがこのホストで読めないときは、そのローカル成果物が ABI 1 なら実行時にそれを使う。ファイル自体が無いときの戻り先は [DeepFilterNet3](../se/MODELS.md)。`make doctor` の `df_rfft` は、選ばれたファイルの source、ABI、SHA-256 を出す。
+追跡中の `src/models/deepfilternet3/libdf_rfft.so` と内容が違うときは置き換えない。環境変数 `DF_RFFT_LIBRARY` が空で追跡ファイルがこのホストで読めないときは、そのローカル成果物が ABI 1 なら実行時にそれを使う。ファイル自体が無いときの戻り先は [DeepFilterNet3](../se/MODELS.md)。`make doctor` の `df_rfft` は、選ばれたファイルの source、ABI、SHA-256 を出す。
 
-`scripts/setup/platforms/tsubame.sh` は cargo が無いと準備を打ち切る。両プラットフォームのメッセージが求めるのは Rust 1.76 以上である。`make df-rfft` が通った記録は rustc 1.99.1 で、他の版での再コンパイルは記録が無い。`libdf` の wheel を Rust 1.76.0 で作った記録は [VALIDATION.md](../se/VALIDATION.md)。依存の版は `src/se/models/deepfilternet3/rfft_kernel/Cargo.lock` の `realfft` 3.3.0 と `rustfft` 6.4.1。
+`scripts/setup/platforms/tsubame.sh` は cargo が無いと準備を打ち切る。両プラットフォームのメッセージが求めるのは Rust 1.76 以上である。`make df-rfft` が通った記録は rustc 1.99.1 で、他の版での再コンパイルは記録が無い。`libdf` の wheel を Rust 1.76.0 で作った記録は [VALIDATION.md](../se/VALIDATION.md)。依存の版は `src/models/deepfilternet3/rfft_kernel/Cargo.lock` の `realfft` 3.3.0 と `rustfft` 6.4.1。
 
 ## 融合カーネル
 

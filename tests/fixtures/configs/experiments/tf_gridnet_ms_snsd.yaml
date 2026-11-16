@@ -23,7 +23,7 @@ checkpoint:
 components:
   model:
     role: module
-    class: src.experiments.official.tf_gridnet.model.TFGridNetModel
+    class: src.models.tf_gridnet.model.TFGridNetModel
     kwargs:
       seed: 0
       variant: ms-snsd
@@ -121,7 +121,7 @@ components:
         - {ref: loss}
   trainer:
     role: trainer
-    class: src.experiments.official.tf_gridnet.trainer.TFGridNetTrainer
+    class: src.models.tf_gridnet.trainer.TFGridNetTrainer
     kwargs:
       max_logical_steps: 1
       global_batch_size: 2

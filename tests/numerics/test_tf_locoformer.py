@@ -8,7 +8,7 @@ from pathlib import Path
 
 import torch
 
-from src.se import build_model, load_enhancer
+from src.models import build_model, load_enhancer
 from src.experiments.calc.rng import seed_model_init, set_determinism
 from src.experiments.calc.spectral import multi_resolution_l1
 from tests.numerics.reference.tf_locoformer_task import TFLocoformerTask
@@ -78,7 +78,7 @@ class TFLocoformerTrainingTests(unittest.TestCase):
     @unittest.skipUnless(OFFICIAL.is_dir(), "official checkout missing")
     def test_yaml_model_matches_standalone_separator(self):
         """The experiment model class is the network the trainer calls."""
-        from src.experiments.official.tf_locoformer.model import TFLocoformerModel
+        from src.models.tf_locoformer.model import TFLocoformerModel
 
         torch.manual_seed(11)
         official = _official_separator()

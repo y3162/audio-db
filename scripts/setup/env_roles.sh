@@ -236,12 +236,12 @@ build_df_rfft() {
     echo "cargo is missing. libdf_rfft.so was not rebuilt." >&2
     return 1
   fi
-  local manifest="src/se/models/deepfilternet3/rfft_kernel/Cargo.toml"
+  local manifest="src/models/deepfilternet3/rfft_kernel/Cargo.toml"
   if ! cargo build --release --locked --manifest-path "$manifest" --target-dir build/df-rfft; then
     cargo build --release --manifest-path "$manifest" --target-dir build/df-rfft || return 1
   fi
   local built="build/df-rfft/release/libdf_rfft.so"
-  local tracked="src/se/models/deepfilternet3/libdf_rfft.so"
+  local tracked="src/models/deepfilternet3/libdf_rfft.so"
   if [[ -f "$tracked" ]] && ! cmp -s "$built" "$tracked"; then
     echo "The new libdf_rfft.so differs from the tracked file. The tracked file was not replaced." >&2
     echo "A process that does not set DF_RFFT_LIBRARY uses this build when the tracked file does not load." >&2

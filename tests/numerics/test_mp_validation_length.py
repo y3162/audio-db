@@ -1,7 +1,7 @@
 import unittest
 
 from src.experiments.calc.errors import TrainingError
-from src.experiments.official.mp_senet.dataset import align_validation_length
+from src.models.mp_senet.dataset import align_validation_length
 
 
 class ValidationLengthTests(unittest.TestCase):

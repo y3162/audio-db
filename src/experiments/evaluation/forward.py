@@ -62,7 +62,7 @@ def _mossformer(module: torch.nn.Module, noisy: torch.Tensor, clean: torch.Tenso
     the discriminator, so research scoring does not update its BatchNorm.
     """
 
-    from src.experiments.official.mossformergan.loss import _compress, _istft, _stft, _uncompress
+    from src.models.mossformergan.loss import _compress, _istft, _stft, _uncompress
 
     scale = torch.sqrt(noisy.shape[-1] / (noisy.square().sum(dim=-1) + 1e-6)).unsqueeze(-1)
     normalized = noisy * scale

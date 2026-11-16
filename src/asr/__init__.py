@@ -1,6 +1,6 @@
 """Speech recognition models.
 
-``src.asr`` does not import ``src.evaluation`` or ``src.se``.
+``src.asr`` does not import ``src.evaluation`` or ``src.models``.
 """
 
 from src.asr.api import SpeechRecognizer, available_families, load_recognizer, model_catalog

@@ -16,7 +16,7 @@ sys.path.insert(0, str(ROOT))
 OUT = Path("/tmp/audio-db-level1-20261111/locoformer")
 
 from src.experiments.calc.spectral import multi_resolution_l1  # noqa: E402
-from src.se.models.tf_locoformer.separator import TFLocoformerSeparator  # noqa: E402
+from src.models.tf_locoformer.separator import TFLocoformerSeparator  # noqa: E402
 from tests.numerics.reference.common import gap, grad_report, optim_report, weight_report  # noqa: E402
 from tests.numerics.reference.level1_locoformer_ulp import DNS, _terms, _tone, _wave_from  # noqa: E402
 

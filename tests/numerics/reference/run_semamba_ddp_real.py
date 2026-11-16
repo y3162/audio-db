@@ -13,7 +13,7 @@ import torch
 import torch.distributed as dist
 from src.experiments.calc.distributed import setup_process, unwrap
 from src.experiments.calc.rng import capture_rng, restore_rng, seed_training_stream
-from src.se.models.semambapp.network import SelectiveSSM
+from src.models.semambapp.network import SelectiveSSM
 from tests.numerics.reference.train_semamba_200 import INIT, _independent
 from tests.numerics.reference.compare_semamba_quality import _require_environment
 

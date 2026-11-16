@@ -71,7 +71,7 @@ selection:
     save: true
 trainer:
   role: trainer
-  class: src.experiments.official.tf_gridnet.trainer.TFGridNetTrainer
+  class: src.models.tf_gridnet.trainer.TFGridNetTrainer
   inject:
     model_selection: {ref: selection}
 ```

@@ -6,7 +6,6 @@
 
 | 場所 | 責務 | 入口 |
 |---|---|---|
-| `src/se/` | SE の推論モデル。MP-SENet、TF-GridNet、TF-Locoformer、DeepFilterNet3、MossFormerGAN、SEMamba++ | `load_enhancer()`、`build_model()` |
 | `src/asr/` | ASR の推論。Parakeet、Whisper、Wav2Vec2、HuBERT、WavLM | `load_recognizer()` → `transcribe()` |
 | `src/evaluation/` | 名前付き評価セット → 必要なら波形生成 → SE → ASR → 指標 | `python -m src.evaluation.cli` |
 | `src/data/` | コーパス走査、レシピ、ステージング、評価用 DuckDB | `make db-init`、`make db-ingest` |
@@ -19,12 +18,12 @@
 | `src/experiments/evaluation/` | 研究用の波形評価。学習カーソル、重み、Optimizer を動かさない | YAML の `evaluator` |
 | `src/experiments/selection/` | 研究用の best 判定。推論重みの書き出しは判定の外 | YAML の `other` と `state.save: true` |
 | `src/experiments/data/` | 再現用 DB、スナップショット、サンプリング、オンデマンド描画。学習ループは持たない | `python -m src.experiments.data.cli` |
-| `src/experiments/official/` | 6 モデルの公式 Model、Trainer、参照ステップ、モデル固有の検証統計と選択。MP-SENet の GAN 対、CPU/DDP 更新、CUDA 重なり、進捗の `MPTrainingProgress` は `official/mp_senet/trainer.py` にある。公式検証の式と rank 0 の手続きは `official/mp_senet/evaluator.py` にある。DeepFilterNet3 の cosine、蓄積、epoch 境界は `official/deepfilternet3/trainer.py` にあり、損失手順は `loss.py`、等重み検証は `evaluator.py` にある。比較用学習 Task は `tests/numerics/reference/deepfilternet_task.py` にあり、本番は import しない。TF-GridNet の進捗、蓄積更新、遅延 step ログ、epoch 境界は `official/tf_gridnet/trainer.py` にあり、検証と n-best は `evaluator.py` にある。比較用学習 Task は `tests/numerics/reference/tf_gridnet_task.py` にあり、本番は import しない。TF-Locoformer の進捗、`step_batch`、`step_validation`、蓄積更新、epoch 境界は `official/tf_locoformer/trainer.py` にある。検証と n-best の書き出しは `evaluator.py` にある。比較用学習 Task は `tests/numerics/reference/tf_locoformer_task.py` にあり、本番は import しない。SEMamba++ の進捗、D のあと G の更新、ExponentialLR の境界は `official/semambapp/trainer.py` にある。検証の shadow は `evaluator.py` にある。比較用学習 Task は `tests/numerics/reference/semamba_task.py` にあり、本番は import しない。MossFormerGAN の micro-batch、両 AdamW、plateau は `official/mossformergan/trainer.py` にある。`consume_micro_batch` は Trainer の入口のままである。検証と plateau 判定は `evaluator.py`、generator 項は `loss.py` にある。比較用学習 Task は `tests/numerics/reference/mossformer_task.py` にあり、本番は import しない。比較用の MP-SENet 学習 Task は `tests/numerics/reference/mp_senet_task.py` にあり、本番は import しない。他の実験から個別に import する | YAML の `class` |
+| `src/models/` | 6 モデルの公式 Model、Trainer、参照ステップ、モデル固有の検証統計と選択。MP-SENet の GAN 対、CPU/DDP 更新、CUDA 重なり、進捗の `MPTrainingProgress` は `src/models/mp_senet/trainer.py` にある。公式検証の式と rank 0 の手続きは `src/models/mp_senet/evaluator.py` にある。DeepFilterNet3 の cosine、蓄積、epoch 境界は `src/models/deepfilternet3/trainer.py` にあり、損失手順は `loss.py`、等重み検証は `evaluator.py` にある。比較用学習 Task は `tests/numerics/reference/deepfilternet_task.py` にあり、本番は import しない。TF-GridNet の進捗、蓄積更新、遅延 step ログ、epoch 境界は `src/models/tf_gridnet/trainer.py` にあり、検証と n-best は `evaluator.py` にある。比較用学習 Task は `tests/numerics/reference/tf_gridnet_task.py` にあり、本番は import しない。TF-Locoformer の進捗、`step_batch`、`step_validation`、蓄積更新、epoch 境界は `src/models/tf_locoformer/trainer.py` にある。検証と n-best の書き出しは `evaluator.py` にある。比較用学習 Task は `tests/numerics/reference/tf_locoformer_task.py` にあり、本番は import しない。SEMamba++ の進捗、D のあと G の更新、ExponentialLR の境界は `src/models/semambapp/trainer.py` にある。検証の shadow は `evaluator.py` にある。比較用学習 Task は `tests/numerics/reference/semamba_task.py` にあり、本番は import しない。MossFormerGAN の micro-batch、両 AdamW、plateau は `src/models/mossformergan/trainer.py` にある。`consume_micro_batch` は Trainer の入口のままである。検証と plateau 判定は `evaluator.py`、generator 項は `loss.py` にある。比較用学習 Task は `tests/numerics/reference/mossformer_task.py` にあり、本番は import しない。比較用の MP-SENet 学習 Task は `tests/numerics/reference/mp_senet_task.py` にあり、本番は import しない。推論の入口は `load_enhancer()` と `build_model()`。他の実験から個別に import する | `load_enhancer()`、`build_model()`、YAML の `class` |
 | `src/experiments/calc/` | 手法を共有する STFT、スペクトル損失、scheduler、RNG。CLI ではない | テストと Trainer が呼ぶ |
 
 `api.py`、`cli.py`、`launcher.py`、`config.py`、`errors.py` は `src/experiments/` 直下の入口である。`launcher.py` は学習プロセスを起動して終了状態を記録するだけで、ジョブの投入、GPU の選択、再試行はしない。`builder.py`、`factory.py`、`registry.py`、`state.py`、`runtime.py`、`checkpoint.py`、`lifecycle.py`、`selectors.py`、`provenance.py`、`signals.py`、`profile.py`、`results.py`、`trainers.py`、`losses.py` は公開 import パスで、実装は上の3ディレクトリにある。Experiment は build し、Lifecycle を注入し、クラス自身の `fit()` を一度呼び、資源を解放する。信号、`RUNNING`、再開と終了の判定は `Lifecycle.start` と `finish` が持ち、Trainer の `fit` がそれらを一度ずつ呼ぶ。直接比較は `run_direct` を使う。学習順は `fit` にある。YAML の `class` はこの公開パスのままである。公開モジュールは実装と同じオブジェクトを返す。クラスの identity は同じである。公開モジュール上の関数名を差し替えても、実装モジュールのグローバルは変わらない。
 
-YAML から参照する公式モデル・Trainer の `official/<model>/model(s).py`・`trainer.py` と共有 scheduler の `calc/optim.py` は直接の公開モジュールである。公開名と checkpoint の識別規則は `docs/experiments/CHECKPOINT.md` を参照する。
+YAML から参照する公式モデル・Trainer の `src/models/<model>/model.py`・`models.py`・`trainer.py` と共有 scheduler の `calc/optim.py` は直接の公開モジュールである。公開名と checkpoint の識別規則は `docs/experiments/CHECKPOINT.md` を参照する。
 
 `src/training/` と `configs/training/` は無い。旧形式 `audio-db-training-v1` の checkpoint は再開しない。研究用の実装を足すときは、公式再現の Model、Trainer、参照ステップを変えず、独立した領域に置く。
 
@@ -33,8 +32,8 @@ YAML から参照する公式モデル・Trainer の `official/<model>/model(s).
 - `transcribe()` は `eval()`、全パラメータ `requires_grad=False`、`torch.inference_mode()`。
 - `enhance()` は推論専用。`build_model()` は学習可能な `nn.Module` を返すだけで、損失も更新順も含まない。
 - 学習は `enhance()` と `transcribe()` を呼ばない。
-- `src/se/` と `src/asr/` は、他の `src/` を import しない。
-- `src/evaluation/` は `src/se`、`src/asr`、`src/data` を使う。再現用 DB パッケージは import しない。
+- `src/asr/` は他の `src/` を import しない。`src/models` の推論モジュールは `src.experiments` を import しない。各モデルの Trainer と学習用 `model.py` は `src.experiments` を使う。
+- `src/evaluation/` は `src/models`、`src/asr`、`src/data` を使う。再現用 DB パッケージは import しない。
 - テスト（`tests/`）は `data/` の下に書かない。本番データを作る処理は `src/` と Make ターゲットに置く。
-- `src/experiments/data/` の DB と準備は `src/data/recipe` を使う。`src/se`、`src/asr`、`src/evaluation`、Trainer は import しない。
-- 学習ランタイムは `src/se.build_model` と `src/experiments/data/` の描画関数を使う。学習中に DuckDB を開かない。
+- `src/experiments/data/` の DB と準備は `src/data/recipe` を使う。`src/models`、`src/asr`、`src/evaluation`、Trainer は import しない。
+- 学習ランタイムは `src.models.build_model` と `src/experiments/data/` の描画関数を使う。学習中に DuckDB を開かない。

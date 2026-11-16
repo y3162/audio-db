@@ -7,7 +7,7 @@ url = "https://github.com/yxlu-0102/MP-SENet.git"
 commit = "89932cfe90d1dacb8e170e4a331d762462c21792"
 dest = "src/se/official/mp-senet"
 license = "MIT"
-license_note = "Repository LICENSE. Local copy also at src/se/models/mp_senet/LICENSE."
+license_note = "Repository LICENSE. Local copy also at src/models/mp_senet/LICENSE."
 
 [[source]]
 id = "deepfilternet"
@@ -39,7 +39,7 @@ url = "https://github.com/merlresearch/tf-locoformer.git"
 commit = "7a615460d347ff7334a13dbb831d16280da72cdc"
 dest = "src/se/official/tf-locoformer"
 license = "Apache-2.0"
-license_note = "Tag v1.1.0. Standalone separator is copied into src/se/models/tf_locoformer. Pretrained weights are Git LFS objects in the checkout."
+license_note = "Tag v1.1.0. Standalone separator is copied into src/models/tf_locoformer. Pretrained weights are Git LFS objects in the checkout."
 
 [[source]]
 id = "espnet"

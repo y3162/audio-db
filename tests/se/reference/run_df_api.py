@@ -12,7 +12,7 @@ import torchaudio.functional as AF
 
 ROOT = Path(__file__).resolve().parents[3]
 sys.path.insert(0, str(ROOT))
-from src.se import load_enhancer
+from src.models import load_enhancer
 from tests.se.reference.metrics import compare, format_row
 sys.path.insert(0, str(ROOT / 'src/se/official/deepfilternet/DeepFilterNet'))
 from df.enhance import enhance, init_df

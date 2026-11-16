@@ -4,7 +4,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parents[3]))
 import torch
 from mamba_ssm.ops.selective_scan_interface import mamba_inner_fn
-from src.se.models.semambapp.network import SelectiveSSM
+from src.models.semambapp.network import SelectiveSSM
 
 
 def full_mixer(self, hidden):

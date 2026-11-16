@@ -156,8 +156,8 @@ class MPSENet:
         if implementation == "official":
             generator, discriminator = _official_mp(h, device)
         else:
-            from src.se import build_model
-            from src.experiments.official.mp_senet.model import MetricDiscriminator
+            from src.models import build_model
+            from src.models.mp_senet.model import MetricDiscriminator
             generator = build_model("mp_senet", vars(h)).to(device)
             discriminator = MetricDiscriminator().to(device)
         self._h = h

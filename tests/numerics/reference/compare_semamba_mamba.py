@@ -19,7 +19,7 @@ ROOT = Path(__file__).resolve().parents[3]
 sys.path.insert(0, str(ROOT))
 
 from mamba_ssm.modules.mamba_simple import Mamba  # noqa: E402
-from src.se.models.semambapp.network import SelectiveSSM  # noqa: E402
+from src.models.semambapp.network import SelectiveSSM  # noqa: E402
 
 
 def _stats(reference: torch.Tensor, other: torch.Tensor) -> dict[str, float]:

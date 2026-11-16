@@ -94,4 +94,4 @@ class ConfigClassTests(unittest.TestCase):
 
         path = Path(__file__).resolve().parents[2] / 'tests/fixtures/configs/experiments/linear_supervised.yaml'
         self.assertEqual(config_sha256(load_experiment(path)),
-                         '9a5e82f736c6e6f56e2b9181fd9ea434c5a7c689b43fa7d9b4decef02e6193d9')
+                         'af3e57bb71bab9e9b3e90cc696d7f2ceb6d2e9d3d30cd25301a7a3ee98507652')

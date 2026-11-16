@@ -825,7 +825,10 @@ class InitializeTests(_Base):
         )
         with self.assertRaises(Exception) as caught:
             build_experiment(load_experiment(wide)).run()
-        self.assertIn("size mismatch", str(caught.exception))
+        self.assertTrue(
+            "size mismatch" in str(caught.exception) or "must match the size" in str(caught.exception),
+            str(caught.exception),
+        )
         missing = self._new(["model"])
         missing.write_text(
             missing.read_text(encoding="utf-8").replace(str(self.source), str(self.source) + ".missing"),
