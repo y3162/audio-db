@@ -193,7 +193,7 @@ Babble は 48,000 Hz、2,880,000 frames、1 ch、5,760,044 バイト。SSN は 4
 | `TCAR_48k.zip` | `8ff68f65c8af88764a6bae44ce35747f592929753b03319e68211f9ef58c55d6` |
 | `TMETRO_48k.zip` | `2d9be4da51098491be1ed67474dabfa7f5ed254cae921cca1dd06585bddfe883` |
 
-2026-11-12 時点で、VoiceBank の SNR をずらしたレシピ 12,396 件がデータセットルートの `recipes/voicebank-snr-shift-v1/` にあり、`eval.cases` には入れていなかった。調査の原記録はデータセットルートの `investigations/voicebank-20261112/` にあった。この実験の学習コードとリポジトリ内の設定は後に削除した。2026-11-16 に再構成情報を現行の v1 へ移したあと、レシピ、調査記録、旧 DB、旧 staging、旧 snapshot も削除した。現行の置き場は「2026-11-16 VoiceBank SNR shift v1」にある。
+2026-11-12 時点で、VoiceBank の SNR をずらしたレシピ 12,396 件がデータセットルートの `recipes/voicebank-snr-shift-v1/` にあり、`eval.cases` には入れていなかった。調査の原記録はデータセットルートの `investigations/voicebank-20261112/` にあった。この実験の学習コードとリポジトリ内の設定は後に削除した。2026-11-16 に再構成情報を現行の v1 へ移したあと、データセットルートのレシピ、調査記録、旧 DB、旧 staging、旧 snapshot も削除した。発話レシピの正本は `configs/data/voicebank_snr/v1.jsonl` で、DB と snapshot は「2026-11-16 VoiceBank SNR shift v1」にある。
 
 ## 2026-11-12 に在ったファイル
 
@@ -535,16 +535,21 @@ per-rank 側（学習設定が指す方）の snapshot hash:
 
 ## 2026-11-16 VoiceBank SNR shift v1
 
-12,396 発話の共有レシピを `data/db/reproduction-voicebank-snr-v1.duckdb` と `data/staging/reproduction-voicebank-snr-v1/` に登録した。snapshot は `data/db/snapshots/` の Dataset ID ディレクトリである。56 話者版は含まない。生成は VCTK 0.80、DEMAND48、Babble、SSN だけを読み、公式 clean/noisy は比較専用である。
+発話レシピの正本は `configs/data/voicebank_snr/v1.jsonl` である。12,396 行、10,335,148 bytes、ファイル SHA-256 は `d92609b863e5e33623bab9133b851cccce8bf2e625138c9c7a22a34b58581cef`。train 10,700、validation 872、test 824。`snr_shift_db` は行に無い。
 
-レシピ文書を発話 ID 順に連結した SHA-256 は `9f39b32546f2ec9c99f468f21143a759ad72daec29a528de82db987530191e6c`。移行元 `recipes/voicebank-snr-shift-v2/recipes.jsonl` の SHA-256 は `9502da7b24b81bed04781c1e66726945dfcb3024045111df8bbb5839e0d01c14`。発話ごとの比較は `data/staging/reproduction-voicebank-snr-v1/verification/utterances.jsonl`（SHA-256 `013fe4320406056ad205534a067532317fc10a15a43d8e9c358f391a758001fa`）。
+流れは `configs/data/voicebank_snr/v1.jsonl` → `data/staging/reproduction-voicebank-snr-v1/` と `data/db/reproduction-voicebank-snr-v1.duckdb` → `data/db/snapshots/<dataset_id>/` → Dataset → `src/experiments/data/mix/voicebank_snr.py` である。登録は `make reproduction-register-voicebank-snr` で、空の `SNR_SHIFT_DB` は 0、−15、−20 を作る。`SNR_SHIFT_DB=-20` は −20 dB だけを足す。元素材は VCTK 0.80、DEMAND48、Babble、SSN である。公式 clean/noisy は登録では読まない。56 話者版は含まない。3 つの ready Dataset は同じ 12,396 Case を共有する。Case の protocol は shift 0（`08fe93a6f16ad272a5309b4dd663422c185df1cf3f7b3732b8cf18a40ff629f0`）である。
 
-| Dataset | Dataset ID | Snapshot hash | 件数 |
-|---|---|---|---|
-| voicebank.snr_shift.no@1 | `9afa1659db79a0377597989e89087f74dfe5a3b575b406c184541baff89cb6ec` | `8fb3cc458191ae42194963494e5581eb20ddb083920b1553e80dd2a06edc4bc9` | train 10700 / valid 872 / test 824 |
-| voicebank.snr_shift.minus_15db@1 | `81cb8da3b3bcd8b972ca424efc942a94f1145696801fe0c74db92e58da089fbf` | `c85e359fcf9431f9a0a3de8d36abf5ad441d78e7f6fc7b4e690d3da4afeb2922` | 同じ case。雑音ゲインだけが −15 dB |
+realization 文書を case 順（train、validation、test、各分割内は発話 ID）に連結した SHA-256 は `9f39b32546f2ec9c99f468f21143a759ad72daec29a528de82db987530191e6c`。Build の `source_recipes_sha256` は `9502da7b24b81bed04781c1e66726945dfcb3024045111df8bbb5839e0d01c14` で、削除済みの測定入力のハッシュである。JSONL ファイルのハッシュではない。この値を変えると build id と case id が変わる。
 
-`voicebank.snr_shift.published`（`7c603344d3e7dd54600074109d503bf4a03be5d362978f96199b90d86235c239`）は case なしの blocked である。公式生成器は未回収のため、ready の 2 Dataset は `research_checkpoint_selection` であり、`official_reproduction` ではない。`selection_uses_test` は false。
+| Dataset | Dataset ID | Protocol ID | Snapshot hash | `snr_shift_db` |
+|---|---|---|---|---:|
+| voicebank.snr_shift.no@1 | `9afa1659db79a0377597989e89087f74dfe5a3b575b406c184541baff89cb6ec` | `08fe93a6f16ad272a5309b4dd663422c185df1cf3f7b3732b8cf18a40ff629f0` | `8fb3cc458191ae42194963494e5581eb20ddb083920b1553e80dd2a06edc4bc9` | 0 |
+| voicebank.snr_shift.minus_15db@1 | `81cb8da3b3bcd8b972ca424efc942a94f1145696801fe0c74db92e58da089fbf` | `b151ea81d35c3818b2c2d655a90e10e5c8c25d3f5f70e27b4923a991ce158226` | `c85e359fcf9431f9a0a3de8d36abf5ad441d78e7f6fc7b4e690d3da4afeb2922` | −15 |
+| voicebank.snr_shift.minus_20db@1 | `49117d5cc89280a4f67174b1153a2cb42d2428e2e1dcbe3b578d3785665ac3f1` | `60bd4ffaa117514d30680d6a38dd194ea7e9666a85ee58f68e026f70486ddd54` | `c2ea4920b06e296410ec149c4229e51f568bee22c9013231474a23a8334e9231` | −20 |
+
+`voicebank.snr_shift.published`（`7c603344d3e7dd54600074109d503bf4a03be5d362978f96199b90d86235c239`、protocol `e8712cd464a11ce32450c9b6ac36eaa97bb784f0fba1c2c6000d28f236e66d80`）は case なしの blocked である。公式生成器は未回収のため、ready Dataset は `research_checkpoint_selection` であり、`official_reproduction` ではない。`selection_uses_test` は false。Build は `a152ccdf3dd23f8063be6331c9f74a8c5e8e3596922a43dac58b188c4dfcf208`。
+
+公式 PCM16 との全件比較は、現行の登録では行わない。2026-11-16 の測定記録は次のとおりで、比較ファイル `data/staging/reproduction-voicebank-snr-v1/verification/utterances.jsonl`（SHA-256 `013fe4320406056ad205534a067532317fc10a15a43d8e9c358f391a758001fa`）は残っている。`no` と `minus_15db` の `distribution_check` はこの測定の監査で、`minus_20db` には無い。
 
 48 kHz PCM16 の公式波形との比較は、発話完全一致が clean 0/12396、noisy 0/12396。サンプル完全一致は clean 844,316,618/1,722,262,113（49.0237%）、noisy 861,094,240/1,722,262,113（49.9979%）。clean の差は 0 または +1 LSB。noisy は 1 サンプルが −1 LSB、1 サンプルが +2 LSB（`p226_357`）で、残りは 0 または +1 LSB。ビット完全一致は未達。
 

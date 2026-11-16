@@ -168,8 +168,11 @@ reproduction-register-p8:
 reproduction-register-p9:
 	$(WITH_ENV) $(PYTHON) -c 'from src.experiments.data.prepare.semamba_online import register_p9; print(register_p9())'
 
+SNR_SHIFT_DB ?=
+
+# Reads configs/data/voicebank_snr/v1.jsonl. Empty SNR_SHIFT_DB registers 0, -15, and -20.
 reproduction-register-voicebank-snr:
-	$(WITH_ENV) $(PYTHON) -c 'from src.experiments.data.prepare.voicebank_snr import register_voicebank_snr; print(register_voicebank_snr())'
+	SNR_SHIFT_DB="$(SNR_SHIFT_DB)" $(WITH_ENV) $(PYTHON) -c 'import os; from src.experiments.data.build.voicebank_snr import register_voicebank_snr; print(register_voicebank_snr(shifts=os.environ.get("SNR_SHIFT_DB", "")))'
 
 CONFIG ?=
 RESUME ?=

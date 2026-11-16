@@ -49,7 +49,7 @@ DDL の正本は `src/experiments/data/db/schema.py`。登録は `src/experiment
 | `data/db/reproduction-vb-ondemand.duckdb` | VoiceBank オンデマンド 4 Dataset が入っているファイル。既定の Make ターゲットはこのパスを指さない。`reproduction.duckdb` には入れない |
 | `data/db/reproduction-p8.duckdb` | DeepFilterNet3。`make reproduction-register-p8` |
 | `data/db/reproduction-p9.duckdb` | SEMamba++。`make reproduction-register-p9` |
-| `data/db/reproduction-voicebank-snr-v1.duckdb` | VoiceBank+DEMAND の SNR shift。`make reproduction-register-voicebank-snr`。モデル別 Dataset にはしない |
+| `data/db/reproduction-voicebank-snr-v1.duckdb` | VoiceBank+DEMAND の SNR shift。発話レシピの正本は `configs/data/voicebank_snr/v1.jsonl`。`make reproduction-register-voicebank-snr`。モデル別 Dataset にはしない |
 | `data/db/snapshots/<dataset_id>/` | 学習が読む不変のスナップショット |
 
 DB ファイル名の stem を `eval` にしない。DuckDB のカタログ名と `eval.cases` が衝突するため。`reproduction` はこの衝突を起こさない。
@@ -98,7 +98,15 @@ DB ファイル名の stem を `eval` にしない。DuckDB のカタログ名�
 
 受理する algorithm は次の 7 つで、版はどれも 1 である。`fixed_pair.mp_senet`、`fixed_pair.mossformergan_se_16k`、`online.dfn3`、`online.semambapp_gsr`、`pregenerated.ms_snsd_tfgridnet`、`pregenerated.dns_tflocoformer`、`pregenerated.voicebank_snr_shift`。
 
-`pregenerated.voicebank_snr_shift` は、VCTK 0.80 の切り出しと雑音区間、ピーク正規化、保存済みゲインを 1 発話 1 レシピで持つ。`snr_shift_db` は protocol の規則で、realization には入れない。shift 0 と −15 dB は同じ Case を束ね、Dataset の protocol だけが違う。生成は VCTK と雑音ファイルだけを読む。公式 clean/noisy は逆解析と照合の参照で、生成入力ではない。56 話者版は含まない。出力は float64 で、クリップも PCM16 量子化もしない。公式波形との PCM16 比較は別関数である。Train と validation は話者と発話が分かれ、雑音ファイルと雑音区間は共有する。この algorithm の leak 監査は、雑音素材を音声の重複 FAIL から外し、雑音区間の重複を `noise_interval_independence` に記録する。Train/validation の雑音重複は WARN で、独立とは書かない。Train または validation と test の雑音重複は FAIL である。他の algorithm の leak 監査は変えない。
+`pregenerated.voicebank_snr_shift` の発話レシピの正本は `configs/data/voicebank_snr/v1.jsonl` である。12,396 行で、train 10,700、validation 872、test 824。1 行が 1 発話で、VCTK 0.80 の切り出し、DEMAND48 / Babble / SSN の雑音区間、ピーク段数、保存済みゲイン、元素材の SHA-256、無音除去を持つ。パスはコーパス識別子と `data/corpora/` からの相対パスである。使用区間は 48 kHz の半開区間 `[start, end)` である。ゲインは十進文字列のまま持ち、float へ往復しない。`snr_shift_db` は行に書かない。Protocol の規則であり、shift が違っても Case は同じである。Case は常に shift 0 の protocol（`voicebank.snr_shift.no`）を指す。Dataset の protocol だけが shift を持つ。
+
+流れは `configs/data/voicebank_snr/v1.jsonl` → `data/staging/reproduction-voicebank-snr-v1/` と `data/db/reproduction-voicebank-snr-v1.duckdb` → `data/db/snapshots/<dataset_id>/` → Dataset → `src/experiments/data/mix/voicebank_snr.py` である。DB、staging、snapshot は JSONL から再構築する派生物で、発話レシピの正本ではない。
+
+登録は JSONL と元素材（VCTK 0.80、DEMAND48、Babble、SSN）だけを読む。公式 VoiceBank+DEMAND の clean/noisy は読まない。公式波形との全件比較や逆解析は登録に含めない。56 話者版は含まない。レンダラは `clean = speech * clean_scale * g`、`noisy = clean + noise_gain_after_peak * 10**(-snr_shift_db/20) * noise` である。出力は float64 で、追加のピーク処理、暗黙のクリップ、PCM16 量子化をしない。公式 PCM16 との完全一致は未達で、その測定は過去の記録である。登録はそれを再実行しない。
+
+Dataset 名は、0 を `voicebank.snr_shift.no`、負の整数 −N を `voicebank.snr_shift.minus_Ndb`、正の整数 N を `voicebank.snr_shift.plus_Ndb` とする。非整数は小数点を `p` に置き、符号を `minus` または `plus` に付ける（−6.5 は `minus_6p5db`）。整数値の −0 と 0 は同じ `no` である。整数は protocol の JSON でも整数のままである。違う shift が同じ名前になる指定は拒否する。SNR ごとの Dataset 別 YAML は作らない。version は 1 固定で、shift は `SNR_SHIFT_DB` と Builder が決める。
+
+Train と validation は話者と発話が分かれ、雑音ファイルと雑音区間は共有する。この algorithm の leak 監査は、雑音素材を音声の重複 FAIL から外し、雑音区間の重複を `noise_interval_independence` に記録する。Train/validation の雑音重複は WARN で、独立とは書かない。Train または validation と test の雑音重複は FAIL である。他の algorithm の leak 監査は変えない。`selection_uses_test` は false である。
 
 ## 4. スキーマ
 
@@ -274,11 +282,12 @@ make reproduction-verify DATASET=name@version HASH=1
 make reproduction-register-p8
 make reproduction-register-p9
 make reproduction-register-voicebank-snr
+make reproduction-register-voicebank-snr SNR_SHIFT_DB=-20
 ```
 
 `DATASET` が無い snapshot、`OUT` が無い rebuild は失敗する。再構築は `OUT` が既存なら拒否し、新しいファイルへ書く。全表のハッシュが一致したときだけ置き換える。leakage 監査が `UNKNOWN` の Dataset を書き出すときだけ `ALLOW_UNKNOWN_LEAK_CHECK=1` を付ける。このフラグはスナップショットの provenance に残り、ハッシュには入らない。
 
-`reproduction-register-p8` は `register_p8()`、`reproduction-register-p9` は `register_p9()`。既定の出力はそれぞれ `data/staging/reproduction-p8` と `data/db/reproduction-p8.duckdb`、`data/staging/reproduction-p9` と `data/db/reproduction-p9.duckdb` で、ready な Dataset のスナップショットを `data/db/snapshots/` に書く。`reproduction-register-voicebank-snr` は、staging `data/staging/reproduction-voicebank-snr-v1/` が既にあるとき `register_voicebank_snr()` を呼び、`data/db/reproduction-voicebank-snr-v1.duckdb` と既定の snapshot ディレクトリへ書く。レシピの測定自体はこのターゲットに含めない。既存の同じ内容は増やさない。`reproduction.duckdb` と `resource.duckdb` には入れない。
+`reproduction-register-p8` は `register_p8()`、`reproduction-register-p9` は `register_p9()`。既定の出力はそれぞれ `data/staging/reproduction-p8` と `data/db/reproduction-p8.duckdb`、`data/staging/reproduction-p9` と `data/db/reproduction-p9.duckdb` で、ready な Dataset のスナップショットを `data/db/snapshots/` に書く。`reproduction-register-voicebank-snr` は `register_voicebank_snr()` を呼ぶ。入力は `configs/data/voicebank_snr/v1.jsonl` と `SNR_SHIFT_DB` である。空なら 0、−15、−20 を登録する。`make reproduction-register-voicebank-snr SNR_SHIFT_DB=-20` は −20 dB の Dataset を足す。shift 0 の protocol は Case のアンカーとして常に作る。要求した shift の ready Dataset と、その snapshot を `data/db/snapshots/` に書く。同じ内容は増やさない。同じ名前で違う ID は拒否する。Python の SNR 定数は編集しない。`reproduction.duckdb` と `resource.duckdb` には入れない。
 
 `reproduction-prepare` は VoiceBank の固定ペア（`src/experiments/data/prepare/run.py`）で、段は diagnose、lists、resolve、register、snapshot、verify である。既定の DB は `data/db/reproduction.duckdb`、staging は `data/staging/reproduction` である。ケースは 48 kHz のコーパスを指す。16 kHz への変換は学習が読むときである。オンデマンド 4 Dataset の実ファイルは別パスで、そのパスを既定にするターゲットは無い。
 

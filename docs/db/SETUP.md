@@ -100,9 +100,10 @@ make reproduction-rebuild-db OUT=data/db/reproduction-rebuilt.duckdb
 make reproduction-register-p8
 make reproduction-register-p9
 make reproduction-register-voicebank-snr
+make reproduction-register-voicebank-snr SNR_SHIFT_DB=-20
 ```
 
-`reproduction-register-p8` は `register_p8()`、`reproduction-register-p9` は `register_p9()` です。既定の出力は `data/staging/reproduction-p8` と `data/db/reproduction-p8.duckdb`、および `reproduction-p9` の対です。`reproduction-register-voicebank-snr` は staging `data/staging/reproduction-voicebank-snr-v1/` を `data/db/reproduction-voicebank-snr-v1.duckdb` に登録し、ready な Dataset のスナップショットを `data/db/snapshots/` に書きます。`reproduction.duckdb` と `resource.duckdb` には入れません。仕様と、いまの中身は [再現用 DB](REPRODUCTION_DB_DESIGN.md) と [配置と記録](INVENTORY.md) です。
+`reproduction-register-p8` は `register_p8()`、`reproduction-register-p9` は `register_p9()` です。既定の出力は `data/staging/reproduction-p8` と `data/db/reproduction-p8.duckdb`、および `reproduction-p9` の対です。`reproduction-register-voicebank-snr` は `configs/data/voicebank_snr/v1.jsonl` を読み、`SNR_SHIFT_DB` の Dataset を作ります。空なら 0、−15、−20 です。`SNR_SHIFT_DB=0` は `voicebank.snr_shift.no@1`、SNR ごとの YAML は作りません。元素材は VCTK 0.80、DEMAND48、Babble、SSN です。出力は staging `data/staging/reproduction-voicebank-snr-v1/`、`data/db/reproduction-voicebank-snr-v1.duckdb`、ready な Dataset のスナップショット `data/db/snapshots/<dataset_id>/` です。同じ内容の再実行は行を増やしません。`reproduction.duckdb` と `resource.duckdb` には入れません。仕様と、いまの中身は [再現用 DB](REPRODUCTION_DB_DESIGN.md) と [配置と記録](INVENTORY.md) です。
 
 `DATASET` が無い snapshot、`OUT` が無い rebuild、`DATASET` と `BUILD` のどちらも無い verify は失敗する。再構築は `OUT` が既存なら拒否する。leakage 監査が `UNKNOWN` の Dataset を書き出すときだけ `ALLOW_UNKNOWN_LEAK_CHECK=1` を付ける。このフラグはスナップショットの来歴に残り、ハッシュには入らない。
 

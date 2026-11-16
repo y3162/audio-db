@@ -30,14 +30,20 @@ from src.experiments.data.mix.voicebank_snr import (
     render_case,
     render_components,
 )
-from src.experiments.data.paths import ROOT
-from src.experiments.data.prepare.voicebank_snr import (
+from src.experiments.data.build.voicebank_snr import (
     EXPECTED_COUNTS,
+    RECIPE_PATH,
     assert_population,
     build_voicebank_snr_graph,
-    normalize_recipe_row,
+    concatenated_realization_sha256,
+    dataset_name,
+    dump_recipe_line,
+    load_recipes,
     realization_document,
+    records_from_recipes,
+    stub_headers,
 )
+from src.experiments.data.paths import ROOT
 
 FORBIDDEN = (
     "voicebank-snr-shift-v1",
@@ -72,6 +78,7 @@ class VoicebankSnrTests(unittest.TestCase):
         self.assertEqual(quantized.tolist(), [0, 2, 2, 0, -2, 32767, -32768])
         self.assertEqual(noise_scale(0), 1.0)
         self.assertAlmostEqual(noise_scale(-15), 10 ** (15 / 20), places=12)
+        self.assertAlmostEqual(noise_scale(-20), 10.0, places=12)
         self.assertAlmostEqual(noise_scale(-6), 10 ** (6 / 20), places=12)
         self.assertEqual(decimal_string(1.0), "1")
 
@@ -81,8 +88,10 @@ class VoicebankSnrTests(unittest.TestCase):
         noise = 0.05 * np.sin(2.0 * np.pi * 1000.0 * time / 48000.0)
         base = p56_snr_db(clean, noise)
         shifted = p56_snr_db(clean, noise * noise_scale(-15))
-        self.assertTrue(np.isfinite(base) and np.isfinite(shifted))
+        lower = p56_snr_db(clean, noise * noise_scale(-20))
+        self.assertTrue(np.isfinite(base) and np.isfinite(shifted) and np.isfinite(lower))
         self.assertAlmostEqual(shifted - base, -15.0, places=6)
+        self.assertAlmostEqual(lower - base, -20.0, places=6)
         power = component_snr_db(clean, noise)
         self.assertNotAlmostEqual(power, base, places=2)
 
@@ -116,52 +125,69 @@ class VoicebankSnrTests(unittest.TestCase):
         ratio = np.max(np.abs(shifted - shifted_clean)) / np.max(np.abs(noisy - clean))
         self.assertAlmostEqual(ratio, noise_scale(-15), places=12)
 
-    def test_recipe_row_assigns_validation_and_canonical_gains(self) -> None:
-        row = normalize_recipe_row(
-            {
-                "utterance_id": "p286_001",
-                "split": "train",
-                "noise_type": "cafeteria",
-                "source_vctk": "data/corpora/VCTK/wav48/p286/p286_001.wav",
-                "source_vctk_sha256": "a" * 64,
-                "noise_path": "data/corpora/DEMAND48/PCAFETER/ch01.wav",
-                "noise_sha256": "b" * 64,
-                "noise_channel_1based": "1",
-                "noise_start_48k": "10",
-                "noise_end_exclusive_48k": "20",
-                "vctk_alignment_offset": "5",
-                "official_log_snr_db": 15.0,
-                "clean_gain_g": "1.0",
-                "noise_gain_before_peak_beta": "0.5",
-                "noise_gain_after_peak": "0.5",
-                "peak_steps": "0",
-            }
+    def test_shift_names_do_not_collide(self) -> None:
+        self.assertEqual(dataset_name(0), "voicebank.snr_shift.no")
+        self.assertEqual(dataset_name(-0.0), "voicebank.snr_shift.no")
+        self.assertEqual(dataset_name(-15), "voicebank.snr_shift.minus_15db")
+        self.assertEqual(dataset_name(-15.0), "voicebank.snr_shift.minus_15db")
+        self.assertEqual(dataset_name(-20), "voicebank.snr_shift.minus_20db")
+        self.assertEqual(dataset_name(6), "voicebank.snr_shift.plus_6db")
+        self.assertEqual(dataset_name(-6.5), "voicebank.snr_shift.minus_6p5db")
+        self.assertEqual(dataset_name(6.5), "voicebank.snr_shift.plus_6p5db")
+        names = [dataset_name(shift) for shift in (0, -15, 15, -6.5, 6.5, -20)]
+        self.assertEqual(len(names), len(set(names)))
+        self.assertEqual(dataset_name(0), dataset_name(-0.0))
+
+    def test_recipe_rejects_bad_rows(self) -> None:
+        root = Path(tempfile.mkdtemp(prefix="voicebank-recipe-"))
+        try:
+            path = root / "recipes.jsonl"
+            path.write_text(dump_recipe_line(_recipe()) + "\n", encoding="utf-8")
+            loaded = load_recipes(path, check_population=False)
+            self.assertEqual(loaded[0]["split"], "valid")
+            self.assertEqual(loaded[0]["clean_gain_g"], "1")
+            bad = _recipe()
+            bad["clean"]["gain_g"] = "1.0"
+            bad["noise"]["gain_after_peak"] = "0.5"
+            path.write_text(dump_recipe_line(bad) + "\n", encoding="utf-8")
+            with self.assertRaises(ReproductionError):
+                load_recipes(path, check_population=False)
+            shifted = _recipe()
+            shifted["snr_shift_db"] = -15
+            path.write_text(dump_recipe_line(shifted) + "\n", encoding="utf-8")
+            with self.assertRaises(ReproductionError):
+                load_recipes(path, check_population=False)
+            train_holdout = _recipe()
+            train_holdout["split"] = "train"
+            path.write_text(dump_recipe_line(train_holdout) + "\n", encoding="utf-8")
+            with self.assertRaises(ReproductionError):
+                load_recipes(path, check_population=False)
+            test_speaker = _recipe(utterance="p232_001", speaker="p232", split="train")
+            path.write_text(dump_recipe_line(test_speaker) + "\n", encoding="utf-8")
+            with self.assertRaises(ReproductionError):
+                load_recipes(path, check_population=False)
+        finally:
+            shutil.rmtree(root)
+
+    def test_published_recipe_keeps_ids(self) -> None:
+        rows = load_recipes(RECIPE_PATH)
+        graph = build_voicebank_snr_graph(records_from_recipes(rows, stub_headers(rows)))
+        documents = [case["doc_json"] for case in graph.cases]
+        self.assertEqual(
+            concatenated_realization_sha256(documents),
+            "9f39b32546f2ec9c99f468f21143a759ad72daec29a528de82db987530191e6c",
         )
-        self.assertEqual(row["split"], "valid")
-        self.assertEqual(row["noise_kind"], "demand")
-        self.assertEqual(row["clean_gain_g"], "1")
-        self.assertEqual(row["noise_channel"], 0)
-        with self.assertRaises(ReproductionError):
-            normalize_recipe_row(
-                {
-                    "utterance_id": "p232_001",
-                    "split": "train",
-                    "noise_type": "babble",
-                    "source_vctk": "data/corpora/VCTK/wav48/p232/p232_001.wav",
-                    "source_vctk_sha256": "a" * 64,
-                    "noise_path": "data/corpora/Babble/babble.wav",
-                    "noise_sha256": "b" * 64,
-                    "noise_channel_1based": 1,
-                    "noise_start_48k": 0,
-                    "noise_end_exclusive_48k": 8,
-                    "vctk_alignment_offset": 0,
-                    "official_log_snr_db": 2.5,
-                    "clean_gain_g": 1.0,
-                    "noise_gain_before_peak_beta": 0.2,
-                    "noise_gain_after_peak": 0.2,
-                    "peak_steps": 0,
-                }
-            )
+        self.assertEqual(graph.builds[0]["build_id"], "a152ccdf3dd23f8063be6331c9f74a8c5e8e3596922a43dac58b188c4dfcf208")
+        ids = {row["name"]: row["dataset_id"] for row in graph.datasets}
+        self.assertEqual(ids["voicebank.snr_shift.no"], "9afa1659db79a0377597989e89087f74dfe5a3b575b406c184541baff89cb6ec")
+        self.assertEqual(ids["voicebank.snr_shift.minus_15db"], "81cb8da3b3bcd8b972ca424efc942a94f1145696801fe0c74db92e58da089fbf")
+        self.assertEqual(ids["voicebank.snr_shift.published"], "7c603344d3e7dd54600074109d503bf4a03be5d362978f96199b90d86235c239")
+        self.assertEqual(len(set(ids.values())), len(ids))
+        protocols = {case["protocol_id"] for case in graph.cases}
+        self.assertEqual(protocols, {"08fe93a6f16ad272a5309b4dd663422c185df1cf3f7b3732b8cf18a40ff629f0"})
+        for dataset in graph.datasets:
+            self.assertFalse(dataset["selection_uses_test"])
+        self.assertEqual(len({case["case_id"] for case in graph.cases}), 12396)
 
     def test_population_counts(self) -> None:
         rows = []
@@ -203,7 +229,8 @@ class VoicebankSnrTests(unittest.TestCase):
             register_staging(staging, database)
             no_hash = export_snapshot(database, "voicebank.snr_shift.no@1", snapshots, corpora=corpora)
             low_hash = export_snapshot(database, "voicebank.snr_shift.minus_15db@1", snapshots, corpora=corpora)
-            self.assertNotEqual(no_hash, low_hash)
+            lower_hash = export_snapshot(database, "voicebank.snr_shift.minus_20db@1", snapshots, corpora=corpora)
+            self.assertEqual(len({no_hash, low_hash, lower_hash}), 3)
             no_source = SnapshotSource("voicebank.snr_shift.no@1", snapshots, "train", corpora=corpora, derived=root / "derived", generated=root / "generated")
             low_source = SnapshotSource("voicebank.snr_shift.minus_15db@1", snapshots, "train", corpora=corpora, derived=root / "derived", generated=root / "generated")
             no_source.open()
@@ -225,6 +252,12 @@ class VoicebankSnrTests(unittest.TestCase):
             shifted = low_noisy - low_clean
             ratio = np.sqrt(np.mean(shifted ** 2) / np.mean(base ** 2))
             self.assertAlmostEqual(float(ratio), noise_scale(-15), places=9)
+            lower_source = SnapshotSource("voicebank.snr_shift.minus_20db@1", snapshots, "train", corpora=corpora, derived=root / "derived", generated=root / "generated")
+            lower_source.open()
+            lower_clean, lower_noisy = render_case(lower_source.store, case_id, snr_shift_db=-20)
+            np.testing.assert_array_equal(clean, lower_clean)
+            lower_ratio = np.sqrt(np.mean((lower_noisy - lower_clean) ** 2) / np.mean(base ** 2))
+            self.assertAlmostEqual(float(lower_ratio), noise_scale(-20), places=9)
             _, arbitrary = render_case(no_source.store, case_id, snr_shift_db=-6)
             arbitrary_ratio = np.sqrt(np.mean((arbitrary - clean) ** 2) / np.mean(base ** 2))
             self.assertAlmostEqual(float(arbitrary_ratio), noise_scale(-6), places=9)
@@ -257,6 +290,42 @@ class VoicebankSnrTests(unittest.TestCase):
                         hits.append(f"{path}:{needle}")
         self.assertEqual(hits, [])
 
+    def test_register_is_idempotent_and_rejects_a_reused_name(self) -> None:
+        root = Path(tempfile.mkdtemp(prefix="voicebank-register-"))
+        try:
+            corpora = root / "corpora"
+            graph = _graph_from_wavs(corpora, shared=False)
+            staging = root / "staging"
+            database = root / "db.duckdb"
+            write_graph(staging, graph)
+            initialize_database(database)
+            register_staging(staging, database)
+            again = register_staging(staging, database)
+            self.assertTrue(all(count == 0 for count in again.values()))
+            renamed = _graph_from_wavs(corpora, shared=False)
+            collided = next(row for row in renamed.datasets if row["name"] == "voicebank.snr_shift.minus_15db")
+            collided["name"] = "voicebank.snr_shift.no"
+            other = root / "other-staging"
+            write_graph(other, renamed)
+            with self.assertRaises(ReproductionError):
+                register_staging(other, database)
+            arbitrary = _graph_from_wavs(root / "arbitrary", shared=False, shifts=(-6,))
+            names = {row["name"] for row in arbitrary.datasets}
+            self.assertEqual(names, {"voicebank.snr_shift.published", "voicebank.snr_shift.minus_6db"})
+            self.assertIn("voicebank.snr_shift.no", {row["name"] for row in arbitrary.protocols})
+            validate_graph(arbitrary)
+            write_graph(root / "arbitrary-staging", arbitrary)
+            initialize_database(root / "arbitrary.duckdb")
+            register_staging(root / "arbitrary-staging", root / "arbitrary.duckdb")
+            export_snapshot(
+                root / "arbitrary.duckdb",
+                "voicebank.snr_shift.minus_6db@1",
+                root / "arbitrary-snapshots",
+                corpora=root / "arbitrary",
+            )
+        finally:
+            shutil.rmtree(root)
+
 
 def leak_status(graph, name: str) -> str:
     return leak_of(graph, name)["status"]
@@ -275,7 +344,7 @@ def leak_of(graph, name: str) -> dict:
     )
 
 
-def _graph_from_wavs(corpora: Path, *, shared: bool | str):
+def _graph_from_wavs(corpora: Path, *, shared: bool | str, shifts: tuple = (0, -15, -20)):
     corpora.mkdir(parents=True, exist_ok=True)
     specs = [
         ("train", "p226", "p226_001", 15, "babble", "Babble/train.wav", 220.0),
@@ -321,11 +390,50 @@ def _graph_from_wavs(corpora: Path, *, shared: bool | str):
                 "noise": _asset(noise_rel, noise, channel=0, start=start, end=start + speech["frames"], speaker=None, key=Path(noise_rel).stem, kind=kind, name=kind),
             }
         )
-    return build_voicebank_snr_graph(
-        records,
-        verification_report={"status": "PASS", "bit_exact": False, "utterances": 3, "synthetic": True},
-        source_recipes_sha256="c" * 64,
-    )
+    return build_voicebank_snr_graph(records, shifts)
+
+
+def _recipe(utterance: str = "p286_001", speaker: str = "p286", split: str = "valid") -> dict:
+    return {
+        "recipe_version": 1,
+        "utterance_id": utterance,
+        "speaker_id": speaker,
+        "split": split,
+        "position": 0,
+        "sample_rate": 48000,
+        "official_snr_db": 15,
+        "peak_steps": 0,
+        "target_peak_pcm": 16384,
+        "output_length": 10,
+        "clean": {
+            "corpus": "VCTK",
+            "rel_path": f"VCTK/wav48/{speaker}/{utterance}.wav",
+            "sha256": "a" * 64,
+            "channel": 0,
+            "start": 0,
+            "end": 10,
+            "scale": "1",
+            "gain_g": "1",
+            "silence": {
+                "mode": "contiguous_slice",
+                "source_frames": 10,
+                "leading_removed": 0,
+                "trailing_removed": 0,
+            },
+        },
+        "noise": {
+            "corpus": "DEMAND48",
+            "rel_path": "DEMAND48/PCAFETER/ch01.wav",
+            "sha256": "b" * 64,
+            "channel": 0,
+            "start": 0,
+            "end": 10,
+            "kind": "demand",
+            "name": "cafeteria",
+            "gain_before_peak_beta": "0.5",
+            "gain_after_peak": "0.5",
+        },
+    }
 
 
 def _scale(samples: np.ndarray) -> str:
