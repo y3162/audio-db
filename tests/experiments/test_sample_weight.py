@@ -9,6 +9,7 @@ import torch
 from src.experiments.data.sample import SampleRef
 from src.experiments.data.fixed_pair import MicroBatcher
 from src.experiments.data.tensor import TensorPairData
+from src.experiments.training.control import open_flat_window_at, open_grouped_window, window_divisor
 from src.experiments.training.sample_weight import sample_scales, window_is_uniform
 
 
@@ -66,6 +67,31 @@ class TailBatchTests(unittest.TestCase):
         self.assertEqual(view.updates, 2)
         self.assertEqual(view.batch(0)[0].inputs.shape[0], 2)
         self.assertEqual(view.batch(1), [])
+
+
+class OfficialWindowTests(unittest.TestCase):
+    def test_a_short_tail_is_kept_and_a_full_window_still_uses_accumulation(self) -> None:
+        accumulation = 2
+        self.assertIs(window_divisor(accumulation, accumulation), accumulation)
+        self.assertEqual(window_divisor(accumulation, 1), 1)
+        data = TensorPairData(features=2, examples=5, batch_size=1, seed=1)
+        data.setup(type("Runtime", (), {"device": torch.device("cpu"), "world_size": 1, "rank": 0})())
+        self.assertEqual(data.train_epoch(0, start_update=0).updates, 5)
+        holder = type("Trainer", (), {"data": data, "accumulation": accumulation})()
+        _, index, _, planned = open_grouped_window(holder, "trainer")
+        self.assertEqual(index, 0)
+        self.assertEqual(len(planned), accumulation)
+        data.update_index = 4
+        _, index, _, planned = open_grouped_window(holder, "trainer")
+        self.assertEqual((index, len(planned)), (4, 1))
+        self.assertEqual(planned[0][0].inputs.shape[0], 1)
+        data.update_index = 0
+        _, _, _, batches = open_flat_window_at(data, accumulation, "trainer")
+        self.assertEqual(len(batches), accumulation)
+        data.update_index = 4
+        _, _, _, batches = open_flat_window_at(data, accumulation, "trainer")
+        self.assertEqual(len(batches), 1)
+        self.assertEqual(batches[0].sample_id, "ex-4")
 
 
 if __name__ == "__main__":

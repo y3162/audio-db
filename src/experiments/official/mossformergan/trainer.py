@@ -43,7 +43,7 @@ from src.experiments.runtime import PreparedModel, ProcessRuntime, require_prepa
 from src.experiments.selectors import scalar_metrics
 from src.experiments.stopping import control_requests_stop, observe_validation, should_stop
 from src.experiments.trainers import _close_epoch_view
-from src.experiments.training.control import stop_requested
+from src.experiments.training.control import stop_requested, window_divisor
 from src.experiments.training.objectives import call_objective
 from src.experiments.training.official_objectives import require_mossformer
 
@@ -221,7 +221,7 @@ class MossFormerGANTrainer(ProgressView):
                 continue
             view, batch, updates = opened
             try:
-                stepped = self.consume_micro_batch(batch, runtime, update_index=index)
+                stepped = self.consume_micro_batch(batch, runtime, update_index=index, updates=updates)
                 index += 1
                 self.data.epoch = epoch
                 self.data.update_index = index
@@ -235,11 +235,18 @@ class MossFormerGANTrainer(ProgressView):
             finally:
                 _close_epoch_view(view)
 
-    def consume_micro_batch(self, batch: Batch, runtime: ProcessRuntime, *, update_index: int) -> dict[str, Any] | None:
+    def consume_micro_batch(
+        self,
+        batch: Batch,
+        runtime: ProcessRuntime,
+        *,
+        update_index: int,
+        updates: int | None = None,
+    ) -> dict[str, Any] | None:
         """Run one micro-batch. Return the shared log when both optimizers stepped."""
 
         return self._micro.consume(
-            batch, runtime, update_index=update_index, phase_hook=self._on_update_phase,
+            batch, runtime, update_index=update_index, updates=updates, phase_hook=self._on_update_phase,
             step_pair=self._step_pair, journal=getattr(self, "journal", None), skip_path=self._skip_path,
         )
 
@@ -858,6 +865,7 @@ class MicroBatch:
         runtime: ProcessRuntime,
         *,
         update_index: int,
+        updates: int | None = None,
         phase_hook: Any,
         step_pair: Any,
         journal: Any,
@@ -919,6 +927,13 @@ class MicroBatch:
             if self._skip(runtime, disc_reason, batch, update_index, journal, skip_path):
                 return None
             progress.counters["micro_batches_succeeded"] += 1
+            start = update_index - int(progress.accu_count)
+            remaining = None if updates is None else int(updates) - start
+            if remaining is None or remaining >= self.accumulation or remaining < 1:
+                planned = self.accumulation
+            else:
+                planned = remaining
+            divisor = window_divisor(self.accumulation, planned)
             progress.accu_count += 1
             self.last_components = {
                 "discriminator": float(discriminator_loss.detach()),
@@ -927,15 +942,15 @@ class MicroBatch:
             for name, value in result.terms.items():
                 self.last_components[name] = float(value.detach())
             phase_hook("before_generator_backward")
-            self._backward(runtime, generator_loss / self.accumulation, self.generator)
+            self._backward(runtime, generator_loss / divisor, self.generator)
             phase_hook("after_generator_clip")
             phase_hook("before_discriminator_backward")
-            self._backward(runtime, discriminator_loss / self.accumulation, self.discriminator)
+            self._backward(runtime, discriminator_loss / divisor, self.discriminator)
             phase_hook("after_discriminator_clip")
         progress.window_generator.append(float(generator_loss.detach()))
         progress.window_discriminator.append(float(discriminator_loss.detach()))
         progress.window_samples.append(str(batch.sample_id))
-        if progress.accu_count != self.accumulation:
+        if progress.accu_count != planned:
             phase_hook("after_micro_batch")
             return None
         return step_pair(runtime)
@@ -1102,11 +1117,6 @@ def open_micro_batch(
             raise RuntimeFailure(f"component {component_id}: ranks have different micro-batch counts {counts}")
         if updates < 1:
             raise RuntimeFailure(f"component {component_id}: epoch {epoch} has no micro-batches")
-        if updates % accumulation != 0:
-            raise RuntimeFailure(
-                f"component {component_id}: epoch micro-batches {updates} "
-                f"are not divisible by accumulation {accumulation}"
-            )
         if index > updates:
             raise RuntimeFailure(f"component {component_id}: update {index} is past epoch {epoch}")
         if index == updates:

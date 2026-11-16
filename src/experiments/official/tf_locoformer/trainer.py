@@ -43,7 +43,12 @@ from src.experiments.official.tf_locoformer.evaluator import (
 from src.experiments.results import RunResult
 from src.experiments.runtime import PreparedModel, ProcessRuntime, require_prepared
 from src.experiments.stopping import observe_validation, should_stop
-from src.experiments.training.control import close_training_run, open_grouped_window, stop_after_step
+from src.experiments.training.control import (
+    close_training_run,
+    open_grouped_window,
+    stop_after_step,
+    window_divisor,
+)
 from src.experiments.training.objectives import call_objective, coerce_spectral_objective, term_floats
 from src.experiments.trainers import _close_epoch_view, _rank
 
@@ -147,7 +152,7 @@ class TFLocoformerTrainer:
                     self.scheduler.step_batch()
                     scheduled_lr = float(self.optimizer.param_groups[0]["lr"])
                 progress.record_step(loss=local.loss, used_lr=local.used_lr, scheduled_lr=scheduled_lr)
-                index += self.accumulation
+                index += len(planned)
                 progress.place_cursor(self.data, epoch, index)
                 epoch_done = index == view.updates
                 step_metrics: dict[str, float] = {}
@@ -714,22 +719,23 @@ class LocoformerUpdate:
         monitor_sum: torch.Tensor | None = None
         monitor_count = 0
         term_acc: dict[str, float] = {}
+        divisor = window_divisor(self.accumulation, len(planned))
         for offset, batches in enumerate(planned):
-            sync = offset == self.accumulation - 1
+            sync = offset == len(planned) - 1
             sample_ids.extend(batch.sample_id for batch in batches)
             with runtime.sync_gradients([self.model], enabled=sync):
                 with runtime.autocast():
                     micro, monitor, count, terms = _forward_loss(
                         self.model, self.objective, batches, component_id, runtime
                     )
-                micro = micro / self.accumulation
+                micro = micro / divisor
                 runtime.backward(micro)
             detached = micro.detach()
             total = detached if total is None else total + detached
             monitor_sum = monitor if monitor_sum is None else monitor_sum + monitor
             monitor_count += count
             for name, value in terms.items():
-                term_acc[name] = term_acc.get(name, 0.0) + value / self.accumulation
+                term_acc[name] = term_acc.get(name, 0.0) + value / divisor
         if self.grad_clip is not None:
             runtime.clip(self.model, self.grad_clip, optimizer=self.optimizer)
         if total is None:

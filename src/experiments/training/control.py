@@ -4,9 +4,10 @@ These functions replace copies whose meaning, errors, and order already
 matched. They do not choose a model's update, validation, or save point.
 
 ``open_grouped_window`` is the TF-GridNet and TF-Locoformer accumulation
-window: one list per micro-batch, and a window that does not fit is refused.
-``open_flat_window_at`` is the MP-SENet and SE-Mamba++ window: the epoch length
-must be divisible by the accumulation, and the micro-batches are flattened.
+window: one list per micro-batch. A short tail is that many micro-batches,
+not an error and not padding. ``open_flat_window_at`` is the MP-SENet and
+SE-Mamba++ window. A full window still has ``accumulation`` micro-batches.
+A short tail is shorter, and the micro-batches are flattened.
 ``open_flat_window`` passes a trainer's data and accumulation into it.
 DeepFilterNet3 retargets its cosine table while opening a window.
 MossFormerGAN reads one micro-batch in ``fit``. Those two stay in their
@@ -135,6 +136,21 @@ def finish_training_run(trainer: Any, reason: str, *, prepare: Any = None) -> Ru
     )
 
 
+def window_divisor(accumulation: int, window: int) -> int:
+    """Denominator for one optimizer window.
+
+    A full window returns ``accumulation`` itself. A short tail returns how
+    many micro-batches it actually holds. The two integers differ only then,
+    so a full window still divides by the same value as before.
+    """
+
+    if window == accumulation:
+        return accumulation
+    if isinstance(window, bool) or not isinstance(window, int) or window < 1 or window > accumulation:
+        raise RuntimeFailure(f"window {window} is outside 1..{accumulation}")
+    return window
+
+
 def open_grouped_window(
     trainer: Any,
     component_id: str,
@@ -153,12 +169,8 @@ def open_grouped_window(
             raise RuntimeFailure(
                 f"component {component_id}: epoch {epoch} is exhausted without a pending boundary"
             )
-        if index + trainer.accumulation > view.updates:
-            raise RuntimeFailure(
-                f"component {component_id}: accumulation {trainer.accumulation} "
-                f"does not fit at update {index}"
-            )
-        planned = [view.batch(index + offset) for offset in range(trainer.accumulation)]
+        span = min(trainer.accumulation, view.updates - index)
+        planned = [view.batch(index + offset) for offset in range(span)]
     except Exception:
         _close_epoch_view(view)
         raise
@@ -172,8 +184,8 @@ def open_flat_window_at(
 ) -> tuple[int, int, Any, list[Batch]]:
     """Take the next accumulation window as one flat micro-batch list.
 
-    The epoch length must be divisible by the accumulation. A short tail is
-    not padded here.
+    A short tail returns fewer micro-batches. It is not padded and it is not
+    dropped. A full window still returns ``accumulation`` of them.
     """
 
     epoch = int(data.epoch)
@@ -182,23 +194,15 @@ def open_flat_window_at(
     try:
         if view.updates < 1:
             raise RuntimeFailure(f"component {component_id}: epoch {epoch} has no micro-batches")
-        if view.updates % accumulation != 0:
-            raise RuntimeFailure(
-                f"component {component_id}: epoch micro-batches {view.updates} "
-                f"are not divisible by accumulation {accumulation}"
-            )
         if index > view.updates:
             raise RuntimeFailure(f"component {component_id}: update {index} is past epoch {epoch}")
         if index == view.updates:
             raise RuntimeFailure(
                 f"component {component_id}: epoch {epoch} is exhausted without a pending boundary"
             )
-        if index + accumulation > view.updates:
-            raise RuntimeFailure(
-                f"component {component_id}: accumulation {accumulation} does not fit at update {index}"
-            )
+        span = min(accumulation, view.updates - index)
         batches: list[Batch] = []
-        for offset in range(accumulation):
+        for offset in range(span):
             batches.extend(view.batch(index + offset))
     except Exception:
         _close_epoch_view(view)

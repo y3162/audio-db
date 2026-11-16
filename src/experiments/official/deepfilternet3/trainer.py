@@ -36,7 +36,7 @@ from src.experiments.results import RunResult
 from src.experiments.runtime import PreparedModel, ProcessRuntime, require_prepared
 from src.experiments.stopping import observe_validation, should_stop
 from src.experiments.trainers import _close_epoch_view, _rank
-from src.experiments.training.control import finish_training_run, stop_requested
+from src.experiments.training.control import finish_training_run, stop_requested, window_divisor
 from src.se.models.deepfilternet3.dsp import DFStream
 
 # --- Trainer. ``fit`` is the timeline. The sections below are the steps it calls. ---
@@ -180,7 +180,7 @@ class DeepFilterNet3Trainer:
                 self.progress.record_step(
                     applied=local.applied, loss=local.loss, learning_rate=learning_rate, decay=decay,
                 )
-                index += self.accumulation
+                index += local.consumed
                 self.data.epoch = epoch
                 self.data.update_index = index
                 note_step(
@@ -681,12 +681,7 @@ def open_epoch(
     try:
         if view.updates < 1:
             raise RuntimeFailure(f"component {component_id}: epoch {epoch} has no micro-batches")
-        if view.updates % accumulation != 0:
-            raise RuntimeFailure(
-                f"component {component_id}: epoch {epoch} has {view.updates} micro-batches, "
-                f"which is not divisible by accumulation {accumulation}"
-            )
-        steps = view.updates // accumulation
+        steps = (view.updates + accumulation - 1) // accumulation
         cosine.retarget(steps)
         progress.schedule_steps = cosine.steps
         if index > view.updates or index % accumulation != 0:
@@ -810,6 +805,7 @@ class DFStep:
     loss: float
     applied: bool
     sample_id: str
+    consumed: int
 
 def run_accumulation(
     model: Any,
@@ -828,22 +824,27 @@ def run_accumulation(
     optimizer.zero_grad(set_to_none=True)
     total: torch.Tensor | None = None
     sample_ids: list[str] = []
-    for offset in range(accumulation):
-        sync = offset == accumulation - 1
+    remaining = int(view.updates) - index
+    span = accumulation if remaining >= accumulation else remaining
+    if span < 1:
+        raise RuntimeFailure(f"component {component_id}: update {index} is past the epoch")
+    divisor = window_divisor(accumulation, span)
+    for offset in range(span):
+        sync = offset == span - 1
         batches = view.batch(index + offset)
         sample_ids.extend(batch.sample_id for batch in batches)
         with runtime.sync_gradients([model], enabled=sync):
             with runtime.autocast():
                 micro = forward_loss(stream, model, objective, batches, component_id, runtime)
-            runtime.backward(micro / accumulation)
-        detached = (micro / accumulation).detach()
+            runtime.backward(micro / divisor)
+        detached = (micro / divisor).detach()
         total = detached if total is None else total + detached
     runtime.clip(model, grad_clip, optimizer=optimizer)
     result = runtime.step(optimizer)
     runtime.end_step()
     if total is None or not bool(torch.isfinite(total).all()):
         raise RuntimeFailure(f"component {component_id}: loss is not finite")
-    return DFStep(float(total), bool(result.applied), ",".join(sample_ids))
+    return DFStep(float(total), bool(result.applied), ",".join(sample_ids), span)
 
 def forward_loss(
     stream: DFStream | None,

@@ -38,7 +38,12 @@ from src.experiments.runtime import PreparedModel, ProcessRuntime, require_prepa
 from src.experiments.selectors import scalar_metrics
 from src.experiments.stopping import observe_validation, should_stop
 from src.experiments.trainers import _close_epoch_view
-from src.experiments.training.control import finish_training_run, open_flat_window, stop_after_step
+from src.experiments.training.control import (
+    finish_training_run,
+    open_flat_window,
+    stop_after_step,
+    window_divisor,
+)
 from src.experiments.training.objectives import call_objective
 
 # --- Observations the trainer exposes from the update it owns. ---
@@ -229,7 +234,7 @@ class SEMambaPPTrainer(UpdateView):
             try:
                 local = self.official_step(batches, runtime)
                 self.progress.complete_update()
-                index += self.accumulation
+                index += len(batches)
                 self.data.epoch = epoch
                 self.data.update_index = index
                 epoch_done = index == view.updates
@@ -812,10 +817,11 @@ class SEMambaUpdate:
         self._phase = phase_hook
         self.refuse_amp(runtime)
         self.require_scan(runtime)
-        if len(batches) != self.accumulation:
+        if len(batches) < 1 or len(batches) > self.accumulation:
             raise RuntimeFailure(
                 f"official step received {len(batches)} micro-batches, accumulation is {self.accumulation}"
             )
+        divisor = window_divisor(self.accumulation, len(batches))
         counts = runtime.gather_objects(len(batches))
         if any(item != len(batches) for item in counts):
             raise RuntimeFailure("ranks disagree on the number of micro-batches")
@@ -857,7 +863,7 @@ class SEMambaUpdate:
             self.sync_trace.append("discriminator_sync" if last else "discriminator_nosync")
             with runtime.sync_gradients([self.mrd, self.cqt], enabled=last):
                 loss = self._discriminator_loss(runtime, clean, audio.detach())
-                _backward_if_finite(runtime, loss / self.accumulation, "discriminator loss")
+                _backward_if_finite(runtime, loss / divisor, "discriminator loss")
             term = loss.detach()
             discriminator_total = term if discriminator_total is None else discriminator_total + term
             self.mrd_forwards += 1
@@ -894,10 +900,14 @@ class SEMambaUpdate:
                     with runtime.sync_gradients([self.generator], enabled=last):
                         parts = self._generator_forward(runtime, clean, noisy, preview=False)
                         self.generator_reforward_forwards += 1
-                        generator_total += self._generator_backward(runtime, clean, parts, component_totals)
+                        generator_total += self._generator_backward(
+                            runtime, clean, parts, component_totals, divisor
+                        )
                 else:
                     self.sync_trace.append("generator_backward_retained")
-                    generator_total += self._generator_backward(runtime, clean, parts, component_totals)
+                    generator_total += self._generator_backward(
+                        runtime, clean, parts, component_totals, divisor
+                    )
         finally:
             for parameter in frozen:
                 parameter.requires_grad_(True)
@@ -1015,6 +1025,7 @@ class SEMambaUpdate:
         clean: torch.Tensor,
         parts: dict[str, torch.Tensor],
         components: dict[str, Any],
+        divisor: int,
     ) -> torch.Tensor:
         error: str | None = None
         total: torch.Tensor | None = None
@@ -1054,7 +1065,7 @@ class SEMambaUpdate:
             raise RuntimeFailure("generator loss failed: " + "; ".join(item for item in errors if item))
         if total is None or terms is None:
             raise RuntimeFailure("generator loss is missing")
-        _backward_if_finite(runtime, total / self.accumulation, "generator loss")
+        _backward_if_finite(runtime, total / divisor, "generator loss")
         for name, value in terms.items():
             current = components.get(name, 0.0)
             components[name] = current + value.detach()

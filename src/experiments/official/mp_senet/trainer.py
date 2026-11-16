@@ -47,7 +47,12 @@ from src.experiments.results import RunResult
 from src.experiments.runtime import PreparedModel, ProcessRuntime, require_prepared
 from src.experiments.selectors import scalar_metrics
 from src.experiments.stopping import control_requests_stop, observe_validation
-from src.experiments.training.control import close_training_run, open_flat_window_at, stop_after_step
+from src.experiments.training.control import (
+    close_training_run,
+    open_flat_window_at,
+    stop_after_step,
+    window_divisor,
+)
 from src.experiments.training.objectives import call_objective
 from src.experiments.training.official_objectives import require_mp_senet
 from src.experiments.trainers import _close_epoch_view
@@ -165,7 +170,7 @@ class MPSENetGANTrainer:
             try:
                 local = self.official_step(batches, runtime)
                 progress.complete_update()
-                index += self.accumulation
+                index += len(batches)
                 progress.place_cursor(self.data, epoch, index)
                 epoch_done = index == view.updates
                 validate = self.validation_interval > 0 and progress.logical_step % self.validation_interval == 0
@@ -867,6 +872,7 @@ def accumulated_step(
 ) -> dict[str, float]:
     """Discriminator micro-batches, one discriminator step, then the generator."""
 
+    divisor = window_divisor(update.accumulation, len(batches))
     phase_hook("zero_grad")
     update.optim_d.zero_grad(set_to_none=True)
     update.optim_g.zero_grad(set_to_none=True)
@@ -908,7 +914,7 @@ def accumulated_step(
                     loss = call_objective(
                         update.discriminator_objective,
                         {"real_score": real, "fake_score": fake, "ones": ones, "pesq_target": targets},
-                    ).total / update.accumulation
+                    ).total / divisor
                 except (TrainingError, RuntimeError, ValueError) as exc:
                     disc_error = f"{type(exc).__name__}: {exc}"
                 disc_errors = runtime.gather_objects(disc_error)
@@ -919,7 +925,7 @@ def accumulated_step(
                 if loss is None:
                     raise RuntimeFailure("discriminator loss is missing")
                 backward_if_finite(runtime, loss, "discriminator loss")
-                discriminator_total += float(loss.detach()) * update.accumulation
+                discriminator_total += float(loss.detach()) * divisor
         discriminator_result = runtime.step(update.optim_d)
         phase_hook("after_discriminator_step", stored)
         raw = update.discriminator.unwrapped().discriminator
@@ -946,7 +952,7 @@ def accumulated_step(
                         "metric": metric_out.terms["metric"],
                         "time": signal.terms["time"],
                     }
-                    total = total_tensor / update.accumulation
+                    total = total_tensor / divisor
                 except (TrainingError, RuntimeError, ValueError) as exc:
                     gen_error = f"{type(exc).__name__}: {exc}"
                 gen_errors = runtime.gather_objects(gen_error)
@@ -1195,7 +1201,7 @@ class MPSENetUpdate:
         """Apply one official pair, or raise before either optimizer is a safe point."""
 
         refuse_gan_amp(runtime)
-        if len(batches) != self.accumulation:
+        if len(batches) < 1 or len(batches) > self.accumulation:
             raise RuntimeFailure(
                 f"official step received {len(batches)} micro-batches, accumulation is {self.accumulation}"
             )
@@ -1204,7 +1210,7 @@ class MPSENetUpdate:
             raise RuntimeFailure("ranks disagree on the number of micro-batches")
         self.generator.train()
         self.discriminator.train()
-        if runtime.device.type == "cuda" and runtime.world_size == 1 and len(batches) == 1:
+        if runtime.device.type == "cuda" and runtime.world_size == 1 and self.accumulation == 1 and len(batches) == 1:
             return cuda_overlapped_step(
                 self,
                 batches[0],
