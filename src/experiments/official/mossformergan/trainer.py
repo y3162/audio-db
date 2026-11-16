@@ -44,6 +44,7 @@ from src.experiments.selectors import scalar_metrics
 from src.experiments.stopping import control_requests_stop, observe_validation, should_stop
 from src.experiments.trainers import _close_epoch_view
 from src.experiments.training.control import (
+    connected_zero,
     finite_gradient_report,
     gather_row_counts,
     planned_row_counts,
@@ -963,6 +964,13 @@ class MicroBatch:
             raise RuntimeFailure("a micro-batch cannot start between the two optimizer steps")
         self.generator.train()
         self.discriminator.train()
+        inputs = batch.inputs
+        if isinstance(inputs, torch.Tensor) and inputs.ndim >= 1 and int(inputs.shape[0]) == 0:
+            return self._consume_empty(
+                batch, runtime, update_index=update_index, updates=updates,
+                apply_optimizer=apply_optimizer, phase_hook=phase_hook, step_pair=step_pair,
+                journal=journal, skip_path=skip_path,
+            )
         clean, noisy = _waveforms(batch, runtime, self.n_fft)
         progress = self.progress
         progress.counters["micro_batches_processed"] += 1
@@ -1042,6 +1050,85 @@ class MicroBatch:
             phase_hook("after_discriminator_clip")
         progress.window_generator.append(float(generator_loss.detach()))
         progress.window_discriminator.append(float(discriminator_loss.detach()))
+        progress.window_samples.append(str(batch.sample_id))
+        if progress.accu_count != planned:
+            phase_hook("after_micro_batch")
+            return None
+        if not apply_optimizer:
+            return None
+        return step_pair(runtime)
+
+    def _consume_empty(
+        self,
+        batch: Batch,
+        runtime: ProcessRuntime,
+        *,
+        update_index: int,
+        updates: int | None,
+        apply_optimizer: bool,
+        phase_hook: Any,
+        step_pair: Any,
+        journal: Any,
+        skip_path: Any,
+    ) -> dict[str, Any] | None:
+        """Backward a connected zero. Do not render or forward the empty batch.
+
+        The two ``agree`` calls and the two backwards stay in the same order as
+        a rank that has audio, so a mixed window does not wait forever.
+        """
+
+        progress = self.progress
+        progress.counters["micro_batches_processed"] += 1
+        progress.counters["official_step"] += 1
+        with runtime.sync_gradients([self.generator, self.discriminator], enabled=False):
+            if self._skip(runtime, None, batch, update_index, journal, skip_path):
+                return None
+            if self._skip(runtime, None, batch, update_index, journal, skip_path):
+                return None
+            progress.counters["micro_batches_succeeded"] += 1
+            start = update_index - int(progress.accu_count)
+            remaining = None if updates is None else int(updates) - start
+            if remaining is None or remaining >= self.accumulation or remaining < 1:
+                planned = self.accumulation
+            else:
+                planned = remaining
+            divisor = window_divisor(self.accumulation, planned)
+            progress.accu_count += 1
+            self.last_components = {"discriminator": 0.0, "generator": 0.0}
+            phase_hook("before_generator_backward")
+            offset = int(progress.accu_count) - 1
+            scale = divisor if self.loss_scale is None else self.loss_scale
+            # The generator loss scores the fake pair, so its backward reaches
+            # the discriminator too. The zero has to reach the same parameters.
+            self._backward(
+                runtime,
+                weight_loss(
+                    connected_zero(
+                        (
+                            *self.generator.unwrapped().parameters(),
+                            *self.discriminator.unwrapped().parameters(),
+                        ),
+                        "trainer",
+                    ),
+                    scale,
+                    offset,
+                ),
+                self.generator,
+            )
+            phase_hook("after_generator_clip")
+            phase_hook("before_discriminator_backward")
+            self._backward(
+                runtime,
+                weight_loss(
+                    connected_zero(self.discriminator.unwrapped().parameters(), "trainer"),
+                    scale,
+                    offset,
+                ),
+                self.discriminator,
+            )
+            phase_hook("after_discriminator_clip")
+        progress.window_generator.append(0.0)
+        progress.window_discriminator.append(0.0)
         progress.window_samples.append(str(batch.sample_id))
         if progress.accu_count != planned:
             phase_hook("after_micro_batch")

@@ -11,6 +11,7 @@ from src.experiments.data.fixed_pair import MicroBatcher
 from src.experiments.data.tensor import TensorPairData
 from src.experiments.data.sample import Batch
 from src.experiments.execution.runtime import PreparePolicy, PreparedModel, ProcessRuntime
+from src.experiments.official.mossformergan.trainer import MicroBatch, MossProgress, PairGuard
 from src.experiments.official.mp_senet.trainer import accumulated_step
 from src.experiments.official.semambapp.trainer import SEMambaUpdate
 from src.experiments.official.tf_gridnet.trainer import GridNetUpdate
@@ -262,6 +263,56 @@ class GanEmptyTests(unittest.TestCase):
         )
         self.assertEqual(result["generator"], 0.0)
         self.assertEqual(result["sample_id"], "empty")
+        self.assertTrue(all(parameter.grad is not None for parameter in generator.parameters))
+        self.assertTrue(all(parameter.grad is not None for parameter in discriminator.parameters))
+
+    def test_mossformer_does_not_forward_an_empty_micro_batch(self) -> None:
+        runtime = ProcessRuntime(device="cpu", precision="fp32")
+        generator = _silent("moss-g")
+        discriminator = _silent("moss-d")
+        progress = MossProgress.initial("optim_g", "optim_d", "research")
+        micro = MicroBatch(
+            generator=generator,
+            discriminator=discriminator,
+            optim_g=torch.optim.SGD(generator.parameters, lr=0.1),
+            optim_d=torch.optim.SGD(discriminator.parameters, lr=0.1),
+            generator_objective=torch.nn.Identity(),
+            discriminator_objective=torch.nn.Identity(),
+            progress=progress,
+            guard=PairGuard(),
+            accumulation=1,
+            grad_clip=1.0,
+            n_fft=400,
+            hop=100,
+            win=400,
+            sample_rate=16000,
+        )
+        seen: list[str] = []
+        result = micro.consume(
+            _empty_batch(),
+            runtime,
+            update_index=0,
+            updates=1,
+            apply_optimizer=False,
+            phase_hook=lambda name: seen.append(name),
+            step_pair=lambda _runtime: (_ for _ in ()).throw(AssertionError("optimizer stepped")),
+            journal=None,
+            skip_path=None,
+        )
+        self.assertIsNone(result)
+        self.assertEqual(
+            seen,
+            [
+                "before_generator_backward",
+                "after_generator_clip",
+                "before_discriminator_backward",
+                "after_discriminator_clip",
+            ],
+        )
+        self.assertEqual(progress.counters["micro_batches_succeeded"], 1)
+        self.assertEqual(progress.counters["micro_batches_failed"], 0)
+        self.assertEqual(micro.average_calls, 2)
+        self.assertEqual(progress.window_samples, ["empty"])
         self.assertTrue(all(parameter.grad is not None for parameter in generator.parameters))
         self.assertTrue(all(parameter.grad is not None for parameter in discriminator.parameters))
 
