@@ -15,6 +15,7 @@ from src.experiments.official.tf_gridnet.trainer import GridNetUpdate
 from src.experiments.training.control import (
     open_flat_window_at,
     open_grouped_window,
+    planned_row_counts,
     window_divisor,
     window_scale,
 )
@@ -52,6 +53,10 @@ class ScaleTests(unittest.TestCase):
         self.assertEqual(short, 1)
         mixed = window_scale([2, 1], [[2, 1]], accumulation=accumulation, world_size=1)
         self.assertEqual(mixed, [2 / 3, 1 / 3])
+        view = type("View", (), {"_groups": (("a", "b"), ("c",), ())})()
+        self.assertEqual(planned_row_counts(view, 0, 2), [2, 1])
+        self.assertEqual(planned_row_counts(type("View", (), {"_data": type("Data", (), {"micro_batch": 1})()})(), 0, 2), [1, 1])
+        self.assertIsNone(planned_row_counts(type("View", (), {})(), 0, 1))
 
 
 class TailBatchTests(unittest.TestCase):

@@ -45,10 +45,14 @@ from src.experiments.stopping import control_requests_stop, observe_validation, 
 from src.experiments.trainers import _close_epoch_view
 from src.experiments.training.control import (
     finite_gradient_report,
+    gather_row_counts,
+    planned_row_counts,
     restore_fields,
     snapshot_fields,
     stop_requested,
+    weight_loss,
     window_divisor,
+    window_scale,
 )
 from src.experiments.training.objectives import call_objective
 from src.experiments.training.official_objectives import require_mossformer
@@ -227,6 +231,23 @@ class MossFormerGANTrainer(ProgressView):
                 continue
             view, batch, updates = opened
             try:
+                if int(self.progress.accu_count) == 0:
+                    remaining = int(updates) - index
+                    if remaining >= self.accumulation or remaining < 1:
+                        planned = self.accumulation
+                    else:
+                        planned = remaining
+                    counts = planned_row_counts(view, index, planned)
+                    if counts is None:
+                        self._micro.loss_scale = None
+                    else:
+                        resolved = window_scale(
+                            counts,
+                            gather_row_counts(runtime, counts),
+                            accumulation=self.accumulation,
+                            world_size=int(runtime.world_size),
+                        )
+                        self._micro.loss_scale = None if isinstance(resolved, int) else resolved
                 stepped = self.consume_micro_batch(
                     batch, runtime, update_index=index, updates=updates,
                 )
@@ -923,6 +944,7 @@ class MicroBatch:
         self.sample_rate = sample_rate
         self.average_calls = 0
         self.last_components: dict[str, float] | None = None
+        self.loss_scale: list[float] | None = None
 
     def consume(
         self,
@@ -1008,10 +1030,15 @@ class MicroBatch:
             for name, value in result.terms.items():
                 self.last_components[name] = float(value.detach())
             phase_hook("before_generator_backward")
-            self._backward(runtime, generator_loss / divisor, self.generator)
+            offset = int(progress.accu_count) - 1
+            self._backward(runtime, weight_loss(generator_loss, divisor if self.loss_scale is None else self.loss_scale, offset), self.generator)
             phase_hook("after_generator_clip")
             phase_hook("before_discriminator_backward")
-            self._backward(runtime, discriminator_loss / divisor, self.discriminator)
+            self._backward(
+                runtime,
+                weight_loss(discriminator_loss, divisor if self.loss_scale is None else self.loss_scale, offset),
+                self.discriminator,
+            )
             phase_hook("after_discriminator_clip")
         progress.window_generator.append(float(generator_loss.detach()))
         progress.window_discriminator.append(float(discriminator_loss.detach()))

@@ -255,6 +255,23 @@ def window_scale(
     return sample_scales(local, world_size=world_size, n_global=n_global)
 
 
+def planned_row_counts(view: Any, index: int, planned: int) -> list[int] | None:
+    """Row counts for a window from the plan, without rendering audio.
+
+    ``None`` means the view does not expose a plan. Callers then keep the
+    integer window divisor instead of materializing future micro-batches.
+    """
+
+    groups = getattr(view, "_groups", None)
+    if isinstance(groups, tuple) and index >= 0 and index + planned <= len(groups):
+        return [len(groups[index + cursor]) for cursor in range(planned)]
+    data = getattr(view, "_data", None)
+    micro = getattr(data, "micro_batch", None)
+    if isinstance(micro, int) and not isinstance(micro, bool) and micro >= 0:
+        return [micro for _ in range(planned)]
+    return None
+
+
 def weight_loss(loss: torch.Tensor, scale: int | list[float], offset: int) -> torch.Tensor:
     """Apply ``window_scale``. An int divides. A list multiplies that micro-batch."""
 
