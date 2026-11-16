@@ -23,6 +23,7 @@ from src.experiments.calc.rng import seed_model_init
 from src.experiments.calc.stft import mag_pha_istft, mag_pha_stft
 from src.experiments.errors import BuildError, RuntimeFailure
 from src.models import build_model
+from src.models.features import parse_output_features
 from src.models.mp_senet.network import MPNet
 
 # --- Discriminator network ---
@@ -96,7 +97,7 @@ OFFICIAL_ARCHITECTURE = {
     "ts_dropout": 0.0,
     "win_size": 400,
 }
-# Tuple order is the trainer's dict order. DDP forwards this tuple.
+# Required training outputs. Extra keys are optional features, not a new tuple slot.
 _FORWARD_FIELDS = (
     "clean_mag",
     "clean_phase",
@@ -111,6 +112,7 @@ _FORWARD_FIELDS = (
     "phase_hat",
     "recomputed_complex",
 )
+_OPTIONAL_FEATURES = frozenset({"noisy_complex"})
 
 
 def architecture_config(
@@ -191,17 +193,25 @@ def require_official_architecture(architecture: Mapping[str, Any], claim: str) -
     return tuple(differences)
 
 
-def pack_forward(values: tuple[torch.Tensor, ...] | list[torch.Tensor]) -> dict[str, torch.Tensor]:
-    """Map the generator tuple to the names used by the official update."""
+def pack_forward(values: Mapping[str, torch.Tensor]) -> dict[str, torch.Tensor]:
+    """Keep the generator's named outputs. Extra features stay in the mapping.
 
-    if len(values) != len(_FORWARD_FIELDS):
-        raise RuntimeFailure(
-            f"MP-SENet generator returned {len(values)} tensors, expected {len(_FORWARD_FIELDS)}"
-        )
-    packed = dict(zip(_FORWARD_FIELDS, values, strict=True))
-    for name, value in packed.items():
+    The trainer reads keys. It does not depend on a fixed tuple length, so a
+    research generator can add one tensor without a trainer branch.
+    """
+
+    if not isinstance(values, Mapping):
+        raise RuntimeFailure("MP-SENet generator must return a named mapping")
+    missing = [name for name in _FORWARD_FIELDS if name not in values]
+    if missing:
+        raise RuntimeFailure(f"MP-SENet generator is missing {missing}")
+    packed: dict[str, torch.Tensor] = {}
+    for name, value in values.items():
+        if not isinstance(name, str) or not name:
+            raise RuntimeFailure("MP-SENet output names must be non-empty strings")
         if not isinstance(value, torch.Tensor):
             raise RuntimeFailure(f"MP-SENet field {name} is not a tensor")
+        packed[name] = value
     return packed
 
 
@@ -229,8 +239,10 @@ class MPSENetGANGenerator(torch.nn.Module):
         dense_depth: int = 4,
         ts_dropout: float = 0.0,
         disc_dim: int = 16,
+        output_features: list[str] | tuple[str, ...] | None = None,
     ) -> None:
         super().__init__()
+        self.output_features = parse_output_features(output_features, allowed=_OPTIONAL_FEATURES)
         self.seed = _seed(seed)
         self.architecture = architecture_config(
             dense_channel=dense_channel,
@@ -256,8 +268,8 @@ class MPSENetGANGenerator(torch.nn.Module):
         self.win_size = int(self.architecture["win_size"])
         self.compress_factor = float(self.architecture["compress_factor"])
 
-    def forward(self, noisy: torch.Tensor, clean: torch.Tensor) -> tuple[torch.Tensor, ...]:
-        """Return the official generation tuple for one micro-batch.
+    def forward(self, noisy: torch.Tensor, clean: torch.Tensor) -> dict[str, torch.Tensor]:
+        """Return the official named outputs for one micro-batch.
 
         Training rejects an iSTFT length that differs from the waveform.
         Validation uses the task report, which allows the official center
@@ -281,7 +293,7 @@ class MPSENetGANGenerator(torch.nn.Module):
             clean_mag, clean_phase, clean_complex = mag_pha_stft(
                 clean, spec["n_fft"], spec["hop_size"], spec["win_size"], spec["compress_factor"]
             )
-            noisy_mag, noisy_phase, _noisy_complex = mag_pha_stft(
+            noisy_mag, noisy_phase, noisy_complex = mag_pha_stft(
                 noisy, spec["n_fft"], spec["hop_size"], spec["win_size"], spec["compress_factor"]
             )
             magnitude, phase, complex_spectrum = self.generator(noisy_mag, noisy_phase)
@@ -304,20 +316,25 @@ class MPSENetGANGenerator(torch.nn.Module):
             )
         except (RuntimeError, TrainingError) as exc:
             raise RuntimeFailure(str(exc)) from exc
-        return (
-            clean_mag,
-            clean_phase,
-            clean_complex,
-            noisy_mag,
-            noisy_phase,
-            magnitude,
-            phase,
-            complex_spectrum,
-            audio,
-            magnitude_hat,
-            phase_hat,
-            recomputed,
-        )
+        outputs = {
+            "clean_mag": clean_mag,
+            "clean_phase": clean_phase,
+            "clean_complex": clean_complex,
+            "noisy_mag": noisy_mag,
+            "noisy_phase": noisy_phase,
+            "mag": magnitude,
+            "phase": phase,
+            "complex": complex_spectrum,
+            "audio": audio,
+            "mag_hat": magnitude_hat,
+            "phase_hat": phase_hat,
+            "recomputed_complex": recomputed,
+        }
+        if "noisy_complex" in self.output_features:
+            outputs["noisy_complex"] = noisy_complex
+        else:
+            del noisy_complex
+        return outputs
 
     def export_for_inference(self) -> dict[str, torch.Tensor]:
         """Generator weights only. The discriminator is not part of enhancement."""

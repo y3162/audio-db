@@ -331,7 +331,12 @@ def component_losses(
     _spec, _erb, _feat, clean_complex = _analyze(stream, generator, clean)
     stream.reset()
     noisy_spec, noisy_erb, noisy_feat, noisy_complex = _analyze(stream, generator, noisy)
-    enhanced, _mask, lsnr, _coefs = module(noisy_spec, noisy_erb, noisy_feat)
+    produced = module(noisy_spec, noisy_erb, noisy_feat)
+    if isinstance(produced, Mapping):
+        enhanced = produced["enhanced"]
+        lsnr = produced["lsnr"]
+    else:
+        enhanced, _mask, lsnr, _coefs = produced
     enhanced_complex = torch.view_as_complex(enhanced.squeeze(1))
     frames = min(enhanced_complex.shape[-2], clean_complex.shape[-2], noisy_complex.shape[-2])
     bins = min(enhanced_complex.shape[-1], clean_complex.shape[-1], noisy_complex.shape[-1])

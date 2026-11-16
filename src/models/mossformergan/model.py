@@ -13,6 +13,7 @@ import torch
 
 from src.experiments.calc.rng import seed_model_init
 from src.experiments.errors import BuildError
+from src.models.features import parse_output_features
 from src.models.mossformergan.discriminator import Discriminator
 from src.models import build_model
 from src.models.mossformergan.generator import SyncANet
@@ -140,8 +141,10 @@ class MossFormerGANGenerator(torch.nn.Module):
         dropout: float = 0.1,
         query_key_dim: int = 128,
         expansion_factor: float = 4.0,
+        output_features: list[str] | tuple[str, ...] | None = None,
     ) -> None:
         super().__init__()
+        self.output_features = parse_output_features(output_features, allowed=frozenset())
         self.seed = _seed(seed)
         self.architecture = architecture_config(
             variant=variant,
@@ -166,12 +169,13 @@ class MossFormerGANGenerator(torch.nn.Module):
         self.hop = int(self.architecture["hop"])
         self.sampling_rate = int(self.architecture["sampling_rate"])
 
-    def forward(self, noisy_spec: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
-        """Return real and imaginary spectra. ``_generator_terms`` calls this."""
+    def forward(self, noisy_spec: torch.Tensor) -> dict[str, torch.Tensor]:
+        """Return the named SyncANet spectra. The SyncANet tuple itself is unchanged."""
 
         if not isinstance(noisy_spec, torch.Tensor):
             raise BuildError("MossFormerGAN generator input must be a tensor")
-        return self.generator(noisy_spec)
+        real, imag = self.generator(noisy_spec)
+        return {"predicted_real": real, "predicted_imag": imag}
 
     def export_for_inference(self) -> dict[str, Any]:
         """Inference checkpoint. The value is the SyncANet state."""

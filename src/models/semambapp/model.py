@@ -21,7 +21,7 @@ does not import ``src/se/official``.
 
 from __future__ import annotations
 
-from typing import Any
+from typing import Any, Mapping
 
 import torch
 from nnAudio.features.cqt import CQT2010v2
@@ -34,6 +34,7 @@ from src.experiments.calc.rng import seed_model_init
 from src.experiments.calc.stft import _reflect_pad, semamba_mag_phase_istft, semamba_mag_phase_stft
 from src.experiments.errors import BuildError, RuntimeFailure
 from src.models import build_model
+from src.models.features import parse_output_features
 from src.models.semambapp.network import SEMambaPP
 
 # --- Published discriminator networks. ---
@@ -290,6 +291,7 @@ _FORWARD_FIELDS = (
     "recomputed",
     "audio",
 )
+_OPTIONAL_FEATURES = frozenset({"noisy_complex"})
 
 def architecture_config(
     *,
@@ -366,17 +368,21 @@ def network_config(architecture: dict[str, Any]) -> dict[str, Any]:
     skipped = {"hop", "sampling_rate", "win"} | _DISCRIMINATOR_KEYS
     return {key: value for key, value in architecture.items() if key not in skipped}
 
-def pack_forward(values: tuple[torch.Tensor, ...] | list[torch.Tensor]) -> dict[str, torch.Tensor]:
-    """Map the generator tuple onto the names used by ``SEMambaTask._generate``."""
+def pack_forward(values: Mapping[str, torch.Tensor]) -> dict[str, torch.Tensor]:
+    """Keep the generator's named outputs. Extra features stay in the mapping."""
 
-    if len(values) != len(_FORWARD_FIELDS):
-        raise RuntimeFailure(
-            f"SEMamba++ generator returned {len(values)} tensors, expected {len(_FORWARD_FIELDS)}"
-        )
-    packed = dict(zip(_FORWARD_FIELDS, values, strict=True))
-    for name, value in packed.items():
+    if not isinstance(values, Mapping):
+        raise RuntimeFailure("SEMamba++ generator must return a named mapping")
+    missing = [name for name in _FORWARD_FIELDS if name not in values]
+    if missing:
+        raise RuntimeFailure(f"SEMamba++ generator is missing {missing}")
+    packed: dict[str, torch.Tensor] = {}
+    for name, value in values.items():
+        if not isinstance(name, str) or not name:
+            raise RuntimeFailure("SEMamba++ output names must be non-empty strings")
         if not isinstance(value, torch.Tensor):
             raise RuntimeFailure(f"SEMamba++ field {name} is not a tensor")
+        packed[name] = value
     return packed
 
 def scan_execution(module: torch.nn.Module, device: torch.device) -> dict[str, str]:
@@ -444,8 +450,10 @@ class SEMambaPPGenerator(torch.nn.Module):
         cqt_hops: tuple[int, ...] | list[int] = _CQT_HOPS,
         cqt_octaves: tuple[int, ...] | list[int] = _CQT_OCTAVES,
         cqt_bins_per_octave: tuple[int, ...] | list[int] = _CQT_BINS,
+        output_features: list[str] | tuple[str, ...] | None = None,
     ) -> None:
         super().__init__()
+        self.output_features = parse_output_features(output_features, allowed=_OPTIONAL_FEATURES)
         self.seed = _seed(seed)
         self.architecture = architecture_config(
             hid_feature=hid_feature,
@@ -477,8 +485,8 @@ class SEMambaPPGenerator(torch.nn.Module):
         self.compress = _COMPRESS
         self.sampling_rate = int(self.architecture["sampling_rate"])
 
-    def forward(self, clean: torch.Tensor, noisy: torch.Tensor) -> tuple[torch.Tensor, ...]:
-        """Return the official generation tuple for one micro-batch."""
+    def forward(self, clean: torch.Tensor, noisy: torch.Tensor) -> dict[str, torch.Tensor]:
+        """Return the official named outputs for one micro-batch."""
 
         if not isinstance(clean, torch.Tensor) or not isinstance(noisy, torch.Tensor):
             raise RuntimeFailure("SEMamba++ inputs must be tensors")
@@ -491,7 +499,7 @@ class SEMambaPPGenerator(torch.nn.Module):
             clean_mag, clean_phase, clean_complex = semamba_mag_phase_stft(
                 clean, self.n_fft, self.hop, self.win, self.compress, addeps=False
             )
-            noisy_mag, noisy_phase, _noisy_complex = semamba_mag_phase_stft(
+            noisy_mag, noisy_phase, noisy_complex = semamba_mag_phase_stft(
                 noisy, self.n_fft, self.hop, self.win, self.compress, addeps=False
             )
             magnitude, phase = self.generator(noisy_mag, noisy_phase)
@@ -510,16 +518,21 @@ class SEMambaPPGenerator(torch.nn.Module):
             del _recomputed_mag, _recomputed_phase
         except (TrainingError, RuntimeError, ValueError) as exc:
             raise RuntimeFailure(str(exc)) from exc
-        return (
-            clean_mag,
-            clean_phase,
-            clean_complex,
-            magnitude,
-            phase,
-            complex_spectrum,
-            recomputed,
-            audio,
-        )
+        outputs = {
+            "clean_mag": clean_mag,
+            "clean_phase": clean_phase,
+            "clean_complex": clean_complex,
+            "mag": magnitude,
+            "phase": phase,
+            "complex": complex_spectrum,
+            "recomputed": recomputed,
+            "audio": audio,
+        }
+        if "noisy_complex" in self.output_features:
+            outputs["noisy_complex"] = noisy_complex
+        else:
+            del noisy_complex
+        return outputs
 
     def export_for_inference(self) -> dict[str, Any]:
         """Inference checkpoint. The value is the SEMambaPP state."""

@@ -15,6 +15,7 @@ import torch
 
 from src.experiments.errors import BuildError, RuntimeFailure
 from src.models import build_model
+from src.models.features import parse_output_features
 from src.models.deepfilternet3.network import DFN3Params, DfNet
 from src.experiments.calc.rng import seed_model_init
 
@@ -28,8 +29,10 @@ class DeepFilterNet3Model(torch.nn.Module):
         seed: int,
         architecture: Mapping[str, Any] | None = None,
         variant: str = "deepfilternet3",
+        output_features: list[str] | tuple[str, ...] | None = None,
     ) -> None:
         super().__init__()
+        self.output_features = parse_output_features(output_features, allowed=frozenset())
         if variant != "deepfilternet3":
             raise BuildError(f"DeepFilterNet3Model implements variant deepfilternet3, got {variant!r}")
         if isinstance(seed, bool) or not isinstance(seed, int) or seed < 0:
@@ -57,11 +60,11 @@ class DeepFilterNet3Model(torch.nn.Module):
         spec: torch.Tensor,
         feat_erb: torch.Tensor,
         feat_spec: torch.Tensor,
-    ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
-        """Return enhanced spectrum, mask, local SNR, and deep-filter coefficients."""
+    ) -> dict[str, torch.Tensor]:
+        """Return the named DfNet outputs. The generator tuple itself is unchanged."""
 
         enhanced, mask, lsnr, coefs = self.generator(spec, feat_erb, feat_spec)
-        return enhanced, mask, lsnr, coefs
+        return {"enhanced": enhanced, "mask": mask, "lsnr": lsnr, "coefs": coefs}
 
     def export_for_inference(self) -> dict[str, torch.Tensor]:
         """Raw ``DfNet`` state, including the unused ``df_fc_a`` parameter."""

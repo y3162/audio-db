@@ -20,7 +20,7 @@ def estimate_waveform(module: torch.nn.Module, inputs: torch.Tensor, targets: to
         return _mp_senet(module, inputs)
     if name == "SEMambaPPGenerator":
         produced = module(targets, inputs)
-        audio = produced[-1]
+        audio = produced["audio"]
         if not isinstance(audio, torch.Tensor):
             raise RuntimeFailure("SEMamba++ research estimate did not return audio")
         return audio
@@ -67,7 +67,9 @@ def _mossformer(module: torch.nn.Module, noisy: torch.Tensor, clean: torch.Tenso
     scale = torch.sqrt(noisy.shape[-1] / (noisy.square().sum(dim=-1) + 1e-6)).unsqueeze(-1)
     normalized = noisy * scale
     noisy_spec = _compress(_stft(normalized, module.n_fft, module.hop, module.win)).permute(0, 1, 3, 2)
-    real, imag = module(noisy_spec)
+    produced = module(noisy_spec)
+    real = produced["predicted_real"]
+    imag = produced["predicted_imag"]
     real = real.permute(0, 1, 3, 2)
     imag = imag.permute(0, 1, 3, 2)
     audio = _istft(_uncompress(real, imag).squeeze(1), module.n_fft, module.hop, module.win, int(clean.shape[-1]))

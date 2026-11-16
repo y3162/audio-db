@@ -100,7 +100,10 @@ torch.set_rng_state(rng)
 yaml_out = yaml(compressed)
 report['yaml_generator'] = {
     'class': 'src.models.mossformergan.models.MossFormerGANGenerator',
-    'forward_vs_task_generator_same_weights': [gap(a,b) for a,b in zip(same_weights, yaml_out)],
+    'forward_vs_task_generator_same_weights': [
+        gap(same_weights[0], yaml_out['predicted_real']),
+        gap(same_weights[1], yaml_out['predicted_imag']),
+    ],
 }
 extra=[]
 for step in (2, 3):

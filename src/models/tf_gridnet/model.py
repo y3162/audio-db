@@ -16,6 +16,7 @@ import torch
 
 from src.experiments.errors import BuildError, RuntimeFailure
 from src.models import build_model
+from src.models.features import parse_output_features
 from src.models.tf_gridnet.network import TFGridNet
 from src.experiments.calc.rng import seed_model_init
 from src.experiments.calc.errors import TrainingError
@@ -32,8 +33,10 @@ class TFGridNetModel(torch.nn.Module):
         architecture: Mapping[str, Any] | None = None,
         variant: str = "ms-snsd",
         init: str = "xavier_uniform",
+        output_features: list[str] | tuple[str, ...] | None = None,
     ) -> None:
         super().__init__()
+        self.output_features = parse_output_features(output_features, allowed=frozenset())
         if variant != "ms-snsd":
             raise BuildError(f"TFGridNetModel implements variant ms-snsd, got {variant!r}")
         if not isinstance(init, str) or not init:
@@ -65,8 +68,8 @@ class TFGridNetModel(torch.nn.Module):
         self.n_fft = int(generator.n_fft)
         self.stride = int(generator.stride)
 
-    def forward(self, waveform: torch.Tensor) -> torch.Tensor:
-        """Return an enhanced waveform with the same shape as ``waveform``."""
+    def named_outputs(self, waveform: torch.Tensor) -> dict[str, torch.Tensor]:
+        """Named contract. Official training uses the ``enhanced`` waveform."""
 
         if not isinstance(waveform, torch.Tensor):
             raise RuntimeFailure("TF-GridNet input must be a tensor")
@@ -81,7 +84,12 @@ class TFGridNetModel(torch.nn.Module):
             raise RuntimeFailure(
                 f"TF-GridNet length {tuple(enhanced.shape)} does not match the input {tuple(waveform.shape)}"
             )
-        return enhanced
+        return {"enhanced": enhanced}
+
+    def forward(self, waveform: torch.Tensor) -> torch.Tensor:
+        """Return an enhanced waveform with the same shape as ``waveform``."""
+
+        return self.named_outputs(waveform)["enhanced"]
 
     def export_for_inference(self) -> dict[str, torch.Tensor]:
         """ESPnet separator state. Integer tensors keep their dtype."""

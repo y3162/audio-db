@@ -87,7 +87,7 @@ class ModelArchitectureTests(unittest.TestCase):
         self.assertEqual(deep.generator.dense_encoder.dense_block.depth, 3)
         waveform = torch.randn(1, 64)
         generated = shallow(waveform, waveform)
-        generated[-1].square().mean().backward()
+        generated["audio"].square().mean().backward()
         wide = MPSENetMetricDiscriminator(seed=1, **common)
         narrow = MPSENetMetricDiscriminator(seed=1, **dict(common, disc_dim=4))
         self.assertNotEqual(wide.architecture, narrow.architecture)
@@ -108,7 +108,9 @@ class ModelArchitectureTests(unittest.TestCase):
         self.assertEqual(len(two.generator.blocks), 2)
         self.assertNotEqual(_count(one), _count(two))
         spectrum = torch.randn(1, 2, 4, 201)
-        real, imag = one(spectrum)
+        produced = one(spectrum)
+        real = produced["predicted_real"]
+        imag = produced["predicted_imag"]
         (real.square().mean() + imag.square().mean()).backward()
         self.assertEqual(require_moss(MossFormerGANGenerator(seed=2).architecture, "official_faithful"), ())
         differences = require_moss(one.architecture, "official_faithful")
@@ -144,7 +146,7 @@ class ModelArchitectureTests(unittest.TestCase):
         generator = SEMambaPPGenerator(**common)
         clean = torch.randn(1, 800)
         outputs = generator(clean, clean)
-        outputs[-1].square().mean().backward()
+        outputs["audio"].square().mean().backward()
         with self.assertRaises(BuildError):
             SEMambaPPGenerator(**common, cqt_hops=(32,), cqt_octaves=(2, 2))
 

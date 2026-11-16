@@ -7,6 +7,7 @@ update per logical step. Official speech-enhancement loops live under
 
 from __future__ import annotations
 
+from collections.abc import Mapping
 from dataclasses import replace
 from typing import Any
 
@@ -367,9 +368,7 @@ class StandardTrainer:
         for batch in batches:
             batch = _batch_on_device(batch, runtime.device)
             prediction = self.model(batch.inputs)
-            if not isinstance(prediction, torch.Tensor):
-                raise RuntimeFailure(f"component {component_id}: model did not return a tensor")
-            value = prediction.reshape(-1).sum() * 0
+            value = _connected_zero(prediction, component_id)
             total = value if total is None else total + value
         if total is None:
             return self._zero_loss(component_id)
@@ -403,12 +402,50 @@ class StandardTrainer:
         for batch in batches:
             batch = _batch_on_device(batch, runtime.device)
             prediction = self.model(batch.inputs)
-            value = self.loss(prediction, batch.targets)
+            if isinstance(prediction, torch.Tensor):
+                value = self.loss(prediction, batch.targets)
+            elif isinstance(prediction, Mapping):
+                value = self.loss(_named_context(prediction, batch, component_id))
+            else:
+                raise RuntimeFailure(f"component {component_id}: model did not return a tensor or a named mapping")
             if not isinstance(value, torch.Tensor):
                 raise RuntimeFailure(f"component {component_id}: loss did not return a tensor")
             total = value if total is None else total + value
         assert total is not None
         return total / len(batches)
+
+def _connected_zero(prediction: object, component_id: str) -> torch.Tensor:
+    """A zero that still executed the module forward on this rank."""
+
+    if isinstance(prediction, torch.Tensor):
+        return prediction.reshape(-1).sum() * 0
+    if isinstance(prediction, Mapping):
+        total: torch.Tensor | None = None
+        for name, value in prediction.items():
+            if not isinstance(value, torch.Tensor):
+                raise RuntimeFailure(f"component {component_id}: output {name} is not a tensor")
+            term = value.reshape(-1).sum() * 0
+            total = term if total is None else total + term
+        if total is None:
+            raise RuntimeFailure(f"component {component_id}: model returned an empty mapping")
+        return total
+    raise RuntimeFailure(f"component {component_id}: model did not return a tensor or a named mapping")
+
+
+def _named_context(prediction: Mapping[str, object], batch: Batch, component_id: str) -> dict[str, object]:
+    """Batch fields plus model outputs. A colliding name is an error."""
+
+    context: dict[str, object] = {"inputs": batch.inputs, "targets": batch.targets}
+    if batch.sample_id is not None:
+        context["sample_id"] = batch.sample_id
+    overlap = [str(key) for key in prediction if key in context]
+    if overlap:
+        raise RuntimeFailure(
+            f"component {component_id}: model output {overlap} collides with a batch field"
+        )
+    context.update(prediction)
+    return context
+
 
 def _close_epoch_view(view: object) -> None:
     """Release an epoch view. Data modules without ``close`` stay unchanged."""

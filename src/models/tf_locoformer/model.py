@@ -18,6 +18,7 @@ from typing import Any
 import torch
 
 from src.experiments.errors import BuildError, RuntimeFailure
+from src.models.features import parse_output_features
 from src.models import build_model
 from src.models.tf_locoformer.network import TFLocoformer, _DNS_SEPARATOR
 from src.experiments.calc.rng import seed_model_init
@@ -35,8 +36,10 @@ class TFLocoformerModel(torch.nn.Module):
         architecture: Mapping[str, Any] | None = None,
         variant: str = "dns",
         init: str = "xavier_uniform",
+        output_features: list[str] | tuple[str, ...] | None = None,
     ) -> None:
         super().__init__()
+        self.output_features = parse_output_features(output_features, allowed=frozenset())
         if variant != "dns":
             raise BuildError(f"TFLocoformerModel implements variant dns, got {variant!r}")
         if not isinstance(init, str) or not init:
@@ -69,8 +72,8 @@ class TFLocoformerModel(torch.nn.Module):
         self.hop_length = int(generator.hop_length)
         self.normalize_variance = bool(generator.normalize_variance)
 
-    def forward(self, waveform: torch.Tensor) -> torch.Tensor:
-        """Return an enhanced waveform with the same shape as ``waveform``."""
+    def named_outputs(self, waveform: torch.Tensor) -> dict[str, torch.Tensor]:
+        """Named contract. Official training uses the ``enhanced`` waveform."""
 
         if not isinstance(waveform, torch.Tensor):
             raise RuntimeFailure("TF-Locoformer input must be a tensor")
@@ -88,7 +91,12 @@ class TFLocoformerModel(torch.nn.Module):
             raise RuntimeFailure(
                 f"TF-Locoformer length {tuple(enhanced.shape)} does not match the input {tuple(waveform.shape)}"
             )
-        return enhanced
+        return {"enhanced": enhanced}
+
+    def forward(self, waveform: torch.Tensor) -> torch.Tensor:
+        """Return an enhanced waveform with the same shape as ``waveform``."""
+
+        return self.named_outputs(waveform)["enhanced"]
 
     def export_for_inference(self) -> dict[str, torch.Tensor]:
         """Full generator state.

@@ -799,7 +799,7 @@ def _forward_loss(
         batch = runtime.move(batch)
         try:
             prediction = model(batch.inputs)
-            result = call_objective(objective, {"estimate": prediction, "target": batch.targets})
+            result = call_objective(objective, _objective_context(prediction, batch, component_id))
         except ValueError as exc:
             raise RuntimeFailure(str(exc)) from exc
         value = result.total
@@ -811,6 +811,27 @@ def _forward_loss(
     assert total is not None
     count = len(batches)
     return total / count, {name: amount / count for name, amount in term_sums.items()}
+
+def _objective_context(prediction: object, batch: Batch, component_id: str) -> dict[str, object]:
+    """Waveform models keep ``estimate``. A named mapping may add one feature."""
+
+    if isinstance(prediction, torch.Tensor):
+        return {"estimate": prediction, "target": batch.targets}
+    if not isinstance(prediction, Mapping) or "enhanced" not in prediction:
+        raise RuntimeFailure(
+            f"component {component_id}: model must return a waveform or a mapping with enhanced"
+        )
+    context: dict[str, object] = {"estimate": prediction["enhanced"], "target": batch.targets}
+    for key, value in prediction.items():
+        if key == "enhanced":
+            continue
+        if key in context:
+            raise RuntimeFailure(
+                f"component {component_id}: model output {key!r} collides with a batch field"
+            )
+        context[str(key)] = value
+    return context
+
 
 _micro_loss = _forward_loss
 

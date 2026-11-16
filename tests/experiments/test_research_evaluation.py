@@ -143,6 +143,57 @@ class EvaluatorSideEffectTests(unittest.TestCase):
         self.assertEqual(incomplete.status, "incomplete")
         self.assertIsNone(incomplete.value)
 
+    def test_two_evaluators_keep_independent_frequencies(self) -> None:
+        module = _Echo()
+        prepared = PreparedModel("model", module, tuple(module.parameters()), module, PreparePolicy())
+        data = _CursorData()
+        runtime = ProcessRuntime(device="cpu", precision="fp32", timeout_seconds=30)
+        loss = AudioPairEvaluator(
+            source="validation",
+            metrics=(LossMetric(name="loss"),),
+            model=prepared,
+            data=data,
+            every={"unit": "logical_step", "interval": 1},
+            objective=_ConstantObjective(),
+        )
+        monitor = AudioPairEvaluator(
+            source="validation",
+            metrics=(SISDRMetric(name="monitor"),),
+            model=prepared,
+            data=data,
+            every={"unit": "logical_step", "interval": 2},
+        )
+        from src.experiments.evaluation.boundary import ResearchSession
+        from src.experiments.selection.policy import BestMetricSelection
+
+        selection = BestMetricSelection("validation.monitor", "max")
+        seen: list[object] = []
+
+        class _Stop:
+            def observe(self, event: object) -> None:
+                seen.append(event)
+
+        self.assertTrue(loss.due(logical_step=1, epoch=0, kind="step"))
+        self.assertFalse(monitor.due(logical_step=1, epoch=0, kind="step"))
+        session = ResearchSession((loss, monitor), selection, data=data, module=module)
+        with tempfile.TemporaryDirectory() as raw:
+            scored = session.score(
+                runtime,
+                output_directory=Path(raw),
+                config_identity=None,
+                kind="step",
+                epoch=0,
+                logical_step=1,
+                stopping=_Stop(),
+            )
+        self.assertEqual(set(scored), {"validation.loss"})
+        self.assertEqual(data.calls, ["validation:0"])
+        self.assertIsNone(selection.best)
+        self.assertEqual(len(seen), 1)
+        self.assertIn("loss", seen[0].metrics)
+        self.assertNotIn("monitor", seen[0].metrics)
+        self.assertFalse(loss.due(logical_step=1, epoch=0, kind="step"))
+
 
 class YamlBuildTests(unittest.TestCase):
     def test_official_faithful_and_metric_state_are_rejected_before_training(self) -> None:

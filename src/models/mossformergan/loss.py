@@ -88,7 +88,9 @@ def _generator_terms(self, module, discriminator, clean: torch.Tensor, noisy: to
 
 def _forward(self, module, noisy: torch.Tensor, clean: torch.Tensor):
     noisy_spec = _compress(_stft(noisy, self.n_fft, self.hop, self.win)).permute(0, 1, 3, 2)
-    real, imag = module(noisy_spec)
+    produced = module(noisy_spec)
+    real = produced["predicted_real"]
+    imag = produced["predicted_imag"]
     real = real.permute(0, 1, 3, 2)
     imag = imag.permute(0, 1, 3, 2)
     pred_mag = torch.sqrt(real ** 2 + imag ** 2)
