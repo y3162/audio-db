@@ -92,7 +92,15 @@ def validate_graph(
     _case_sets(case_sets, cases)
     for dataset in datasets.values():
         _dataset(dataset, protocols, case_sets, materials, cases, assets)
-        report = leak_report(dataset, case_sets, materials, cases, assets, resource_db=resource_db)
+        report = leak_report(
+            dataset,
+            case_sets,
+            materials,
+            cases,
+            assets,
+            resource_db=resource_db,
+            protocols=protocols,
+        )
         if report["status"] == "FAIL":
             raise ReproductionError(
                 f"dataset {dataset['name']} failed leak_check: {report['reason']}"
@@ -153,8 +161,16 @@ def leak_report(
     assets: dict[str, dict[str, Any]],
     *,
     resource_db: str | None,
+    protocols: dict[str, dict[str, Any]] | None = None,
 ) -> dict[str, Any]:
     groups = _split_assets(dataset, case_sets, materials, cases)
+    protocol = None if protocols is None else protocols.get(dataset["protocol_id"])
+    voicebank = protocol is not None and protocol.get("algorithm") == "pregenerated.voicebank_snr_shift"
+    if voicebank:
+        # Train and validation share DEMAND/Babble/SSN files by construction.
+        # Those files are not speech leakage. Speech assets stay in the FAIL groups.
+        noise_ids = _voicebank_noise_assets(dataset, case_sets, cases)
+        groups = {split: set(ids) - noise_ids for split, ids in groups.items()}
     components: list[dict[str, Any]] = []
     pairs = (("train", "valid"), ("train", "test"))
     if dataset["profile"] == "leakage_safe":
@@ -172,6 +188,8 @@ def leak_report(
         components.append(_sha_overlap(left, right, groups[left], groups[right], assets))
     if dataset["profile"] == "leakage_safe":
         components.append(_eval_overlap(groups, assets, resource_db))
+    if voicebank:
+        components.append(_voicebank_noise_independence(dataset, case_sets, cases))
     status = _worst(component["status"] for component in components)
     reasons = [component["check"] for component in components if component["status"] == "FAIL"]
     return {
@@ -181,6 +199,110 @@ def leak_report(
         "failed": reasons,
         "components": components,
     }
+
+
+def _voicebank_noise_assets(dataset, case_sets, cases) -> set[str]:
+    found: set[str] = set()
+    for case_id in _bound_case_ids(dataset, case_sets):
+        sources = cases[case_id]["doc_json"].get("sources")
+        if not isinstance(sources, dict):
+            continue
+        noise = sources.get("noise")
+        if isinstance(noise, dict) and isinstance(noise.get("asset"), str):
+            found.add(noise["asset"])
+    return found
+
+
+def _voicebank_noise_independence(dataset, case_sets, cases) -> dict[str, Any]:
+    """Noise-file and noise-interval overlap. Train/validation overlap is WARN.
+
+    A shared noise file is not treated as independent speech. Overlap into test
+    is FAIL. The stored sample counts are measured again from the realizations.
+    """
+
+    spans: dict[str, list[tuple[str, int, int]]] = {"train": [], "valid": [], "test": []}
+    files: dict[str, set[str]] = {"train": set(), "valid": set(), "test": set()}
+    for binding in dataset["bindings"]:
+        if not str(binding["slot"]).endswith(".cases") or not binding.get("case_set_id"):
+            continue
+        split = binding["slot"].split(".", 1)[0]
+        if split not in spans:
+            continue
+        for item in case_sets[binding["case_set_id"]]["items"]:
+            noise = cases[item["case_id"]]["doc_json"]["sources"]["noise"]
+            files[split].add(noise["asset"])
+            spans[split].append((str(noise["sha256"]), int(noise["start"]), int(noise["end"])))
+    merged = {split: _merge_spans(rows) for split, rows in spans.items()}
+
+    def overlap(left: str, right: str) -> tuple[int, int, int]:
+        samples = 0
+        utterances = 0
+        total = 0
+        for sha, start, end in spans[right]:
+            total += end - start
+            hit = _span_hit(merged[left].get(sha, []), start, end)
+            samples += hit
+            if hit:
+                utterances += 1
+        return samples, utterances, total
+
+    pairs = {}
+    for left, right in (("train", "valid"), ("train", "test"), ("valid", "test")):
+        samples, utterances, total = overlap(left, right)
+        pairs[f"{left}_{right}"] = {
+            "overlap_samples": samples,
+            "overlap_utterances": utterances,
+            "right_samples": total,
+            "shared_assets": sorted(files[left] & files[right]),
+        }
+    test_overlap = (
+        pairs["train_test"]["overlap_samples"]
+        or pairs["valid_test"]["overlap_samples"]
+        or pairs["train_test"]["shared_assets"]
+        or pairs["valid_test"]["shared_assets"]
+    )
+    train_valid = pairs["train_valid"]["overlap_samples"] or pairs["train_valid"]["shared_assets"]
+    if test_overlap:
+        status = "FAIL"
+    elif train_valid:
+        status = "WARN"
+    else:
+        status = "PASS"
+    return {
+        "check": "noise_interval_independence",
+        "status": status,
+        "validation_noise_independent": status == "PASS",
+        "bound_cases": sum(len(rows) for rows in spans.values()),
+        "pairs": pairs,
+    }
+
+
+def _merge_spans(rows: list[tuple[str, int, int]]) -> dict[str, list[list[int]]]:
+    grouped: dict[str, list[tuple[int, int]]] = {}
+    for sha, start, end in rows:
+        grouped.setdefault(sha, []).append((start, end))
+    merged: dict[str, list[list[int]]] = {}
+    for sha, intervals in grouped.items():
+        ordered = sorted(intervals)
+        acc: list[list[int]] = []
+        for start, end in ordered:
+            if acc and start <= acc[-1][1]:
+                acc[-1][1] = max(acc[-1][1], end)
+            else:
+                acc.append([start, end])
+        merged[sha] = acc
+    return merged
+
+
+def _span_hit(merged: list[list[int]], start: int, end: int) -> int:
+    total = 0
+    for left, right in merged:
+        if right <= start:
+            continue
+        if left >= end:
+            break
+        total += min(right, end) - max(left, start)
+    return total
 
 
 def _worst(statuses) -> str:
@@ -502,6 +624,10 @@ def _recorded_sources(case, assets) -> None:
 
 
 def _generated_case(case, assets, builds, protocol) -> None:
+    if protocol.get("algorithm") == "pregenerated.voicebank_snr_shift":
+        from src.experiments.data.mix.voicebank_snr import check_voicebank_assets
+
+        check_voicebank_assets(case, assets)
     if case.get("build_id") not in builds or case.get("gen_index") is None:
         raise ReproductionError(f"generated case {case['case_id']} is missing build_id or gen_index")
     delivery = (protocol.get("rule_json") or {}).get("delivery")

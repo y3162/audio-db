@@ -193,7 +193,7 @@ Babble は 48,000 Hz、2,880,000 frames、1 ch、5,760,044 バイト。SSN は 4
 | `TCAR_48k.zip` | `8ff68f65c8af88764a6bae44ce35747f592929753b03319e68211f9ef58c55d6` |
 | `TMETRO_48k.zip` | `2d9be4da51098491be1ed67474dabfa7f5ed254cae921cca1dd06585bddfe883` |
 
-2026-11-12 時点で、VoiceBank の SNR をずらしたレシピ 12,396 件がデータセットルートの `recipes/voicebank-snr-shift-v1/` にあり、`eval.cases` には入れていなかった。調査の原記録はデータセットルートの `investigations/voicebank-20261112/` にある。この実験の学習コードとリポジトリ内の設定は後に削除した。ディスク上のレシピと調査記録は残している。
+2026-11-12 時点で、VoiceBank の SNR をずらしたレシピ 12,396 件がデータセットルートの `recipes/voicebank-snr-shift-v1/` にあり、`eval.cases` には入れていなかった。調査の原記録はデータセットルートの `investigations/voicebank-20261112/` にあった。この実験の学習コードとリポジトリ内の設定は後に削除した。2026-11-16 に再構成情報を現行の v1 へ移したあと、レシピ、調査記録、旧 DB、旧 staging、旧 snapshot も削除した。現行の置き場は「2026-11-16 VoiceBank SNR shift v1」にある。
 
 ## 2026-11-12 に在ったファイル
 
@@ -504,7 +504,7 @@ SEMamba++ のオンライン劣化は `reproduction-p9` に置く。ready な代
 
 ## 2026-11-13 SNR shift の分割と雑音区間
 
-この節は 2026-11-13 の測定記録である。学習コードとリポジトリ内の設定は後に削除した。ここに書いた DB と snapshot は削除していない。
+この節は 2026-11-13 の測定記録である。学習コードとリポジトリ内の設定は後に削除した。ここに書いた DB、staging、snapshot、およびデータセットルートの旧レシピと調査記録は、2026-11-16 に現行 v1 へ移したあと削除した。Train と Validation の雑音区間重複 118,129,608 / 118,136,696 samples は、現行 Dataset の leak 監査で同じ値だった。
 
 12,396 レシピについて、48 kHz の半開区間を雑音素材 SHA-256 ごとに照合し、Train 区間の和集合と各 Validation / Test 発話の交差を数えた。対象発話間の重複はそれぞれの発話として数え、1 発話内で複数の Train 区間が重なる部分は二重に数えていない。
 
@@ -532,3 +532,22 @@ per-rank 側（学習設定が指す方）の snapshot hash:
 共有順の snapshot は SEMamba++ だけ protocol が違い、hash は `1d4c705ae48f53979728cb8829db30881996589dedddb49b9a62a46b3c1cea5b`、dataset ID は `b04c3d50efa96b93e648a9ce38c257ce817f4ee98b1173160928af4013d0c6ae`。他の 3 モデルの hash は per-rank と同じである。
 
 同日、正本レシピの SHA-256 を検証し、4 モデル共通の case・分割・上記監査結果を `data/staging/voicebank-snr-shift-v1/` に保存した。`cases.jsonl` の SHA-256 は `fa6071af0b533a061c112639659af328d173d2bcfc05f4f5912e32c3cb511d09`。`metadata.json` の選択先は計画上の `valid` であり、学習用 snapshot や checkpoint の provenance ではない。素材ファイル全件のハッシュ再計算はこの staging の作成では行っていない。
+
+## 2026-11-16 VoiceBank SNR shift v1
+
+12,396 発話の共有レシピを `data/db/reproduction-voicebank-snr-v1.duckdb` と `data/staging/reproduction-voicebank-snr-v1/` に登録した。snapshot は `data/db/snapshots/` の Dataset ID ディレクトリである。56 話者版は含まない。生成は VCTK 0.80、DEMAND48、Babble、SSN だけを読み、公式 clean/noisy は比較専用である。
+
+レシピ文書を発話 ID 順に連結した SHA-256 は `9f39b32546f2ec9c99f468f21143a759ad72daec29a528de82db987530191e6c`。移行元 `recipes/voicebank-snr-shift-v2/recipes.jsonl` の SHA-256 は `9502da7b24b81bed04781c1e66726945dfcb3024045111df8bbb5839e0d01c14`。発話ごとの比較は `data/staging/reproduction-voicebank-snr-v1/verification/utterances.jsonl`（SHA-256 `013fe4320406056ad205534a067532317fc10a15a43d8e9c358f391a758001fa`）。
+
+| Dataset | Dataset ID | Snapshot hash | 件数 |
+|---|---|---|---|
+| voicebank.snr_shift.no@1 | `9afa1659db79a0377597989e89087f74dfe5a3b575b406c184541baff89cb6ec` | `8fb3cc458191ae42194963494e5581eb20ddb083920b1553e80dd2a06edc4bc9` | train 10700 / valid 872 / test 824 |
+| voicebank.snr_shift.minus_15db@1 | `81cb8da3b3bcd8b972ca424efc942a94f1145696801fe0c74db92e58da089fbf` | `c85e359fcf9431f9a0a3de8d36abf5ad441d78e7f6fc7b4e690d3da4afeb2922` | 同じ case。雑音ゲインだけが −15 dB |
+
+`voicebank.snr_shift.published`（`7c603344d3e7dd54600074109d503bf4a03be5d362978f96199b90d86235c239`）は case なしの blocked である。公式生成器は未回収のため、ready の 2 Dataset は `research_checkpoint_selection` であり、`official_reproduction` ではない。`selection_uses_test` は false。
+
+48 kHz PCM16 の公式波形との比較は、発話完全一致が clean 0/12396、noisy 0/12396。サンプル完全一致は clean 844,316,618/1,722,262,113（49.0237%）、noisy 861,094,240/1,722,262,113（49.9979%）。clean の差は 0 または +1 LSB。noisy は 1 サンプルが −1 LSB、1 サンプルが +2 LSB（`p226_357`）で、残りは 0 または +1 LSB。ビット完全一致は未達。
+
+公式 SNR ラベルは、共通ピークゲインの前の P.56 と一致する（`g != 1` の 55 発話で最大絶対誤差 7.11e-14 dB）。出力波形にゲインを掛けたあとの P.56 は、その 55 発話で最大 0.489 dB ずれる。−15 dB の変化量は全 12,396 発話で −15 dB と 7.11e-15 dB 以内で一致する。float 出力はクリップしない。絶対値が 1 以上になるのは 5,416 発話、11,179,504 サンプル、最大絶対値 6.0103019105279536。
+
+Train と Validation の話者・発話・音声素材は重ならない。雑音区間は 118,129,608 / 118,136,696 samples、872 発話すべてで重なる。Train / Test と Validation / Test の雑音の重なりは 0。leak 監査は WARN で、独立とは扱わない。

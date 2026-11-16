@@ -6,6 +6,7 @@
 	reproduction-plan-dns reproduction-register-dns \
 	reproduction-benchmark-dns-accept reproduction-plan-dns-accept reproduction-register-dns-accept \
 	reproduction-register-p8 reproduction-register-p9 \
+	reproduction-register-voicebank-snr \
 	experiment experiment-preflight test-cpu test
 
 ROOT := $(abspath $(dir $(lastword $(MAKEFILE_LIST))))
@@ -166,6 +167,9 @@ reproduction-register-p8:
 
 reproduction-register-p9:
 	$(WITH_ENV) $(PYTHON) -c 'from src.experiments.data.prepare.semamba_online import register_p9; print(register_p9())'
+
+reproduction-register-voicebank-snr:
+	$(WITH_ENV) $(PYTHON) -c 'from src.experiments.data.prepare.voicebank_snr import register_voicebank_snr; print(register_voicebank_snr())'
 
 CONFIG ?=
 RESUME ?=

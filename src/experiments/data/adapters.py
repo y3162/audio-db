@@ -14,10 +14,12 @@ from src.experiments.data.fixed_pair import SnapshotSource, _call
 from src.experiments.errors import DataError
 from src.experiments.data.mix.dns_ondemand import dns_rendering, render_dns_pair
 from src.experiments.data.mix.ondemand import ms_snsd_rendering, render_ms_snsd_pair
+from src.experiments.data.mix.voicebank_snr import dataset_shift, render_case
 from src.experiments.data.sampling.planner import chunk_case_length, fixed_pair_case_length
 
 _MS = "pregenerated.ms_snsd_tfgridnet"
 _DNS = "pregenerated.dns_tflocoformer"
+_VOICEBANK = "pregenerated.voicebank_snr_shift"
 
 
 class ChunkAdapter:
@@ -91,6 +93,35 @@ class DnsChunkAdapter(ChunkAdapter):
         return (
             np.ascontiguousarray(noisy[start:stop]),
             np.ascontiguousarray(clean[start:stop]),
+            stop - start,
+        )
+
+
+class VoicebankSnrChunkAdapter(ChunkAdapter):
+    """Float32 mixture slice. The protocol shift scales noise; nothing is clipped."""
+
+    def __init__(self, source: SnapshotSource, *, verify_on_read: bool) -> None:
+        self.source = source
+        self.verify_on_read = verify_on_read
+        self._shift: float | None = None
+
+    def prepare(self) -> None:
+        self._shift = _call(dataset_shift, self.source.dataset())
+
+    def render_span(self, case_id: str, start: int, stop: int) -> tuple[np.ndarray, np.ndarray, int]:
+        if self._shift is None:
+            raise DataError("VoiceBank SNR adapter is not prepared")
+        clean, noisy = _call(
+            render_case,
+            self.source.store,
+            case_id,
+            snr_shift_db=self._shift,
+            verify_on_read=self.verify_on_read,
+        )
+        _span_in_range(case_id, start, stop, int(clean.shape[0]))
+        return (
+            np.ascontiguousarray(noisy[start:stop], dtype=np.float32),
+            np.ascontiguousarray(clean[start:stop], dtype=np.float32),
             stop - start,
         )
 
@@ -260,6 +291,32 @@ class DnsPairAdapter(_GeneratedPairAdapter):
         return noisy, clean
 
 
+class VoicebankSnrPairAdapter(_GeneratedPairAdapter):
+    """Full float32 utterance. Official PCM16 is not this adapter's output."""
+
+    def __init__(self, source: SnapshotSource, *, verify_on_read: bool, sample_rate: int) -> None:
+        super().__init__(source, verify_on_read=verify_on_read, sample_rate=sample_rate)
+        self._shift: float | None = None
+
+    def _bind(self) -> None:
+        self._shift = _call(dataset_shift, self.source.dataset())
+
+    def render_full(self, case_id: str) -> tuple[np.ndarray, np.ndarray]:
+        if not self._ready or self._shift is None:
+            raise DataError("VoiceBank SNR adapter is not prepared")
+        clean, noisy = _call(
+            render_case,
+            self.source.store,
+            case_id,
+            snr_shift_db=self._shift,
+            verify_on_read=self.verify_on_read,
+        )
+        return (
+            np.ascontiguousarray(noisy, dtype=np.float32),
+            np.ascontiguousarray(clean, dtype=np.float32),
+        )
+
+
 def open_chunk_adapter(
     source: SnapshotSource,
     *,
@@ -270,7 +327,7 @@ def open_chunk_adapter(
     """Bind the chunk renderer named by the snapshot's generation algorithm."""
 
     algorithm = str(source.dataset().get("algorithm"))
-    if algorithm in {_MS, _DNS}:
+    if algorithm in {_MS, _DNS, _VOICEBANK}:
         if resample is not None:
             raise DataError("generated chunk audio declares its own rate; resample was not requested for this adapter")
         native = generated_native_rate(source)
@@ -278,7 +335,11 @@ def open_chunk_adapter(
             raise DataError(
                 f"dataset rate {native} does not match pipeline rate {sample_rate}; resampling was not requested"
             )
-        factory = MsSnsdChunkAdapter if algorithm == _MS else DnsChunkAdapter
+        factory = {
+            _MS: MsSnsdChunkAdapter,
+            _DNS: DnsChunkAdapter,
+            _VOICEBANK: VoicebankSnrChunkAdapter,
+        }[algorithm]
         return factory(source, verify_on_read=verify_on_read)
     if algorithm.startswith("fixed_pair."):
         return RecordedChunkAdapter(
@@ -308,6 +369,10 @@ def open_pair_adapter(
         if resample is not None:
             raise DataError("generated audio is already at its declared rate; resample does not apply")
         return DnsPairAdapter(source, verify_on_read=verify_on_read, sample_rate=sample_rate)
+    if algorithm == _VOICEBANK:
+        if resample is not None:
+            raise DataError("generated audio is already at its declared rate; resample does not apply")
+        return VoicebankSnrPairAdapter(source, verify_on_read=verify_on_read, sample_rate=sample_rate)
     if algorithm.startswith("fixed_pair."):
         return RecordedPairAdapter(
             source,

@@ -77,6 +77,8 @@ RULE_KEYS = {
     "retry_policy",
     "renderer",
     "online",
+    "snr_shift_db",
+    "mix",
 }
 # Shipped DeepFilterNet3 online-mixing distributions. The protocol id hashes
 # this object. audio-db does not reproduce Rust StdRng bits.
@@ -243,6 +245,36 @@ ALGORITHMS: dict[str, dict[str, Any]] = {
         "teacher": "dry_clean",
         "normalize": None,
     },
+    # Shared VoiceBank+DEMAND reconstruction. snr_shift_db lives on the
+    # protocol, not in the per-utterance realization.
+    "pregenerated.voicebank_snr_shift": {
+        "kind": "pregenerated",
+        "version": 1,
+        "sample_rate": 48000,
+        "teacher": "dry_clean",
+        "normalize": None,
+    },
+}
+# Shipped VoiceBank SNR-shift mix. Strings keep the protocol hash off the
+# 6-decimal float normalizer. This is the measured candidate, not a recovered
+# publisher source.
+VOICEBANK_SNR_MIX_V1 = {
+    "snr_definition": "p56_active_mean_square_over_segment_rms",
+    "p56": "itu_p56_method_b_nbits16_audio_db_v1",
+    "p56_level": "10log10_active_mean_square",
+    "p56_status": "measured_candidate_not_publisher_source",
+    "add_order": "g_times_clean_plus_scaled_noise",
+    "gain_order": "peak_normalize_vctk_then_stored_g_and_beta_then_snr_shift_on_noise_only",
+    "peak_factors": ["1.1", "1.2", "1.3", "1.4"],
+    "peak_stop": "max_abs_lte_1",
+    "peak_status": "estimated_common_gain_from_55_utterances",
+    "official_quantization": "pcm16_rint_nearest_even_saturate",
+    "official_quantization_status": "candidate_not_identified",
+    "shifted_output": "float64_no_clip_no_pcm",
+    "clean_component": "g_times_peak_normalized_vctk",
+    "published_clean_peak_pcm": 16384,
+    "fifty_six_speaker": "excluded",
+    "renderer_version": "voicebank_snr_shift_v1",
 }
 
 CASE_SLOTS = ("train.cases", "valid.cases", "test.cases")
@@ -563,8 +595,14 @@ def validate_rule(algorithm: str, rule: Any) -> dict[str, Any]:
         "deterministic_case_stream_v1",
     }:
         raise ReproductionError("rule_json.retry_policy is unknown")
-    if "renderer" in body and body["renderer"] not in {"dns_pcm16_v1", "dns_pcm16_accept_v2"}:
+    if "renderer" in body and body["renderer"] not in {
+        "dns_pcm16_v1",
+        "dns_pcm16_accept_v2",
+        "voicebank_snr_shift_v1",
+    }:
         raise ReproductionError("rule_json.renderer is unknown")
+    if algorithm != "pregenerated.voicebank_snr_shift" and ("snr_shift_db" in body or "mix" in body):
+        raise ReproductionError(f"{algorithm} does not take snr_shift_db or mix")
     if body.get("renderer") == "dns_pcm16_accept_v2" and body.get("retry_policy") != "deterministic_case_stream_v1":
         raise ReproductionError("dns_pcm16_accept_v2 requires deterministic_case_stream_v1")
     if body.get("retry_policy") == "deterministic_case_stream_v1" and body.get("renderer") != "dns_pcm16_accept_v2":
@@ -593,6 +631,19 @@ def validate_rule(algorithm: str, rule: Any) -> dict[str, Any]:
             raise ReproductionError("online.semambapp_gsr global_batch must be the shipped 8")
         if body.get("delivery") != "on_demand":
             raise ReproductionError("online.semambapp_gsr delivery must be on_demand")
+    elif algorithm == "pregenerated.voicebank_snr_shift":
+        if body.get("delivery") != "on_demand":
+            raise ReproductionError("voicebank snr shift delivery must be on_demand")
+        if body.get("renderer") != "voicebank_snr_shift_v1":
+            raise ReproductionError("voicebank snr shift renderer must be voicebank_snr_shift_v1")
+        if body.get("mix") != VOICEBANK_SNR_MIX_V1:
+            raise ReproductionError("voicebank snr shift mix policy is not the shipped v1")
+        shift = body.get("snr_shift_db")
+        if isinstance(shift, bool) or not isinstance(shift, (int, float)):
+            raise ReproductionError("snr_shift_db must be a finite number")
+        shift_value = float(shift)
+        if shift_value != shift_value or shift_value in {float("inf"), float("-inf")}:
+            raise ReproductionError("snr_shift_db must be a finite number")
     elif "online" in body:
         raise ReproductionError(f"{algorithm} does not take online")
     if "resample" in body:
@@ -710,6 +761,10 @@ def validate_realization(document: Any) -> dict[str, Any]:
         raise ReproductionError("realization.output.teacher is unknown")
     if "length" in output:
         positive_int(output["length"], "realization.output.length")
+    if algorithm == "pregenerated.voicebank_snr_shift":
+        from src.experiments.data.mix.voicebank_snr import validate_realization_document
+
+        validate_realization_document(body)
     return body
 
 

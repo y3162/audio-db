@@ -49,6 +49,7 @@ DDL の正本は `src/experiments/data/db/schema.py`。登録は `src/experiment
 | `data/db/reproduction-vb-ondemand.duckdb` | VoiceBank オンデマンド 4 Dataset が入っているファイル。既定の Make ターゲットはこのパスを指さない。`reproduction.duckdb` には入れない |
 | `data/db/reproduction-p8.duckdb` | DeepFilterNet3。`make reproduction-register-p8` |
 | `data/db/reproduction-p9.duckdb` | SEMamba++。`make reproduction-register-p9` |
+| `data/db/reproduction-voicebank-snr-v1.duckdb` | VoiceBank+DEMAND の SNR shift。`make reproduction-register-voicebank-snr`。モデル別 Dataset にはしない |
 | `data/db/snapshots/<dataset_id>/` | 学習が読む不変のスナップショット |
 
 DB ファイル名の stem を `eval` にしない。DuckDB のカタログ名と `eval.cases` が衝突するため。`reproduction` はこの衝突を起こさない。
@@ -95,7 +96,9 @@ DB ファイル名の stem を `eval` にしない。DuckDB のカタログ名�
 | 事前生成 | `pregenerated` | `delivery: on_demand` のときは元素材と `realization_v1` から再構成する。生成 WAV のパスを必須にしない |
 | オンライン混合 | `online_mixing` | 学習は素材リストから描画する。valid / test は固定した実現値を描画する |
 
-受理する algorithm は次の 6 つで、版はどれも 1 である。`fixed_pair.mp_senet`、`fixed_pair.mossformergan_se_16k`、`online.dfn3`、`online.semambapp_gsr`、`pregenerated.ms_snsd_tfgridnet`、`pregenerated.dns_tflocoformer`。
+受理する algorithm は次の 7 つで、版はどれも 1 である。`fixed_pair.mp_senet`、`fixed_pair.mossformergan_se_16k`、`online.dfn3`、`online.semambapp_gsr`、`pregenerated.ms_snsd_tfgridnet`、`pregenerated.dns_tflocoformer`、`pregenerated.voicebank_snr_shift`。
+
+`pregenerated.voicebank_snr_shift` は、VCTK 0.80 の切り出しと雑音区間、ピーク正規化、保存済みゲインを 1 発話 1 レシピで持つ。`snr_shift_db` は protocol の規則で、realization には入れない。shift 0 と −15 dB は同じ Case を束ね、Dataset の protocol だけが違う。生成は VCTK と雑音ファイルだけを読む。公式 clean/noisy は逆解析と照合の参照で、生成入力ではない。56 話者版は含まない。出力は float64 で、クリップも PCM16 量子化もしない。公式波形との PCM16 比較は別関数である。Train と validation は話者と発話が分かれ、雑音ファイルと雑音区間は共有する。この algorithm の leak 監査は、雑音素材を音声の重複 FAIL から外し、雑音区間の重複を `noise_interval_independence` に記録する。Train/validation の雑音重複は WARN で、独立とは書かない。Train または validation と test の雑音重複は FAIL である。他の algorithm の leak 監査は変えない。
 
 ## 4. スキーマ
 
@@ -270,11 +273,12 @@ make reproduction-rebuild-db OUT=data/db/reproduction-rebuilt.duckdb
 make reproduction-verify DATASET=name@version HASH=1
 make reproduction-register-p8
 make reproduction-register-p9
+make reproduction-register-voicebank-snr
 ```
 
 `DATASET` が無い snapshot、`OUT` が無い rebuild は失敗する。再構築は `OUT` が既存なら拒否し、新しいファイルへ書く。全表のハッシュが一致したときだけ置き換える。leakage 監査が `UNKNOWN` の Dataset を書き出すときだけ `ALLOW_UNKNOWN_LEAK_CHECK=1` を付ける。このフラグはスナップショットの provenance に残り、ハッシュには入らない。
 
-`reproduction-register-p8` は `register_p8()`、`reproduction-register-p9` は `register_p9()`。既定の出力はそれぞれ `data/staging/reproduction-p8` と `data/db/reproduction-p8.duckdb`、`data/staging/reproduction-p9` と `data/db/reproduction-p9.duckdb` で、ready な Dataset のスナップショットを `data/db/snapshots/` に書く。既存の同じ内容は増やさない。`reproduction.duckdb` と `resource.duckdb` には入れない。
+`reproduction-register-p8` は `register_p8()`、`reproduction-register-p9` は `register_p9()`。既定の出力はそれぞれ `data/staging/reproduction-p8` と `data/db/reproduction-p8.duckdb`、`data/staging/reproduction-p9` と `data/db/reproduction-p9.duckdb` で、ready な Dataset のスナップショットを `data/db/snapshots/` に書く。`reproduction-register-voicebank-snr` は、staging `data/staging/reproduction-voicebank-snr-v1/` が既にあるとき `register_voicebank_snr()` を呼び、`data/db/reproduction-voicebank-snr-v1.duckdb` と既定の snapshot ディレクトリへ書く。レシピの測定自体はこのターゲットに含めない。既存の同じ内容は増やさない。`reproduction.duckdb` と `resource.duckdb` には入れない。
 
 `reproduction-prepare` は VoiceBank の固定ペア（`src/experiments/data/prepare/run.py`）で、段は diagnose、lists、resolve、register、snapshot、verify である。既定の DB は `data/db/reproduction.duckdb`、staging は `data/staging/reproduction` である。ケースは 48 kHz のコーパスを指す。16 kHz への変換は学習が読むときである。オンデマンド 4 Dataset の実ファイルは別パスで、そのパスを既定にするターゲットは無い。
 

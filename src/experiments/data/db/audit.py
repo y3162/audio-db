@@ -32,6 +32,7 @@ def audits_for(graph: Graph, dataset_ids: list[str], resource_db: str | None) ->
             cases,
             assets,
             resource_db=resource_db,
+            protocols=index_rows(graph.protocols, "protocol_id", "protocols"),
         )
         rows.append(_audit("dataset", dataset_id, "leak_check", report))
     build_ids: set[str] = set()
