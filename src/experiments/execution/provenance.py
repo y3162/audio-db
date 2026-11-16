@@ -23,7 +23,7 @@ from src.evaluation.provenance import (
     parse_provenance_bytes,
     sidecar_path,
 )
-from src.experiments.config import ExperimentConfig, config_sha256
+from src.experiments.config import ExperimentConfig, config_sha256, structural_sha256
 from src.experiments.errors import CheckpointError
 from src.experiments.calc.errors import TrainingError
 from src.experiments.calc.provenance import build_provenance, provenance_sha256, publish_provenance
@@ -206,10 +206,13 @@ def _document(
     view = _DatasetView(_view_identity(identity_map), parts)
     process = _Process(int(getattr(runtime, "world_size", 1)))
     digest = config_sha256(config) if config_digest is None else config_digest
+    # The run identity follows the structure. An optimizer or scheduler
+    # hyperparameter written over a restored checkpoint is the same data run.
+    structural = structural_sha256(config) if config_digest is None else config_digest
     training_config = {
         "model": {"name": _model_name(config)},
         "seed": config.seed,
-        "loss": {"experiment_config_sha256": digest},
+        "loss": {"experiment_config_sha256": structural},
         "data": {},
     }
     document = build_provenance(view, training_config, process)

@@ -40,7 +40,14 @@ from typing import Any, Callable, Literal, Mapping
 
 import torch
 
-from src.experiments.config import ExperimentConfig, config_sha256
+from src.experiments.config import (
+    ExperimentConfig,
+    _OPTIMIZER_HYPERPARAMETERS,
+    _SCHEDULER_HYPERPARAMETERS,
+    config_sha256,
+    load_experiment,
+    structural_sha256,
+)
 from src.experiments.data.identity import comparable_identity
 from src.experiments.errors import BuildError, CheckpointError, ExperimentError, StateError
 from src.experiments.calc.errors import TrainingError
@@ -307,6 +314,18 @@ class CheckpointManager:
         self._latest_current = decision.latest or current
         return report
 
+    def validate_resume(self, path: Path) -> None:
+        """Refuse a resume that cannot be restored. Do not load state."""
+
+        config, registry, runtime = self._bound()
+        source = Path(path)
+        if source.is_dir():
+            source = source / LATEST_NAME
+        payload = _read_finished(source)
+        _validate_resume(
+            payload, registry, runtime, config, self._components, source, self.directory, self.selector
+        )
+
     def restore(
         self,
         path: Path,
@@ -543,6 +562,8 @@ class CheckpointManager:
         payload = _read_finished(source)
         _validate_resume(payload, states, runtime, config, self._components, source, self.directory, self.selector)
         _apply_resume(payload, states, runtime, self.selector)
+        if config_sha256(config) != payload.get("config_sha256"):
+            _reapply_hyperparameters(config, states)
         return RestoreReport("resume", _stored_step(payload), states.ids(), ())
 
     def _initialize_local(
@@ -656,8 +677,11 @@ def _validate_resume(
         raise CheckpointError("resume from a different directory is not supported")
     if payload.get("output_directory") != str(root):
         raise CheckpointError("resume from a different directory is not supported")
-    if payload.get("config_sha256") != config_sha256(config):
-        raise CheckpointError("checkpoint config identity does not match this experiment")
+    saved_hash = payload.get("config_sha256")
+    if saved_hash != config_sha256(config):
+        previous = _config_with_hash(directory, saved_hash)
+        if previous is None or structural_sha256(previous) != structural_sha256(config):
+            raise CheckpointError("checkpoint structure does not match this experiment")
     saved_selector = payload.get("selector")
     if not isinstance(saved_selector, dict) or set(saved_selector) != {"class", "kwargs", "state"} or not isinstance(saved_selector.get("state"), dict):
         raise CheckpointError("checkpoint selector state is invalid")
@@ -752,6 +776,108 @@ def _saved_states(payload: dict[str, Any]) -> dict[str, Any]:
     if set(saved_ids) != set(saved_states):
         raise CheckpointError("checkpoint state_ids and states do not match")
     return saved_states
+
+
+def _config_with_hash(directory: Path, digest: object) -> ExperimentConfig | None:
+    """Return the resolved document whose identity hash is ``digest``.
+
+    Rank 0 archives the previous ``config.yaml`` before resume validation.
+    A checkpoint whose hash is not in that history cannot be classified as a
+    hyperparameter change, so the caller refuses it.
+    """
+
+    if not isinstance(digest, str) or len(digest) != 64:
+        return None
+    candidates: list[Path] = []
+    history = directory / "config_history"
+    if history.is_dir():
+        candidates.extend(sorted(history.glob("*.yaml")))
+    current = directory / "config.yaml"
+    if current.is_file():
+        candidates.append(current)
+    for path in candidates:
+        try:
+            loaded = load_experiment(path)
+        except (OSError, ExperimentError):
+            continue
+        if config_sha256(loaded) == digest:
+            return loaded
+    return None
+
+
+def _reapply_hyperparameters(config: ExperimentConfig, states: StateRegistry) -> None:
+    """Write the current YAML optimizer and scheduler values over restored state.
+
+    Called only when the resolved config hash changed. An unchanged hash keeps
+    the decayed learning rate the scheduler already stored.
+    """
+
+    for state_id in states.ids():
+        owner = states.owner(state_id)
+        spec = config.components.get(state_id)
+        if spec is None:
+            continue
+        if owner.kind == "optimizer":
+            _reapply_optimizer(owner.target, spec)
+        elif owner.kind == "scheduler":
+            _reapply_scheduler(owner.target, spec)
+    for state_id in states.ids():
+        owner = states.owner(state_id)
+        if owner.kind != "scheduler":
+            continue
+        bases = getattr(owner.target, "base_lrs", None)
+        optimizer = getattr(owner.target, "optimizer", None)
+        groups = getattr(optimizer, "param_groups", None)
+        if isinstance(bases, list) and isinstance(groups, list) and len(bases) == len(groups):
+            owner.target.base_lrs = [group.get("lr", base) for group, base in zip(groups, bases)]
+
+
+def _reapply_optimizer(optimizer: Any, spec: Any) -> None:
+    groups = getattr(optimizer, "param_groups", None)
+    if not isinstance(groups, list):
+        raise CheckpointError("optimizer state has no param_groups")
+    shared = {
+        key: _yaml_value(spec.kwargs[key])
+        for key in _OPTIMIZER_HYPERPARAMETERS
+        if key in spec.kwargs
+    }
+    bindings = spec.parameters_of or ()
+    if bindings and not spec.parameters_flat:
+        if len(groups) < len(bindings):
+            raise CheckpointError(
+                f"optimizer has {len(groups)} groups and the YAML names {len(bindings)}"
+            )
+        for index, binding in enumerate(bindings):
+            if binding.lr is not None:
+                groups[index]["lr"] = binding.lr
+            elif "lr" in shared:
+                groups[index]["lr"] = shared["lr"]
+            if binding.weight_decay is not None:
+                groups[index]["weight_decay"] = binding.weight_decay
+            elif "weight_decay" in shared:
+                groups[index]["weight_decay"] = shared["weight_decay"]
+        for group in groups[len(bindings) :]:
+            for key, value in shared.items():
+                if key in group:
+                    group[key] = value
+        return
+    for group in groups:
+        for key, value in shared.items():
+            if key in group:
+                group[key] = value
+
+
+def _reapply_scheduler(scheduler: Any, spec: Any) -> None:
+    for key in _SCHEDULER_HYPERPARAMETERS:
+        if key not in spec.kwargs or not hasattr(scheduler, key):
+            continue
+        setattr(scheduler, key, _yaml_value(spec.kwargs[key]))
+
+
+def _yaml_value(value: Any) -> Any:
+    if isinstance(value, list):
+        return tuple(_yaml_value(item) for item in value)
+    return value
 
 
 def _apply_resume(payload: dict[str, Any], states: StateRegistry, runtime: Any, selector: Selector) -> None:

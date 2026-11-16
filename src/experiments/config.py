@@ -725,6 +725,30 @@ def _reject_differentiable(components: dict[str, ComponentConfig]) -> None:
         _reject_differentiable_value(spec.kwargs, spec.component_id)
 
 
+_OPTIMIZER_HYPERPARAMETERS = frozenset({
+    "amsgrad",
+    "betas",
+    "dampening",
+    "eps",
+    "lr",
+    "maximize",
+    "momentum",
+    "nesterov",
+    "weight_decay",
+})
+_SCHEDULER_HYPERPARAMETERS = frozenset({
+    "cooldown",
+    "eta_min",
+    "factor",
+    "gamma",
+    "min_lr",
+    "patience",
+    "step_size",
+    "T_max",
+    "threshold",
+})
+
+
 def config_sha256(config: ExperimentConfig) -> str:
     """Hash the experiment identity.
 
@@ -739,6 +763,36 @@ def config_sha256(config: ExperimentConfig) -> str:
     either field hashes as before.
     """
 
+    return _sha256(_config_payload(config))
+
+
+def structural_sha256(config: ExperimentConfig) -> str:
+    """Hash everything resume must not change.
+
+    Optimizer and scheduler hyperparameters are left out. Resume restores the
+    checkpoint and then writes the current YAML values over those fields.
+    Loss coefficients, class paths, shapes, and the data plan stay in the hash.
+    """
+
+    payload = _config_payload(config)
+    for spec in payload["components"].values():
+        kwargs = spec.get("kwargs")
+        if not isinstance(kwargs, dict):
+            continue
+        if spec.get("role") == "optimizer":
+            for key in _OPTIMIZER_HYPERPARAMETERS:
+                kwargs.pop(key, None)
+            for binding in spec.get("parameters_of") or []:
+                if isinstance(binding, dict):
+                    binding.pop("lr", None)
+                    binding.pop("weight_decay", None)
+        elif spec.get("role") == "scheduler":
+            for key in _SCHEDULER_HYPERPARAMETERS:
+                kwargs.pop(key, None)
+    return _sha256(payload)
+
+
+def _config_payload(config: ExperimentConfig) -> dict[str, Any]:
     payload: dict[str, Any] = {
         "components": {
             component_id: _component_identity(spec)
@@ -757,6 +811,10 @@ def config_sha256(config: ExperimentConfig) -> str:
         }
     if config.publication is not None:
         payload["publication"] = _jsonable(config.publication)
+    return payload
+
+
+def _sha256(payload: dict[str, Any]) -> str:
     encoded = json.dumps(payload, ensure_ascii=True, separators=(",", ":"), sort_keys=True)
     return hashlib.sha256(encoded.encode("utf-8")).hexdigest()
 

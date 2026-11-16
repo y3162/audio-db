@@ -16,7 +16,7 @@ import torch
 from unittest import mock
 
 from src.experiments.api import Experiment, build_experiment, preflight_experiment
-from src.experiments.config import load_experiment
+from src.experiments.config import config_sha256, load_experiment, structural_sha256
 from src.experiments.errors import CheckpointError
 from src.experiments.trainers import StandardTrainer
 
@@ -238,6 +238,39 @@ class MinimalExperimentTests(unittest.TestCase):
         skipped_meta = json.loads((skipped / "out" / "metadata.json").read_text(encoding="utf-8"))
         self.assertEqual(probed_meta["launches"][0]["batch_probe"]["status"], "ok")
         self.assertEqual(skipped_meta["launches"][0]["batch_probe"]["status"], "disabled")
+
+    def test_resume_reapplies_the_yaml_learning_rate(self) -> None:
+        directory = Path(self.enterContext(self._directory()))
+        source = _config_text(directory, 2)
+        stopped = source.read_text(encoding="utf-8").replace(
+            "max_logical_steps: 2, accumulation: 1",
+            "max_logical_steps: 2, accumulation: 1, stop_after_logical_steps: 1",
+        )
+        source.write_text(stopped, encoding="utf-8")
+        first = build_experiment(load_experiment(source))
+        stopped_result = first.run()
+        self.assertEqual(stopped_result.stop_reason, "interrupted")
+        self.assertFalse((directory / "out" / "complete.json").exists())
+        changed = stopped.replace("{lr: 0.001}", "{lr: 0.05}").replace(
+            ", stop_after_logical_steps: 1", ""
+        )
+        resume_path = directory / "resume.yaml"
+        resume_path.write_text(changed, encoding="utf-8")
+        original = load_experiment(source)
+        updated = load_experiment(resume_path)
+        self.assertNotEqual(config_sha256(original), config_sha256(updated))
+        self.assertEqual(structural_sha256(original), structural_sha256(updated))
+        wider_path = directory / "wider.yaml"
+        wider_path.write_text(changed.replace("out_features: 8", "out_features: 4"), encoding="utf-8")
+        kept = (directory / "out" / "latest.pt").read_bytes()
+        with self.assertRaisesRegex(CheckpointError, "structure"):
+            build_experiment(load_experiment(wider_path)).run(resume=directory / "out")
+        self.assertEqual((directory / "out" / "latest.pt").read_bytes(), kept)
+        resumed = build_experiment(updated)
+        result = resumed.run(resume=directory / "out")
+        self.assertEqual(result.logical_step, 2)
+        self.assertEqual(resumed.get("optimizer").param_groups[0]["lr"], 0.05)
+        self.assertTrue(any(not torch.equal(left, right) for left, right in zip(_weights(first), _weights(resumed))))
 
     def test_ctrl_c_does_not_leave_the_status_running(self) -> None:
         directory = Path(self.enterContext(self._directory()))

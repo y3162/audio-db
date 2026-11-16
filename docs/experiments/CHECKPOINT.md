@@ -116,7 +116,7 @@ checkpoint:
 
 ディレクトリを渡すと `latest.pt` を使う。`archive/` のファイルを直接渡してもよい。次は拒否する。
 
-- 設定の同一性が違う。`config_sha256` は `output`、`checkpoint`、`stop_after_logical_steps` を除いた設定の SHA-256 である。
+- 構造が違う。クラス、損失係数、形状、データ計画が変わった YAML は再開しない。Optimizer と Scheduler の学習率、betas、weight decay、eps、momentum、gamma、step size などは、状態を戻したあと現在の YAML の値を書く。Checkpoint に残った学習率は優先しない。
 - 出力ディレクトリが違う。再開元は、その実験のディレクトリ直下か `archive/` にあるファイルだけである。
 - world size、Dataset の同一性、データ計画の `plan_hash` が違う。
 - `provenance_sha256` を持つ checkpoint の sidecar が欠けている、またはハッシュが違う。

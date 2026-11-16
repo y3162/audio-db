@@ -16,9 +16,9 @@
 - payload は `progress` を必須にする。欠けるファイルは再開を拒否し、`logical_step` だけから progress を作らない。`progress` に `logical_step` があるとき、payload の `logical_step` はその値と一致する。キーが無い保存点では `logical_step` は null である。Core は学習単位のカウンタを Trainer に強制しない。`progress_keys` を宣言した Trainer は、Selector が要するキーを attach 時に検査する。宣言が無い Trainer は検査しない。間隔がキーを数える点でそのキーが無いときは拒否する。`boundary`、`stop`、`final` はカウンタが無くても Latest を選べる。
 - 停止ポリシーは Selector と独立し、指標を評価しない。Trainer は境界処理後に指標を配送し、停止状態を更新してから保存点を `save_if_needed` する。停止設定は実験同一性に含み、状態を全 rank で照合して再開する。
 - 研究用の評価とモデル選択は、公式の検証・scheduler・公式の推論用重みのあとで動く。指標の計算、集約、選択判定は Python が行い、YAML は指標、データ、タイミング、選択基準を宣言する。公式の検証式と推論用ファイルは置き換えない。`official_faithful` と `official_reproduction` は研究用の metric、evaluator、selection を拒否する。仕様は `docs/experiments/EVALUATION.md`。
-- 再開は同じ実験の厳密な続きである。`config_sha256` は `output`、`checkpoint`、`stop_after_logical_steps` を除いた設定の SHA-256 で、違う設定、違う出力ディレクトリ、違う world size を拒否する。`initialize` と `publication` は書かれているときだけハッシュに入る。無い文書は以前と同じハッシュになる。Latest より前の Archive から続けることも拒否する。古い状態から始めるのは、`initialize` を使う別の実験である。
+- 再開は同じ実験の続きである。`config_sha256` は `output`、`checkpoint`、`stop_after_logical_steps` を除いた設定の SHA-256 である。Optimizer と Scheduler の学習率、betas、weight decay、eps、momentum、gamma、step size などの違いは、checkpoint の状態を戻したあと現在の YAML で上書きする。クラス、損失係数、形状、データ計画、world size、出力ディレクトリが違う再開は拒否する。`initialize` と `publication` は書かれているときだけハッシュに入る。無い文書は以前と同じハッシュになる。Latest より前の Archive から続けることも拒否する。古い状態から始めるのは、`initialize` を使う別の実験である。
 - `initialize` は module、optimizer、scheduler の状態だけを読み、元の実験のファイルを変更しない。データ位置、Trainer の履歴、RNG は引き継がない。
-- 再開は現行の設定ハッシュだけを受ける。Selector のクラス ID と設定はハッシュとは別に照合し、停止ポリシーもクラス ID と状態を照合する。旧設定世代のハッシュを再開時に受け入れない。
+- 再開は、checkpoint に保存した解決済み設定と構造ハッシュが一致する YAML だけを受ける。構造ハッシュは Optimizer と Scheduler のハイパーパラメータを除く。Selector のクラス ID と設定はハッシュとは別に照合し、停止ポリシーもクラス ID と状態を照合する。旧 checkpoint 形式のハッシュを再開時に受け入れない。
 - `COMPLETED` と `complete.json` は、全プロセスが正常終了したあとに書く。Launcher の下では Launcher が書く。一部の rank だけが学習を続ける経路を作らない。
 - `provenance_sha256` が None の checkpoint は来歴なしのまま再開できる。後から同じディレクトリに JSON ができても、その checkpoint を証明済みにしない。
 - FSDP と sharded checkpoint は未実装。`fp16` は CUDA autocast と GradScaler、`bf16` は CUDA autocast だけで Scaler は無い。CPU への黙った降格はしない。複数 Optimizer の `fp16` は拒否する。

@@ -129,6 +129,8 @@ class Experiment:
             self._lifecycle = lifecycle
             trainer.runtime = self._graph.runtime  # type: ignore[attr-defined]
             trainer.lifecycle = lifecycle  # type: ignore[attr-defined]
+            if resume is not None:
+                self._checkpoint.validate_resume(Path(resume))
             from src.experiments.execution.preflight import run_batch_probe
 
             self._record_probe(run_batch_probe(self))
