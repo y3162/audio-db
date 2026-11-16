@@ -411,8 +411,17 @@ class MossFormerGANTrainer(ProgressView):
         )
 
     def _on_update_phase(self, phase: str) -> None:
-        if self.fail_phase == phase:
-            raise RuntimeFailure(f"injected failure at {phase}")
+        expected = self.fail_phase
+        if expected is None:
+            return
+        minimum = 0
+        if "@" in expected:
+            expected, raw = expected.split("@", 1)
+            if not raw.isdigit():
+                raise RuntimeFailure(f"injected failure phase {self.fail_phase!r} is invalid")
+            minimum = int(raw)
+        if phase == expected and int(self.progress.logical_step) >= minimum:
+            raise RuntimeFailure(f"injected failure at {expected}")
 
     def _refuse_amp(self, runtime: ProcessRuntime) -> None:
         refuse_amp(runtime)
@@ -420,17 +429,22 @@ class MossFormerGANTrainer(ProgressView):
     def _publish_interrupt(self, runtime: ProcessRuntime) -> None:
         if self._guard.active:
             raise RuntimeFailure("refusing to checkpoint between the generator step and the discriminator step")
-        if self.progress.logical_step <= 0 and self.progress.accu_count <= 0:
+        if self.progress.accu_count > 0:
+            # The open window is recomputed from the last finished logical step.
+            return
+        if self.progress.logical_step <= 0:
             return
         self._offer(runtime, "stop")
 
     def _offer(self, runtime: ProcessRuntime, event: str, metrics: dict[str, float] | None = None) -> None:
         if self._guard.active:
             raise RuntimeFailure("refusing to checkpoint between the generator step and the discriminator step")
-        if event in ("step", "partial"):
+        if event == "partial":
+            return
+        if event == "step":
             self.lifecycle.save_if_needed(
                 event, logical_step=self.progress.logical_step,
-                metrics=metrics if event == "step" else None, prepare=self._sync_ranks,
+                metrics=metrics, prepare=self._sync_ranks,
             )
             return
         self._sync_ranks(runtime)
@@ -837,7 +851,8 @@ def note_micro_batch(
     offer: Any,
 ) -> None:
     if stepped is None:
-        offer("partial")
+        # The window is still open, or this micro-batch was skipped. Formal v1
+        # does not write a checkpoint until the logical step finishes.
         return
     progress.note_closed_pair()
     progress.step_log.append(stepped)
@@ -1359,6 +1374,9 @@ def finish_boundary(
 ) -> None:
     if progress.phase != PENDING_BOUNDARY or progress.boundary is None:
         raise RuntimeFailure(f"component {component_id}: there is no pending MossFormerGAN boundary")
+    # An unfinished accumulation window is not a checkpoint. Drop it before
+    # validation or a boundary save so the saved state is a finished step.
+    micro.discard_window()
     boundary = progress.boundary
     if boundary["validate"] and not boundary["validation_done"]:
         summary = evaluate(

@@ -21,7 +21,7 @@ from typing import Any, Mapping
 from src.experiments.errors import BuildError, CheckpointError
 
 # ``step``: one logical step finished inside an epoch.
-# ``partial``: a safe point inside an accumulation window; no logical step finished.
+# ``partial``: an accumulation window is still open. Formal v1 does not save it.
 # ``boundary_pending``: an epoch or validation boundary opened; its work has not run.
 # ``boundary``: the boundary work finished. ``metrics`` holds validation results when it validated.
 # ``stop``: a safe stop was requested. The state is the state of the previous offer.
@@ -117,8 +117,8 @@ class StandardSelector(Selector):
     Latest is replaced every ``latest_every`` logical steps, at each boundary,
     on a safe stop, and when training completes. The default interval is
     :data:`DEFAULT_LATEST_EVERY`, so omitting it does not save every step.
-    ``latest_every: 1`` does. ``partial`` also replaces Latest at safe points
-    inside an accumulation window.
+    ``latest_every: 1`` does. An open accumulation window is not a save point.
+    ``partial: true`` is refused.
     """
 
     checkpoint_class_id = "src.experiments.selectors.StandardSelector"
@@ -132,9 +132,14 @@ class StandardSelector(Selector):
         self.latest_every = _positive_int("latest_every", latest_every)
         if not isinstance(partial, bool):
             raise BuildError("partial must be a bool")
+        if partial:
+            raise BuildError(
+                "partial checkpoints are not part of formal v1; "
+                "save only at a finished logical step"
+            )
         if not isinstance(progress_key, str) or not progress_key:
             raise BuildError("progress_key must be a non-empty string")
-        self.partial = partial
+        self.partial = False
         self.progress_key = progress_key
 
     def decide(self, point: SavePoint) -> Decision:
@@ -155,7 +160,7 @@ class StandardSelector(Selector):
         if point.event in ("stop", "final"):
             return not point.latest_is_current
         if point.event == "partial":
-            return self.partial
+            return False
         raise CheckpointError(f"unknown save point event {point.event!r}")
 
 

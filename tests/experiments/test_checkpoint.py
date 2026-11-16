@@ -414,7 +414,8 @@ class SelectorTests(_Base):
         self.assertEqual(selector.decide(SavePoint("stop", 5, latest_is_current=True)), Decision())
         self.assertEqual(selector.decide(SavePoint("final", 5, latest_is_current=True)), Decision())
         self.assertEqual(selector.decide(SavePoint("final", 5)), Decision(latest=True))
-        self.assertEqual(StandardSelector(partial=True).decide(SavePoint("partial", 0)), Decision(latest=True))
+        with self.assertRaises(BuildError):
+            StandardSelector(partial=True)
         standard = StandardSelector()
         self.assertEqual(standard.latest_every, DEFAULT_LATEST_EVERY)
         self.assertEqual(standard.decide(SavePoint("step", 1)), Decision())

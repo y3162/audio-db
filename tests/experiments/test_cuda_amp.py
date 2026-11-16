@@ -888,8 +888,8 @@ class Phase4JCudaTests(unittest.TestCase):
             partial.mkdir()
             _yaml(
                 partial,
-                partial=True,
-                steps=1,
+                partial=False,
+                steps=2,
                 updates=4,
                 accumulation=2,
                 validate=False,
@@ -898,15 +898,16 @@ class Phase4JCudaTests(unittest.TestCase):
                 device="cuda",
                 deterministic=False,
                 world=2,
+                preflight=False,
             )
-            failed = _moss_nccl(partial, "run", timeout=240, fail_phase="after_generator_step")
+            failed = _moss_nccl(partial, "run", timeout=240, fail_phase="after_generator_step@1")
             self.assertNotEqual(failed.returncode, 0)
-            self.assertTrue((partial / "archive/step_00000000.pt").is_file())
-            self.assertFalse((partial / "archive/step_00000001.pt").is_file())
-            resumed = _moss_nccl(partial, "run", timeout=240, resume=partial / "archive/step_00000000.pt")
+            self.assertTrue((partial / "archive/step_00000001.pt").is_file())
+            self.assertFalse((partial / "archive/step_00000002.pt").is_file())
+            resumed = _moss_nccl(partial, "run", timeout=240, resume=partial / "archive/step_00000001.pt")
             self.assertEqual(resumed.returncode, 0, resumed.stderr[-2500:])
             resumed_ranks = _moss_ranks(partial)
-            self.assertEqual([row["logical_step"] for row in resumed_ranks], [1, 1])
+            self.assertEqual([row["logical_step"] for row in resumed_ranks], [2, 2])
             self.assertEqual([row["accu_count"] for row in resumed_ranks], [0, 0])
             self.assertEqual(resumed_ranks[0]["generator_sha256"], resumed_ranks[1]["generator_sha256"])
             self.assertEqual(resumed_ranks[0]["discriminator_sha256"], resumed_ranks[1]["discriminator_sha256"])

@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import math
 import re
 from dataclasses import asdict, dataclass, field, replace
 from pathlib import Path
@@ -816,7 +817,10 @@ def structural_sha256(config: ExperimentConfig, *, ignore_global_batch: bool = F
 
     Optimizer and scheduler hyperparameters are left out. Resume restores the
     checkpoint and then writes the current YAML values over those fields.
-    Loss coefficients, class paths, and shapes stay in the hash. With
+    Class paths and shapes stay in the hash. Objective ``weights`` whose
+    values are all finite numbers are left out: resume keeps the restored
+    model and optimizer and uses the current YAML coefficients. A loss class,
+    term list, or non-numeric weight entry still refuses resume. With
     ``ignore_global_batch``, per-rank ``micro_batch_size`` and runtime
     ``world_size`` are left out, and the derived ``accumulation_steps`` stays,
     so an epoch-boundary world-size change can keep the global batch.
@@ -839,12 +843,30 @@ def structural_sha256(config: ExperimentConfig, *, ignore_global_batch: bool = F
                 if isinstance(binding, dict):
                     binding.pop("lr", None)
                     binding.pop("weight_decay", None)
+        elif spec.get("role") == "loss":
+            _drop_numeric_weights(kwargs)
         elif spec.get("role") == "scheduler":
             for key in _SCHEDULER_HYPERPARAMETERS:
                 kwargs.pop(key, None)
     if ignore_global_batch and isinstance(payload["runtime"].get("kwargs"), dict):
         payload["runtime"]["kwargs"].pop("world_size", None)
     return _sha256(payload)
+
+
+def _drop_numeric_weights(kwargs: dict[str, Any]) -> None:
+    """Remove an objective coefficient map from a resume-structure hash.
+
+    A mapping of finite numbers is a coefficient. Anything else stays in the
+    hash so a structural weight table cannot slip through as a coefficient.
+    """
+
+    weights = kwargs.get("weights")
+    if not isinstance(weights, dict) or not weights:
+        return
+    for value in weights.values():
+        if isinstance(value, bool) or not isinstance(value, (int, float)) or not math.isfinite(float(value)):
+            return
+    kwargs.pop("weights")
 
 
 def _record_accumulation_steps(payload: dict[str, Any]) -> None:

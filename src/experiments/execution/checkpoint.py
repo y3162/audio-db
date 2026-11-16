@@ -455,6 +455,7 @@ class CheckpointManager:
                     raise CheckpointError("rng_by_rank length does not match world size")
             if int(runtime.rank) == 0:
                 if writes:
+                    _refuse_open_accumulation_state(states)
                     from src.experiments.execution.provenance import bind_provenance
 
                     with Span("checkpoint_write"):
@@ -564,7 +565,8 @@ class CheckpointManager:
         _validate_resume(payload, states, runtime, config, self._components, source, self.directory, self.selector)
         _apply_resume(payload, states, runtime, self.selector)
         if config_sha256(config) != payload.get("config_sha256"):
-            _reapply_hyperparameters(config, states)
+            previous = _config_with_hash(self.directory, payload.get("config_sha256"))
+            _reapply_hyperparameters(config, states, previous)
         return RestoreReport("resume", _stored_step(payload), states.ids(), ())
 
     def _initialize_local(
@@ -831,6 +833,7 @@ def _validate_resume(
         raise CheckpointError("resume from a different directory is not supported")
     if payload.get("output_directory") != str(root):
         raise CheckpointError("resume from a different directory is not supported")
+    _refuse_open_accumulation_payload(payload)
     saved_hash = payload.get("config_sha256")
     if saved_hash != config_sha256(config):
         previous = _config_with_hash(directory, saved_hash)
@@ -959,22 +962,40 @@ def _config_with_hash(directory: Path, digest: object) -> ExperimentConfig | Non
     return None
 
 
-def _reapply_hyperparameters(config: ExperimentConfig, states: StateRegistry) -> None:
-    """Write the current YAML optimizer and scheduler values over restored state.
+def _reapply_hyperparameters(
+    config: ExperimentConfig,
+    states: StateRegistry,
+    previous: ExperimentConfig | None,
+) -> None:
+    """Write changed YAML optimizer and scheduler values over restored state.
 
-    Called only when the resolved config hash changed. An unchanged hash keeps
-    the decayed learning rate the scheduler already stored.
+    Called only when the resolved config hash changed. A coefficient-only
+    change leaves a decayed learning rate where it is. An unchanged hash never
+    reaches this function, so a scheduler's stored rate is not rewritten.
+    When the previous document cannot be found, every current hyperparameter
+    is written, which is the same as treating the whole hash change as a
+    hyperparameter edit.
     """
 
+    changed_optimizer = False
     for state_id in states.ids():
         owner = states.owner(state_id)
         spec = config.components.get(state_id)
         if spec is None:
             continue
         if owner.kind == "optimizer":
-            _reapply_optimizer(owner.target, spec)
+            if previous is None or _hyperparameters_differ(
+                previous, config, state_id, _OPTIMIZER_HYPERPARAMETERS
+            ):
+                _reapply_optimizer(owner.target, spec)
+                changed_optimizer = True
         elif owner.kind == "scheduler":
-            _reapply_scheduler(owner.target, spec)
+            if previous is None or _hyperparameters_differ(
+                previous, config, state_id, _SCHEDULER_HYPERPARAMETERS
+            ):
+                _reapply_scheduler(owner.target, spec)
+    if not changed_optimizer:
+        return
     for state_id in states.ids():
         owner = states.owner(state_id)
         if owner.kind != "scheduler":
@@ -1026,6 +1047,59 @@ def _reapply_scheduler(scheduler: Any, spec: Any) -> None:
         if key not in spec.kwargs or not hasattr(scheduler, key):
             continue
         setattr(scheduler, key, _yaml_value(spec.kwargs[key]))
+
+
+def _hyperparameters_differ(
+    previous: ExperimentConfig,
+    config: ExperimentConfig,
+    state_id: str,
+    keys: frozenset[str],
+) -> bool:
+    """True when this component's YAML hyperparameters are not the saved ones."""
+
+    old = previous.components.get(state_id)
+    new = config.components.get(state_id)
+    if old is None or new is None or old.class_path != new.class_path:
+        return True
+    old_values = {key: _yaml_value(old.kwargs[key]) for key in keys if key in old.kwargs}
+    new_values = {key: _yaml_value(new.kwargs[key]) for key in keys if key in new.kwargs}
+    if old_values != new_values:
+        return True
+    left = old.parameters_of or ()
+    right = new.parameters_of or ()
+    if len(left) != len(right):
+        return True
+    for before, after in zip(left, right, strict=True):
+        if before.lr != after.lr or before.weight_decay != after.weight_decay:
+            return True
+    return False
+
+
+def _open_accumulation(blob: object) -> bool:
+    if not isinstance(blob, dict):
+        return False
+    accu = blob.get("accu_count")
+    return isinstance(accu, int) and not isinstance(accu, bool) and accu > 0
+
+
+def _refuse_open_accumulation_payload(payload: dict[str, Any]) -> None:
+    blobs = payload.get("states")
+    if isinstance(blobs, dict) and any(_open_accumulation(blob) for blob in blobs.values()):
+        raise CheckpointError(
+            "checkpoint is inside an accumulation window; formal v1 resumes only a finished logical step"
+        )
+
+
+def _refuse_open_accumulation_state(states: StateRegistry) -> None:
+    for state_id in states.ids():
+        owner = states.owner(state_id)
+        if getattr(owner, "kind", None) != "trainer":
+            continue
+        if _open_accumulation(owner.state_dict()):
+            raise CheckpointError(
+                "refusing to checkpoint inside an accumulation window; "
+                "formal v1 saves only a finished logical step"
+            )
 
 
 def _yaml_value(value: Any) -> Any:

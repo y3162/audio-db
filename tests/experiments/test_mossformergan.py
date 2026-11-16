@@ -32,6 +32,7 @@ from src.experiments.training.official_objectives import (
 )
 from tests.experiments.official_loss_yaml import MOSS_COMPONENTS, MOSS_INJECT
 from src.experiments.runtime import PreparePolicy, ProcessRuntime
+from src.experiments.selectors import StandardSelector
 from src.experiments.calc.rng import set_determinism
 from tests.numerics.reference.mossformer_task import (
     MossFormerGANTask,
@@ -154,6 +155,7 @@ def _yaml(directory: Path, **kwargs: object) -> Path:
     timeout = int(kwargs.get("timeout", 120))
     device = str(kwargs.get("device", "cpu"))
     deterministic = "true" if kwargs.get("deterministic", True) else "false"
+    preflight = "true" if kwargs.get("preflight", True) else "false"
     text = f"""
 schema: audio-db-experiment/v1
 checkpoint:
@@ -172,6 +174,7 @@ runtime:
     precision: fp32
     world_size: {world}
     timeout_seconds: {timeout}
+    preflight: {preflight}
 output:
   directory: {directory}
 components:
@@ -824,48 +827,69 @@ class MossFormerGANAlgorithmTests(unittest.TestCase):
             trainer._offer(self.runtime, _CheckpointStub(), "step")
         trainer._in_optimizer_pair = False
 
-    def test_partial_resume_and_all_fail_stop(self) -> None:
+    def test_finished_step_resume_and_all_fail_stop(self) -> None:
+        with self.assertRaises(BuildError):
+            StandardSelector(partial=True)
         def _constant(clean: torch.Tensor, enhanced: torch.Tensor, sample_rate: int) -> torch.Tensor:
             del enhanced, sample_rate
             return torch.full((clean.shape[0],), 0.4)
 
-        with tempfile.TemporaryDirectory(prefix="moss-partial-") as raw, patch(
+        with tempfile.TemporaryDirectory(prefix="moss-window-") as raw, patch(
             "src.models.mossformergan.loss.metric_targets", _constant
         ):
             root = Path(raw)
+            refused = root / "refused"
+            refused.mkdir()
+            with self.assertRaises(BuildError):
+                build_experiment(load_experiment(_yaml(refused, partial=True, steps=1, updates=4, accumulation=2)))
+            open_dir = root / "open"
+            open_dir.mkdir()
+            opened = build_experiment(load_experiment(_yaml(
+                open_dir, partial=False, steps=1, updates=4, accumulation=2, preflight=False,
+            )))
+            opened.get("trainer").fail_phase = "after_micro_batch"
+            with self.assertRaises(RuntimeFailure):
+                opened.run()
+            self.assertFalse(any(open_dir.rglob("*.pt")))
             first_dir = root / "clean"
             first_dir.mkdir()
-            clean = build_experiment(load_experiment(_yaml(first_dir, partial=True, steps=1, updates=4, accumulation=2)))
+            clean = build_experiment(load_experiment(_yaml(first_dir, partial=False, steps=2, updates=4, accumulation=2)))
             try:
                 result = clean.run()
             finally:
                 clean.close()
             self.assertEqual(result.stop_reason, "completed")
-            self.assertEqual(result.logical_step, 1)
+            self.assertEqual(result.logical_step, 2)
             failed_dir = root / "failed"
             failed_dir.mkdir()
-            failed = build_experiment(load_experiment(_yaml(failed_dir, partial=True, steps=1, updates=4, accumulation=2)))
-            failed.get("trainer").fail_phase = "after_generator_step"
+            failed = build_experiment(load_experiment(_yaml(
+                failed_dir, partial=False, steps=2, updates=4, accumulation=2, preflight=False,
+            )))
+            failed.get("trainer").fail_phase = "after_generator_step@1"
             with self.assertRaises(RuntimeFailure):
                 failed.run()
-            self.assertTrue((failed_dir / "archive/step_00000000.pt").is_file())
-            self.assertFalse((failed_dir / "archive/step_00000001.pt").is_file())
-            resumed = build_experiment(load_experiment(_yaml(failed_dir, partial=True, steps=1, updates=4, accumulation=2)))
+            self.assertTrue((failed_dir / "archive/step_00000001.pt").is_file())
+            self.assertFalse((failed_dir / "archive/step_00000002.pt").is_file())
+            saved = _load(failed_dir / "archive/step_00000001.pt")["states"]["trainer"]
+            self.assertEqual(saved["logical_step"], 1)
+            self.assertEqual(saved["accu_count"], 0)
+            resumed = build_experiment(load_experiment(_yaml(
+                failed_dir, partial=False, steps=2, updates=4, accumulation=2, preflight=False,
+            )))
             try:
-                resumed_result = resumed.run(resume=failed_dir / "archive/step_00000000.pt")
+                resumed_result = resumed.run(resume=failed_dir / "archive/step_00000001.pt")
             finally:
                 resumed.close()
-            self.assertEqual(resumed_result.logical_step, 1)
-            clean_state = _load(first_dir / "archive/step_00000001.pt")["states"]
-            resumed_state = _load(failed_dir / "archive/step_00000001.pt")["states"]
+            self.assertEqual(resumed_result.logical_step, 2)
+            clean_state = _load(first_dir / "archive/step_00000002.pt")["states"]
+            resumed_state = _load(failed_dir / "archive/step_00000002.pt")["states"]
             for key in ("generator", "discriminator", "optim_g", "optim_d"):
                 self.assertEqual(_max_tree(clean_state[key], resumed_state[key], key), 0.0)
-            self.assertEqual(resumed_state["trainer"]["logical_step"], 1)
+            self.assertEqual(resumed_state["trainer"]["logical_step"], 2)
             self.assertEqual(resumed_state["trainer"]["accu_count"], 0)
-            self.assertEqual(resumed_state["data"]["update_index"], 2)
-            broken = failed_dir / "archive/step_00000001.pt"
+            broken = failed_dir / "archive/step_00000002.pt"
             broken.write_bytes(b"not-a-checkpoint")
-            again = build_experiment(load_experiment(_yaml(failed_dir, partial=True, steps=1, updates=4, accumulation=2)))
+            again = build_experiment(load_experiment(_yaml(failed_dir, partial=False, steps=2, updates=4, accumulation=2)))
             with self.assertRaises(CheckpointError):
                 again.run(resume=broken)
             again.close()

@@ -37,7 +37,7 @@ payload は `progress` を必須にする。同じ形式名でも `progress` が
 | event | 意味 |
 |---|---|
 | `step` | epoch の内側で logical step が 1 つ終わった |
-| `partial` | 蓄積の途中の安全な点。logical step は終わっていない（MossFormerGAN） |
+| `partial` | 蓄積窓が開いたままの点。formal v1 は保存しない。`partial: true` は構築時に拒否する |
 | `boundary_pending` | epoch 末または検証の境界に入った。境界の処理はまだ |
 | `boundary` | 境界の処理が終わった。検証をしたときは `metrics` に有限な値が入る |
 | `stop` | 安全な停止の要求を受けた。状態は直前の保存点と同じ |
@@ -72,7 +72,7 @@ Selector は、引数、復元した状態、差し出された点だけから�
 
 | クラス（`src.experiments.selectors.`） | 残すもの | 引数 |
 |---|---|---|
-| `StandardSelector` | Latest だけ。`latest_every` step ごと、各境界、安全な停止、完了で置き換える | `latest_every`（既定 1000）、`partial`（既定 false。true なら蓄積途中の点でも置き換える）、`progress_key`（既定 `logical_step`） |
+| `StandardSelector` | Latest だけ。`latest_every` step ごと、各境界、安全な停止、完了で置き換える。蓄積窓の途中は保存しない | `latest_every`（既定 1000）、`partial`（true は拒否）、`progress_key`（既定 `logical_step`） |
 | `PeriodicArchiveSelector` | Latest の規則は同じ。加えて `archive_every` step ごとの Archive。`latest_every` を省くと 1 のまま | `archive_every`、`keep_last`（省略は全部残す）、`name`（既定 `step_{step:08d}.pt`）、`latest_every`（既定 1）、`progress_key`（既定 `logical_step`） |
 | `TopKSelector` | Latest の規則は同じ。加えて境界の指標が良い順に `k` 個の Archive。`latest_every` を省くと 1 のまま | `metric`、`mode`（`min` / `max`）、`k`、`name`（既定 `best_{step:08d}.pt`）、`latest_every`（既定 1）、`progress_key`（既定 `logical_step`） |
 
@@ -117,7 +117,7 @@ checkpoint:
 
 ディレクトリを渡すと `latest.pt` を使う。`archive/` のファイルを直接渡してもよい。次は拒否する。
 
-- 構造が違う。クラス、損失係数、形状、データ計画が変わった YAML は再開しない。Optimizer と Scheduler の学習率、betas、weight decay、eps、momentum、gamma、step size などは、状態を戻したあと現在の YAML の値を書く。Checkpoint に残った学習率は優先しない。
+- 構造が違う。クラス、項の構成、形状、データ計画が変わった YAML は再開しない。有限な数値だけの Objective `weights` は構造に含めない。係数だけの変更は、戻したモデルと Optimizer を保ち、現在の YAML の係数を使う。Optimizer と Scheduler の学習率、betas、weight decay、eps、momentum、gamma、step size などは、保存時の解決済み設定と違うときだけ、状態を戻したあと現在の YAML の値を書く。係数だけの変更で減衰した学習率は巻き戻さない。
 - 出力ディレクトリが違う。再開元は、その実験のディレクトリ直下か `archive/` にあるファイルだけである。
 - world size が違う。例外は epoch の境界で、`batch_size * world_size * accumulation` が保存時と同じときである。そのとき per-rank の `batch_size` だけを合わせてよい。`update_index` が 0 でも、その epoch を終えた回数と一致しても境界である。終えた epoch は次の epoch の先頭として読み、増えた rank は既存 rank の RNG をコピーしない。`batch_size` を identity に持たないデータは、この例外に入らない。
 - Dataset の同一性、または同じ world size でのデータ計画 `plan_hash` が違う。境界で rank 幅だけが変わった計画は、保存時の `plan_hash` と一致しなくてよい。
