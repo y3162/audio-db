@@ -50,6 +50,7 @@ from src.experiments.stopping import control_requests_stop, observe_validation
 from src.experiments.training.control import (
     close_training_run,
     finite_gradient_report,
+    connected_zero,
     gather_row_counts,
     micro_rows,
     open_flat_window_at,
@@ -921,12 +922,33 @@ def accumulated_step(
     phase_hook("zero_grad")
     update.optim_d.zero_grad(set_to_none=True)
     update.optim_g.zero_grad(set_to_none=True)
-    stored: list[tuple[torch.Tensor, dict[str, torch.Tensor]]] = []
+    stored: list[tuple[torch.Tensor, dict[str, torch.Tensor]] | None] = []
     discriminator_total = 0.0
     sample_ids: list[str] = []
     with runtime.sync_gradients([update.generator], enabled=False):
         for index, batch in enumerate(batches):
             last = index == len(batches) - 1
+            if row_counts[index] == 0:
+                sample_ids.append(batch.sample_id)
+                if not runtime.agree(True, policy="all"):
+                    raise RuntimeFailure("a rank rejected its micro-batch before the generator forward")
+                phase_hook("before_generator_forward")
+                errors = runtime.gather_objects(None)
+                if any(errors):
+                    raise RuntimeFailure("generator forward failed: " + "; ".join(item for item in errors if item))
+                stored.append(None)
+                with runtime.sync_gradients([update.discriminator], enabled=last):
+                    disc_errors = runtime.gather_objects(None)
+                    if any(disc_errors):
+                        raise RuntimeFailure(
+                            "discriminator forward failed: " + "; ".join(item for item in disc_errors if item)
+                        )
+                    backward_if_finite(
+                        runtime,
+                        connected_zero(update.discriminator.parameters, "trainer"),
+                        "discriminator loss",
+                    )
+                continue
             clean, noisy = waveforms(batch, runtime)
             sample_ids.append(batch.sample_id)
             ready = inputs_ready(clean, noisy, update.generator.unwrapped().n_fft)
@@ -986,7 +1008,23 @@ def accumulated_step(
         try:
             for parameter in frozen:
                 parameter.requires_grad_(False)
-            for index, (clean, parts) in enumerate(stored):
+            for index, item in enumerate(stored):
+                if item is None:
+                    gen_errors = runtime.gather_objects(None)
+                    if any(gen_errors):
+                        raise RuntimeFailure(
+                            "generator loss failed: " + "; ".join(item for item in gen_errors if item)
+                        )
+                    synced = update.generator.gradient_sync_enabled()
+                    if synced is not None:
+                        note_generator_sync(synced)
+                    backward_if_finite(
+                        runtime,
+                        connected_zero(update.generator.parameters, "trainer"),
+                        "generator loss",
+                    )
+                    continue
+                clean, parts = item
                 ones = torch.ones(clean.shape[0], device=clean.device)
                 gen_error: str | None = None
                 total: torch.Tensor | None = None
@@ -1072,6 +1110,44 @@ def cuda_overlapped_step(
         accumulation=update.accumulation,
         world_size=int(runtime.world_size),
     )
+    if rows[0] == 0:
+        phase_hook("before_generator_forward")
+        backward_if_finite(
+            runtime, connected_zero(update.generator.parameters, "trainer"), "generator signal loss",
+        )
+        drain_previous()
+        backward_if_finite(
+            runtime, connected_zero(update.discriminator.parameters, "trainer"), "discriminator loss",
+        )
+        if apply_optimizer:
+            discriminator_result = runtime.step(update.optim_d)
+        phase_hook("after_discriminator_step", [])
+        backward_if_finite(
+            runtime, connected_zero(update.generator.parameters, "trainer"), "generator metric loss",
+        )
+        note_gradients_averaged()
+        runtime.average_gradients(update.generator)
+        if apply_optimizer:
+            generator_result = runtime.step(update.optim_g)
+            runtime.end_step()
+            runtime.broadcast_buffers(update.generator)
+            runtime.broadcast_buffers(update.discriminator)
+            if not discriminator_result.applied or not generator_result.applied:
+                raise RuntimeFailure("MP-SENet GAN requires both optimizers to apply in one logical step")
+        phase_hook("end_step")
+        return {
+            "complex": 0.0,
+            "consistency": 0.0,
+            "discriminator": 0.0,
+            "generator": 0.0,
+            "lr_d": float(update.optim_d.param_groups[0]["lr"]),
+            "lr_g": float(update.optim_g.param_groups[0]["lr"]),
+            "magnitude": 0.0,
+            "metric": 0.0,
+            "phase": 0.0,
+            "sample_id": str(batch.sample_id),
+            "time": 0.0,
+        }
     clean, noisy = waveforms(batch, runtime)
     if not inputs_ready(clean, noisy, update.generator.unwrapped().n_fft):
         raise RuntimeFailure("a rank rejected its micro-batch before the generator forward")

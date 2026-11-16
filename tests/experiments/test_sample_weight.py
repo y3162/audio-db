@@ -11,6 +11,8 @@ from src.experiments.data.fixed_pair import MicroBatcher
 from src.experiments.data.tensor import TensorPairData
 from src.experiments.data.sample import Batch
 from src.experiments.execution.runtime import PreparePolicy, PreparedModel, ProcessRuntime
+from src.experiments.official.mp_senet.trainer import accumulated_step
+from src.experiments.official.semambapp.trainer import SEMambaUpdate
 from src.experiments.official.tf_gridnet.trainer import GridNetUpdate
 from src.experiments.training.control import (
     open_flat_window_at,
@@ -183,6 +185,85 @@ class OfficialScaleTests(unittest.TestCase):
         expected = _mean_grad(wide) * (2 / 3) + _mean_grad(narrow) * (1 / 3)
         self.assertLess(torch.max(torch.abs(mixed - expected)).item(), 1e-6)
         self.assertLess(torch.max(torch.abs(kept - _mean_grad(wide))).item(), 1e-6)
+
+
+class _Silent(torch.nn.Module):
+    def __init__(self) -> None:
+        super().__init__()
+        self.generator = torch.nn.Linear(2, 2, bias=False)
+        self.discriminator = torch.nn.Linear(2, 2, bias=False)
+
+    def forward(self, *args: object, **kwargs: object) -> torch.Tensor:
+        del args, kwargs
+        raise AssertionError("empty micro-batch was forwarded")
+
+
+def _silent(name: str) -> PreparedModel:
+    module = _Silent()
+    return PreparedModel(
+        component_id=name,
+        module=module,
+        parameters=tuple(module.parameters()),
+        state_module=module,
+        policy=PreparePolicy(),
+    )
+
+
+def _empty_batch() -> Batch:
+    return Batch(
+        inputs=torch.empty(0, 8),
+        targets=torch.empty(0, 8),
+        sample_id="empty",
+        realization_id="empty",
+    )
+
+
+class GanEmptyTests(unittest.TestCase):
+    def test_semamba_and_mp_senet_do_not_forward_an_empty_window(self) -> None:
+        runtime = ProcessRuntime(device="cpu", precision="fp32")
+        empty = _empty_batch()
+        generator = _silent("generator")
+        mrd = _silent("mrd")
+        cqt = _silent("cqt")
+        semamba = SEMambaUpdate(
+            generator=generator,
+            mrd=mrd,
+            cqt=cqt,
+            optim_g=torch.optim.SGD(generator.parameters, lr=0.1),
+            optim_d=torch.optim.SGD([*mrd.parameters, *cqt.parameters], lr=0.1),
+            generator_objective=torch.nn.Identity(),
+            discriminator_objective=torch.nn.Identity(),
+            accumulation=2,
+            grad_clip=None,
+        )
+        semamba.scan_report = {"configured": "eager", "executed": "eager"}
+        report = semamba.run([empty, empty], runtime, lambda *_args, **_kwargs: None, apply_optimizer=False)
+        self.assertEqual(report["sample_id"], "empty,empty")
+        self.assertEqual(semamba.generator_graph_forwards, 0)
+        self.assertTrue(all(parameter.grad is not None for parameter in semamba.generator.parameters))
+        self.assertTrue(all(parameter.grad is not None for parameter in semamba.mrd.parameters))
+
+        generator = _silent("mp-g")
+        discriminator = _silent("mp-d")
+        update = type("Update", (), {})()
+        update.generator = generator
+        update.discriminator = discriminator
+        update.accumulation = 1
+        update.optim_g = torch.optim.SGD(generator.parameters, lr=0.1)
+        update.optim_d = torch.optim.SGD(discriminator.parameters, lr=0.1)
+        result = accumulated_step(
+            update,
+            [empty],
+            runtime,
+            phase_hook=lambda *_args, **_kwargs: None,
+            note_generator_sync=lambda _enabled: None,
+            note_gradients_averaged=lambda: None,
+            apply_optimizer=False,
+        )
+        self.assertEqual(result["generator"], 0.0)
+        self.assertEqual(result["sample_id"], "empty")
+        self.assertTrue(all(parameter.grad is not None for parameter in generator.parameters))
+        self.assertTrue(all(parameter.grad is not None for parameter in discriminator.parameters))
 
 
 if __name__ == "__main__":

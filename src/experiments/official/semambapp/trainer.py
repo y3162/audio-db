@@ -39,6 +39,7 @@ from src.experiments.selectors import scalar_metrics
 from src.experiments.stopping import observe_validation, should_stop
 from src.experiments.trainers import _close_epoch_view
 from src.experiments.training.control import (
+    connected_zero,
     finish_training_run,
     finite_gradient_report,
     gather_row_counts,
@@ -873,12 +874,43 @@ class SEMambaUpdate:
         self._phase("zero_grad")
         self.optim_d.zero_grad(set_to_none=True)
         reuse_graph = len(batches) == 1
-        cached: list[tuple[torch.Tensor, torch.Tensor, dict[str, torch.Tensor] | None]] = []
+        cached: list[tuple[torch.Tensor, torch.Tensor, dict[str, torch.Tensor] | None] | None] = []
         discriminator_total = None
         sample_ids: list[str] = []
         realization_ids: list[str] = []
         for index, batch in enumerate(batches):
             last = index == len(batches) - 1
+            if row_counts[index] == 0:
+                sample_ids.append(batch.sample_id)
+                realization_ids.append(batch.realization_id)
+                if not runtime.agree(True, policy="all"):
+                    raise RuntimeFailure("a rank rejected its micro-batch before the generator forward")
+                if reuse_graph:
+                    self.sync_trace.append("generator_forward_sync")
+                    with runtime.sync_gradients([self.generator], enabled=True):
+                        errors = runtime.gather_objects(None)
+                        if any(errors):
+                            raise RuntimeFailure(
+                                "generator forward failed: " + "; ".join(item for item in errors if item)
+                            )
+                else:
+                    self.sync_trace.append("generator_preview_nograd")
+                    errors = runtime.gather_objects(None)
+                    if any(errors):
+                        raise RuntimeFailure(
+                            "generator forward failed: " + "; ".join(item for item in errors if item)
+                        )
+                cached.append(None)
+                self.sync_trace.append("discriminator_sync" if last else "discriminator_nosync")
+                with runtime.sync_gradients([self.mrd, self.cqt], enabled=last):
+                    errors = runtime.gather_objects(None)
+                    if any(errors):
+                        raise RuntimeFailure(
+                            "discriminator forward failed: " + "; ".join(item for item in errors if item)
+                        )
+                    zero = connected_zero((*self.mrd.parameters, *self.cqt.parameters), "trainer")
+                    _backward_if_finite(runtime, weight_loss(zero, scale, index), "discriminator loss")
+                continue
             clean, noisy = _waveforms(batch, runtime)
             sample_ids.append(batch.sample_id)
             realization_ids.append(batch.realization_id)
@@ -933,8 +965,35 @@ class SEMambaUpdate:
                 parameter.requires_grad_(False)
             self.frozen_during_generator = True
             self._phase("before_generator_backward")
-            for index, (clean, noisy, parts) in enumerate(cached):
+            for index, item in enumerate(cached):
                 last = index == len(cached) - 1
+                if item is None:
+                    if reuse_graph:
+                        self.sync_trace.append("generator_backward_retained")
+                        errors = runtime.gather_objects(None)
+                        if any(errors):
+                            raise RuntimeFailure(
+                                "generator loss failed: " + "; ".join(item for item in errors if item)
+                            )
+                        zero = connected_zero(self.generator.parameters, "trainer")
+                        _backward_if_finite(runtime, weight_loss(zero, scale, index), "generator loss")
+                    else:
+                        self.sync_trace.append("generator_reforward_sync" if last else "generator_reforward_nosync")
+                        with runtime.sync_gradients([self.generator], enabled=last):
+                            errors = runtime.gather_objects(None)
+                            if any(errors):
+                                raise RuntimeFailure(
+                                    "generator forward failed: " + "; ".join(item for item in errors if item)
+                                )
+                            errors = runtime.gather_objects(None)
+                            if any(errors):
+                                raise RuntimeFailure(
+                                    "generator loss failed: " + "; ".join(item for item in errors if item)
+                                )
+                            zero = connected_zero(self.generator.parameters, "trainer")
+                            _backward_if_finite(runtime, weight_loss(zero, scale, index), "generator loss")
+                    continue
+                clean, noisy, parts = item
                 if parts is None:
                     self.sync_trace.append("generator_reforward_sync" if last else "generator_reforward_nosync")
                     with runtime.sync_gradients([self.generator], enabled=last):
@@ -954,6 +1013,13 @@ class SEMambaUpdate:
             self.frozen_during_generator = False
         if self.grad_clip is not None:
             runtime.clip(self.generator, self.grad_clip)
+        if not any(row_counts):
+            for name in ("adversarial", "complex", "consistency", "magnitude", "matching", "mel", "phase"):
+                component_totals.setdefault(name, 0.0)
+            if discriminator_total is None:
+                discriminator_total = torch.zeros((), device=runtime.device)
+            if not isinstance(generator_total, torch.Tensor):
+                generator_total = torch.zeros((), device=runtime.device)
         log_terms = torch.stack(
             [
                 value.detach() if isinstance(value, torch.Tensor) else torch.tensor(float(value), device=runtime.device)
