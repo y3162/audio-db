@@ -132,17 +132,17 @@ class RankRuleTests(unittest.TestCase):
         even = [rank_order("torch_distributed_sampler_v1", 8, seed=7, epoch=0, world_size=2, rank=rank) for rank in (0, 1)]
         odd = [rank_order("torch_distributed_sampler_v1", 7, seed=7, epoch=0, world_size=2, rank=rank) for rank in (0, 1)]
         self.assertEqual(len(even[0]), 4)
-        self.assertEqual(len(odd[0]), 3)
+        self.assertEqual(len(odd[0]), 4)
+        self.assertEqual(len(odd[1]), 3)
         self.assertEqual(set(even[0]).intersection(even[1]), set())
-        self.assertEqual(len(set(odd[0] + odd[1])), 6)
-        self.assertEqual(len(set(range(7)) - set(odd[0] + odd[1])), 1)
+        self.assertEqual(sorted(odd[0] + odd[1]), list(range(7)))
+        self.assertEqual(set(odd[0]).intersection(odd[1]), set())
         covered = distributed_sampler_coverage(7, 2)
         self.assertEqual(covered["dropped_tail"], 1)
         self.assertEqual(covered["padded_duplicates"], 2)
         moss = [rank_order("rank_mod_fixed_v1", 7, seed=7, epoch=0, world_size=2, rank=rank) for rank in (0, 1)]
-        self.assertEqual(len(moss[0]), len(moss[1]))
-        self.assertEqual(len(moss[0]), 4)
-        self.assertTrue(set(moss[0]).intersection(moss[1]) or len(set(moss[0] + moss[1])) < 7)
+        self.assertEqual(sorted(moss[0] + moss[1]), list(range(7)))
+        self.assertFalse(set(moss[0]).intersection(moss[1]))
 
 
 class DistributedSupplyTests(unittest.TestCase):

@@ -135,7 +135,13 @@ class OnlineDFN3TrainingData:
 
         def render(update_index: int) -> list[dict]:
             group = plan.rank_groups[rank][update_index]
-            return [self._render_refs(micro.samples, "train", epoch) for micro in group.micro_batches]
+            rendered = []
+            for micro in group.micro_batches:
+                if not micro.samples:
+                    rendered.append({"empty": True, "samples": []})
+                else:
+                    rendered.append(self._render_refs(micro.samples, "train", epoch))
+            return rendered
 
         return EpochStream(plan.updates, plan.plan_hash, render, start_update)
 
@@ -344,7 +350,7 @@ def plan_online_epoch(
     snapshot_hash: str,
     case_ids: list[str | None] | None = None,
 ) -> EpochPlan:
-    """Assign sample indices. The last batch is kept. world_size > 1 pads."""
+    """Assign sample indices. The last batch is kept. Ranks do not share samples."""
     if count < 1 or world_size < 1 or micro_batch < 1:
         raise ReproductionError("online plan sizes must be positive")
     rng = np.random.Generator(
@@ -372,6 +378,9 @@ def plan_online_epoch(
             updates.append(UpdateGroup((MicroBatchPlan(refs),)))
         partial.append(0 if not chunk else micro_batch - len(chunk))
         groups.append(tuple(updates))
+    width = max(len(group) for group in groups)
+    empty = UpdateGroup((MicroBatchPlan(()),))
+    groups = [group + (empty,) * (width - len(group)) for group in groups]
     updates = len(groups[0])
     if any(len(group) != updates for group in groups):
         raise ReproductionError("online ranks do not share an update count")
@@ -416,11 +425,16 @@ def plan_online_epoch(
 
 
 def _shard(order: list[int], world_size: int) -> tuple[list[list[int]], int]:
+    """Split ``order`` by stride. The returned pad count is always zero.
+
+    Repeating the front of the list would score those samples twice. A short
+    last shard stays short. Callers that need the same step count pad with an
+    empty update rather than a copied sample.
+    """
+
     if world_size == 1:
         return [list(order)], 0
-    pad = (-len(order)) % world_size
-    padded = list(order) + list(order[:pad])
-    return [padded[rank::world_size] for rank in range(world_size)], pad
+    return [list(order[rank::world_size]) for rank in range(world_size)], 0
 
 
 def _member_ids(store: AssetStore, slot: str) -> list[str]:

@@ -7,7 +7,6 @@ import unittest
 
 import torch
 
-from src.experiments.data.errors import ReproductionError
 from src.experiments.data.sampling.order import (
     distributed_sampler_coverage,
     rank_order,
@@ -31,33 +30,33 @@ def _official_rank_slices(size: int, world: int, epoch: int = 0) -> list[list[in
 
 
 class MossFormerSamplerTests(unittest.TestCase):
-    def test_rank_slices_match_the_official_sampler(self):
+    def test_rank_slices_cover_every_sample_once(self):
         for size, world in ((8, 2), (10, 3), (11, 4), (5, 2)):
             official = _official_rank_slices(size, world, epoch=0)
             ours = [
                 rank_order("rank_mod_fixed_v1", size, seed=99, epoch=0, world_size=world, rank=rank)
                 for rank in range(world)
             ]
-            self.assertEqual(ours, official)
-            self.assertEqual(len({len(row) for row in ours}), 1)
-            coverage = distributed_sampler_coverage(size, world)
-            self.assertEqual(coverage["num_samples_per_rank"], len(ours[0]))
-            self.assertEqual(coverage["dropped_tail"], size % world)
-            self.assertEqual(coverage["scored_slots"], coverage["num_samples_per_rank"] * world)
             flat = [item for row in ours for item in row]
-            self.assertEqual(len(flat) - len(set(flat)), coverage["padded_duplicates"])
-            self.assertTrue(set(range((size // world) * world)).issuperset(set(flat)))
-            self.assertTrue(set(range((size // world) * world, size)).isdisjoint(flat))
+            self.assertEqual(sorted(flat), list(range(size)))
+            self.assertEqual(len(flat), len(set(flat)))
+            coverage = distributed_sampler_coverage(size, world)
+            if size % world == 0:
+                self.assertEqual(ours, official)
+                self.assertEqual(coverage["padded_duplicates"], 0)
+            else:
+                self.assertNotEqual(ours, official)
+                self.assertGreater(coverage["padded_duplicates"], 0)
 
     def test_fewer_items_than_ranks_is_not_the_official_split(self):
         left, left_label = recipe_validation_positions(1, 2, 0)
         right, right_label = recipe_validation_positions(1, 2, 1)
         self.assertEqual(left, [0])
-        self.assertEqual(right, [0])
-        self.assertEqual(left_label, "undersized_same_list")
-        self.assertEqual(right_label, "undersized_same_list")
-        with self.assertRaises(ReproductionError):
-            rank_order("rank_mod_fixed_v1", 1, seed=0, epoch=0, world_size=2, rank=0)
+        self.assertEqual(right, [])
+        self.assertEqual(left_label, "cover_once")
+        self.assertEqual(right_label, "cover_once")
+        self.assertEqual(rank_order("rank_mod_fixed_v1", 1, seed=0, epoch=0, world_size=2, rank=0), [0])
+        self.assertEqual(rank_order("rank_mod_fixed_v1", 1, seed=0, epoch=0, world_size=2, rank=1), [])
         official = rank_order("rank_mod_fixed_v1", 824, seed=0, epoch=0, world_size=2, rank=0)
         got, label = recipe_validation_positions(824, 2, 0)
         self.assertEqual(label, "rank_mod_fixed_v1")

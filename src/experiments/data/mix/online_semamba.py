@@ -133,7 +133,13 @@ class OnlineSemambaTrainingData:
 
         def render(update_index: int) -> list[dict]:
             group = plan.rank_groups[rank][update_index]
-            return [self._render_refs(micro.samples, "train", epoch) for micro in group.micro_batches]
+            rendered = []
+            for micro in group.micro_batches:
+                if not micro.samples:
+                    rendered.append({"empty": True, "samples": []})
+                else:
+                    rendered.append(self._render_refs(micro.samples, "train", epoch))
+            return rendered
 
         return EpochStream(plan.updates, plan.plan_hash, render, start_update)
 
@@ -322,8 +328,9 @@ def plan_semamba_epoch(
     protocol_id: str,
     snapshot_hash: str,
     case_ids: list[str | None] | None = None,
+    drop_last: bool = False,
 ) -> EpochPlan:
-    """Per-rank speech order, then drop incomplete micro-batches and updates."""
+    """Per-rank speech order. The default keeps a short tail and does not copy samples."""
     if count < 1 or world_size < 1 or micro_batch < 1 or accumulation < 1:
         raise ReproductionError("semamba plan sizes must be positive")
     if split == "train":
@@ -345,7 +352,7 @@ def plan_semamba_epoch(
     groups = []
     dropped = []
     for shard in shards:
-        usable = (len(shard) // micro_batch) * micro_batch
+        usable = (len(shard) // micro_batch) * micro_batch if drop_last else len(shard)
         dropped.append(len(shard) - usable)
         micros = []
         for start in range(0, usable, micro_batch):
@@ -361,13 +368,20 @@ def plan_semamba_epoch(
                 for index in chunk
             )
             micros.append(MicroBatchPlan(refs))
-        usable_updates = (len(micros) // accumulation) * accumulation
-        dropped[-1] += (len(micros) - usable_updates) * micro_batch
+        if drop_last:
+            usable_updates = (len(micros) // accumulation) * accumulation
+            dropped[-1] += (len(micros) - usable_updates) * micro_batch
+        else:
+            usable_updates = len(micros)
         updates = tuple(
             UpdateGroup(tuple(micros[start : start + accumulation]))
             for start in range(0, usable_updates, accumulation)
         )
         groups.append(updates)
+    if not drop_last:
+        width = max(len(group) for group in groups)
+        empty = UpdateGroup((MicroBatchPlan(()),))
+        groups = [group + (empty,) * (width - len(group)) for group in groups]
     update_count = len(groups[0])
     if update_count < 1:
         raise ReproductionError(
@@ -393,7 +407,7 @@ def plan_semamba_epoch(
             "world_size": world_size,
             "micro_batch": micro_batch,
             "accumulation": accumulation,
-            "drop_last": True,
+            "drop_last": drop_last,
         },
         "dropped_samples": dropped,
         "overlap": overlap,

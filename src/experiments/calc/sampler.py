@@ -15,9 +15,8 @@ from src.experiments.calc.errors import TrainingError
 def epoch_indices(size: int, seed: int, epoch: int, world_size: int, rank: int) -> list[int]:
     """Return this rank's sample indexes for one epoch, in shuffle order.
 
-    The tail that does not fill every rank is omitted so each rank sees the
-    same count. The omitted indexes change with the epoch because the shuffle
-    does.
+    A tail that does not fill every rank is given to the first ranks, one
+    index each. Those indexes are not copied onto the other ranks.
     """
     if size < 1:
         raise TrainingError("training dataset is empty")
@@ -29,9 +28,11 @@ def epoch_indices(size: int, seed: int, epoch: int, world_size: int, rank: int) 
     generator.manual_seed(mix_seed("order", seed, epoch))
     order = torch.randperm(size, generator=generator).tolist()
     usable = (size // world_size) * world_size
-    if usable == 0:
-        raise TrainingError(f"dataset size {size} is smaller than world_size {world_size}")
-    return order[:usable][rank::world_size]
+    base = order[:usable][rank::world_size] if usable else []
+    tail = order[usable:]
+    if rank < len(tail):
+        return [*base, tail[rank]]
+    return list(base)
 
 
 def crop_start(case_id: str, seed: int, epoch: int, length: int, segment: int) -> int:

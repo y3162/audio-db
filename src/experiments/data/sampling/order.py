@@ -24,18 +24,18 @@ POLICY_NOTES: dict[str, dict[str, str]] = {
         "detail": (
             "Same permutation as src.experiments.calc.sampler.epoch_indices: "
             "torch.randperm seeded by mix_seed('order', seed, epoch), then "
-            "drop the tail and take [rank::world]."
+            "stride [rank::world]. A tail that does not fill every rank is "
+            "given to the first ranks, one sample each, and is not copied."
         ),
     },
     "torch_distributed_sampler_v1": {
         "matches": "algorithm_when_divisible",
         "detail": (
-            "torch.randperm(N) with generator seed 0+epoch, keep N//world*world "
-            "items, then [rank::world]. This is torch.utils.data.DistributedSampler "
-            "with drop_last=True and seed 0. MP-SENet constructs DistributedSampler "
-            "without drop_last, so the default pads instead of truncating. The two "
-            "agree whenever N is divisible by world_size (the VoiceBank 11,572 "
-            "list is divisible by 2 and by 4). The training seed is not used."
+            "torch.randperm(N) with generator seed 0+epoch, then [rank::world] "
+            "over the complete stride groups. Leftover samples go to the first "
+            "ranks once each. When N is divisible by world_size this is "
+            "DistributedSampler(drop_last=True, seed 0). It does not pad. "
+            "The training seed is not used."
         ),
     },
     "fixed_single_shuffle_v1": {
@@ -45,21 +45,20 @@ POLICY_NOTES: dict[str, dict[str, str]] = {
             "for every epoch. This is the MP-SENet 1-GPU Dataset shuffle. "
             "The sequence is CPython's Random.shuffle on this interpreter, "
             "not a promise about an older Python. The training seed is not used. "
-            "world_size 1 keeps the full list; a larger world then applies the "
-            "same tail drop and stride, which the official 1-GPU loader never does."
+            "world_size 1 keeps the full list. A larger world strides that shuffle "
+            "and gives leftover samples to the first ranks once each."
         ),
     },
     "rank_mod_fixed_v1": {
         "matches": "algorithm",
         "detail": (
-            "ClearerVoice DistributedSampler: randperm(N//world) with seed "
-            "0+epoch, expand by world, then pad by repeating the front up to "
-            "ceil(N/world) per rank. Rank r therefore owns indexes congruent "
-            "to r (mod world) from the first (N//world)*world items. Leftover "
-            "indexes at the tail are dropped and earlier indexes are repeated. "
-            "Official non-DDP training uses DataLoader(shuffle=True) instead; "
-            "that RandomSampler sequence is not reproduced. Validation order "
-            "uses epoch 0 of this policy. The training seed is not used."
+            "ClearerVoice DistributedSampler's complete stride groups: "
+            "randperm(N//world) with seed 0+epoch, expand by world. Rank r "
+            "owns a contiguous slice of those groups. Leftover indexes are "
+            "appended once, to the first ranks, instead of repeating the front. "
+            "When N is divisible by world_size the slices match the official "
+            "sampler. Official non-DDP training uses DataLoader(shuffle=True); "
+            "that sequence is not reproduced. The training seed is not used."
         ),
     },
     "per_rank_independent_v1": {
@@ -81,8 +80,8 @@ POLICY_NOTES: dict[str, dict[str, str]] = {
         "detail": (
             "DeepFilterNet3 is one process. audio-db shuffles sample indices with "
             "mix_seed('dfn3-order', protocol, snapshot, seed, split, epoch), then "
-            "pads the list so every rank has the same length when world_size > 1 "
-            "(torch DistributedSampler drop_last=False). The last batch is kept. "
+            "shards with [rank::world] and does not repeat samples to equalize "
+            "rank lengths. The last batch is kept. "
             "world_size 1 does not pad, so the update count is ceil(N / batch), "
             "which is the official drop_last=false loader. Sample audio does not "
             "depend on rank or world size. This is not the official main-thread "
@@ -146,8 +145,8 @@ def rank_order(
 ) -> list[int]:
     """Dataset positions for ``rank`` in ``epoch``.
 
-    Positions refer to the case list before shuffling. A position may repeat
-    when the official sampler pads.
+    Positions refer to the case list before shuffling. Each position is
+    returned on at most one rank.
     """
     _check_rank(size, world_size, rank, epoch)
     if policy == "global_shuffle_stride_v1":
@@ -172,11 +171,11 @@ def order_params(policy: str, seed: int) -> dict[str, int | bool | str]:
     if policy == "global_shuffle_stride_v1":
         return {"mix": "order", "training_seed": seed, "reshuffle_each_epoch": True}
     if policy == "torch_distributed_sampler_v1":
-        return {"sampler_seed": 0, "epoch_added": True, "drop_last": True, "training_seed_used": False}
+        return {"sampler_seed": 0, "epoch_added": True, "drop_last": False, "pad": "none", "training_seed_used": False}
     if policy == "fixed_single_shuffle_v1":
         return {"shuffle_seed": 1234, "reshuffle_each_epoch": False, "training_seed_used": False}
     if policy == "rank_mod_fixed_v1":
-        return {"sampler_seed": 0, "epoch_added": True, "pad": "repeat_front", "training_seed_used": False}
+        return {"sampler_seed": 0, "epoch_added": True, "pad": "none", "training_seed_used": False}
     if policy == "per_rank_independent_v1":
         return {"training_seed": seed, "sampler_seed": 0, "list": "mix_seed per_rank"}
     if policy == "espnet_chunk_v1":
@@ -205,55 +204,54 @@ def _randperm(size: int, generator_seed: int) -> list[int]:
     return torch.randperm(size, generator=generator).tolist()
 
 
+def _cover_stride(order: list[int], world_size: int, rank: int) -> list[int]:
+    """Stride a global order. Leftover items go once to the first ranks."""
+
+    usable = (len(order) // world_size) * world_size
+    base = order[:usable][rank::world_size] if usable else []
+    tail = order[usable:]
+    if rank < len(tail):
+        return [*base, tail[rank]]
+    return list(base)
+
+
 def _global_shuffle_stride(size: int, seed: int, epoch: int, world_size: int, rank: int) -> list[int]:
-    order = _randperm(size, mix_seed("order", seed, epoch))
-    usable = (size // world_size) * world_size
-    if usable == 0:
-        raise ReproductionError(f"dataset size {size} is smaller than world_size {world_size}")
-    return order[:usable][rank::world_size]
+    return _cover_stride(_randperm(size, mix_seed("order", seed, epoch)), world_size, rank)
 
 
 def _torch_distributed(size: int, world_size: int, rank: int, epoch: int, *, sampler_seed: int) -> list[int]:
-    usable = (size // world_size) * world_size
-    if usable == 0:
-        raise ReproductionError(f"dataset size {size} is smaller than world_size {world_size}")
-    order = _randperm(size, sampler_seed + epoch)
-    return order[:usable][rank::world_size]
+    return _cover_stride(_randperm(size, sampler_seed + epoch), world_size, rank)
 
 
 def _fixed_single_shuffle(size: int, world_size: int, rank: int) -> list[int]:
     order = list(range(size))
     random.Random(1234).shuffle(order)
-    usable = (size // world_size) * world_size
-    if usable == 0:
-        raise ReproductionError(f"dataset size {size} is smaller than world_size {world_size}")
-    return order[:usable][rank::world_size]
+    return _cover_stride(order, world_size, rank)
 
 
 def _rank_mod_fixed(size: int, world_size: int, rank: int, epoch: int, *, sampler_seed: int) -> list[int]:
-    """ClearerVoice ``DistributedSampler.__iter__`` for one rank."""
-    num_samples = int(math.ceil(size / world_size))
-    total = num_samples * world_size
+    """Complete ClearerVoice stride groups, plus each leftover index once.
+
+    When ``size`` is divisible by ``world_size`` the slice matches
+    ``DistributedSampler`` with its default padding, because that padding
+    adds nothing. A short dataset gives the first ranks one index and the
+    others an empty list.
+    """
+
     base = size // world_size
-    if base < 1:
-        raise ReproductionError(
-            f"rank_mod_fixed_v1 cannot assign {size} samples across world_size {world_size}"
-        )
-    generator = torch.Generator()
-    generator.manual_seed(sampler_seed + epoch)
-    ind = torch.randperm(base, generator=generator) * world_size
-    indices: list[int] = []
-    for offset in range(world_size):
-        indices.extend((ind + offset).tolist())
-    if len(indices) > total:
-        raise ReproductionError("rank_mod_fixed_v1 produced too many indexes")
-    indices += indices[: total - len(indices)]
-    if len(indices) != total:
-        raise ReproductionError("rank_mod_fixed_v1 padding did not fill the epoch")
-    start = rank * num_samples
-    chosen = indices[start : start + num_samples]
-    if len(chosen) != num_samples:
-        raise ReproductionError("rank_mod_fixed_v1 rank slice has the wrong length")
+    chosen: list[int] = []
+    if base >= 1:
+        generator = torch.Generator()
+        generator.manual_seed(sampler_seed + epoch)
+        ind = torch.randperm(base, generator=generator) * world_size
+        indices: list[int] = []
+        for offset in range(world_size):
+            indices.extend((ind + offset).tolist())
+        start = rank * base
+        chosen = indices[start : start + base]
+    tail = size - base * world_size
+    if rank < tail:
+        chosen.append(base * world_size + rank)
     return chosen
 
 
@@ -287,12 +285,10 @@ def distributed_sampler_coverage(size: int, world_size: int) -> dict[str, int]:
 def recipe_validation_positions(count: int, world_size: int, rank: int) -> tuple[list[int], str]:
     """Indexes one rank scores in recipe validation.
 
-    When ``count >= world_size > 1``, this is ``rank_mod_fixed_v1`` (ClearerVoice
-    ``DistributedSampler`` at epoch 0). When the validation set is shorter than
-    the world, that sampler's shuffle has no complete stride group and its own
-    length assert fails. Every rank then receives ``range(count)``, the same
-    short list. That keeps the forward count aligned. It is not the official
-    split of the 824-utterance VoiceBank validation.
+    When ``count >= world_size > 1``, this is ``rank_mod_fixed_v1``. When the
+    validation set is shorter than the world, rank ``r`` receives index ``r``
+    if ``r < count`` and otherwise an empty list. The same utterance is not
+    scored on two ranks.
     """
     if count < 0 or world_size < 1 or rank < 0 or rank >= world_size:
         raise ReproductionError(
@@ -311,7 +307,7 @@ def recipe_validation_positions(count: int, world_size: int, rank: int) -> tuple
             "rank_mod_fixed_v1",
         )
     if world_size > 1 and count < world_size:
-        return list(range(count)), "undersized_same_list"
+        return ([rank] if rank < count else []), "cover_once"
     return list(range(count)), "single_process"
 
 

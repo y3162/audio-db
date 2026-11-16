@@ -18,6 +18,7 @@ from src.experiments.execution.journal import StepJournal
 from src.experiments.execution.results import RunResult
 from src.experiments.execution.runtime import PreparedModel, ProcessRuntime, require_prepared
 from src.experiments.stopping import MetricEvent, should_stop
+from src.experiments.training.sample_weight import sample_scales, window_is_uniform
 
 
 class StandardTrainer:
@@ -96,25 +97,13 @@ class StandardTrainer:
         self.model.train()
         view = self.data.train_epoch(0, start_update=0)
         try:
-            if view.updates < 1 or self.accumulation > view.updates:
+            if view.updates < 1:
                 raise RuntimeFailure(
                     f"component {component_id}: preflight accumulation {self.accumulation} "
                     f"does not fit in {view.updates} updates"
                 )
             self.optimizer.zero_grad(set_to_none=True)
-            total: torch.Tensor | None = None
-            sample_ids: list[str] = []
-            for offset in range(self.accumulation):
-                sync = offset == self.accumulation - 1
-                batches = view.batch(offset)
-                sample_ids.extend(batch.sample_id for batch in batches)
-                with runtime.sync_gradients([self.model], enabled=sync):
-                    with runtime.autocast():
-                        micro = self._forward_loss(batches, component_id, runtime)
-                    micro = micro / self.accumulation
-                    runtime.backward(micro)
-                detached = micro.detach()
-                total = detached if total is None else total + detached
+            total, sample_ids, _window = self._backward_window(view, 0, component_id, runtime)
             if total is None or total.numel() != 1 or not bool(torch.isfinite(total).all()):
                 raise RuntimeFailure(f"component {component_id}: preflight loss is not finite")
             missing = 0
@@ -199,25 +188,8 @@ class StandardTrainer:
                     if epoch > self.max_logical_steps + 1:
                         raise RuntimeFailure(f"component {component_id}: data has no updates")
                     continue
-                if index + self.accumulation > view.updates:
-                    raise RuntimeFailure(
-                        f"component {component_id}: accumulation {self.accumulation} "
-                        f"does not fit at update {index}"
-                    )
                 self.optimizer.zero_grad(set_to_none=True)
-                total: torch.Tensor | None = None
-                sample_ids: list[str] = []
-                for offset in range(self.accumulation):
-                    sync = offset == self.accumulation - 1
-                    batches = view.batch(index + offset)
-                    sample_ids.extend(batch.sample_id for batch in batches)
-                    with runtime.sync_gradients([self.model], enabled=sync):
-                        with runtime.autocast():
-                            micro = self._forward_loss(batches, component_id, runtime)
-                        micro = micro / self.accumulation
-                        runtime.backward(micro)
-                    detached = micro.detach()
-                    total = detached if total is None else total + detached
+                total, sample_ids, window = self._backward_window(view, index, component_id, runtime)
                 self._before_optimizer_step(runtime)
                 if self.grad_clip is not None:
                     runtime.clip(self.model, self.grad_clip, optimizer=self.optimizer)
@@ -228,7 +200,7 @@ class StandardTrainer:
                     if self.scheduler is not None:
                         self.scheduler.step()
                 self.logical_step += 1
-                index += self.accumulation
+                index += window
                 if hasattr(self.data, "epoch") and hasattr(self.data, "update_index"):
                     self.data.epoch = epoch
                     self.data.update_index = index
@@ -321,6 +293,77 @@ class StandardTrainer:
             progress={"logical_step": int(self.logical_step)},
             prepare=self._before_checkpoint,
         )
+
+    def _backward_window(
+        self,
+        view: Any,
+        index: int,
+        component_id: str,
+        runtime: ProcessRuntime,
+    ) -> tuple[torch.Tensor | None, list[str], int]:
+        """Backward one optimizer window.
+
+        A full window with equal micro-batch sizes on every rank divides by
+        ``accumulation``. A short tail or an uneven rank scales by the real
+        sample count. An empty rank backpropagates a zero that stays connected
+        to the parameters so the all-reduce still runs.
+        """
+
+        remaining = int(view.updates) - index
+        if remaining < 1:
+            raise RuntimeFailure(
+                f"component {component_id}: accumulation {self.accumulation} "
+                f"does not fit at update {index}"
+            )
+        window = self.accumulation if remaining >= self.accumulation else remaining
+        pieces: list[tuple[list[Batch], int]] = []
+        for offset in range(window):
+            batches = view.batch(index + offset)
+            count = sum(int(batch.inputs.shape[0]) for batch in batches)
+            pieces.append((batches, count))
+        counts = [count for _batches, count in pieces]
+        if int(runtime.world_size) == 1:
+            rank_counts = [counts]
+        else:
+            rank_counts = [list(row) for row in runtime.gather_objects(counts)]
+        uniform = window_is_uniform(rank_counts, self.accumulation)
+        n_global = sum(sum(row) for row in rank_counts)
+        scales = (
+            None
+            if uniform
+            else sample_scales(counts, world_size=int(runtime.world_size), n_global=n_global)
+        )
+        total: torch.Tensor | None = None
+        sample_ids: list[str] = []
+        for offset, (batches, count) in enumerate(pieces):
+            sync = offset == window - 1
+            sample_ids.extend(batch.sample_id for batch in batches if batch.sample_id)
+            with runtime.sync_gradients([self.model], enabled=sync):
+                with runtime.autocast():
+                    if count == 0:
+                        micro = self._zero_loss(component_id)
+                    else:
+                        micro = self._forward_loss(batches, component_id, runtime)
+                    if uniform:
+                        micro = micro / self.accumulation
+                    else:
+                        assert scales is not None
+                        micro = micro * scales[offset]
+                    runtime.backward(micro)
+            detached = micro.detach()
+            total = detached if total is None else total + detached
+        return total, sample_ids, window
+
+    def _zero_loss(self, component_id: str) -> torch.Tensor:
+        total: torch.Tensor | None = None
+        for parameter in self.model.parameters:
+            if not parameter.requires_grad:
+                continue
+            term = parameter.reshape(-1)[:1].sum() * 0
+            total = term if total is None else total + term
+        if total is None:
+            raise RuntimeFailure(f"component {component_id}: empty rank has no trainable parameters")
+        return total
 
     def _require_group_size(self, component_id: str) -> None:
         group_size = getattr(self.data, "group_size", None)

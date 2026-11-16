@@ -36,8 +36,11 @@ class EpochView:
         if update_index < 0 or update_index >= self.updates:
             raise StateError(f"update index {update_index} is outside 0..{self.updates - 1}")
         stride = self._data.batch_size * self._data.world_size
-        start = update_index * stride + self._data.rank * self._data.batch_size
-        end = start + self._data.batch_size
+        block = update_index * stride
+        start = block + self._data.rank * self._data.batch_size
+        end = min(start + self._data.batch_size, block + stride, self._data.examples)
+        if start >= end:
+            return []
         sample_ids = [f"ex-{index}" for index in range(start, end)]
         sample_id = ",".join(sample_ids)
         return [
@@ -65,12 +68,16 @@ class TensorPairData:
         batch_size: int,
         seed: int = 0,
         target_features: int | None = None,
+        drop_last: bool = False,
     ) -> None:
         self.features = _positive("features", features)
         self.examples = _positive("examples", examples)
         self.batch_size = _positive("batch_size", batch_size)
         self.seed = _non_negative("seed", seed)
         self.target_features = self.features if target_features is None else _positive("target_features", target_features)
+        if not isinstance(drop_last, bool):
+            raise ValueError("drop_last must be a boolean")
+        self.drop_last = drop_last
         if self.examples < self.batch_size:
             raise ValueError("examples must be at least batch_size")
         generator = torch.Generator()
@@ -97,6 +104,7 @@ class TensorPairData:
             "target_features": self.target_features,
             "examples": self.examples,
             "batch_size": self.batch_size,
+            "drop_last": self.drop_last,
             "seed": self.seed,
             "world_size": self.world_size,
         }
@@ -118,7 +126,11 @@ class TensorPairData:
     def train_epoch(self, epoch: int, *, start_update: int) -> EpochView:
         if isinstance(epoch, bool) or not isinstance(epoch, int) or epoch < 0:
             raise StateError(f"epoch {epoch!r} is not a valid index")
-        updates = self.examples // self.global_batch_size
+        stride = self.global_batch_size
+        if self.drop_last:
+            updates = self.examples // stride
+        else:
+            updates = (self.examples + stride - 1) // stride
         if isinstance(start_update, bool) or not isinstance(start_update, int):
             raise StateError(f"start_update {start_update!r} is not an integer")
         if start_update < 0 or start_update > updates:
@@ -157,6 +169,7 @@ class TensorPairData:
         digest.update(self.targets.detach().cpu().numpy().tobytes())
         digest.update(str(self.batch_size).encode("utf-8"))
         digest.update(str(self.world_size).encode("utf-8"))
+        digest.update(b"drop_last" if self.drop_last else b"keep_tail")
         return digest.hexdigest()
 
 

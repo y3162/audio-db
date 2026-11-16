@@ -195,7 +195,7 @@ class MixerTests(unittest.TestCase):
         self.assertNotEqual(sample_seed("p", "s", 1, "valid", 0, 3), sample_seed("p", "s", 1, "test", 0, 3))
         self.assertNotEqual(sample_seed("p", "s", 1, "train", 0, 3), sample_seed("p", "s", 1, "train", 1, 3))
 
-    def test_plan_keeps_remainder_and_pads_ranks(self):
+    def test_plan_keeps_remainder_without_copying_samples(self):
         count = 10
         micro = 4
         for world in (1, 2, 4):
@@ -203,13 +203,10 @@ class MixerTests(unittest.TestCase):
             second = _plan(count, micro, world, epoch=0)
             self.assertEqual(first.plan_hash, second.plan_hash)
             self.assertNotEqual(first.plan_hash, _plan(count, micro, world, epoch=1).plan_hash)
-            lengths = [len(_indices(first, rank)) for rank in range(world)]
-            self.assertEqual(len(set(lengths)), 1)
-            self.assertEqual(first.updates, schedule_update_count(lengths[0], micro))
             self.assertTrue(all(len(group) == first.updates for group in first.rank_groups))
             flat = [index for rank in range(world) for index in _indices(first, rank)]
-            self.assertEqual(set(flat), set(range(count)))
-            self.assertEqual(len(flat) - count, int(first.stats["padded_samples"]))
+            self.assertEqual(sorted(flat), list(range(count)))
+            self.assertEqual(int(first.stats["padded_samples"]), 0)
             self.assertEqual(first.stats["omitted_samples"], 0)
         single = _plan(count, micro, 1, epoch=0)
         self.assertEqual(single.updates, 3)

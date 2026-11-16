@@ -213,7 +213,7 @@ class OnlineDataTests(unittest.TestCase):
         finally:
             module.close()
 
-    def test_semamba_plan_matches_rank_order_and_drops_the_tail(self) -> None:
+    def test_semamba_plan_matches_rank_order_and_keeps_the_tail(self) -> None:
         for group_size in (1, 2):
             module = _semamba_module(self.semamba, micro_batch=2, group_size=group_size)
             module.setup(_Runtime())
@@ -246,8 +246,8 @@ class OnlineDataTests(unittest.TestCase):
                         for micro in update.micro_batches
                     ]
                     self.assertEqual([[sample.index for sample in group] for group in grouped], expected)
-                    self.assertEqual(len(grouped) // group_size, plan.updates)
-                    self.assertLess(sum(len(group) for group in grouped), 5)
+                    self.assertEqual((len(grouped) + group_size - 1) // group_size, plan.updates)
+                    self.assertEqual(sum(len(group) for group in grouped), 5)
                 self.assertNotEqual(module.plan_hash, module._epoch_plan(1).plan_hash)  # type: ignore[attr-defined]
             finally:
                 module.close()

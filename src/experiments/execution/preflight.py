@@ -34,8 +34,7 @@ def run_batch_probe(experiment: object) -> dict[str, Any]:
             "status": "unsupported",
             "trainer": type(trainer).__name__,
         }
-    if getattr(trainer, "runtime", None) is None:
-        trainer.runtime = runtime
+    _attach_probe_runtime(trainer, runtime)
     snapshot = _snapshot(experiment, runtime)
     try:
         report = probe()
@@ -45,6 +44,23 @@ def run_batch_probe(experiment: object) -> dict[str, Any]:
         raise BuildError("preflight probe did not return a report")
     report["enabled"] = True
     return report
+
+
+def _attach_probe_runtime(trainer: object, runtime: object) -> None:
+    """Give the probe the process runtime.
+
+    A wrapper trainer stores ``runtime`` on itself and forwards unknown
+    attributes to an inner trainer. The probe is the inner method, so the
+    inner object needs the same runtime before it runs.
+    """
+
+    if getattr(trainer, "runtime", None) is None:
+        setattr(trainer, "runtime", runtime)
+    inner = getattr(trainer, "_trainer", None)
+    if inner is None or inner is trainer:
+        return
+    if getattr(inner, "runtime", None) is None:
+        setattr(inner, "runtime", getattr(trainer, "runtime", runtime))
 
 
 def _snapshot(experiment: object, runtime: object) -> dict[str, Any]:

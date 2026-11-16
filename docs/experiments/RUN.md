@@ -68,6 +68,8 @@ DDP は `--nproc` を world size にする。学習する module の `prepare` �
 
 ChunkSampler の `global_batch` は `micro_batch × world_size × group_size` と一致させ、`group_size` は Trainer の勾配蓄積回数と一致させる。チャンクの計画は実効 batch 単位で作り、各 rank の計画を micro-batch に分けて蓄積する。world size が変わるとデータの順序も変わるため、実効 batch が同じでも別の実験である。
 
+同一 epoch の実サンプルは rank 間で複製しない。割り切れない末尾は先頭の rank から 1 件ずつ配る。`MicroBatcher.keep_partial` の既定は true で、短い micro-batch と短い末尾グループを残す。false のときだけそれらを捨て、捨てた件数は `dropped_samples` に残る。`StandardTrainer` は、全 rank の micro-batch 件数が揃った窓を accumulation で割る。短い末尾や rank 間で件数が違う窓は、各 micro-batch の損失に `n_i * world_size / n_global` を掛ける。公式 Trainer はフル窓を accumulation で割るままである。
+
 `python -m src.experiments.cli` を直接呼んでも学習できる。その場合は、プロセスが kill されたときの判定と後始末をする者がいない。学習は Launcher から起動する。
 
 ジョブスクリプトからは `scripts/experiments/job.sh` を使う。TSUBAME での投入は [TSUBAME 4.0](../envs/TSUBAME.md)。

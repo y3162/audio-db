@@ -53,6 +53,7 @@ class OrderTests(unittest.TestCase):
                 return self.size
 
         for size, world, epoch in ((32, 2, 0), (32, 4, 3), (11, 2, 1), (11572, 2, 0)):
+            produced_ranks = []
             for rank in range(world):
                 sampler = DistributedSampler(
                     _Length(size), num_replicas=world, rank=rank, shuffle=True, seed=0, drop_last=True
@@ -66,7 +67,16 @@ class OrderTests(unittest.TestCase):
                     world_size=world,
                     rank=rank,
                 )
-                self.assertEqual(produced, list(sampler))
+                produced_ranks.append(produced)
+                truncated = list(sampler)
+                if size % world == 0:
+                    self.assertEqual(produced, truncated)
+                elif rank == 0:
+                    self.assertEqual(produced[:-1], truncated)
+                else:
+                    self.assertEqual(produced, truncated)
+            flat = [item for row in produced_ranks for item in row]
+            self.assertEqual(sorted(flat), list(range(size)))
 
     def test_fixed_shuffle_is_stable_across_epochs(self):
         expected = list(range(20))
@@ -98,6 +108,7 @@ class OrderTests(unittest.TestCase):
                 return self.size
 
         for size, world, epoch in ((11, 2, 0), (11572, 2, 1)):
+            found = []
             for rank in range(world):
                 sampler = DistributedSampler(
                     _Length(size), num_replicas=world, rank=rank, shuffle=True, seed=0
@@ -106,19 +117,26 @@ class OrderTests(unittest.TestCase):
                 produced = rank_order(
                     "rank_mod_fixed_v1", size, seed=0, epoch=epoch, world_size=world, rank=rank
                 )
-                self.assertEqual(produced, list(sampler))
+                found.extend(produced)
+                if size % world == 0:
+                    self.assertEqual(produced, list(sampler))
+            self.assertEqual(sorted(found), list(range(size)))
         wave = np.array([0.1, -0.2, 0.4, 0.05, -0.3, 0.2], dtype=np.float64)
         reference, _scalar = audio_norm(wave)
         produced = independent_audio_norm(wave)
         self.assertLess(float(np.max(np.abs(reference.astype(np.float32) - produced))), 1e-6)
 
-    def test_rank_mod_matches_the_official_sampler_formula(self):
+    def test_rank_mod_matches_the_official_sampler_when_divisible(self):
         for size, world, epoch in ((11, 2, 0), (11572, 2, 4), (8, 3, 1)):
+            found = []
             for rank in range(world):
-                self.assertEqual(
-                    rank_order("rank_mod_fixed_v1", size, seed=3, epoch=epoch, world_size=world, rank=rank),
-                    _clearervoice_sampler(size, world, rank, epoch),
+                produced = rank_order(
+                    "rank_mod_fixed_v1", size, seed=3, epoch=epoch, world_size=world, rank=rank
                 )
+                found.extend(produced)
+                if size % world == 0:
+                    self.assertEqual(produced, _clearervoice_sampler(size, world, rank, epoch))
+            self.assertEqual(sorted(found), list(range(size)))
         covered = []
         for rank in range(2):
             covered.extend(_clearervoice_sampler(11, 2, rank, 0))

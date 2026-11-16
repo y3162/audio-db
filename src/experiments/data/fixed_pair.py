@@ -642,15 +642,18 @@ class FixedPairProtocol:
 class MicroBatcher:
     """Pack one rank's sample list into micro-batches. It does not shard ranks."""
 
-    def __init__(self, micro_batch: int, group_size: int, keep_partial: bool = False) -> None:
+    def __init__(self, micro_batch: int, group_size: int, keep_partial: bool = True) -> None:
         if not isinstance(keep_partial, bool):
             raise ValueError("keep_partial must be a boolean")
         self.micro_batch = _positive("micro_batch", micro_batch)
         self.group_size = _positive("group_size", group_size)
         self.keep_partial = keep_partial
+        self.dropped_samples = 0
 
     def groups(self, samples: Sequence[SampleRef]) -> tuple[tuple[SampleRef, ...], ...]:
-        return _group_samples(samples, self.micro_batch, self.group_size, self.keep_partial)
+        packed = _group_samples(samples, self.micro_batch, self.group_size, self.keep_partial)
+        self.dropped_samples = len(samples) - sum(len(group) for group in packed)
+        return packed
 
     def collate(self, rendered: Sequence[tuple[np.ndarray, np.ndarray, int, SampleRef]]) -> Batch:
         if not rendered:
@@ -1073,6 +1076,14 @@ class SnapshotDataModule:
         return _clone_batch(cached)
 
     def _collate(self, group: tuple[SampleRef, ...]) -> Batch:
+        if not group:
+            return Batch(
+                inputs=torch.empty(0, 0),
+                targets=torch.empty(0, 0),
+                sample_id="",
+                realization_id="",
+                lengths=torch.empty(0, dtype=torch.long),
+            )
         rendered = []
         kinds: list[str] = []
         for sample in group:
@@ -1104,9 +1115,19 @@ class SnapshotDataModule:
                     raise DataError("set_sampling_weights is only available for a flat order sampler")
                 use(table)
                 applied = True
-            grouped = tuple(
-                self.batcher.groups(sequence) for sequence in self.sampler.all_ranks(epoch, self.world_size)
-            )
+            sequences = self.sampler.all_ranks(epoch, self.world_size)
+            grouped_ranks = []
+            for sequence in sequences:
+                if len(sequence) == 0:
+                    grouped_ranks.append(tuple())
+                    continue
+                grouped_ranks.append(self.batcher.groups(sequence))
+            if self.batcher.keep_partial:
+                width = max((len(rank_groups) for rank_groups in grouped_ranks), default=0)
+                grouped_ranks = [
+                    rank_groups + ((),) * (width - len(rank_groups)) for rank_groups in grouped_ranks
+                ]
+            grouped = tuple(grouped_ranks)
         finally:
             if applied:
                 self.sampler.use_draw_weights(None)  # type: ignore[attr-defined]
@@ -1400,7 +1421,12 @@ def _group_samples(
     group_size: int,
     keep_partial: bool,
 ) -> tuple[tuple[SampleRef, ...], ...]:
-    """Pack one rank. Incomplete micro-batches are dropped unless ``keep_partial``."""
+    """Pack one rank.
+
+    ``keep_partial`` false drops an incomplete micro-batch and an incomplete
+    trailing group. ``keep_partial`` true keeps both. The caller records how
+    many samples were dropped. Ranks are not padded with copied samples.
+    """
 
     rows = tuple(samples)
     if not rows:
@@ -1418,6 +1444,8 @@ def _group_samples(
         ]
     if not packed:
         raise DataError("epoch does not contain a full micro-batch")
+    if keep_partial:
+        return tuple(packed)
     keep = len(packed) - (len(packed) % group_size)
     if keep < 1:
         raise DataError("epoch does not contain a full update group")

@@ -11,11 +11,13 @@ from src.experiments.budget import fixed_pair_kept_samples, logical_steps, obser
 
 
 class TrainingBudgetTests(unittest.TestCase):
-    def test_remainder_micro_batches_are_dropped(self) -> None:
+    def test_remainder_micro_batches_stay_unless_drop_last(self) -> None:
         self.assertEqual(fixed_pair_kept_samples(10700, 2, 2), 10700)
         self.assertEqual(logical_steps(10700, 2, 2), 2675)
-        self.assertEqual(fixed_pair_kept_samples(10700, 4, 2), 10696)
-        self.assertEqual(logical_steps(10700, 4, 2), 1337)
+        self.assertEqual(fixed_pair_kept_samples(10700, 4, 2), 10700)
+        self.assertEqual(logical_steps(10700, 4, 2), 1338)
+        self.assertEqual(fixed_pair_kept_samples(10700, 4, 2, keep_partial=False), 10696)
+        self.assertEqual(logical_steps(10700, 4, 2, keep_partial=False), 1337)
 
     def test_missing_run_does_not_invent_actuals(self) -> None:
         with TemporaryDirectory() as tmp:

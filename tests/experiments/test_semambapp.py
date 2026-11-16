@@ -391,9 +391,9 @@ class SEMambaPPAlgorithmTests(unittest.TestCase):
             count = protocol.material_count("train")
             view = data.train_epoch(0, start_update=0)
             try:
-                self.assertEqual(view.updates, count - (count % 3))
-                self.assertEqual(view.updates % 3, 0)
-                self.assertLess(view.updates, count)
+                self.assertTrue(batcher.keep_partial)
+                self.assertEqual(view.updates, count)
+                self.assertEqual(batcher.dropped_samples, 0)
                 plan_hash = view.plan_hash
                 again = data.train_epoch(0, start_update=0)
                 try:

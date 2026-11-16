@@ -403,10 +403,11 @@ class PlanTests(unittest.TestCase):
                 self.assertTrue(set(covered) != set(range(16)) or len(covered) != len(set(covered)))
             later = _plan(16, micro=2, world=world, epoch=1, accumulation=1)
             self.assertNotEqual(_indexes(plan, 0), _indexes(later, 0))
-        dropped = _plan(10, micro=4, world=1, epoch=0, accumulation=1)
+        kept = _plan(10, micro=4, world=1, epoch=0, accumulation=1)
         full = rank_order("per_rank_independent_v1", 10, seed=7, epoch=0, world_size=1, rank=0)
-        self.assertEqual(_indexes(dropped, 0), full[:8])
-        self.assertEqual(dropped.stats["dropped_samples"], [2])
+        self.assertEqual(_indexes(kept, 0), full)
+        self.assertEqual(kept.stats["dropped_samples"], [0])
+        self.assertFalse(kept.stats["order_params"]["drop_last"])
         known = _plan(8, micro=2, world=2, epoch=0, accumulation=1, seed=1)
         known_indexes = _indexes(known, 0) + _indexes(known, 1)
         self.assertTrue(set(known_indexes) != set(range(8)) or len(known_indexes) != len(set(known_indexes)))
@@ -558,7 +559,7 @@ class TrainerTests(unittest.TestCase):
         self.assertTrue(bool(torch.any(soft > 0.1)))
 
 
-def _plan(count: int, micro: int, world: int, epoch: int, accumulation: int, seed: int = 7):
+def _plan(count: int, micro: int, world: int, epoch: int, accumulation: int, seed: int = 7, drop_last: bool = False):
     return plan_semamba_epoch(
         split="train",
         epoch=epoch,
@@ -569,6 +570,7 @@ def _plan(count: int, micro: int, world: int, epoch: int, accumulation: int, see
         accumulation=accumulation,
         protocol_id="proto",
         snapshot_hash="snap",
+        drop_last=drop_last,
     )
 
 

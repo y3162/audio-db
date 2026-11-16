@@ -11,17 +11,42 @@ from pathlib import Path
 from typing import Any
 
 
-def fixed_pair_kept_samples(count: int, micro_batch: int, group_size: int) -> int:
-    """Utterances kept after dropping an incomplete micro-batch and group."""
+def fixed_pair_kept_samples(
+    count: int,
+    micro_batch: int,
+    group_size: int,
+    *,
+    keep_partial: bool = True,
+) -> int:
+    """Utterances that enter training.
+
+    The default keeps a short tail. ``keep_partial`` false drops an incomplete
+    micro-batch and an incomplete trailing group.
+    """
 
     if count < 1 or micro_batch < 1 or group_size < 1:
         raise ValueError("sample count and batch sizes must be positive")
+    if not isinstance(keep_partial, bool):
+        raise ValueError("keep_partial must be a boolean")
+    if keep_partial:
+        return count
     packed = count // micro_batch
     return (packed - packed % group_size) * micro_batch
 
 
-def logical_steps(samples: int, micro_batch: int, group_size: int) -> int:
-    kept = fixed_pair_kept_samples(samples, micro_batch, group_size)
+def logical_steps(
+    samples: int,
+    micro_batch: int,
+    group_size: int,
+    *,
+    keep_partial: bool = True,
+) -> int:
+    if keep_partial:
+        if samples < 1 or micro_batch < 1 or group_size < 1:
+            raise ValueError("sample count and batch sizes must be positive")
+        packed = (samples + micro_batch - 1) // micro_batch
+        return (packed + group_size - 1) // group_size
+    kept = fixed_pair_kept_samples(samples, micro_batch, group_size, keep_partial=False)
     return kept // (micro_batch * group_size)
 
 
