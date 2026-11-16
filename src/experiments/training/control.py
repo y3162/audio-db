@@ -136,6 +136,78 @@ def finish_training_run(trainer: Any, reason: str, *, prepare: Any = None) -> Ru
     )
 
 
+def snapshot_fields(obj: object) -> dict[str, Any]:
+    """Copy the plain counters an update mutates. Modules and optimizers stay put."""
+
+    saved: dict[str, Any] = {}
+    for name, value in vars(obj).items():
+        if isinstance(value, (int, float, bool, str)) or value is None:
+            saved[name] = value
+        elif isinstance(value, list):
+            saved[name] = list(value)
+        elif isinstance(value, dict):
+            saved[name] = dict(value)
+    return saved
+
+
+def restore_fields(obj: object, saved: dict[str, Any]) -> None:
+    """Put ``snapshot_fields`` back, including lists that were appended in place."""
+
+    for name, value in saved.items():
+        current = getattr(obj, name)
+        if isinstance(value, list) and isinstance(current, list):
+            current.clear()
+            current.extend(value)
+        elif isinstance(value, dict) and isinstance(current, dict):
+            current.clear()
+            current.update(value)
+        else:
+            setattr(obj, name, value)
+
+
+def finite_gradient_report(
+    modules: list[Any],
+    *,
+    loss: float,
+    sample_id: str,
+    component_id: str,
+) -> dict[str, Any]:
+    """Report gradient connectivity after one probe backward.
+
+    A model that sets ``find_unused_parameters`` may leave some parameters
+    without a gradient. Every other trainable parameter needs one. No
+    connected gradient is a failure either way.
+    """
+
+    missing = 0
+    present = 0
+    allow_missing = False
+    for module in modules:
+        policy = getattr(module, "policy", None)
+        if getattr(policy, "find_unused_parameters", False) is True:
+            allow_missing = True
+        parameters = getattr(module, "parameters", ())
+        for parameter in parameters:
+            if not parameter.requires_grad:
+                continue
+            if parameter.grad is None:
+                missing += 1
+            else:
+                present += 1
+    if present < 1 or (missing and not allow_missing):
+        raise RuntimeFailure(
+            f"component {component_id}: preflight left {missing} trainable parameters without gradients"
+        )
+    return {
+        "finite": True,
+        "loss": float(loss),
+        "parameters_missing_grad": missing,
+        "parameters_with_grad": present,
+        "sample_id": sample_id,
+        "status": "ok",
+    }
+
+
 def window_divisor(accumulation: int, window: int) -> int:
     """Denominator for one optimizer window.
 

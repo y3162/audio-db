@@ -48,7 +48,7 @@ VoiceBank の公式設定は `data/db/snapshots-voicebank-float-v1/` の snapsho
 
 ## 実行
 
-Preflight はグラフを検証し、学習の開始前に実データの 1 回分の forward、loss、backward を行う。Optimizer は更新しない。RNG、パラメータ、buffer、勾配、データカーソル、この検査が作ったキャッシュは戻すので、その後の step 1 は検査を省いた実行と同じ入力と初期状態になる。`runtime.kwargs.preflight: false` でこの 1 バッチを省く。`StandardTrainer` がこの検査を行う。検査を持たない Trainer は `unsupported` と記録して学習は続ける。`make experiment` は Launcher 経由で学習を始める。
+Preflight はグラフを検証し、学習の開始前に実データの 1 回分の forward、loss、backward を行う。Optimizer は更新しない。RNG、パラメータ、buffer、勾配、データカーソル、この検査が作ったキャッシュは戻すので、その後の step 1 は検査を省いた実行と同じ入力と初期状態になる。`runtime.kwargs.preflight: false` でこの 1 バッチを省く。`StandardTrainer` と 6 公式 Trainer がこの検査を行う。公式 Trainer の読み取り専用の進捗には代入しない。MossFormerGAN でその epoch がすべて skip のときは backward せず `skipped` を残す。検査を持たない Trainer は `unsupported` と記録して学習は続ける。`make experiment` は Launcher 経由で学習を始める。
 
 ```bash
 make experiment-preflight CONFIG=tests/fixtures/configs/experiments/mp_senet_gan.yaml

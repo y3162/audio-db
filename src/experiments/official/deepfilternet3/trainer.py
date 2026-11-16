@@ -36,7 +36,12 @@ from src.experiments.results import RunResult
 from src.experiments.runtime import PreparedModel, ProcessRuntime, require_prepared
 from src.experiments.stopping import observe_validation, should_stop
 from src.experiments.trainers import _close_epoch_view, _rank
-from src.experiments.training.control import finish_training_run, stop_requested, window_divisor
+from src.experiments.training.control import (
+    finish_training_run,
+    finite_gradient_report,
+    stop_requested,
+    window_divisor,
+)
 from src.se.models.deepfilternet3.dsp import DFStream
 
 # --- Trainer. ``fit`` is the timeline. The sections below are the steps it calls. ---
@@ -141,6 +146,45 @@ class DeepFilterNet3Trainer:
     @stop_reason.setter
     def stop_reason(self, value: str) -> None:
         self.progress.stop_reason = value
+
+    def preflight_probe(self) -> dict[str, Any]:
+        """One real window of forward, loss, and backward. The optimizer does not step."""
+
+        runtime = getattr(self, "runtime", None)
+        if not isinstance(runtime, ProcessRuntime):
+            raise BuildError("preflight has no runtime")
+        component_id = str(getattr(self, "_experiment_component_id", "trainer"))
+        was_training = bool(self.model.training)
+        self.model.train()
+        epoch = int(self.data.epoch)
+        index = int(self.data.update_index)
+        view = self.data.train_epoch(epoch, start_update=index)
+        stream = self._stream
+        if stream is None:
+            stream = stream_for(self.model.unwrapped(), runtime.device)
+        try:
+            if int(view.updates) < 1 or index >= int(view.updates):
+                raise RuntimeFailure(f"component {component_id}: preflight has no micro-batches")
+            local = run_accumulation(
+                self.model,
+                self.optimizer,
+                runtime,
+                view,
+                index,
+                accumulation=self.accumulation,
+                grad_clip=self.grad_clip,
+                component_id=component_id,
+                stream=stream,
+                objective=self.objective,
+                apply_optimizer=False,
+            )
+            return finite_gradient_report(
+                [self.model], loss=local.loss, sample_id=local.sample_id, component_id=component_id,
+            )
+        finally:
+            if not was_training:
+                self.model.eval()
+            _close_epoch_view(view)
 
     def fit(self) -> RunResult:
         """Train until the step budget, the epoch cap, or early stopping. Cosine runs before the optimizer."""
@@ -819,6 +863,7 @@ def run_accumulation(
     component_id: str,
     stream: DFStream | None,
     objective: torch.nn.Module,
+    apply_optimizer: bool = True,
 ) -> DFStep:
     model.train()
     optimizer.zero_grad(set_to_none=True)
@@ -839,6 +884,10 @@ def run_accumulation(
             runtime.backward(micro / divisor)
         detached = (micro / divisor).detach()
         total = detached if total is None else total + detached
+    if total is None or not bool(torch.isfinite(total).all()):
+        raise RuntimeFailure(f"component {component_id}: loss is not finite")
+    if not apply_optimizer:
+        return DFStep(float(total), False, ",".join(sample_ids), span)
     runtime.clip(model, grad_clip, optimizer=optimizer)
     result = runtime.step(optimizer)
     runtime.end_step()

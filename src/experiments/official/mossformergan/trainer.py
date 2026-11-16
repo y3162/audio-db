@@ -43,7 +43,13 @@ from src.experiments.runtime import PreparedModel, ProcessRuntime, require_prepa
 from src.experiments.selectors import scalar_metrics
 from src.experiments.stopping import control_requests_stop, observe_validation, should_stop
 from src.experiments.trainers import _close_epoch_view
-from src.experiments.training.control import stop_requested, window_divisor
+from src.experiments.training.control import (
+    finite_gradient_report,
+    restore_fields,
+    snapshot_fields,
+    stop_requested,
+    window_divisor,
+)
 from src.experiments.training.objectives import call_objective
 from src.experiments.training.official_objectives import require_mossformer
 
@@ -221,7 +227,9 @@ class MossFormerGANTrainer(ProgressView):
                 continue
             view, batch, updates = opened
             try:
-                stepped = self.consume_micro_batch(batch, runtime, update_index=index, updates=updates)
+                stepped = self.consume_micro_batch(
+                    batch, runtime, update_index=index, updates=updates,
+                )
                 index += 1
                 self.data.epoch = epoch
                 self.data.update_index = index
@@ -235,6 +243,61 @@ class MossFormerGANTrainer(ProgressView):
             finally:
                 _close_epoch_view(view)
 
+    def preflight_probe(self) -> dict[str, Any]:
+        """One real micro-batch backward. The optimizer pair does not step."""
+
+        runtime = getattr(self, "runtime", None)
+        if not isinstance(runtime, ProcessRuntime):
+            raise BuildError("preflight has no runtime")
+        component_id = str(getattr(self, "_experiment_component_id", "trainer"))
+        saved_progress = snapshot_fields(self.progress)
+        saved_micro = snapshot_fields(self._micro)
+        was_training = bool(self.generator.training)
+        view = None
+        try:
+            index = int(self.data.update_index)
+            view = self.data.train_epoch(int(self.data.epoch), start_update=index)
+            updates = int(view.updates)
+            if updates < 1 or index >= updates:
+                raise RuntimeFailure(f"component {component_id}: preflight has no micro-batch")
+            report = None
+            while index < updates and report is None:
+                batches = view.batch(index)
+                if len(batches) != 1 or not isinstance(batches[0], Batch):
+                    raise RuntimeFailure(f"component {component_id}: expected one micro-batch")
+                batch = batches[0]
+                self.consume_micro_batch(
+                    batch, runtime, update_index=index, updates=updates, apply_optimizer=False,
+                )
+                components = self._micro.last_components
+                if components:
+                    report = finite_gradient_report(
+                        [self.generator, self.discriminator],
+                        loss=float(components["generator"]),
+                        sample_id=str(batch.sample_id),
+                        component_id=component_id,
+                    )
+                index += 1
+            if report is None:
+                # Every micro-batch in this epoch was skipped, so there is no backward.
+                # The run itself records that; the probe must not turn it into a failure.
+                return {
+                    "finite": False,
+                    "loss": None,
+                    "parameters_missing_grad": 0,
+                    "parameters_with_grad": 0,
+                    "sample_id": "",
+                    "status": "skipped",
+                }
+            return report
+        finally:
+            restore_fields(self.progress, saved_progress)
+            restore_fields(self._micro, saved_micro)
+            if not was_training:
+                self.generator.eval()
+            if view is not None:
+                _close_epoch_view(view)
+
     def consume_micro_batch(
         self,
         batch: Batch,
@@ -242,11 +305,13 @@ class MossFormerGANTrainer(ProgressView):
         *,
         update_index: int,
         updates: int | None = None,
+        apply_optimizer: bool = True,
     ) -> dict[str, Any] | None:
         """Run one micro-batch. Return the shared log when both optimizers stepped."""
 
         return self._micro.consume(
-            batch, runtime, update_index=update_index, updates=updates, phase_hook=self._on_update_phase,
+            batch, runtime, update_index=update_index, updates=updates, apply_optimizer=apply_optimizer,
+            phase_hook=self._on_update_phase,
             step_pair=self._step_pair, journal=getattr(self, "journal", None), skip_path=self._skip_path,
         )
 
@@ -866,6 +931,7 @@ class MicroBatch:
         *,
         update_index: int,
         updates: int | None = None,
+        apply_optimizer: bool = True,
         phase_hook: Any,
         step_pair: Any,
         journal: Any,
@@ -952,6 +1018,8 @@ class MicroBatch:
         progress.window_samples.append(str(batch.sample_id))
         if progress.accu_count != planned:
             phase_hook("after_micro_batch")
+            return None
+        if not apply_optimizer:
             return None
         return step_pair(runtime)
 

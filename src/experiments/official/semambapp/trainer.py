@@ -40,7 +40,10 @@ from src.experiments.stopping import observe_validation, should_stop
 from src.experiments.trainers import _close_epoch_view
 from src.experiments.training.control import (
     finish_training_run,
+    finite_gradient_report,
     open_flat_window,
+    restore_fields,
+    snapshot_fields,
     stop_after_step,
     window_divisor,
 )
@@ -259,6 +262,31 @@ class SEMambaPPTrainer(UpdateView):
 
     def _refuse_amp(self, runtime: object) -> None:
         self._update.refuse_amp(runtime)
+
+    def preflight_probe(self) -> dict[str, Any]:
+        """One real window of both backwards. Neither optimizer steps."""
+
+        runtime = getattr(self, "runtime", None)
+        if not isinstance(runtime, ProcessRuntime):
+            raise BuildError("preflight has no runtime")
+        component_id = str(getattr(self, "_experiment_component_id", "trainer"))
+        saved = snapshot_fields(self._update)
+        was_training = bool(self.generator.training)
+        _epoch, _index, view, batches = open_flat_window(self, component_id)
+        try:
+            local = self._update.run(batches, runtime, self._on_update_phase, apply_optimizer=False)
+            loss = float(local["generator"])
+            return finite_gradient_report(
+                [self.generator, self.mrd, self.cqt],
+                loss=loss,
+                sample_id=str(local["sample_id"]),
+                component_id=component_id,
+            )
+        finally:
+            restore_fields(self._update, saved)
+            if not was_training:
+                self.generator.eval()
+            _close_epoch_view(view)
 
     def official_step(self, batches: list[Any], runtime: ProcessRuntime) -> dict[str, float | str]:
         """Run one official GAN update. Both optimizers step, or neither is checkpointed."""
@@ -811,6 +839,8 @@ class SEMambaUpdate:
         batches: list[Batch],
         runtime: ProcessRuntime,
         phase_hook: Any,
+        *,
+        apply_optimizer: bool = True,
     ) -> dict[str, float | str]:
         """Step both optimizers. The caller commits the logical step only after this returns."""
 
@@ -877,7 +907,8 @@ class SEMambaUpdate:
                 self.mrd.unwrapped().discriminator, self.cqt.unwrapped().discriminator
             )
         self._phase("before_discriminator_step")
-        discriminator_result = runtime.step(self.optim_d)
+        if apply_optimizer:
+            discriminator_result = runtime.step(self.optim_d)
         self._phase("after_discriminator_step")
         frozen = [
             parameter
@@ -935,6 +966,11 @@ class SEMambaUpdate:
         if self.capture_gradients:
             self.last_generator_grads = _clone_grads(self.generator.unwrapped().generator)
         self._phase("before_generator_step")
+        if not apply_optimizer:
+            return {
+                "generator": float(generator_total.detach()),
+                "sample_id": ",".join(sample_ids),
+            }
         generator_result = runtime.step(self.optim_g)
         runtime.end_step()
         runtime.broadcast_buffers(self.generator)

@@ -42,6 +42,7 @@ from src.experiments.runtime import PreparedModel, ProcessRuntime, require_prepa
 from src.experiments.stopping import observe_validation, should_stop
 from src.experiments.training.control import (
     close_training_run,
+    finite_gradient_report,
     open_grouped_window,
     stop_after_step,
     window_divisor,
@@ -121,6 +122,26 @@ class TFGridNetTrainer:
         """Live step counter. ``GridNetProgress`` owns the value."""
 
         return self.progress.logical_step
+
+    def preflight_probe(self) -> dict[str, Any]:
+        """One real window of forward, loss, and backward. The optimizer does not step."""
+
+        runtime = getattr(self, "runtime", None)
+        if not isinstance(runtime, ProcessRuntime):
+            raise BuildError("preflight has no runtime")
+        component_id = str(getattr(self, "_experiment_component_id", "trainer"))
+        was_training = bool(self.model.training)
+        self.model.train()
+        _epoch, _index, view, planned = open_grouped_window(self, component_id)
+        try:
+            local = self._update.run(planned, runtime, component_id, apply_optimizer=False)
+            return finite_gradient_report(
+                [self.model], loss=local.loss, sample_id=local.sample_id, component_id=component_id,
+            )
+        finally:
+            if not was_training:
+                self.model.eval()
+            _close_epoch_view(view)
 
     @property
     def phase(self) -> str:
@@ -686,7 +707,14 @@ class GridNetUpdate:
         self.accumulation = accumulation
         self.grad_clip = grad_clip
 
-    def run(self, planned: list[list[Batch]], runtime: ProcessRuntime, component_id: str) -> GridNetStep:
+    def run(
+        self,
+        planned: list[list[Batch]],
+        runtime: ProcessRuntime,
+        component_id: str,
+        *,
+        apply_optimizer: bool = True,
+    ) -> GridNetStep:
         """Run one window. The last micro-batch is the one that synchronizes."""
 
         self.model.train()
@@ -707,10 +735,22 @@ class GridNetUpdate:
             total = detached if total is None else total + detached
             for name, value in terms.items():
                 term_acc[name] = term_acc.get(name, 0.0) + value / divisor
-        if self.grad_clip is not None:
-            runtime.clip(self.model, self.grad_clip, optimizer=self.optimizer)
         if total is None:
             raise RuntimeFailure(f"component {component_id}: loss is not finite")
+        if not apply_optimizer:
+            host_loss = runtime.host_scalar(total)
+            loss_value = float(host_loss)
+            if not math.isfinite(loss_value):
+                raise RuntimeFailure(f"component {component_id}: loss is not finite")
+            return GridNetStep(
+                loss=loss_value,
+                applied=False,
+                learning_rate=float(self.optimizer.param_groups[0]["lr"]),
+                sample_id=",".join(sample_ids),
+                terms=term_acc,
+            )
+        if self.grad_clip is not None:
+            runtime.clip(self.model, self.grad_clip, optimizer=self.optimizer)
         host_loss = runtime.host_scalar(total)
         result = runtime.step(self.optimizer)
         runtime.end_step()

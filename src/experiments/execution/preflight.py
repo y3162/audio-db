@@ -149,14 +149,12 @@ def _restore(snapshot: dict[str, Any]) -> None:
         _drop_new_keys(getattr(data, "_plans", None), item["plan_keys"])
         _drop_new_keys(getattr(data, "_cache", None), item["cache_keys"])
     trainer = snapshot["trainer"]
-    if snapshot["logical_step"] is not None and hasattr(trainer, "logical_step"):
-        trainer.logical_step = snapshot["logical_step"]
-    if snapshot["optimizer_updates"] is not None and hasattr(trainer, "optimizer_updates"):
-        trainer.optimizer_updates = _clone_tree(snapshot["optimizer_updates"])
+    _set_if_writable(trainer, "logical_step", snapshot["logical_step"])
+    if snapshot["optimizer_updates"] is not None:
+        _set_if_writable(trainer, "optimizer_updates", _clone_tree(snapshot["optimizer_updates"]))
     if hasattr(trainer, "losses"):
-        trainer.losses = list(snapshot["losses"])
-    if snapshot["stop_reason"] is not None and hasattr(trainer, "stop_reason"):
-        trainer.stop_reason = snapshot["stop_reason"]
+        _set_if_writable(trainer, "losses", list(snapshot["losses"]))
+    _set_if_writable(trainer, "stop_reason", snapshot["stop_reason"])
     runtime = snapshot["runtime"]
     runtime._loss_finite = snapshot["loss_finite"]
     runtime._clipped = set(snapshot["clipped"])
@@ -166,6 +164,17 @@ def _restore(snapshot: dict[str, Any]) -> None:
     if scaler is not None and snapshot["scaler"] is not None:
         scaler.load_state_dict(_clone_tree(snapshot["scaler"]))
     restore_rank_rng(snapshot["rng"], cuda=snapshot["cuda"])
+
+
+def _set_if_writable(obj: object, name: str, value: Any) -> None:
+    """Restore a trainer field. A read-only property keeps the object that owns it."""
+
+    if value is None or not hasattr(obj, name):
+        return
+    attr = getattr(type(obj), name, None)
+    if isinstance(attr, property) and attr.fset is None:
+        return
+    setattr(obj, name, value)
 
 
 def _drop_new_keys(mapping: object, keys: set[Any] | None) -> None:

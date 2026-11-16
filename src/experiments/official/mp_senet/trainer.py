@@ -49,7 +49,10 @@ from src.experiments.selectors import scalar_metrics
 from src.experiments.stopping import control_requests_stop, observe_validation
 from src.experiments.training.control import (
     close_training_run,
+    finite_gradient_report,
     open_flat_window_at,
+    restore_fields,
+    snapshot_fields,
     stop_after_step,
     window_divisor,
 )
@@ -249,6 +252,38 @@ class MPSENetGANTrainer:
         official = done.metrics if done.validate else {}
         extra = self._research(runtime, "boundary", done.trainer_epoch, official=official)
         self._offer("boundary", metrics={**done.metrics, **extra} if extra else done.metrics)
+
+    def preflight_probe(self) -> dict[str, Any]:
+        """One real window of both backwards. Neither optimizer steps."""
+
+        runtime = getattr(self, "runtime", None)
+        if not isinstance(runtime, ProcessRuntime):
+            raise BuildError("preflight has no runtime")
+        component_id = str(getattr(self, "_experiment_component_id", "trainer"))
+        saved = snapshot_fields(self._update)
+        was_training = bool(self.generator.training)
+        _epoch, _index, view, batches = open_flat_window_at(self.data, self.accumulation, component_id)
+        try:
+            local = self._update.run(
+                batches,
+                runtime,
+                phase_hook=self._on_update_phase,
+                drain_previous=lambda: None,
+                note_generator_sync=self._update.note_generator_sync,
+                note_gradients_averaged=self._update.note_gradients_averaged,
+                apply_optimizer=False,
+            )
+            return finite_gradient_report(
+                [self.generator, self.discriminator],
+                loss=float(local["generator"]),
+                sample_id=str(local["sample_id"]),
+                component_id=component_id,
+            )
+        finally:
+            restore_fields(self._update, saved)
+            if not was_training:
+                self.generator.eval()
+            _close_epoch_view(view)
 
     def official_step(self, batches: list[Any], runtime: ProcessRuntime) -> dict[str, float]:
         self._in_official_step = True
@@ -869,6 +904,7 @@ def accumulated_step(
     phase_hook: Callable[..., None],
     note_generator_sync: Callable[[bool], None],
     note_gradients_averaged: Callable[[], None],
+    apply_optimizer: bool = True,
 ) -> dict[str, float]:
     """Discriminator micro-batches, one discriminator step, then the generator."""
 
@@ -926,7 +962,8 @@ def accumulated_step(
                     raise RuntimeFailure("discriminator loss is missing")
                 backward_if_finite(runtime, loss, "discriminator loss")
                 discriminator_total += float(loss.detach()) * divisor
-        discriminator_result = runtime.step(update.optim_d)
+        if apply_optimizer:
+            discriminator_result = runtime.step(update.optim_d)
         phase_hook("after_discriminator_step", stored)
         raw = update.discriminator.unwrapped().discriminator
         frozen = [parameter for parameter in raw.parameters() if parameter.requires_grad]
@@ -973,12 +1010,13 @@ def accumulated_step(
                 parameter.requires_grad_(True)
         note_gradients_averaged()
         runtime.average_gradients(update.generator)
-    generator_result = runtime.step(update.optim_g)
-    runtime.end_step()
-    runtime.broadcast_buffers(update.generator)
-    runtime.broadcast_buffers(update.discriminator)
-    if not discriminator_result.applied or not generator_result.applied:
-        raise RuntimeFailure("MP-SENet GAN requires both optimizers to apply in one logical step")
+    if apply_optimizer:
+        generator_result = runtime.step(update.optim_g)
+        runtime.end_step()
+        runtime.broadcast_buffers(update.generator)
+        runtime.broadcast_buffers(update.discriminator)
+        if not discriminator_result.applied or not generator_result.applied:
+            raise RuntimeFailure("MP-SENet GAN requires both optimizers to apply in one logical step")
     count = len(batches)
     phase_hook("end_step")
     return {
@@ -1005,6 +1043,7 @@ def cuda_overlapped_step(
     phase_hook: Callable[..., None],
     drain_previous: Callable[[], None],
     note_gradients_averaged: Callable[[], None],
+    apply_optimizer: bool = True,
 ) -> dict[str, float]:
     """PESQ runs while the signal backward uses the same generator graph."""
 
@@ -1042,7 +1081,8 @@ def cuda_overlapped_step(
     except (TrainingError, RuntimeFailure, RuntimeError, ValueError) as exc:
         raise RuntimeFailure(f"discriminator forward failed: {type(exc).__name__}: {exc}") from exc
     backward_if_finite(runtime, loss_d, "discriminator loss")
-    discriminator_result = runtime.step(update.optim_d)
+    if apply_optimizer:
+        discriminator_result = runtime.step(update.optim_d)
     phase_hook("after_discriminator_step", [(clean, parts)])
     raw = update.discriminator.unwrapped().discriminator
     frozen = [parameter for parameter in raw.parameters() if parameter.requires_grad]
@@ -1075,12 +1115,13 @@ def cuda_overlapped_step(
     )
     host = torch.empty(logged.shape, dtype=torch.float32, pin_memory=True)
     host.copy_(logged.detach().float(), non_blocking=True)
-    generator_result = runtime.step(update.optim_g)
-    runtime.end_step()
-    runtime.broadcast_buffers(update.generator)
-    runtime.broadcast_buffers(update.discriminator)
-    if not discriminator_result.applied or not generator_result.applied:
-        raise RuntimeFailure("MP-SENet GAN requires both optimizers to apply in one logical step")
+    if apply_optimizer:
+        generator_result = runtime.step(update.optim_g)
+        runtime.end_step()
+        runtime.broadcast_buffers(update.generator)
+        runtime.broadcast_buffers(update.discriminator)
+        if not discriminator_result.applied or not generator_result.applied:
+            raise RuntimeFailure("MP-SENet GAN requires both optimizers to apply in one logical step")
     complex_v, consistency_v, disc_v, total_v, magnitude_v, metric_v, phase_v, time_v = (
         float(item) for item in host.tolist()
     )
@@ -1197,6 +1238,7 @@ class MPSENetUpdate:
         drain_previous: Callable[[], None],
         note_generator_sync: Callable[[bool], None],
         note_gradients_averaged: Callable[[], None],
+        apply_optimizer: bool = True,
     ) -> dict[str, float]:
         """Apply one official pair, or raise before either optimizer is a safe point."""
 
@@ -1218,6 +1260,7 @@ class MPSENetUpdate:
                 phase_hook=phase_hook,
                 drain_previous=drain_previous,
                 note_gradients_averaged=note_gradients_averaged,
+                apply_optimizer=apply_optimizer,
             )
         return accumulated_step(
             self,
@@ -1226,6 +1269,7 @@ class MPSENetUpdate:
             phase_hook=phase_hook,
             note_generator_sync=note_generator_sync,
             note_gradients_averaged=note_gradients_averaged,
+            apply_optimizer=apply_optimizer,
         )
 
 # --- Pending boundary: validation, best, then both ExponentialLR steps. ---
