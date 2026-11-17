@@ -53,6 +53,7 @@ SUITES = (
     "tests/se",
     "tests/setup",
     "tests/numerics",
+    "tests/research",
 )
 
 # Real-model and CUDA paths. They also appear in the CPU lane, where CUDA is

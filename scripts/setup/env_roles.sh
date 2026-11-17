@@ -34,12 +34,14 @@ install_role() {
   uv pip sync --python "$python" --index-strategy unsafe-best-match "$lock" || return 1
   link_nvcc "$python"
   case "$role" in
-    asr)
+    asr|asr_guided_se)
       if ! "$python" -c 'import whisper' >/dev/null 2>&1; then
         uv pip install --python "$python" --no-build-isolation --index-strategy unsafe-best-match openai-whisper==20240930 || return 1
       fi
       ;;
-    semambapp)
+  esac
+  case "$role" in
+    semambapp|asr_guided_se)
       build_mamba "$python" || return 1
       ;;
     deepfilternet)
@@ -63,6 +65,9 @@ role_imports() {
       ;;
     asr)
       "$python" -c 'import torch, whisper, duckdb'
+      ;;
+    asr_guided_se)
+      "$python" -c 'import torch, nemo, numba, whisper, duckdb, causal_conv1d_cuda, selective_scan_cuda; from nnAudio.features.cqt import CQT2010v2'
       ;;
     semambapp)
       "$python" -c 'import torch, causal_conv1d_cuda, selective_scan_cuda'

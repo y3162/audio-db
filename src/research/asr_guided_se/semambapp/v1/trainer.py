@@ -127,6 +127,34 @@ class GuidedSEMambaPPTrainer(SEMambaPPTrainer):
             return fingerprint_text(self.asr.metadata())
         return type(self.asr).__name__
 
+    def preflight_probe(self) -> dict[str, Any]:
+        """Official probe, then drop ASR cache entries the probe created.
+
+        Python, NumPy, and torch generators are restored by the experiment
+        probe. The teacher cache is not one of those generators. Leaving the
+        probe's recognitions in place would make step 1 read a cache that a
+        run without the probe does not have. Numba's own device state is not
+        part of this snapshot.
+        """
+
+        cache = self._cache
+        items = getattr(cache, "_items", None)
+        before = set(items) if isinstance(items, dict) else None
+        path = self._hypotheses
+        before_size = path.stat().st_size if path is not None and path.is_file() else None
+        try:
+            return super().preflight_probe()
+        finally:
+            if isinstance(items, dict) and before is not None:
+                for key in list(items):
+                    if key not in before:
+                        del items[key]
+            if path is not None and before_size is None and path.is_file():
+                path.unlink()
+            elif path is not None and before_size is not None and path.is_file():
+                with path.open("a+b") as handle:
+                    handle.truncate(before_size)
+
 
 class GuidedUpdate(SEMambaUpdate):
     """Official step, with a batch lookup and a different generator loss when a switch needs it."""

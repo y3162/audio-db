@@ -64,6 +64,16 @@ make experiment CONFIG=configs/reproduction/experiments/official/mp_senet_gan.ya
 CUDA_VISIBLE_DEVICES=0,1 .venvs/se/bin/python -m src.experiments.launcher --config CONFIG --nproc 2
 ```
 
+`make experiment` の Python は、`AUDIO_DB_PYTHON` があればそれ、無ければ `.venvs/se` である。ASR-guided SEMamba++ は `.venvs/asr_guided_se` から起動する。同梱 YAML の `device` は `cpu` である。CUDA の 1 step は、そのファイルを `extends` し、`runtime.kwargs.device` を `cuda` に、`output.directory` を別のディレクトリにした子 YAML で行う。
+
+```bash
+CUDA_VISIBLE_DEVICES=<空きGPU> \
+  AUDIO_DB_PYTHON=.venvs/asr_guided_se/bin/python \
+  make experiment CONFIG=<子YAML> NPROC=1
+```
+
+2026-11-17 に tensor の空いている A100 80GB で、公式幅（`hid_feature` 48、`num_tfmamba` 4、reference scan）の 8 つのスイッチ組み合わせを 1 logical step ずつ完了した。TDT を含む step の損失は、preflight を省いた再実行と一致した。NCCL の 2 プロセスは未実行である。
+
 DDP は `--nproc` を world size にする。学習する module の `prepare` に `distribute: ddp` が要る。`runtime.kwargs.world_size` を書いた設定は、その値と `--nproc` が違うと拒否する。CUDA では rank ごとに GPU を 1 枚使い、2 つの rank が同じ GPU を使う起動は拒否する。`CUDA_VISIBLE_DEVICES` で隠すと、見える番号は 0 から振り直される。実験 runtime は、指定された CUDA デバイスを他プロセスの使用率や使用メモリでは拒否しない。CUDA が使えない、見えるデバイスが無い、`LOCAL_RANK` が範囲外、world size がデバイス数を超える起動は拒否する。実際の CUDA OOM はエラーとして記録する。Launcher はデバイス全体の使用メモリを `gpu_memory.jsonl` に追記する。これは起動の可否には使わない。
 
 ChunkSampler の `global_batch` は `micro_batch × world_size × group_size` と一致させ、`group_size` は Trainer の勾配蓄積回数と一致させる。チャンクの計画は実効 batch 単位で作り、各 rank の計画を micro-batch に分けて蓄積する。world size が変わるとデータの順序も変わるため、実効 batch が同じでも別の実験である。

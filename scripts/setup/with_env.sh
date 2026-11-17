@@ -11,4 +11,17 @@ if [[ $# -eq 0 ]]; then
   echo "usage: scripts/setup/with_env.sh command..." >&2
   exit 2
 fi
+# Numba in .venvs/asr_guided_se must see that venv's CUDA 12 NVVM, not /usr/local/cuda.
+# Other interpreters, including the official roles, are not modified.
+for _audio_db_arg in "$@"; do
+  case "$_audio_db_arg" in
+    */.venvs/asr_guided_se/bin/python|.venvs/asr_guided_se/bin/python)
+      # shellcheck disable=SC1091
+      source "$root/scripts/setup/cuda_wheel.sh"
+      apply_cuda_wheel "$_audio_db_arg" || exit 1
+      break
+      ;;
+  esac
+done
+unset _audio_db_arg
 exec "$@"

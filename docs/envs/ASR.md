@@ -24,3 +24,5 @@ export CUDA_VISIBLE_DEVICES=<空きGPU>
 ```
 
 使う前に `nvidia-smi` を見る。評価が使う GPU は、使用メモリが 1024 MiB 未満のものに限る。評価設定の `asr.device` はその番号である。`CUDA_VISIBLE_DEVICES` で隠した場合、見える番号は 0 から振り直される。
+
+Parakeet と SEMamba++ を同じプロセスで学習するときは `.venvs/asr_guided_se` を使う。構築と、未設定の `CUDA_HOME` を wheel の NVVM に向ける処理は [セットアップ](SETUP.md)。決定的アルゴリズムが有効な CUDA では、featurizer の `center=True` STFT を index reflection と `center=False` に替える。スペクトルは centered STFT と一致し、`reflection_pad1d` の CUDA backward は使わない。同じプロセスで続けて計算した TDT 損失は omega 0 でも一致しない。別プロセスで同じ初期状態から始めた step 1 は、このホストでは preflight の有無で一致した。

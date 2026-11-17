@@ -35,13 +35,14 @@ help:
 	  '  make setup PLATFORM=tsubame' \
 	  '  make setup PLATFORM=shinoda_lab' \
 	  '  make setup-env PLATFORM=tsubame ROLES=se,asr' \
+	  '  make setup-env PLATFORM=shinoda_lab ROLES=asr_guided_se' \
 	  '  make assets MODELS=mp_senet' \
 	  '  make assets-check' \
 	  '  make db-link ONLY=LibriSpeech DRY_RUN=1 ALLOW_PARTIAL=1' \
 	  '  make doctor' \
 	  '  make test-setup' \
 	  '' \
-	  'Roles: se, asr, official, semambapp, deepfilternet' \
+	  'Roles: se, asr, official, semambapp, deepfilternet, asr_guided_se' \
 	  'Platforms: tsubame, shinoda_lab' \
 	  'Default setup builds every role, fetches every pinned asset, links configured datasets, then runs doctor.' \
 	  'DB init, ingest, and bootstrap are separate and are not run by make setup.' \
@@ -68,7 +69,7 @@ setup:
 	$(WITH_ENV) $(ROOT)/scripts/setup/setup.sh $(PLATFORM)
 
 setup-env:
-	$(WITH_ENV) bash -c 'cd $(ROOT) && source scripts/setup/platforms/$(PLATFORM).sh && platform_prepare && source scripts/setup/env_roles.sh && install_roles "$(or $(ROLES),se,asr,official,semambapp,deepfilternet)"'
+	$(WITH_ENV) bash -c 'cd $(ROOT) && source scripts/setup/platforms/$(PLATFORM).sh && platform_prepare && source scripts/setup/env_roles.sh && install_roles "$(or $(ROLES),se,asr,official,semambapp,deepfilternet,asr_guided_se)"'
 
 assets:
 	$(WITH_ENV) $(SETUP_PY) $(ROOT)/scripts/setup/assets.py fetch --models "$(MODELS)"
@@ -178,15 +179,17 @@ CONFIG ?=
 RESUME ?=
 NPROC ?= 1
 STOP_AFTER ?=
+# AUDIO_DB_PYTHON selects the interpreter. Unset keeps .venvs/se.
+EXPERIMENT_PYTHON := $(if $(AUDIO_DB_PYTHON),$(AUDIO_DB_PYTHON),$(PYTHON))
 
 # Runs under the launcher. NPROC is the number of DDP ranks; the caller chooses the GPUs.
 experiment:
 	@test -n "$(CONFIG)" || { echo "CONFIG is required"; exit 1; }
-	CUDA_VISIBLE_DEVICES="$${CUDA_VISIBLE_DEVICES}" $(WITH_ENV) $(PYTHON) -m src.experiments.launcher --config "$(CONFIG)" --nproc "$(NPROC)" $(if $(RESUME),--resume "$(RESUME)",) $(if $(STOP_AFTER),--stop-after "$(STOP_AFTER)",)
+	CUDA_VISIBLE_DEVICES="$${CUDA_VISIBLE_DEVICES}" $(WITH_ENV) $(EXPERIMENT_PYTHON) -m src.experiments.launcher --config "$(CONFIG)" --nproc "$(NPROC)" $(if $(RESUME),--resume "$(RESUME)",) $(if $(STOP_AFTER),--stop-after "$(STOP_AFTER)",)
 
 experiment-preflight:
 	@test -n "$(CONFIG)" || { echo "CONFIG is required"; exit 1; }
-	CUDA_VISIBLE_DEVICES="$${CUDA_VISIBLE_DEVICES}" $(WITH_ENV) $(PYTHON) -m src.experiments.cli --config "$(CONFIG)" --preflight
+	CUDA_VISIBLE_DEVICES="$${CUDA_VISIBLE_DEVICES}" $(WITH_ENV) $(EXPERIMENT_PYTHON) -m src.experiments.cli --config "$(CONFIG)" --preflight
 
 test-cpu:
 	CUDA_VISIBLE_DEVICES="" $(WITH_ENV) $(PYTHON) $(ROOT)/scripts/tests/run_suite.py --cpu-only

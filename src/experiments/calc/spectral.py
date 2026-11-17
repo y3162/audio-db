@@ -212,7 +212,13 @@ def _slaney_log_mel(
     # The published mel loss builds both the window and the librosa basis on
     # CPU, then moves them to the signal device. GPU construction and a
     # mathematically equivalent transposed multiplication change gradients.
-    waveform = F.pad(waveform.unsqueeze(1), (0, 0), mode="reflect")
+    # A zero-width reflection pad is an identity. Its CUDA backward has no
+    # deterministic implementation, so that path unsqueezes without the kernel.
+    # Other devices keep the pad so the graph stays the published one.
+    if waveform.is_cuda and torch.are_deterministic_algorithms_enabled():
+        waveform = waveform.unsqueeze(1)
+    else:
+        waveform = F.pad(waveform.unsqueeze(1), (0, 0), mode="reflect")
     hann = torch.hann_window(window).to(waveform.device)
     if waveform.is_cuda and torch.are_deterministic_algorithms_enabled():
         spec = centered_stft(waveform.squeeze(1), window, hop, hann)

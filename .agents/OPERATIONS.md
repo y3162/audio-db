@@ -53,9 +53,10 @@
 | `.venvs/asr` | NeMo、Whisper、Transformers。実 ASR |
 | `.venvs/official` | 公式実装との比較 |
 | `.venvs/semambapp` | SEMamba++ の fused CUDA |
+| `.venvs/asr_guided_se` | NeMo の TDT と SEMamba++ を同じプロセスで動かす |
 | `.venvs/deepfilternet` | 公式 `libdf`。独立実装の実行時依存ではない |
 
-ASR-guided SE の TDT 損失と SEMamba++ を同じプロセスで動かす環境は、この checkout には作っていない。`.venvs/asr` の numba は 0.61.0、`.venvs/se` の numba は 0.68.1 で、lock を足し合わせない。公式 venv は変更しない。実 Parakeet は `.venvs/asr`、SE の学習確認は `.venvs/se` で分ける。このホストの `/usr/local/cuda` は 11.0 で、Numba 0.61 はそのままでは TDT カーネルをコンパイルしない。`.venvs/asr` に入っている `nvidia/cuda_nvcc` と `nvidia/cuda_runtime` を `CUDA_HOME` と `LD_LIBRARY_PATH` で見せると、A100（8.0）向けにコンパイルできる。venv 自体は変えない。
+`.venvs/asr` の numba 0.61.0 と `.venvs/se` の numba 0.68.1 は同時に満たせない。ASR-guided SE の lock は `requirements/asr_guided_se.lock.txt` で、二つの lock は足し合わせない。公式 venv は変更しない。Numba 0.61 が `/usr/local/cuda` の 11.0 を掴むホストでは、`scripts/setup/with_env.sh` が `.venvs/asr_guided_se` の Python に限って wheel の CUDA 12 NVVM を見せる。手順は `docs/envs/SETUP.md`。
 
 `src/se/official/` は Git 管理外。独立実装はここを import しない。テストの公式比較だけが読む。
 

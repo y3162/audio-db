@@ -33,6 +33,18 @@ class PlatformTests(unittest.TestCase):
         self.assertNotIn("shinoda_lab", text)
         self.assertTrue(os.access(ROOT / "scripts/setup/setup.sh", os.X_OK) or True)
 
+    def test_numba_cuda_wheel_is_only_applied_to_the_unified_env(self) -> None:
+        text = (ROOT / "scripts/setup/with_env.sh").read_text(encoding="utf-8")
+        self.assertIn("/.venvs/asr_guided_se/bin/python", text)
+        self.assertNotIn("/.venvs/se/bin/python", text)
+        self.assertNotIn("/.venvs/asr/bin/python", text)
+        self.assertNotIn("/.venvs/semambapp/bin/python", text)
+        wheel = (ROOT / "scripts/setup/cuda_wheel.sh").read_text(encoding="utf-8")
+        self.assertIn("CUDA_HOME", wheel)
+        self.assertIn("nvidia/cuda_nvcc", wheel)
+        self.assertNotIn("/home/", wheel)
+        self.assertNotIn("CUDA_VISIBLE_DEVICES=4", wheel)
+
 
 if __name__ == "__main__":
     unittest.main()

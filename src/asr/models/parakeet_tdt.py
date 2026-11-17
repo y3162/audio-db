@@ -285,6 +285,7 @@ class ParakeetTDT(nn.Module):
         lengths: torch.Tensor,
         layers: Sequence[int] | None = None,
     ) -> EncodeResult:
+        self._install_deterministic_stft()
         layer_indices = self._resolve_layer_indices(layers)
         batch_size = int(waveforms.shape[0])
         valid = lengths > 0
@@ -515,6 +516,44 @@ class ParakeetTDT(nn.Module):
             tokens=tokens,
         )
 
+    def _install_deterministic_stft(self) -> None:
+        """Match centered STFT without CUDA reflection-pad backward.
+
+        NeMo's featurizer uses ``torch.stft(..., center=True)`` unless
+        ``exact_pad`` is set. That backward calls ``reflection_pad1d``, which
+        has no deterministic CUDA implementation. An index reflection plus
+        ``center=False`` matches the centered spectrum and can propagate
+        gradients while deterministic algorithms stay on. ``src.asr`` does not
+        import the experiment STFT helper, so the pad lives here.
+        """
+
+        featurizer = self.model.preprocessor.featurizer
+        if getattr(featurizer, "_audio_db_deterministic_stft", False):
+            return
+        if not torch.are_deterministic_algorithms_enabled():
+            return
+        if bool(getattr(featurizer, "exact_pad", False)):
+            raise RuntimeError("Parakeet featurizer exact_pad still uses reflection pad")
+        original = featurizer.stft
+
+        def stft(x: torch.Tensor) -> torch.Tensor:
+            if not x.is_cuda:
+                return original(x)
+            pad = int(featurizer.n_fft) // 2
+            framed = _index_reflect(x, pad)
+            return torch.stft(
+                framed,
+                n_fft=int(featurizer.n_fft),
+                hop_length=int(featurizer.hop_length),
+                win_length=int(featurizer.win_length),
+                center=False,
+                window=featurizer.window.to(dtype=torch.float),
+                return_complex=True,
+            )
+
+        featurizer.stft = stft
+        featurizer._audio_db_deterministic_stft = True
+
     def _set_decoder_backward_enabled(self, enabled: bool) -> None:
         if enabled:
             self.model.decoder.train()
@@ -525,6 +564,19 @@ class ParakeetTDT(nn.Module):
                 parameter.requires_grad_(False)
             return
         self.model.decoder.eval()
+
+
+def _index_reflect(waveform: torch.Tensor, pad: int) -> torch.Tensor:
+    """Reflect ``pad`` samples on each side by indexing, not ``reflection_pad1d``."""
+
+    if pad == 0:
+        return waveform
+    length = int(waveform.shape[-1])
+    if length <= pad:
+        raise RuntimeError(f"waveform length {length} cannot be reflect-padded by {pad} samples")
+    left = waveform[..., 1 : pad + 1].flip(-1)
+    right = waveform[..., -pad - 1 : -1].flip(-1)
+    return torch.cat((left, waveform, right), dim=-1)
 
 
 def _layer_tensor(out: Any, encoder_dim: int) -> torch.Tensor:

@@ -25,11 +25,18 @@ make setup PLATFORM=shinoda_lab
 | `.venvs/asr` | NeMo、Whisper、Transformers。SE と ASR を同じプロセスでつなぐ |
 | `.venvs/official` | 公式実装との比較。NumPy 2.5 |
 | `.venvs/semambapp` | SEMamba++ の fused CUDA（`mamba-ssm` 2.3.2.post1、`causal-conv1d` 1.7.0） |
+| `.venvs/asr_guided_se` | NeMo 2.2.1 と SEMamba++ を同じプロセスで使う |
 | `.venvs/deepfilternet` | 公式 `libdf`。PyO3 が NumPy 1.26 を要求するため分けている |
 
 依存の正本は `requirements/<role>.in` と、そこから作った `requirements/<role>.lock.txt` である。通常の `make setup` は lock を更新しない。lock を作り直すときだけ `scripts/setup/compile_locks.sh` を実行する。
 
-ASR-guided SEMamba++ v1 の TDT 損失は NeMo と Numba、Generator は `mamba-ssm` と nnAudio を同じプロセスで使う。その統合環境は作っていない。`.venvs/asr` の numba 0.61.0 と `.venvs/se` の numba 0.68.1 は同時に満たせないので、lock を足した requirements は置かない。公式の 5 環境は変更しない。Parakeet の確認は `.venvs/asr`、SE の更新確認は `.venvs/se` で行う。Numba がシステムの CUDA 11.0 を掴むホストでは、TDT カーネルの確認のときだけ `CUDA_HOME` を `.venvs/asr` の `nvidia/cuda_nvcc` にし、その `nvvm/lib64` と `lib64`、および `nvidia/cuda_runtime/lib` を `LD_LIBRARY_PATH` の先頭に置く。
+ASR-guided SEMamba++ v1 は `.venvs/asr_guided_se` で学習する。NeMo 2.2.1 は `numba==0.61.0` を要求し、その Numba は NumPy 2.2 以降を拒む。`.venvs/se` と `.venvs/semambapp` は numba 0.68.1 と numpy 2.5.4 のままである。lock は足し合わせない。`requirements/asr_guided_se.in` から `requirements/asr_guided_se.lock.txt` を作る。scipy 1.18.1、librosa 1.0.0、nnAudio 0.3.3 は SE に合わせ、numba、llvmlite、numpy は NeMo に合わせる。`mamba-ssm` と `causal-conv1d` は lock に入らない。`openai-whisper==20240930` も lock の外で、sync のあと `--no-build-isolation` で入れる。
+
+```bash
+make setup-env PLATFORM=shinoda_lab ROLES=asr_guided_se
+```
+
+`scripts/setup/with_env.sh` は、この役割の Python を起動するときだけ、未設定の `CUDA_HOME` をその環境の `nvidia/cuda_nvcc` にする。`nvvm/lib64`、`lib64`、`nvidia/cuda_runtime/lib` を `LD_LIBRARY_PATH` の先頭に置く。呼び出し側が `CUDA_HOME` を置いていればそれを使う。他の役割には渡さない。この wheel は `libnvvm.so` と `ptxas` を含み、`nvcc` 本体は含まない。Numba は版付きの `libnvvm.so.*` を探すので wheel を見つけられないことがあり、そのときはこの `LD_LIBRARY_PATH` の `libnvvm.so` を読む。`.venvs/asr` で TDT だけを見るときの変数の渡し方は [ASR](ASR.md)。
 
 SE 学習ログを TensorBoard で確認できるよう、`.venvs/se` に `tensorboard==2.20.0` を含める。TSUBAME と SHINODA-LAB のどちらも `make setup PLATFORM=...` で構築される同じ lock を使う。
 
@@ -52,7 +59,7 @@ make test-setup
 
 ## 融合カーネル
 
-`.venvs/semambapp` の `mamba-ssm` と `causal-conv1d` は、`requirements/official-assets.toml` のピンしたソースからビルドする。lock には入っていない。インストール後、`scripts/apply_mamba_init_patch.py` が `patches/mamba_ssm-2.3.2.post1-init.patch` を当てる。対象は `mamba_ssm/__init__.py` の Mamba2、Mamba3、言語モデルヘッドの import だけである。selective scan のソースと CUDA 拡張は変えない。再実行は何もしない。
+`.venvs/semambapp` と `.venvs/asr_guided_se` の `mamba-ssm` と `causal-conv1d` は、`requirements/official-assets.toml` のピンしたソースからビルドする。lock には入っていない。インストール後、`scripts/apply_mamba_init_patch.py` が `patches/mamba_ssm-2.3.2.post1-init.patch` を当てる。対象は `mamba_ssm/__init__.py` の Mamba2、Mamba3、言語モデルヘッドの import だけである。selective scan のソースと CUDA 拡張は変えない。再実行は何もしない。
 
 `AUDIO_DB_REBUILD_MAMBA=1` は、入っている拡張と `build/native-src` の中間ビルドを消してから作り直す。`TORCH_CUDA_ARCH_LIST` はプラットフォームスクリプトが設定する。あるホストでビルドした `.so` を、別のアーキテクチャのホストへコピーしない。
 
