@@ -18,6 +18,16 @@ apply_cuda_wheel() {
     echo "cuda wheel: libnvvm is missing under ${home}" >&2
     return 1
   fi
+  # Numba looks up libcudart.so.<version> in CUDA_HOME/lib64. The wheel ships
+  # only libcudart.so.12, and uv pip sync removes this link without changing
+  # the setup stamp. Without it, dlopen("libcudart.so") loads the linker's
+  # CUDA 11.0 runtime, which Numba 0.61 rejects with an empty arch list.
+  if [[ ! -e "${runtime}/libcudart.so.12" ]]; then
+    echo "cuda wheel: libcudart.so.12 is missing under ${runtime}" >&2
+    return 1
+  fi
+  mkdir -p "${home}/lib64"
+  ln -sfn "${runtime}/libcudart.so.12" "${home}/lib64/libcudart.so.12"
   export CUDA_HOME="$home"
   export PATH="${CUDA_HOME}/bin:${PATH}"
   libs="${CUDA_HOME}/nvvm/lib64:${CUDA_HOME}/lib64"

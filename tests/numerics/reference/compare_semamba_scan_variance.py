@@ -245,7 +245,8 @@ def _step(kind: str, scan: str | None) -> dict:
         optim.zero_grad(set_to_none=True)
     disc = losses(detached, cqt, mrd)["discriminator"]
     disc.backward()
-    disc_grad_g = _cpu_grads(cqt)
+    cqt_grad = _cpu_grads(cqt)
+    mrd_grad = _cpu_grads(mrd)
     optim_d.step()
     optim_g.zero_grad(set_to_none=True)
     torch.cuda.synchronize()
@@ -283,7 +284,8 @@ def _step(kind: str, scan: str | None) -> dict:
         "cqt": _cpu_state(cqt),
         "mrd": _cpu_state(mrd),
         "generator_grad": gen_grad,
-        "cqt_grad": disc_grad_g,
+        "cqt_grad": cqt_grad,
+        "mrd_grad": mrd_grad,
         "optim_g": _optim_state(optim_g, generator.named_parameters()),
         "optim_d": _optim_state(optim_d, list(cqt.named_parameters()) + list(mrd.named_parameters())),
         "scheduler_g": dict(scheduler_g.state_dict()),
@@ -291,13 +293,15 @@ def _step(kind: str, scan: str | None) -> dict:
     }
     for name in ("adversarial", "matching", "mel", "magnitude", "phase", "complex", "consistency"):
         record["losses"][name] = float(gen_pack[name].detach())
+    record["finite"] = bool(torch.isfinite(audio).all()) and all(
+        value == value and abs(value) != float("inf") for value in record["losses"].values()
+    )
     return record
 
 
-def _save_trial(name: str) -> None:
-    kind, _, scan = name.partition(":")
-    record = _step(kind, scan or None)
-    destination = _out() / f"{name.replace(':', '_')}.pt"
+def _save_trial(name: str, *, kind: str, scan: str | None) -> None:
+    record = _step(kind, scan)
+    destination = _out() / f"{name}.pt"
     torch.save(record, destination)
     summary = {
         "kind": record["kind"],
@@ -309,6 +313,7 @@ def _save_trial(name: str) -> None:
         "peak_allocated": record["peak_allocated"],
         "peak_reserved": record["peak_reserved"],
         "peak_device_mib": record["peak_device_mib"],
+        "finite": record["finite"],
     }
     print(json.dumps(summary))
     print(destination)
@@ -326,6 +331,7 @@ def _named_gap(left: dict, right: dict) -> dict:
     report["p95"] = float(torch.quantile(delta, 0.95))
     report["relative"] = float(delta.max()) / max(float(flat_left.abs().max()), 1e-12)
     report["bitwise"] = bool(torch.equal(flat_left, flat_right)) and not missing
+    report["bitwise_rate"] = float((flat_left == flat_right).sum()) / float(flat_left.numel())
     report["missing"] = missing
     return report
 
@@ -350,7 +356,10 @@ def _pair_stats(left: dict, right: dict) -> dict:
         for name in left["losses"]
     }
     weight = {bucket: _named_gap(left[bucket], right[bucket]) for bucket in ("generator", "cqt", "mrd")}
-    grad = {bucket: _named_gap(left[bucket], right[bucket]) for bucket in ("generator_grad", "cqt_grad")}
+    grad = {
+        bucket: _named_gap(left[bucket], right[bucket])
+        for bucket in ("generator_grad", "cqt_grad", "mrd_grad")
+    }
     optim = {}
     for name in ("optim_g", "optim_d"):
         worst = 0.0
@@ -380,34 +389,100 @@ def _load_named(name: str) -> dict:
     return torch.load(_out() / f"{name}.pt", map_location="cpu", weights_only=False)
 
 
+def _metric_table(stats: dict) -> dict[str, float]:
+    table = {
+        "audio": stats["audio"]["max_abs"],
+        "generator_weight": stats["weight"]["generator"]["max_abs"],
+        "cqt_weight": stats["weight"]["cqt"]["max_abs"],
+        "mrd_weight": stats["weight"]["mrd"]["max_abs"],
+        "generator_grad": stats["grad"]["generator_grad"]["max_abs"],
+        "cqt_grad": stats["grad"]["cqt_grad"]["max_abs"],
+        "mrd_grad": stats["grad"]["mrd_grad"]["max_abs"],
+        "optim_g": stats["optim"]["optim_g"]["max_abs"],
+        "optim_d": stats["optim"]["optim_d"]["max_abs"],
+    }
+    for name, value in stats["losses"].items():
+        table[f"loss_{name}"] = value
+    return table
+
+
+def _envelope(pairs: list[dict]) -> dict[str, dict[str, float]]:
+    buckets: dict[str, list[float]] = {}
+    for pair in pairs:
+        for key, value in _metric_table(pair).items():
+            buckets.setdefault(key, []).append(float(value))
+    return {
+        key: {"max": max(values), "mean": sum(values) / len(values), "min": min(values)}
+        for key, values in buckets.items()
+    }
+
+
 def summarize() -> None:
     official = [f"official_{index}" for index in range(TRIALS)]
-    loaded = {name: _load_named(name) for name in official}
-    loaded["fused"] = _load_named("audiodb_fused")
-    loaded["reference"] = _load_named("audiodb_reference")
-    pairs = []
+    fused_names = [f"audiodb_fused_{index}" for index in range(TRIALS)]
+    loaded = {name: _load_named(name) for name in official + fused_names}
+    loaded["audiodb_reference"] = _load_named("audiodb_reference")
+    official_pairs = []
     for left in range(TRIALS):
         for right in range(left + 1, TRIALS):
-            pairs.append({"left": official[left], "right": official[right], **_pair_stats(loaded[official[left]], loaded[official[right]])})
+            official_pairs.append(
+                {"left": official[left], "right": official[right], **_pair_stats(loaded[official[left]], loaded[official[right]])}
+            )
+    fused_pairs = []
+    for fused_name in fused_names:
+        for official_name in official:
+            fused_pairs.append(
+                {"left": fused_name, "right": official_name, **_pair_stats(loaded[fused_name], loaded[official_name])}
+            )
+    reference_pairs = [
+        {"left": "audiodb_reference", "right": name, **_pair_stats(loaded["audiodb_reference"], loaded[name])}
+        for name in official
+    ]
+    official_spread = _envelope(official_pairs)
+    fused_spread = _envelope(fused_pairs)
+    reference_spread = _envelope(reference_pairs)
+    comparison = {}
+    for key, official_row in official_spread.items():
+        fused_row = fused_spread[key]
+        if official_row["max"] == 0.0 and fused_row["max"] > 0.0:
+            relation = "exceeds_zero_official_spread"
+        elif fused_row["mean"] > official_row["max"]:
+            relation = "mean_exceeds_official_max"
+        elif fused_row["max"] > official_row["max"]:
+            relation = "max_exceeds_official_max"
+        else:
+            relation = "within_official_spread"
+        comparison[key] = {
+            "official": official_row,
+            "fused": fused_row,
+            "reference": reference_spread[key],
+            "relation": relation,
+        }
     report = {
         "versions": _versions(),
         "trials": TRIALS,
-        "note": "Three official processes fix the spread. That is a small sample, not a confidence interval.",
-        "official_pairs": pairs,
-        "fused_vs_official_0": _pair_stats(loaded["fused"], loaded[official[0]]),
-        "reference_vs_official_0": _pair_stats(loaded["reference"], loaded[official[0]]),
+        "note": (
+            "Three official processes and three fused processes. "
+            "A single close pair is not the acceptance check. "
+            "peak_device_mib is the whole GPU and includes other processes."
+        ),
+        "finite": {name: bool(loaded[name]["finite"]) for name in loaded},
+        "fused_calls": {name: loaded[name]["fused_calls"] for name in fused_names},
+        "reference_fused_calls": loaded["audiodb_reference"]["fused_calls"],
+        "official_pairs": official_pairs,
+        "fused_pairs": fused_pairs,
+        "reference_pairs": reference_pairs,
+        "comparison": comparison,
         "worst_generator_weights": {
             "official_0_vs_1": _worst_parameters(loaded[official[0]], loaded[official[1]], "generator"),
-            "fused_vs_official_0": _worst_parameters(loaded["fused"], loaded[official[0]], "generator"),
-            "reference_vs_official_0": _worst_parameters(loaded["reference"], loaded[official[0]], "generator"),
+            "fused_0_vs_official_0": _worst_parameters(loaded[fused_names[0]], loaded[official[0]], "generator"),
+            "reference_vs_official_0": _worst_parameters(loaded["audiodb_reference"], loaded[official[0]], "generator"),
         },
         "worst_generator_grads": {
             "official_0_vs_1": _worst_parameters(loaded[official[0]], loaded[official[1]], "generator_grad"),
-            "fused_vs_official_0": _worst_parameters(loaded["fused"], loaded[official[0]], "generator_grad"),
-            "reference_vs_official_0": _worst_parameters(loaded["reference"], loaded[official[0]], "generator_grad"),
+            "fused_0_vs_official_0": _worst_parameters(loaded[fused_names[0]], loaded[official[0]], "generator_grad"),
+            "reference_vs_official_0": _worst_parameters(loaded["audiodb_reference"], loaded[official[0]], "generator_grad"),
         },
-        "fused_calls": loaded["fused"]["fused_calls"],
-        "reference_fused_calls": loaded["reference"]["fused_calls"],
         "memory": {
             name: {
                 "peak_allocated": loaded[name]["peak_allocated"],
@@ -416,7 +491,7 @@ def summarize() -> None:
                 "forward_seconds": loaded[name]["forward_seconds"],
                 "backward_seconds": loaded[name]["backward_seconds"],
             }
-            for name in ("fused", "reference", official[0])
+            for name in (*fused_names, "audiodb_reference", official[0])
         },
     }
     destination = _out() / "summary.json"
@@ -453,50 +528,78 @@ def bench() -> None:
 
             interface.mamba_inner_fn = _counted
 
-        def one() -> None:
+        def one() -> dict[str, float]:
+            torch.cuda.synchronize()
+            wall = time.perf_counter()
+            started = time.perf_counter()
             forward = _independent_parts(generator, clean, noisy)
+            torch.cuda.synchronize()
+            forward_disc = time.perf_counter() - started
             detached = {**forward, "audio": forward["audio"].detach()}
             optim_d.zero_grad(set_to_none=True)
             optim_g.zero_grad(set_to_none=True)
-            _independent_losses(detached, clean, cqt, mrd)["discriminator"].backward()
+            disc = _independent_losses(detached, clean, cqt, mrd)["discriminator"]
+            if not torch.isfinite(disc):
+                raise SystemExit(f"{scan} discriminator loss is not finite")
+            torch.cuda.synchronize()
+            started = time.perf_counter()
+            disc.backward()
+            torch.cuda.synchronize()
+            backward_disc = time.perf_counter() - started
             optim_d.step()
             optim_g.zero_grad(set_to_none=True)
+            torch.cuda.synchronize()
+            started = time.perf_counter()
             again = _independent_parts(generator, clean, noisy)
+            torch.cuda.synchronize()
+            forward_gen = time.perf_counter() - started
             loss = _independent_losses(again, clean, cqt, mrd)["generator"]
             if not torch.isfinite(loss):
-                raise SystemExit(f"{scan} loss is not finite")
+                raise SystemExit(f"{scan} generator loss is not finite")
+            torch.cuda.synchronize()
+            started = time.perf_counter()
             loss.backward()
+            torch.cuda.synchronize()
+            backward_gen = time.perf_counter() - started
             optim_g.step()
+            torch.cuda.synchronize()
+            return {
+                "seconds": time.perf_counter() - wall,
+                "forward_seconds": forward_disc + forward_gen,
+                "backward_seconds": backward_disc + backward_gen,
+            }
 
-        torch.cuda.synchronize()
-        one()
-        torch.cuda.synchronize()
+        warmup = one()
         torch.cuda.reset_peak_memory_stats()
+        baseline = _device_used_mib()
         device_samples: list[int] = []
         stop = threading.Event()
         watcher = threading.Thread(target=_watch_device, args=(device_samples, stop), daemon=True)
         watcher.start()
-        samples = []
-        for _index in range(3):
-            torch.cuda.synchronize()
-            started = time.perf_counter()
-            one()
-            torch.cuda.synchronize()
-            samples.append(time.perf_counter() - started)
+        samples = [one() for _index in range(3)]
         stop.set()
         watcher.join(timeout=1)
+        ordered = sorted(row["seconds"] for row in samples)
+        peak_device = max(device_samples) if device_samples else None
         rows.append(
             {
                 "scan": scan,
                 "fused_calls": calls["n"],
+                "warmup_seconds": warmup["seconds"],
                 "warmup_steps": 1,
                 "timed_steps": 3,
-                "seconds": samples,
-                "median_seconds": sorted(samples)[1],
-                "steps_per_second": 1.0 / sorted(samples)[1],
+                "seconds": [row["seconds"] for row in samples],
+                "forward_seconds": [row["forward_seconds"] for row in samples],
+                "backward_seconds": [row["backward_seconds"] for row in samples],
+                "median_seconds": ordered[1],
+                "median_forward_seconds": sorted(row["forward_seconds"] for row in samples)[1],
+                "median_backward_seconds": sorted(row["backward_seconds"] for row in samples)[1],
+                "steps_per_second": 1.0 / ordered[1],
                 "peak_allocated": int(torch.cuda.max_memory_allocated()),
                 "peak_reserved": int(torch.cuda.max_memory_reserved()),
-                "peak_device_mib": max(device_samples) if device_samples else None,
+                "device_used_mib_at_timing_start": baseline,
+                "peak_device_mib": peak_device,
+                "peak_device_delta_mib": None if baseline is None or peak_device is None else peak_device - baseline,
                 "finite": True,
             }
         )
@@ -518,8 +621,8 @@ def all_trials() -> None:
     prepare()
     for index in range(TRIALS):
         _spawn(f"save:official_{index}")
-    _spawn("save:audiodb:fused")
-    _spawn("save:audiodb:reference")
+        _spawn(f"save:audiodb_fused_{index}")
+    _spawn("save:audiodb_reference")
     summarize()
     _spawn("bench")
 
@@ -537,10 +640,11 @@ def main() -> None:
     elif command.startswith("save:"):
         name = command.split(":", 1)[1]
         if name.startswith("official_"):
-            _save_trial("official:")
-            (_out() / "official_.pt").rename(_out() / f"{name}.pt")
-        elif name in {"audiodb:fused", "audiodb:reference"}:
-            _save_trial(name)
+            _save_trial(name, kind="official", scan=None)
+        elif name.startswith("audiodb_fused_"):
+            _save_trial(name, kind="audiodb", scan="fused")
+        elif name == "audiodb_reference":
+            _save_trial(name, kind="audiodb", scan="reference")
         else:
             raise SystemExit(command)
     else:

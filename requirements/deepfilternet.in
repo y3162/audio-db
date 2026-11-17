@@ -1,5 +1,6 @@
-# .venvs/deepfilternet. Official libdf (PyO3 / numpy crate 0.20) is built here
-# because it does not share the NumPy 2.5 environment used by .venvs/se.
+# .venvs/deepfilternet. Official libdf (PyO3 0.20 / numpy crate 0.20) is built here.
+# DeepFilterNet's pyproject pins NumPy to <2, and that crate does not load on NumPy 2.
+# .venvs/se is NumPy 2.1.3. .venvs/official is NumPy 2.5.4. Do not move libdf into either.
 torch==2.6.0+cu124
 torchaudio==2.6.0+cu124
 numpy==1.26.4

@@ -724,10 +724,17 @@ def require_group_size(data: object, accumulation: int, component_id: str) -> No
 
 
 class StepLog:
-    def entry(self, progress: SEMambaProgress, shared: dict[str, Any], *, epoch: int) -> dict[str, Any]:
-        """One official metrics row. A subclass may add keys before the row is written."""
-
-        return {
+    def write(
+        self,
+        progress: SEMambaProgress,
+        runtime: ProcessRuntime,
+        journal: StepJournal,
+        local: dict[str, Any],
+        *,
+        epoch: int,
+    ) -> None:
+        shared = _shared_log(runtime, local)
+        entry = {
             "adversarial": shared["adversarial"],
             "applied_d": True,
             "applied_g": True,
@@ -751,18 +758,6 @@ class StepLog:
             "scan_configured": shared["scan_configured"],
             "scan_executed": shared["scan_executed"],
         }
-
-    def write(
-        self,
-        progress: SEMambaProgress,
-        runtime: ProcessRuntime,
-        journal: StepJournal,
-        local: dict[str, Any],
-        *,
-        epoch: int,
-    ) -> None:
-        shared = _shared_log(runtime, local)
-        entry = self.entry(progress, shared, epoch=epoch)
         progress.step_log.append(entry)
         journal.write_metrics(entry)
         journal.write_sample(

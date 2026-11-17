@@ -10,10 +10,11 @@ import torch
 
 import src.models.semambapp.trainer as semamba_trainer
 from src.experiments.errors import BuildError, RuntimeFailure
+from src.experiments.execution.journal import StepJournal
 from src.experiments.runtime import ProcessRuntime
 from src.experiments.training.control import weight_loss
 from src.experiments.calc.errors import TrainingError
-from src.models.semambapp.trainer import SEMambaPPTrainer, SEMambaUpdate, StepLog
+from src.models.semambapp.trainer import SEMambaPPTrainer, SEMambaProgress, SEMambaUpdate, StepLog
 from src.research.asr_guided_se.asr import TeacherCache, fingerprint_text
 from src.research.asr_guided_se.error_mask import crop_error_mask, overlapping_tokens
 from src.research.asr_guided_se.semambapp.v1.config import ASR_HOP, STFT_HOP, GuidanceV1
@@ -25,14 +26,60 @@ _RESEARCH_STEP_KEYS = ("error_mask_fraction", "tdt")
 
 
 class ResearchStepLog(StepLog):
-    """Official step row, plus TDT and the error-mask fraction when that step computed them."""
+    """Official step row, plus TDT and the error-mask fraction when that step computed them.
 
-    def entry(self, progress, shared, *, epoch: int):
-        row = super().entry(progress, shared, epoch=epoch)
+    ``StepLog`` has no extension point. This override builds the same official
+    fields, then adds a research key only when that step already computed it.
+    Each row is written once.
+    """
+
+    def write(
+        self,
+        progress: SEMambaProgress,
+        runtime: ProcessRuntime,
+        journal: StepJournal,
+        local: dict[str, Any],
+        *,
+        epoch: int,
+    ) -> None:
+        shared = semamba_trainer._shared_log(runtime, local)
+        entry = {
+            "adversarial": shared["adversarial"],
+            "applied_d": True,
+            "applied_g": True,
+            "complex": shared["complex"],
+            "consistency": shared["consistency"],
+            "discriminator": shared["discriminator"],
+            "epoch": epoch,
+            "generator": shared["generator"],
+            "generator_forwards": shared["generator_forwards"],
+            "generator_previews": shared["generator_previews"],
+            "generator_reforwards": shared["generator_reforwards"],
+            "logical_step": progress.logical_step,
+            "loss": shared["generator"],
+            "lr_d": shared["lr_d"],
+            "lr_g": shared["lr_g"],
+            "magnitude": shared["magnitude"],
+            "matching": shared["matching"],
+            "mel": shared["mel"],
+            "phase": shared["phase"],
+            "sample_id": shared["sample_id"],
+            "scan_configured": shared["scan_configured"],
+            "scan_executed": shared["scan_executed"],
+        }
         for key in _RESEARCH_STEP_KEYS:
             if key in shared:
-                row[key] = shared[key]
-        return row
+                entry[key] = shared[key]
+        progress.step_log.append(entry)
+        journal.write_metrics(entry)
+        journal.write_sample(
+            {
+                "logical_step": progress.logical_step,
+                "loss": local["generator"],
+                "realization_id": local["realization_id"],
+                "sample_id": local["sample_id"],
+            }
+        )
 
 
 class GuidedSEMambaPPTrainer(SEMambaPPTrainer):

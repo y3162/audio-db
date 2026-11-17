@@ -32,7 +32,12 @@ _NEMO_MARKERS = ("preprocessor", "joint.", "decoder.prediction", "fastconformer"
 
 
 def _reexec_numba_cuda() -> None:
-    """Start again so Numba's loader sees this venv's CUDA 12 NVVM."""
+    """Start again through with_env so Numba sees the CUDA 12 wheel.
+
+    The wrapper restores ``libcudart.so.12`` under the wheel. Pointing
+    ``CUDA_HOME`` at the wheel without that link makes Numba load the
+    system CUDA 11.0 runtime and reject every compute capability.
+    """
 
     if os.environ.get("AUDIO_DB_NUMBA_CUDA") == "ready":
         return
@@ -41,22 +46,10 @@ def _reexec_numba_cuda() -> None:
     if os.environ.get("CUDA_HOME"):
         os.environ["AUDIO_DB_NUMBA_CUDA"] = "ready"
         return
-    site = Path(sys.prefix) / "lib" / f"python{sys.version_info.major}.{sys.version_info.minor}" / "site-packages"
-    home = site / "nvidia" / "cuda_nvcc"
-    if not (home / "nvvm" / "lib64" / "libnvvm.so").is_file():
-        return
     env = os.environ.copy()
-    env["CUDA_HOME"] = str(home)
-    env["PATH"] = str(home / "bin") + os.pathsep + env.get("PATH", "")
-    libs = [
-        str(home / "nvvm" / "lib64"),
-        str(home / "lib64"),
-        str(site / "nvidia" / "cuda_runtime" / "lib"),
-    ]
-    previous = env.get("LD_LIBRARY_PATH")
-    env["LD_LIBRARY_PATH"] = os.pathsep.join(libs) + (os.pathsep + previous if previous else "")
     env["AUDIO_DB_NUMBA_CUDA"] = "ready"
-    os.execve(sys.executable, [sys.executable, *sys.argv], env)
+    wrapper = _ROOT / "scripts/setup/with_env.sh"
+    os.execve(wrapper, [str(wrapper), sys.executable, *sys.argv], env)
 
 
 def _stack_reason() -> str | None:

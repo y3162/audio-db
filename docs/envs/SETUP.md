@@ -23,7 +23,9 @@ make setup PLATFORM=shinoda_lab
 |---|---|
 | `.venvs/se` | 通常の唯一の環境。6 モデル、ASR、DB、評価、テスト、fused scan |
 | `.venvs/official` | 公式実装との比較。NumPy 2.5。通常の学習には使わない |
-| `.venvs/deepfilternet` | 公式 `libdf`。PyO3 が NumPy 1.26 を要求し、`.venvs/se` の 2.1.3 とも `.venvs/official` の 2.5.4 とも共存しない |
+| `.venvs/deepfilternet` | 公式 `libdf`。PyO3 0.20 と numpy crate 0.20 が NumPy 2 を読み込めず、公式パッケージも NumPy 2 未満に固定している。`.venvs/se` の 2.1.3 にも `.venvs/official` の 2.5.4 にも移さない。`.venvs/official` の NumPy は変えない |
+
+導入済みの `libdf` と `libdfdata` の wheel は `manylinux_2_35` である。tensor と shannon の glibc は 2.31 なので、その共有ライブラリは `GLIBC_2.35` が無くロードできない。`uv` もこのプラットフォーム向けとしてその wheel を入れ直さない。ピンした `src/official/deepfilternet` は書き換えない。このホストの Cargo 1.76 は、ワークスペース直下の `--locked` は受けるが、`maturin --locked` を `pyDF` から起動すると lock の更新を求める。lock を外すと `rubato` が 0.14.1 から 0.15.0 に上がるので、その成果物は公式の依存ではない。独立実装の DeepFilterNet3 は `libdf` を import せず、`.venvs/se` とローカルの `libdf_rfft.so` で動く。追跡中の `libdf_rfft.so` は `GLIBC_2.33` を要求してこのホストでは読めない。
 
 依存の正本は `requirements/se.in`、`requirements/official.in`、`requirements/deepfilternet.in` と、それぞれの lock である。通常の `make setup` は lock を更新しない。lock を作り直すときだけ `scripts/setup/compile_locks.sh` を実行する。
 
@@ -33,7 +35,7 @@ make setup PLATFORM=shinoda_lab
 make setup-env PLATFORM=shinoda_lab ROLES=se
 ```
 
-`scripts/setup/with_env.sh` は `.venvs/se` の Python を起動するときだけ、未設定の `CUDA_HOME` をその環境の `nvidia/cuda_nvcc` にする。`nvvm/lib64`、`lib64`、`nvidia/cuda_runtime/lib` を `LD_LIBRARY_PATH` の先頭に置く。呼び出し側が `CUDA_HOME` を置いていればそれを使う。公式役割には渡さない。この wheel は `libnvvm.so` と `ptxas` を含み、`nvcc` 本体は含まない。Numba は版付きの `libnvvm.so.*` を探すので wheel を見つけられないことがあり、そのときはこの `LD_LIBRARY_PATH` の `libnvvm.so` を読む。手で同じ変数を置く手順は [ASR](ASR.md)。
+`scripts/setup/with_env.sh` は `.venvs/se` の Python を起動するときだけ、未設定の `CUDA_HOME` をその環境の `nvidia/cuda_nvcc` にする。起動のたびに `lib64/libcudart.so.12` を `nvidia/cuda_runtime` の実体へ張り直す。`uv pip sync` はこのリンクを消すが lock の stamp は変わらないので、セットアップ時の一度だけでは残らない。`nvvm/lib64`、`lib64`、`nvidia/cuda_runtime/lib` を `LD_LIBRARY_PATH` の先頭に置く。呼び出し側が `CUDA_HOME` を置いていればそれを使う。公式役割には渡さない。この wheel は `libnvvm.so` と `ptxas` を含み、`nvcc` 本体は含まない。Numba は版付きの `libnvvm.so.*` を探すので wheel を見つけられないことがあり、そのときはこの `LD_LIBRARY_PATH` の `libnvvm.so` を読む。リンクが無いと Numba はローダの `libcudart.so`（この研究室のホストでは CUDA 11.0）を読み、対応アーキテクチャが空になって TDT を拒否する。手で同じ変数を置く手順は [ASR](ASR.md)。
 
 SE 学習ログを TensorBoard で確認できるよう、`.venvs/se` に `tensorboard==2.20.0` を含める。TSUBAME と SHINODA-LAB のどちらも `make setup PLATFORM=...` で構築される同じ lock を使う。
 
