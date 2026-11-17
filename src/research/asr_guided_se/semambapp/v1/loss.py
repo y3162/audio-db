@@ -96,7 +96,9 @@ def guided_generator_loss(
 
     if tdt is not None and (not isinstance(tdt, torch.Tensor) or tdt.ndim != 0):
         raise RuntimeFailure("TDT loss must be a scalar tensor")
-    if not guidance.error_weight_enabled:
+    # The stored alpha stays in the config when the switch is off. It is not applied.
+    alpha = float(guidance.error_weight_alpha) if guidance.error_weight_enabled else 0.0
+    if not guidance.error_weight_enabled and content_length is None:
         result = call_objective(objective, context)
         if tdt is None:
             return result
@@ -105,8 +107,14 @@ def guided_generator_loss(
         added = apply_weight(tdt, 1.0)
         total = result.total + added
         return ObjectiveOutput(total, result.records + (("tdt", tdt, 1.0),))
-    if sample_error is None or content_length is None:
+    if content_length is None or (guidance.error_weight_enabled and sample_error is None):
         raise RuntimeFailure("error weighting requires a sample mask and content lengths")
+    if sample_error is None:
+        like = context["clean_mag"]
+        sample_error = torch.zeros(
+            int(content_length.shape[0]), 1, dtype=torch.bool, device=like.device
+        )
+        content_length = content_length.to(device=like.device)
     order = tuple(getattr(objective, "order", ()))
     weights = getattr(objective, "weights", None)
     if not order or not isinstance(weights, dict):
@@ -123,7 +131,7 @@ def guided_generator_loss(
                 context,
                 sample_error,
                 content_length,
-                float(guidance.error_weight_alpha),
+                alpha,
                 stft_hop,
                 spectral_weight,
             )
@@ -133,7 +141,7 @@ def guided_generator_loss(
                     sample_error,
                     content_length,
                     stft_hop,
-                    float(guidance.error_weight_alpha),
+                    alpha,
                 )
         else:
             value = module(context)

@@ -1,0 +1,135 @@
+# A0: ASR features off, TDT off, error weighting off.
+# Shared training condition for A1–A7. Those files change only the three
+# switches, the frozen-ASR wiring, and the output directory.
+extends: ../all_off.yaml
+seed: 42
+deterministic: true
+runtime:
+  kwargs:
+    device: cuda
+    precision: fp32
+output:
+  directory: data/results/experiments/error_aware_se_mamba_pp/ablation/A0
+checkpoint:
+  selector:
+    class: src.experiments.selectors.TopKSelector
+    kwargs:
+      metric: validation.wer
+      mode: min
+      k: 1
+      latest_every: 1000000
+components:
+  guidance:
+    kwargs:
+      asr_features_enabled: false
+      encoder_layer: 15
+      error_weight_enabled: false
+      error_weight_alpha: 1.0
+      tdt_loss_enabled: false
+  generator:
+    kwargs:
+      seed: 42
+      scan_backend: fused
+  mrd:
+    kwargs:
+      seed: 42
+      scan_backend: fused
+  cqt:
+    kwargs:
+      seed: 42
+      scan_backend: fused
+  source:
+    class: src.research.asr_guided_se.semambapp.v1.voicebank.VoicebankAblationSource
+    kwargs:
+      snapshot: voicebank.snr_shift.minus_15db@1
+      split_seed: 42
+      valid_count: 3
+  protocol:
+    class: src.research.asr_guided_se.semambapp.v1.voicebank.VoicebankAblationProtocol
+  sampler:
+    kwargs:
+      seed: 42
+      order: per_rank_independent_v1
+      validation_scope: rank0
+      validation_batch: 1
+  batcher:
+    kwargs:
+      micro_batch_size: 1
+      group_size: 8
+      keep_partial: false
+  asr:
+    role: other
+    class: src.research.asr_guided_se.asr.FrozenParakeet
+    kwargs:
+      model_id: nvidia/parakeet-tdt-0.6b-v2
+      tdt_loss: false
+  wer:
+    role: metric
+    class: src.experiments.metrics.WerMetric
+    kwargs:
+      name: wer
+      normalization: wer-norm-v1
+    inject:
+      recognizer: {ref: asr}
+  pesq:
+    role: metric
+    class: src.experiments.metrics.PESQMetric
+    kwargs:
+      name: pesq
+  stoi:
+    role: metric
+    class: src.experiments.metrics.STOIMetric
+    kwargs:
+      name: stoi
+  si_sdr:
+    role: metric
+    class: src.experiments.metrics.SISDRMetric
+    kwargs:
+      name: si_sdr
+  validation_eval:
+    role: evaluator
+    class: src.experiments.evaluation.AudioPairEvaluator
+    kwargs:
+      source: validation
+      sample_rate: 16000
+      every:
+        unit: epoch
+        interval: 1
+    inject:
+      model: {ref: generator}
+      data: {ref: data}
+      metrics:
+        - {ref: wer}
+        - {ref: pesq}
+        - {ref: stoi}
+        - {ref: si_sdr}
+  selection:
+    role: other
+    class: src.experiments.selection.BestMetricSelection
+    kwargs:
+      metric: validation.wer
+      mode: min
+      tie_break: earlier
+    state:
+      save: true
+  stopping:
+    role: stopping
+    class: src.experiments.stopping.PatienceStopPolicy
+    kwargs:
+      metric: validation.wer
+      mode: min
+      patience: 10
+      min_delta: 0.0
+  trainer:
+    kwargs:
+      max_logical_steps: 10000000
+      max_epochs: 100
+      global_batch_size: 8
+      micro_batch_size: 1
+      validation_interval: 0
+      best_checkpoint_start_epoch: 0
+      claim_label: research
+      experiment_claim: research
+    inject:
+      evaluators: {ref: validation_eval}
+      model_selection: {ref: selection}

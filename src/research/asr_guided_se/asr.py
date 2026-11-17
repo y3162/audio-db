@@ -80,6 +80,26 @@ class FrozenParakeet(nn.Module):
     def recognize(self, waveforms: torch.Tensor, lengths: torch.Tensor):
         return self.inner.recognize(waveforms, lengths)
 
+    def transcribe(self, audio: torch.Tensor, sample_rate: int) -> str:
+        """One utterance hypothesis. The weights stay frozen."""
+
+        if isinstance(sample_rate, bool) or int(sample_rate) != 16000:
+            raise RuntimeError(f"Parakeet transcription expects 16000 Hz, got {sample_rate}")
+        wave = audio.detach()
+        if wave.ndim == 2:
+            if int(wave.shape[0]) != 1:
+                raise RuntimeError("transcribe accepts one waveform")
+            wave = wave[0]
+        if wave.ndim != 1 or int(wave.shape[0]) < 1:
+            raise RuntimeError(f"transcribe waveform must be [time], got {tuple(wave.shape)}")
+        self.to_device(wave.device)
+        length = torch.tensor([int(wave.shape[0])], device=wave.device, dtype=torch.long)
+        recognition = self.recognize(wave.to(dtype=torch.float32).view(1, -1), length)[0]
+        text = getattr(recognition, "text", None)
+        if not isinstance(text, str):
+            raise RuntimeError("Parakeet recognition has no text")
+        return text
+
     def loss_from_ids(
         self,
         waveforms: torch.Tensor,

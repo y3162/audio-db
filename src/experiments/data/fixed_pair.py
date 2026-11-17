@@ -812,7 +812,7 @@ class SnapshotDataModule:
         teacher = getattr(self.protocol, "teacher", None)
         if teacher is None:
             teacher = rule.get("teacher")
-        return {
+        identity = {
             "algorithm": dataset.get("algorithm"),
             "claim_label": dataset.get("claim_label"),
             "class": _IDENTITY_CLASS,
@@ -836,6 +836,23 @@ class SnapshotDataModule:
             "validation_scope": getattr(self.sampler, "validation_scope", None),
             "window": window,
         }
+        record = getattr(self.source, "ablation_record", None)
+        if record is not None:
+            identity["ablation_split"] = record
+        return identity
+
+    def reference_transcript(self, sample_id: str) -> str | None:
+        """Delegate to the protocol when it can name the utterance text."""
+
+        lookup = getattr(self.protocol, "reference_transcript", None)
+        if not callable(lookup):
+            return None
+        value = lookup(sample_id)
+        if value is None:
+            return None
+        if not isinstance(value, str):
+            raise DataError(f"reference transcript for {sample_id} is not a string")
+        return value
 
     def setup(self, runtime: object) -> None:
         if self._closed:

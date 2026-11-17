@@ -2,7 +2,9 @@
 
 from __future__ import annotations
 
+import hashlib
 import json
+import os
 from pathlib import Path
 from typing import Any
 
@@ -136,6 +138,7 @@ class GuidedSEMambaPPTrainer(SEMambaPPTrainer):
 
     def _prepare_run(self, runtime: ProcessRuntime) -> str:
         component_id = super()._prepare_run(runtime)
+        self._record_initial_generator(runtime)
         if self.asr is None:
             return component_id
         directory = Path(self.lifecycle.output_directory)
@@ -156,6 +159,29 @@ class GuidedSEMambaPPTrainer(SEMambaPPTrainer):
 
             self._cache.writer = write
         return component_id
+
+    def _record_initial_generator(self, runtime: ProcessRuntime) -> None:
+        """Rank 0 writes the generator hash once. A resume keeps the first file."""
+
+        if int(getattr(runtime, "rank", 0)) != 0:
+            return
+        directory = Path(self.lifecycle.output_directory)
+        path = directory / "initial_generator.json"
+        if path.is_file():
+            return
+        digest = hashlib.sha256()
+        module = self.generator.unwrapped()
+        for key, value in sorted(module.state_dict().items()):
+            tensor = value.detach().to(device="cpu", dtype=torch.float32).contiguous()
+            digest.update(key.encode("utf-8"))
+            digest.update(tensor.numpy().tobytes())
+        record = {
+            "accumulation": int(self.accumulation),
+            "cuda_visible_devices": os.environ.get("CUDA_VISIBLE_DEVICES"),
+            "generator_state_sha256": digest.hexdigest(),
+            "world_size": int(getattr(runtime, "world_size", 1)),
+        }
+        path.write_text(json.dumps(record, indent=2, sort_keys=True) + "\n", encoding="utf-8")
 
     def _require_asr(self) -> None:
         if self.asr is None:
@@ -294,7 +320,7 @@ class GuidedUpdate(SEMambaUpdate):
         scale: int | list[float],
         offset: int,
     ) -> torch.Tensor:
-        if not self.guidance.changes_loss:
+        if not self.guidance.changes_loss and self._content_lengths(clean) is None:
             return super()._generator_backward(runtime, clean, parts, components, scale, offset)
         error: str | None = None
         total: torch.Tensor | None = None
@@ -325,13 +351,12 @@ class GuidedUpdate(SEMambaUpdate):
                 "sample_rate": int(self.generator.unwrapped().sampling_rate),
             }
             sample_error, content_length, tdt = self._research_terms(clean, parts["audio"])
-            observed_error = sample_error.detach()
-            observed_content = content_length.detach()
+            observed_error = None if sample_error is None else sample_error.detach()
+            observed_content = None if content_length is None else content_length.detach()
             if not self.guidance.tdt_loss_enabled:
                 tdt = None
             if not self.guidance.error_weight_enabled:
                 sample_error = None
-                content_length = None
             result = guided_generator_loss(
                 self.generator_objective,
                 context,
@@ -365,6 +390,18 @@ class GuidedUpdate(SEMambaUpdate):
             self._mask_total += mask_count
         return total.detach()
 
+    def _content_lengths(self, clean: torch.Tensor) -> torch.Tensor | None:
+        """Content lengths from the batch spans. Missing spans stay on the official loss."""
+
+        batch = self._rows.get(id(clean))
+        spans = None if batch is None else getattr(batch, "spans", None)
+        if not spans:
+            return None
+        if len(spans) != int(clean.shape[0]):
+            raise RuntimeFailure("span count does not match the micro-batch")
+        lengths = [_check_span(span, int(clean.shape[-1]))[1] for span in spans]
+        return torch.tensor(lengths, device=clean.device, dtype=torch.long)
+
     def _research_terms(
         self,
         clean: torch.Tensor,
@@ -376,6 +413,9 @@ class GuidedUpdate(SEMambaUpdate):
         spans = tuple(batch.spans)
         if len(spans) != clean.shape[0]:
             raise RuntimeFailure("span count does not match the micro-batch")
+        if not self.guidance.error_weight_enabled and not self.guidance.tdt_loss_enabled:
+            lengths = [_check_span(span, int(clean.shape[-1]))[1] for span in spans]
+            return None, torch.tensor(lengths, device=clean.device, dtype=torch.long), None
         ids = _realization_ids(batch, int(clean.shape[0]))
         masks: list[list[bool]] = []
         contents: list[int] = []

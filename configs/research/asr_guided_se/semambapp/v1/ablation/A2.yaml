@@ -1,0 +1,14 @@
+# A2: ASR features off, TDT on, error weighting off.
+extends: A0.yaml
+output:
+  directory: data/results/experiments/error_aware_se_mamba_pp/ablation/A2
+components:
+  guidance:
+    kwargs:
+      tdt_loss_enabled: true
+  asr:
+    kwargs:
+      tdt_loss: true
+  trainer:
+    inject:
+      asr: {ref: asr}
