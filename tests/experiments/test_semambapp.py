@@ -56,6 +56,7 @@ class LoopData:
         count: int,
         group_size: int = 1,
         poison_rank: int = -1,
+        with_spans: bool = False,
     ) -> None:
         if isinstance(seed, bool) or not isinstance(seed, int):
             raise ValueError("seed must be an integer")
@@ -76,6 +77,7 @@ class LoopData:
         ]
         self.group_size = group_size
         self.poison_rank = poison_rank
+        self.with_spans = bool(with_spans)
         self.rank = rank
         self.epoch = 0
         self.update_index = 0
@@ -125,11 +127,14 @@ class LoopData:
         noisy, clean = self.waves[index]
         if self.poison_rank == self.rank:
             noisy = torch.full_like(noisy, float("nan"))
+        length = int(noisy.shape[-1])
+        spans = ((0, length, length, length),) if self.with_spans else None
         return Batch(
             inputs=noisy.clone(),
             targets=clean.clone(),
             sample_id=f"{split}-{index}",
             realization_id=f"real-{index}",
+            spans=spans,
         )
 
 
@@ -624,6 +629,8 @@ def _yaml(
     device: str = "cpu",
     length: int = 2048,
     deterministic: bool = True,
+    with_spans: bool = False,
+    preflight: bool = True,
 ) -> Path:
     directory.mkdir(parents=True, exist_ok=True)
     stop = "" if stop_after is None else f"      stop_after_logical_steps: {stop_after}\n"
@@ -644,6 +651,7 @@ runtime:
     device: {device}
     precision: fp32
     world_size: {world}
+    preflight: {str(preflight).lower()}
 output:
   directory: {directory}
 components:
@@ -719,6 +727,7 @@ components:
       count: {count}
       group_size: {group_size}
       poison_rank: {poison_rank}
+      with_spans: {str(with_spans).lower()}
   optim_g:
     role: optimizer
     class: torch.optim.AdamW

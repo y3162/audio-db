@@ -29,10 +29,18 @@ import traceback
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[2]
-if str(ROOT) not in sys.path:
-    sys.path.insert(0, str(ROOT))
+_root_on_path = str(ROOT)
+sys.path[:] = [_root_on_path, *[entry for entry in sys.path if entry != _root_on_path]]
 
 from tests import suite_guard  # noqa: E402
+
+_suite_guard_file = Path(suite_guard.__file__).resolve()
+_expected_suite_guard = (ROOT / "tests" / "suite_guard.py").resolve()
+if _suite_guard_file != _expected_suite_guard:
+    raise SystemExit(
+        f"tests resolved to {_suite_guard_file}, not {_expected_suite_guard}. "
+        "Refusing to run a different tests package."
+    )
 from tests.suite_resources import (  # noqa: E402
     available_cpus,
     gpu_inventory_required,

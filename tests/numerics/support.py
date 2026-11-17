@@ -21,9 +21,9 @@ from src.experiments.calc.dataset import RecipeDataset, TrainExample
 def pin_repo_root_for_spawn() -> None:
     """Put this repository first on ``sys.path`` before ``spawn``.
 
-    Do not delete other entries here. Spawn copies this list into the child,
-    and the child drops foreign ``tests`` packages while it imports. Deleting
-    them in the parent would hide packages later tests still need.
+    Do not delete other entries here. Spawn copies this list into the child.
+    A child that deleted every entry containing ``tests/__init__.py`` would
+    also delete site-packages, because NeMo ships that file there.
     """
     import sys
 

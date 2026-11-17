@@ -14,21 +14,15 @@ from pathlib import Path
 from unittest.mock import patch
 
 def _prefer_repo_tests() -> None:
-    repo = Path(__file__).resolve().parents[2]
-    kept = []
-    for entry in list(sys.path):
-        base = Path(entry) if entry else Path.cwd()
-        foreign = base / "tests" / "__init__.py"
-        try:
-            drop = foreign.is_file() and base.resolve() != repo
-        except OSError:
-            drop = False
-        if not drop:
-            kept.append(entry)
-    sys.path[:] = kept
-    root = str(repo)
-    if root not in sys.path:
-        sys.path.insert(0, root)
+    """Put the repository first. Do not drop site-packages.
+
+    NeMo ships ``site-packages/tests/__init__.py``. Dropping every path entry
+    that contains that file removes the environment that provides torch.
+    The repository ``tests`` package wins when its root is earlier.
+    """
+
+    repo = str(Path(__file__).resolve().parents[2])
+    sys.path[:] = [repo, *[entry for entry in sys.path if entry != repo]]
 
 
 _prefer_repo_tests()

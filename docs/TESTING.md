@@ -9,7 +9,7 @@ make test-cpu     # CPU だけ。CUDA は隠す
 make test         # CPU に加え、空いている GPU があれば GPU レーンも実行する
 ```
 
-どちらも `scripts/tests/run_suite.py` を呼ぶ。`tests/asr`、`tests/data`、`tests/evaluation`、`tests/experiments`、`tests/se`、`tests/setup`、`tests/numerics`、`tests/research` のモジュールをプロセスプールで並列に実行する。通常のランナーは `.venvs/se` である。実 Parakeet の GPU テストは `.venvs/asr_guided_se` でファイルを直接実行する。NeMo 2.2.1 はトップレベルの `tests` パッケージを入れるため、このインタプリタでは `python -m unittest tests.research...` がリポジトリのテストを読まない。
+どちらも `scripts/tests/run_suite.py` を呼ぶ。`tests/asr`、`tests/data`、`tests/evaluation`、`tests/experiments`、`tests/se`、`tests/setup`、`tests/numerics`、`tests/research` のモジュールをプロセスプールで並列に実行する。通常のランナーは `.venvs/se` である。実 Parakeet の GPU テストは `.venvs/asr_guided_se` で、リポジトリルートをカレントにして `python -m unittest` するか、ランナーと同じくリポジトリルートを `sys.path` の先頭に置いて実行する。NeMo 2.2.1 はトップレベルの正規パッケージ `tests` を site-packages に入れる。リポジトリの `tests/__init__.py` が同じ名前を正規パッケージにし、ルートが site-packages より前にあるときリポジトリ側が勝つ。site-packages の `tests` は消さない。`tests/__init__.py` があるという理由で path 要素ごと捨てると、NeMo 環境では site-packages 自体が落ちて torch を import できなくなる。ランナーは解決先がリポジトリの `tests/suite_guard.py` でなければ起動しない。実 Parakeet の決定性調査と狭いネットの再開・NCCL は `tests/research/test_tdt_determinism.py` と `tests/research/test_asr_guided_stability.py` である。CPU レーンは CUDA を隠すので、これらは `NOT_RUN` になり NeMo を import しない。GPU レーンの対象リストには入っていない。実行するときは空き GPU だけを `CUDA_VISIBLE_DEVICES` に指定し、`.venvs/asr_guided_se` を `scripts/setup/with_env.sh` 経由で `python -m unittest` する。
 時間のかかるモジュールは先に起動し、他のワーカーが先に遊休になる時間を減らす。
 
 ディレクトリ単体、モジュール単体は `unittest` をそのまま使う。本番データの保護を付けるときは `tests.suite_guard` を前に置く。

@@ -6,6 +6,7 @@ official-width model and it does not load Parakeet.
 
 from __future__ import annotations
 
+import json
 import tempfile
 import unittest
 from dataclasses import replace
@@ -33,8 +34,11 @@ def _research_yaml(directory: Path, **kwargs) -> Path:
     features = bool(kwargs.pop("features", False))
     error = bool(kwargs.pop("error", False))
     tdt = bool(kwargs.pop("tdt", False))
+    real_asr = bool(kwargs.pop("real_asr", False))
     alpha = float(kwargs.pop("alpha", 1.0 if error else 0.0))
     layer = int(kwargs.pop("layer", 3))
+    if error or tdt:
+        kwargs.setdefault("with_spans", True)
     kwargs.setdefault("claim", "research")
     path = _yaml(directory, **kwargs)
     text = path.read_text(encoding="utf-8")
@@ -86,11 +90,16 @@ def _research_yaml(directory: Path, **kwargs) -> Path:
         1,
     )
     if uses_asr:
+        asr_class = (
+            "src.research.asr_guided_se.asr.FrozenParakeet"
+            if real_asr
+            else "tests.research.fake_asr.FakeParakeet"
+        )
         text = text.replace(
             "  trainer:\n",
             f"""  asr:
     role: other
-    class: tests.research.fake_asr.FakeParakeet
+    class: {asr_class}
     kwargs:
       model_id: nvidia/parakeet-tdt-0.6b-v2
       tdt_loss: {str(tdt).lower()}
@@ -223,6 +232,77 @@ class ResearchLoopTest(unittest.TestCase):
             self.assertEqual(second.run(resume=interrupted / "archive/step_00000001.pt").stop_reason, "completed")
             _assert_same_checkpoint(continuous / "archive/step_00000002.pt", interrupted / "archive/step_00000002.pt")
             self.assertEqual(_metric_lines(continuous), _metric_lines(interrupted))
+
+    def test_step_log_records_computed_tdt_and_omits_it_when_disabled(self) -> None:
+        official_keys = {
+            "adversarial",
+            "complex",
+            "consistency",
+            "discriminator",
+            "generator",
+            "magnitude",
+            "matching",
+            "mel",
+            "phase",
+        }
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            runs = {
+                "error": dict(error=True),
+                "tdt": dict(tdt=True),
+                "both": dict(error=True, tdt=True),
+                "features": dict(features=True),
+            }
+            asr_calls = {}
+            for name, options in runs.items():
+                experiment = build_experiment(
+                    load_experiment(
+                        _research_yaml(
+                            root / name,
+                            steps=1,
+                            count=1,
+                            validation_interval=0,
+                            preflight=False,
+                            **options,
+                        )
+                    )
+                )
+                asr = _component(experiment, "asr")
+                experiment.run()
+                asr_calls[name] = (asr.loss_calls, asr.recognize_calls)
+            rows = {
+                name: json.loads(_metric_lines(root / name)[0])
+                for name in runs
+            }
+            for name, row in rows.items():
+                self.assertTrue(official_keys.issubset(row), name)
+                for key in official_keys:
+                    self.assertIsInstance(row[key], float, f"{name}.{key}")
+            self.assertNotIn("tdt", rows["error"])
+            self.assertNotIn("tdt", rows["features"])
+            self.assertNotIn("error_mask_fraction", rows["features"])
+            self.assertIn("tdt", rows["tdt"])
+            self.assertIn("tdt", rows["both"])
+            self.assertIn("error_mask_fraction", rows["error"])
+            self.assertIn("error_mask_fraction", rows["tdt"])
+            self.assertIn("error_mask_fraction", rows["both"])
+            for name in ("error", "tdt", "both"):
+                fraction = rows[name]["error_mask_fraction"]
+                self.assertIsInstance(fraction, float)
+                self.assertGreaterEqual(fraction, 0.0)
+                self.assertLessEqual(fraction, 1.0)
+            self.assertEqual(rows["error"]["error_mask_fraction"], 0.0)
+            self.assertNotEqual(rows["tdt"]["tdt"], rows["tdt"]["generator"])
+            self.assertEqual(rows["tdt"]["tdt"], rows["both"]["tdt"])
+            self.assertEqual(asr_calls["tdt"], (1, 2))
+            self.assertEqual(asr_calls["both"], (1, 2))
+            self.assertEqual(asr_calls["error"], (0, 2))
+            self.assertEqual(asr_calls["features"], (0, 0))
+            payload = torch.load(root / "tdt" / "archive" / "step_00000001.pt", map_location="cpu", weights_only=False)
+            logged = payload["states"]["trainer"]["step_log"][0]
+            self.assertEqual(logged["tdt"], rows["tdt"]["tdt"])
+            error_logged = payload and json.loads(_metric_lines(root / "error")[0])
+            self.assertNotIn("tdt", error_logged)
 
     def test_cpu_gloo_all_off_agrees(self) -> None:
         with tempfile.TemporaryDirectory() as directory:

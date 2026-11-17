@@ -167,11 +167,15 @@ class GuidedUpdate(SEMambaUpdate):
         self.cache = cache
         self.protocol = getattr(data, "protocol", None)
         self._rows: dict[int, Any] = {}
-        self._tdt_values: list[float] = []
+        self._tdt_terms: list[torch.Tensor] = []
+        self._mask_errors = 0
+        self._mask_total = 0
 
     def run(self, batches, runtime, phase_hook, *, apply_optimizer: bool = True):
         self._rows.clear()
-        self._tdt_values = []
+        self._tdt_terms.clear()
+        self._mask_errors = 0
+        self._mask_total = 0
         if self.asr is not None:
             if hasattr(self.asr, "to_device"):
                 self.asr.to_device(runtime.device)
@@ -207,10 +211,17 @@ class GuidedUpdate(SEMambaUpdate):
             semamba_trainer._waveforms = original
             module.bind_batch_lookup(None)
             self._rows.clear()
-        if self.guidance.tdt_loss_enabled:
+        observed: dict[str, float] = {}
+        if self.guidance.tdt_loss_enabled and self._tdt_terms:
+            folded = self._tdt_terms[0]
+            for value in self._tdt_terms[1:]:
+                folded = folded + value
+            observed["tdt"] = float(folded.detach()) / max(len(batches), 1)
+        if self._mask_total > 0:
+            observed["error_mask_fraction"] = self._mask_errors / self._mask_total
+        if observed:
             result = dict(result)
-            count = max(len(batches), 1)
-            result["tdt"] = sum(self._tdt_values) / count
+            result.update(observed)
         return result
 
     def _generator_backward(
@@ -227,6 +238,8 @@ class GuidedUpdate(SEMambaUpdate):
         error: str | None = None
         total: torch.Tensor | None = None
         terms: dict[str, torch.Tensor] | None = None
+        held_error: torch.Tensor | None = None
+        held_content: torch.Tensor | None = None
         try:
             band = self.cqt.unwrapped().discriminator
             mrd = self.mrd.unwrapped().discriminator
@@ -251,6 +264,8 @@ class GuidedUpdate(SEMambaUpdate):
                 "sample_rate": int(self.generator.unwrapped().sampling_rate),
             }
             sample_error, content_length, tdt = self._research_terms(clean, parts["audio"])
+            observed_error = sample_error.detach()
+            observed_content = content_length.detach()
             if not self.guidance.tdt_loss_enabled:
                 tdt = None
             if not self.guidance.error_weight_enabled:
@@ -267,6 +282,8 @@ class GuidedUpdate(SEMambaUpdate):
             )
             total = result.total
             terms = result.terms
+            held_error = observed_error
+            held_content = observed_content
         except (TrainingError, RuntimeFailure, RuntimeError, ValueError) as exc:
             error = f"{type(exc).__name__}: {exc}"
         errors = runtime.gather_objects(error)
@@ -280,7 +297,11 @@ class GuidedUpdate(SEMambaUpdate):
             current = components.get(name, 0.0)
             components[name] = current + value.detach()
         if "tdt" in terms:
-            self._tdt_values.append(float(terms["tdt"].detach()))
+            self._tdt_terms.append(terms["tdt"].detach())
+        if held_error is not None and held_content is not None:
+            mask_errors, mask_count = _content_error_counts(held_error, held_content)
+            self._mask_errors += mask_errors
+            self._mask_total += mask_count
         return total.detach()
 
     def _research_terms(
@@ -359,6 +380,23 @@ class GuidedUpdate(SEMambaUpdate):
         errors = runtime.gather_objects(error)
         if any(errors):
             raise RuntimeFailure("frozen ASR changed: " + "; ".join(item for item in errors if item))
+
+
+def _content_error_counts(mask: torch.Tensor, content: torch.Tensor) -> tuple[int, int]:
+    """Error samples inside the content. The detached mask is not a loss."""
+
+    lengths = [int(value) for value in content.detach().to(device="cpu", dtype=torch.long).tolist()]
+    cpu_mask = mask.detach().to(device="cpu")
+    errors = 0
+    total = 0
+    for row, length in enumerate(lengths):
+        if length <= 0:
+            continue
+        used = min(length, int(cpu_mask.shape[-1]))
+        total += used
+        if used:
+            errors += int(cpu_mask[row, :used].sum().item())
+    return errors, total
 
 
 def _realization_ids(batch, count: int) -> tuple[str, ...]:

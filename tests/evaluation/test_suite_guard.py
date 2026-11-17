@@ -203,5 +203,14 @@ class RunnerGuardTests(unittest.TestCase):
         self.assertIn(suite_guard.UNGUARDED_ENV, message)
 
 
+class RepositoryTestsPackageTests(unittest.TestCase):
+    def test_import_resolves_to_this_repository(self) -> None:
+        import tests
+
+        resolved = Path(tests.__file__).resolve()
+        self.assertEqual(resolved, (ROOT / "tests" / "__init__.py").resolve())
+        self.assertEqual(Path(suite_guard.__file__).resolve(), (ROOT / "tests" / "suite_guard.py").resolve())
+
+
 if __name__ == "__main__":
     unittest.main()
