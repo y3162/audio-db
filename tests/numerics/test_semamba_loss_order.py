@@ -35,7 +35,7 @@ class SEMambaLossOrderTest(unittest.TestCase):
             model = cls.__new__(cls)
             torch.nn.Module.__init__(model)
             model.discriminators = torch.nn.ModuleList([Recording(0), Recording(1)])
-            real, fake, real_features, fake_features = model(torch.tensor(1.0), torch.tensor(2.0))
+            real, fake, real_features, fake_features = model(torch.tensor([[1.0]]), torch.tensor([[2.0]]))
             self.assertEqual(calls, [(0, 1), (0, 2), (1, 1), (1, 2)])
             self.assertEqual([x.item() for x in real], [1, 1])
             self.assertEqual([x.item() for x in fake], [2, 2])

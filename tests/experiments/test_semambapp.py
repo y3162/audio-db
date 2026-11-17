@@ -534,7 +534,12 @@ def _assert_matches_task(test: unittest.TestCase, *, accumulation: int, count: i
                 test.assertIsInstance(old[key], float, key)
                 test.assertIsInstance(new[key], float, key)
                 test.assertTrue(math.isfinite(old[key]) and math.isfinite(new[key]), key)
-                if accumulation > 1 and key in {"discriminator", "matching", "complex", "consistency"}:
+                if key in {"generator_grad_norm", "discriminator_grad_norm"}:
+                    # Same per-parameter sums. The task folds them with += and the
+                    # trainer with sum(); those totals can differ by one float64 ulp.
+                    # The parameter gradients themselves are compared exactly below.
+                    test.assertAlmostEqual(old[key], new[key], delta=1e-12, msg=key)
+                elif accumulation > 1 and key in {"discriminator", "matching", "complex", "consistency"}:
                     # Python-float and float32-tensor accumulation round differently.
                     test.assertAlmostEqual(old[key], new[key], delta=1e-6, msg=key)
                 else:

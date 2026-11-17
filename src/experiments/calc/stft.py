@@ -31,6 +31,37 @@ def _reflect_pad(waveform: torch.Tensor, pad: int) -> torch.Tensor:
     return torch.cat((left, waveform, right), dim=-1)
 
 
+class _FoldedReflect(torch.autograd.Function):
+    """Index reflection whose backward matches ``reflection_pad1d``.
+
+    ``slice`` / ``flip`` / ``cat`` send the center samples and the reflected
+    edges back to the waveform as separate gradient nodes. Another loss on
+    that waveform can accumulate between those nodes, which moves only the
+    reflected boundary. ``F.pad(..., mode="reflect")`` adds the reflected
+    samples before the gradient joins the waveform. Folding both copies here
+    keeps that order without CUDA ``reflection_pad1d_backward``.
+    """
+
+    @staticmethod
+    def forward(ctx, waveform: torch.Tensor, pad: int) -> torch.Tensor:
+        ctx.pad = int(pad)
+        return _reflect_pad(waveform, int(pad))
+
+    @staticmethod
+    def backward(ctx, grad: torch.Tensor):
+        pad = int(ctx.pad)
+        if pad == 0:
+            return grad, None
+        folded = grad[..., pad:-pad].clone()
+        folded[..., 1 : pad + 1] = folded[..., 1 : pad + 1] + grad[..., :pad].flip(-1)
+        folded[..., -pad - 1 : -1] = folded[..., -pad - 1 : -1] + grad[..., -pad:].flip(-1)
+        return folded, None
+
+
+def _folded_reflect(waveform: torch.Tensor, pad: int) -> torch.Tensor:
+    return _FoldedReflect.apply(waveform, int(pad))
+
+
 def centered_stft(
     waveform: torch.Tensor,
     n_fft: int,
@@ -103,12 +134,14 @@ def semamba_mag_phase_stft(
     The dataset path uses ``abs`` and ``angle``. The consistency path adds
     ``1e-10`` inside the square root and both ``atan2`` arguments. Centering
     uses an index reflection so the values match ``center=True`` without the
-    non-deterministic CUDA reflection backward. The Hann window is built on
-    CPU and moved, matching the reference training code. A window created
+    non-deterministic CUDA reflection backward. The backward folds the
+    reflected edges into one gradient, matching ``reflection_pad1d`` when this
+    spectrum is combined with other waveform losses. The Hann window is built
+    on CPU and moved, matching the reference training code. A window created
     directly on CUDA differs by about 1e-7 and can flip phase bins by 2π.
     """
     window = torch.hann_window(win_size, dtype=waveform.dtype).to(waveform.device)
-    framed = _reflect_pad(waveform, n_fft // 2) if center else waveform
+    framed = _folded_reflect(waveform, n_fft // 2) if center else waveform
     spectrum = torch.stft(
         framed,
         n_fft,

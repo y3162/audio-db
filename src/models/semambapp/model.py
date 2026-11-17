@@ -156,6 +156,12 @@ class MultiScaleSubbandCQTDiscriminator(nn.Module):
         )
 
     def forward(self, waveform: torch.Tensor, paired: torch.Tensor | None = None):
+        # Share the channel view across this family, as in the official path.
+        # Creating a separate view in each discriminator changes where their
+        # gradients are accumulated when CQT and MRD are used together.
+        waveform = _as_channel(waveform)
+        if paired is not None:
+            paired = _as_channel(paired)
         scores = []
         features: list[torch.Tensor] = []
         paired_scores = []
@@ -239,6 +245,9 @@ class MultiResolutionDiscriminator(nn.Module):
         )
 
     def forward(self, waveform: torch.Tensor, paired: torch.Tensor | None = None):
+        waveform = _as_channel(waveform)
+        if paired is not None:
+            paired = _as_channel(paired)
         scores = []
         features: list[torch.Tensor] = []
         paired_scores = []

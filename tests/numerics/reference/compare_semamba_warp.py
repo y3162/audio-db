@@ -527,10 +527,9 @@ def _parts(generator, clean, noisy, stft_kind: str) -> dict:
 
 
 def _audio_losses(parts, clean, cqt, mrd, order: str) -> dict:
-    real_q, real_qf = cqt(clean)
-    fake_q, fake_qf = cqt(parts["audio"])
-    real_r, real_rf = mrd(clean)
-    fake_r, fake_rf = mrd(parts["audio"])
+    # The Trainer passes the pair together, interleaving real/fake forwards.
+    real_q, fake_q, real_qf, fake_qf = cqt(clean, parts["audio"])
+    real_r, fake_r, real_rf, fake_rf = mrd(clean, parts["audio"])
     if order == "flat":
         discriminator = sum(
             least_squares_discriminator(real, fake)
@@ -1015,7 +1014,7 @@ def run_step(kind: str, mode: str, trial: str) -> None:
     detached = {**parts, "audio": parts["audio"].detach()}
     for optim in (optim_d, optim_g):
         optim.zero_grad(set_to_none=True)
-    disc_pack = _losses_for(loss_kind, "flat", detached, clean, cqt, mrd, mel, cfg)
+    disc_pack = _losses_for(loss_kind, "family", detached, clean, cqt, mrd, mel, cfg)
     disc_pack["discriminator"].backward()
     cqt_grad = _cpu_grads(cqt)
     mrd_grad = _cpu_grads(mrd)
@@ -1030,7 +1029,7 @@ def run_step(kind: str, mode: str, trial: str) -> None:
     again = _parts(generator, clean, noisy, "official" if kind == "official" else "audio")
     torch.cuda.synchronize()
     forward_seconds = time.perf_counter() - started
-    gen_pack = _losses_for(loss_kind, "flat", again, clean, cqt, mrd, mel, cfg)
+    gen_pack = _losses_for(loss_kind, "family", again, clean, cqt, mrd, mel, cfg)
     torch.cuda.synchronize()
     started = time.perf_counter()
     gen_pack["generator"].backward()
@@ -1075,8 +1074,14 @@ def run_step(kind: str, mode: str, trial: str) -> None:
         "dense_in_grad": None if dense_in is None or dense_in.grad is None else dense_in.grad.detach().cpu(),
         "before": before,
         "after": {name: tensor.detach().cpu() for name, tensor in generator.state_dict().items()},
+        "after_cqt": {name: tensor.detach().cpu() for name, tensor in cqt.state_dict().items()},
+        "after_mrd": {name: tensor.detach().cpu() for name, tensor in mrd.state_dict().items()},
         "optim_g": _optim_state(optim_g, list(generator.named_parameters())),
-        "optim_d": _optim_state(optim_d, list(cqt.named_parameters()) + list(mrd.named_parameters())),
+        "optim_d": _optim_state(
+            optim_d,
+            [(f"cqt.{name}", value) for name, value in cqt.named_parameters()]
+            + [(f"mrd.{name}", value) for name, value in mrd.named_parameters()],
+        ),
         "scheduler_equal_init": scheduler_g.last_epoch == 0 and scheduler_d.last_epoch == 0,
         "meta": {"audio": _meta(again["audio"]), "mag": _meta(again["mag"]), "phase": _meta(again["phase"])},
         "versions": _versions(),
@@ -1178,6 +1183,8 @@ def _pair_steps(left: dict, right: dict) -> dict:
         "cqt_grad": _grouped(left["cqt_grad"], right["cqt_grad"]),
         "mrd_grad": _grouped(left["mrd_grad"], right["mrd_grad"]),
         "after": _grouped(left["after"], right["after"]),
+        "after_cqt": _grouped(left["after_cqt"], right["after_cqt"]) if "after_cqt" in left and "after_cqt" in right else None,
+        "after_mrd": _grouped(left["after_mrd"], right["after_mrd"]) if "after_mrd" in left and "after_mrd" in right else None,
         "optim_g": _optim_gap(left["optim_g"], right["optim_g"]),
         "optim_d": _optim_gap(left["optim_d"], right["optim_d"]),
     }
