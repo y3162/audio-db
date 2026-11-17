@@ -2,7 +2,7 @@
 
 These follow the published training losses (multi-resolution time-frequency
 L1, compressed magnitude, log-mel L1, and least-squares GAN). They do not
-import ``src/se/official``.
+import ``src/official``.
 """
 
 from __future__ import annotations

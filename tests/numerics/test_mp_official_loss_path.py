@@ -5,7 +5,7 @@ from pathlib import Path
 import torch
 
 
-@unittest.skipUnless((Path(__file__).resolve().parents[2] / "src/se/official/mp-senet/train.py").exists(),
+@unittest.skipUnless((Path(__file__).resolve().parents[2] / "src/official/mp-senet/train.py").exists(),
                      "MP-SENet official checkout unavailable")
 class OfficialLossPathTest(unittest.TestCase):
     def test_loss_values_and_gradients(self):

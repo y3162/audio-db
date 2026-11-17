@@ -3,7 +3,7 @@
 Metrics are applied later with the lab environment. This process only writes
 waveforms. Existing outputs are left in place.
 
-    CUDA_VISIBLE_DEVICES=<free> .venvs/semamba/bin/python \\
+    CUDA_VISIBLE_DEVICES=<free> .venvs/se/bin/python \\
         tests/numerics/reference/score_valid64.py official \\
         data/results/training/semamba-200step-20261101/official-a/state_00000200.pt \\
         data/results/training/semamba-valid64-20261101/official-a-step200.pt
@@ -19,7 +19,7 @@ import torch
 
 ROOT = Path(__file__).resolve().parents[3]
 sys.path.insert(0, str(ROOT))
-sys.path.insert(0, str(ROOT / "src/se/official/semambapp"))
+sys.path.insert(0, str(ROOT / "src/official/semambapp"))
 
 from model.semambapp import SEMambapp
 from src.models.semambapp.network import SEMambaPP

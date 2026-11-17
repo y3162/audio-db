@@ -178,7 +178,7 @@ SQL の CHECK:
 
 集合は `case_set_id`、`name`、`version`、`split_role`（`train` / `valid` / `test`）、`origin`（素材リストと同じ 4 値）、`selection_rule_json`、`provenance_json`、`member_count`、`list_sha256`。項目は `(case_set_id, position)` と、集合内の `case_id` の UNIQUE。同じ `case_id` が複数の集合に入ることは許す。test を validation に兼用できるのは、Dataset の制約を通ったときだけである。
 
-公式リストは `configs/data/lists/` に置き、`provenance_json` に出典ファイルの SHA-256 を残す。`src/se/official/` は再構築元にしない。
+公式リストは `configs/data/lists/` に置き、`provenance_json` に出典ファイルの SHA-256 を残す。`src/official/` は再構築元にしない。
 
 ### `datasets` と `dataset_bindings`
 

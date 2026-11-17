@@ -31,7 +31,7 @@ import sys
 
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
-OFFICIAL = ROOT / "src/se/official/tf-locoformer"
+OFFICIAL = ROOT / "src/official/tf-locoformer"
 CHECKPOINT = ROOT / "data/checkpoints/tf-locoformer/dns/valid.loss.ave_5best.pth"
 ABS_TOL = 1e-5
 REL_TOL = 1e-5

@@ -1,8 +1,8 @@
 """SEMamba++ official CUDA mamba-ssm versus the independent PyTorch scan.
 
-Run with ``.venvs/semamba`` (Python 3.10, PyTorch 2.6.0+cu124,
-``causal-conv1d==1.7.0``, ``mamba-ssm==2.3.2.post1``). The library itself
-does not import those packages.
+Run with ``.venvs/se`` (PyTorch 2.6.0+cu124, ``causal-conv1d==1.7.0``,
+``mamba-ssm==2.3.2.post1``). The library itself does not import those packages.
+The 2026-11 measurement used the retired ``.venvs/semamba`` (Python 3.10).
 """
 import sys
 import time
@@ -13,7 +13,7 @@ import torch.nn.functional as F
 
 ROOT = Path(__file__).resolve().parents[3]
 sys.path.insert(0, str(ROOT))
-sys.path.insert(0, str(ROOT / 'src/se/official/semambapp'))
+sys.path.insert(0, str(ROOT / 'src/official/semambapp'))
 from model.semambapp import SEMambapp
 from model.stfts import mag_phase_istft, mag_phase_stft
 from src.models import load_enhancer

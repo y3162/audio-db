@@ -740,7 +740,7 @@ class SEMambaCudaTests(unittest.TestCase):
 
     def test_fused_cuda_matches_the_task_and_records_the_reference_gap(self) -> None:
         _require_devices(1)
-        python = ROOT / ".venvs" / "semambapp" / "bin" / "python"
+        python = ROOT / ".venvs" / "se" / "bin" / "python"
         self.assertTrue(python.is_file())
         report = _semamba_probe("both", str(python))
         by_name = {row["backend"]: row for row in report["runs"]}
@@ -765,7 +765,7 @@ class SEMambaCudaTests(unittest.TestCase):
             root = Path(directory)
             for backend, python in (
                 ("reference", sys.executable),
-                ("fused", str(ROOT / ".venvs" / "semambapp" / "bin" / "python")),
+                ("fused", str(ROOT / ".venvs" / "se" / "bin" / "python")),
             ):
                 for accumulation in (1, 2):
                     target = root / f"{backend}-{accumulation}"
@@ -916,7 +916,7 @@ class Phase4JCudaTests(unittest.TestCase):
         _require_devices(2)
         from tests.experiments.test_semambapp import _yaml
 
-        python = str(ROOT / ".venvs" / "semambapp" / "bin" / "python")
+        python = str(ROOT / ".venvs" / "se" / "bin" / "python")
         self.assertTrue(Path(python).is_file())
         with tempfile.TemporaryDirectory(prefix="phase4j-semamba-fused-") as raw:
             root = Path(raw)

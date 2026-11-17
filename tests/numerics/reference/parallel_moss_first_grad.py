@@ -21,7 +21,7 @@ import torch.nn.functional as F
 
 ROOT = Path(__file__).resolve().parents[3]
 OUT = Path(os.environ.get("AUDIO_DB_NUMERICS_OUT", "/tmp/audio-db-official-continue"))
-SE = ROOT / "src/se/official/clearervoice-studio/train/speech_enhancement"
+SE = ROOT / "src/official/clearervoice-studio/train/speech_enhancement"
 sys.path.insert(0, str(ROOT))
 sys.path.insert(0, str(SE))
 

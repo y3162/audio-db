@@ -7,7 +7,7 @@ import torch
 
 
 ROOT = Path(__file__).resolve().parents[2]
-REFERENCE = ROOT / "src/se/official/deepfilternet/DeepFilterNet/df/loss.py"
+REFERENCE = ROOT / "src/official/deepfilternet/DeepFilterNet/df/loss.py"
 CONFIG = Path(os.environ.get("DF_REFERENCE_CONFIG", ROOT / "data/checkpoints/deepfilternet3/DeepFilterNet3/config.ini"))
 
 

@@ -6,7 +6,7 @@
 
 ## 測定時の環境
 
-数値は次の仮想環境で取った。現行の役割名（`.venvs/se`、`.venvs/official`、`.venvs/semambapp`、`.venvs/deepfilternet`）で取り直してはいない。
+数値は次の仮想環境で取った。現行の `.venvs/se` で取り直してはいない。`.venvs/semambapp` は当時の fused 用の役割名であり、現行の手順ではない。
 
 | 測定時 | 内容 |
 |---|---|
@@ -95,11 +95,11 @@ CUDA_VISIBLE_DEVICES=3 .venvs/official/bin/python tests/se/reference/run_long.py
 # SEMamba++ の CPU。参照スキャン。融合カーネルは要らない。
 CUDA_VISIBLE_DEVICES="" .venvs/se/bin/python tests/se/reference/run_semamba.py
 
-# SEMamba++ の GPU。測定時は .venvs/semamba。fused 用の現行環境は .venvs/semambapp。
-CUDA_VISIBLE_DEVICES=1 .venvs/semambapp/bin/python tests/se/reference/run_semamba_cuda.py 1 5 20
+# SEMamba++ の GPU。測定時は .venvs/semamba。現行の fused は .venvs/se。
+CUDA_VISIBLE_DEVICES=1 .venvs/se/bin/python tests/se/reference/run_semamba_cuda.py 1 5 20
 ```
 
-`tests/se/reference/run_df.py` と `run_df_api.py` は `libdf` と `src.models` の両方を読む。`src.models` は TF-Locoformer 経由で `rotary_embedding_torch` を import する。`.venvs/deepfilternet` は `libdf` 用で、`requirements/deepfilternet.in` に `rotary-embedding-torch` が無い。`.venvs/se` と `.venvs/official` は NumPy 2.5.4 で、`libdf` は NumPy 1.26.4 の `.venvs/deepfilternet` に分けている。測定時の `.venvs/ref` は NumPy 1.26.4 に両方を入れていた。現行の役割名では同じコマンドを書けない。
+`tests/se/reference/run_df.py` と `run_df_api.py` は `libdf` と `src.models` の両方を読む。`src.models` は TF-Locoformer 経由で `rotary_embedding_torch` を import する。`.venvs/deepfilternet` は `libdf` 用で、`requirements/deepfilternet.in` に `rotary-embedding-torch` が無い。`.venvs/se` は NumPy 2.1.3、`.venvs/official` は NumPy 2.5.4 で、`libdf` は NumPy 1.26.4 の `.venvs/deepfilternet` に分けている。測定時の `.venvs/ref` は NumPy 1.26.4 に両方を入れていた。現行の役割名では同じコマンドを書けない。
 
 通常の CPU テストは次である。この実行結果を上の表の一致とは呼ばない。
 

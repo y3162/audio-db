@@ -106,7 +106,7 @@ def _install_stub():
 def main():
     torch.set_num_threads(4)
     _install_stub()
-    sys.path.insert(0, str(ROOT / 'src/se/official/semambapp'))
+    sys.path.insert(0, str(ROOT / 'src/official/semambapp'))
     from model.semambapp import SEMambapp
     from src.models.semambapp.network import SEMambaPP
     from src.models import load_enhancer

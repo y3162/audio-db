@@ -1,4 +1,4 @@
-"""SEMamba++ bandwidth resampling resolves resampy in the fused environment."""
+"""SEMamba++ bandwidth resampling resolves resampy in ``.venvs/se``."""
 
 from __future__ import annotations
 
@@ -10,21 +10,19 @@ import unittest
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[2]
-PYTHON = ROOT / ".venvs" / "semambapp" / "bin" / "python"
+PYTHON = ROOT / ".venvs" / "se" / "bin" / "python"
 
 
 class SemambaResampyTests(unittest.TestCase):
     def test_lock_pins_the_same_resampy_as_se(self) -> None:
         se_in = (ROOT / "requirements" / "se.in").read_text(encoding="utf-8")
-        semamba_in = (ROOT / "requirements" / "semambapp.in").read_text(encoding="utf-8")
-        lock = (ROOT / "requirements" / "semambapp.lock.txt").read_text(encoding="utf-8")
+        lock = (ROOT / "requirements" / "se.lock.txt").read_text(encoding="utf-8")
         self.assertIn("resampy==0.4.3", se_in)
-        self.assertIn("-r se.in", semamba_in)
         self.assertIn("resampy==0.4.3", lock)
 
-    def test_kaiser_resamplers_run_in_the_semambapp_environment(self) -> None:
+    def test_kaiser_resamplers_run_in_the_unified_environment(self) -> None:
         if not PYTHON.is_file():
-            self.fail(f"semambapp interpreter is missing: {PYTHON}")
+            self.fail(f"unified interpreter is missing: {PYTHON}")
         script = textwrap.dedent(
             """\
             import resampy

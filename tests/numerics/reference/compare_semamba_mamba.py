@@ -1,10 +1,12 @@
 """Compare the independent selective scan with the CUDA Mamba kernel.
 
-Run on a Turing GPU. The installed ``mamba_ssm`` and ``causal_conv1d``
-binaries contain sm_75 cubins only, so an A100 cannot load them.
+``.venvs/se`` builds the pinned ``mamba_ssm`` and ``causal_conv1d``. On CUDA
+12.1 their ``setup.py`` hardcodes cubins ``sm_75``, ``sm_80``, ``sm_87``, and
+``sm_90``. ``TORCH_CUDA_ARCH_LIST`` does not change that list, and ``sm_86``
+is absent. The retired ``.venvs/semamba`` binaries contained sm_75 cubins only.
 
     CUDA_VISIBLE_DEVICES=0 CUBLAS_WORKSPACE_CONFIG=:4096:8 \\
-        .venvs/semamba/bin/python tests/numerics/reference/compare_semamba_mamba.py
+        .venvs/se/bin/python tests/numerics/reference/compare_semamba_mamba.py
 """
 
 from __future__ import annotations

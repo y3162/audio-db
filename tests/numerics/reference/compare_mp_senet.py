@@ -44,7 +44,7 @@ from tests.numerics.reference.common import (  # noqa: E402
     weight_report,
 )
 
-OFFICIAL = ROOT / "src" / "se" / "official" / "mp-senet"
+OFFICIAL = ROOT / "src" / "official" / "mp-senet"
 matplotlib = types.ModuleType("matplotlib")
 matplotlib.use = lambda *args, **kwargs: None
 sys.modules.setdefault("matplotlib", matplotlib)

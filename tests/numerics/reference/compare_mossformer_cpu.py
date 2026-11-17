@@ -7,7 +7,7 @@ import torch
 
 ROOT = Path(__file__).resolve().parents[3]
 sys.path.insert(0, str(ROOT))
-sys.path.insert(0, str(ROOT / 'src/se/official/clearervoice-studio/train/speech_enhancement'))
+sys.path.insert(0, str(ROOT / 'src/official/clearervoice-studio/train/speech_enhancement'))
 from models.mossformer_gan.discriminator import Discriminator as Official
 from losses import loss as official_loss
 from utils.misc import stft, power_compress, pesq_loss

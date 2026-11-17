@@ -64,11 +64,10 @@ make experiment CONFIG=configs/reproduction/experiments/official/mp_senet_gan.ya
 CUDA_VISIBLE_DEVICES=0,1 .venvs/se/bin/python -m src.experiments.launcher --config CONFIG --nproc 2
 ```
 
-`make experiment` の Python は、`AUDIO_DB_PYTHON` があればそれ、無ければ `.venvs/se` である。ASR-guided SEMamba++ は `.venvs/asr_guided_se` から起動する。同梱 YAML の `device` は `cpu` である。CUDA の 1 step は、そのファイルを `extends` し、`runtime.kwargs.device` を `cuda` に、`output.directory` を別のディレクトリにした子 YAML で行う。
+`make experiment` の Python は、`AUDIO_DB_PYTHON` があればそれ、無ければ `.venvs/se` である。ASR-guided SEMamba++ も同じである。同梱 YAML の `device` は `cpu` である。CUDA の 1 step は、そのファイルを `extends` し、`runtime.kwargs.device` を `cuda` に、`output.directory` を別のディレクトリにした子 YAML で行う。
 
 ```bash
 CUDA_VISIBLE_DEVICES=<空きGPU> \
-  AUDIO_DB_PYTHON=.venvs/asr_guided_se/bin/python \
   make experiment CONFIG=<子YAML> NPROC=1
 ```
 

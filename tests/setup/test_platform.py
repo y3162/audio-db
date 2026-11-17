@@ -28,16 +28,16 @@ class PlatformTests(unittest.TestCase):
 
     def test_manifest_uses_fixed_names(self) -> None:
         text = (ROOT / "requirements/official-assets.toml").read_text()
-        self.assertIn('dest = "src/se/official/mp-senet"', text)
+        self.assertIn('dest = "src/official/mp-senet"', text)
         self.assertNotIn("tsubame", text)
         self.assertNotIn("shinoda_lab", text)
         self.assertTrue(os.access(ROOT / "scripts/setup/setup.sh", os.X_OK) or True)
 
     def test_numba_cuda_wheel_is_only_applied_to_the_unified_env(self) -> None:
         text = (ROOT / "scripts/setup/with_env.sh").read_text(encoding="utf-8")
-        self.assertIn("/.venvs/asr_guided_se/bin/python", text)
-        self.assertNotIn("/.venvs/se/bin/python", text)
+        self.assertIn("/.venvs/se/bin/python", text)
         self.assertNotIn("/.venvs/asr/bin/python", text)
+        self.assertNotIn("/.venvs/asr_guided_se/bin/python", text)
         self.assertNotIn("/.venvs/semambapp/bin/python", text)
         wheel = (ROOT / "scripts/setup/cuda_wheel.sh").read_text(encoding="utf-8")
         self.assertIn("CUDA_HOME", wheel)

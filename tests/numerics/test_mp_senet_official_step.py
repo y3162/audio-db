@@ -21,7 +21,7 @@ from src.models.mp_senet.model import MetricDiscriminator
 from src.experiments.calc.losses import discriminator_loss, generator_losses, metric_targets
 from src.experiments.calc.stft import mag_pha_istft, mag_pha_stft
 
-OFFICIAL = Path(__file__).resolve().parents[2] / "src" / "se" / "official" / "mp-senet"
+OFFICIAL = Path(__file__).resolve().parents[2] / "src" / "official" / "mp-senet"
 
 
 def _gap(reference: torch.Tensor, other: torch.Tensor) -> dict[str, float]:

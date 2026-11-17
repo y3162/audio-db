@@ -6,7 +6,7 @@ import types
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[3]
-ESP = ROOT / 'src/se/official/espnet'
+ESP = ROOT / 'src/official/espnet'
 _TEMP = None
 
 

@@ -91,4 +91,4 @@ asr:
 
 ## 環境
 
-NeMo は `.venvs/asr` に入ります。再構築は [ASR 環境](../envs/ASR.md) にあります。
+NeMo は `.venvs/se` に入ります。再構築は [ASR 環境](../envs/ASR.md) にあります。

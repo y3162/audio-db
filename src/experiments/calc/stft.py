@@ -2,7 +2,7 @@
 
 The formulas follow the official training code at commit 89932cfe
 (``mag_pha_stft`` / ``mag_pha_istft``). This module does not import
-``src/se/official``. The inference wrapper in ``src.models`` applies the same
+``src/official``. The inference wrapper in ``src.models`` applies the same
 transform inside ``enhance`` and is not used here, so training does not go
 through ``inference_mode``.
 

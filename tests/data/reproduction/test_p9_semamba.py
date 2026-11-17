@@ -1,8 +1,7 @@
 """CPU checks for SEMamba++ online degradation.
 
 Distribution windows below were fixed before the first counted run. Do not
-edit them to make a failing seed pass. Kaiser resampling uses resampy from
-the existing asr environment when the se environment does not install it.
+edit them to make a failing seed pass. Kaiser resampling uses resampy from the current interpreter.
 
 The datasets are registered into a directory of this test module. The
 production database, staging, and snapshots are read by other tests and are
@@ -20,10 +19,6 @@ from pathlib import Path
 
 import numpy as np
 import torch
-
-_ASR_PACKAGES = Path(__file__).resolve().parents[3] / ".venvs/asr/lib/python3.12/site-packages"
-if _ASR_PACKAGES.is_dir():
-    sys.path.append(str(_ASR_PACKAGES))
 
 from src.experiments.data.ids import SEMAMBA_GSR_V1
 from src.experiments.data.mix.online_semamba import plan_semamba_epoch
@@ -81,7 +76,7 @@ def tearDownModule() -> None:
 
 
 def _enable_official_modules():
-    sys.path.insert(0, str(Path(__file__).resolve().parents[3] / "src/se/official/semambapp"))
+    sys.path.insert(0, str(Path(__file__).resolve().parents[3] / "src/official/semambapp"))
     sys.modules.setdefault("pyroomacoustics", types.ModuleType("pyroomacoustics"))
     if "torchaudio.io" not in sys.modules:
         try:

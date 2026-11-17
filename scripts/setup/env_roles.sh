@@ -34,14 +34,10 @@ install_role() {
   uv pip sync --python "$python" --index-strategy unsafe-best-match "$lock" || return 1
   link_nvcc "$python"
   case "$role" in
-    asr|asr_guided_se)
+    se)
       if ! "$python" -c 'import whisper' >/dev/null 2>&1; then
         uv pip install --python "$python" --no-build-isolation --index-strategy unsafe-best-match openai-whisper==20240930 || return 1
       fi
-      ;;
-  esac
-  case "$role" in
-    semambapp|asr_guided_se)
       build_mamba "$python" || return 1
       ;;
     deepfilternet)
@@ -60,17 +56,11 @@ role_imports() {
   local role=$1
   local python=".venvs/${role}/bin/python"
   case "$role" in
-    se|official)
+    se)
+      "$python" -c 'import torch, torchaudio, nemo, numba, whisper, duckdb, yaml, numpy, causal_conv1d_cuda, selective_scan_cuda; from nnAudio.features.cqt import CQT2010v2'
+      ;;
+    official)
       "$python" -c 'import torch, torchaudio, duckdb, yaml, numpy'
-      ;;
-    asr)
-      "$python" -c 'import torch, whisper, duckdb'
-      ;;
-    asr_guided_se)
-      "$python" -c 'import torch, nemo, numba, whisper, duckdb, causal_conv1d_cuda, selective_scan_cuda; from nnAudio.features.cqt import CQT2010v2'
-      ;;
-    semambapp)
-      "$python" -c 'import torch, causal_conv1d_cuda, selective_scan_cuda'
       ;;
     deepfilternet)
       "$python" -c 'import torch, libdf, libdfdata'
@@ -96,6 +86,8 @@ link_nvcc() {
 
 build_mamba() {
   local python=$1
+  # Keep the venv interpreter. readlink -f follows it to uv's base Python.
+  python=$(cd "$(dirname "$python")" && pwd)/$(basename "$python")
   if [[ "${AUDIO_DB_SKIP_NATIVE:-}" == 1 ]]; then
     echo "Fused CUDA extensions were not built. Re-run on a machine with a visible GPU." >&2
     return 1
@@ -175,7 +167,7 @@ install_libdf_wheels() {
 # clone under build/libdf-src may refresh its own lock, offline.
 libdf_build_tree() {
   local src dest commit
-  src="$(pwd)/src/se/official/deepfilternet"
+  src="$(pwd)/src/official/deepfilternet"
   dest="$(pwd)/build/libdf-src"
   commit=$(git -C "$src" rev-parse HEAD)
   if [[ ! -d "$dest/.git" ]] || [[ "$(git -C "$dest" rev-parse HEAD 2>/dev/null || true)" != "$commit" ]]; then
@@ -196,7 +188,7 @@ maturin_release() {
 
 build_libdf() {
   local python=$1
-  local repo="src/se/official/deepfilternet"
+  local repo="src/official/deepfilternet"
   if [[ ! -f "$repo/pyDF/Cargo.toml" ]]; then
     echo "Pinned DeepFilterNet checkout is missing. Run: make assets" >&2
     return 1

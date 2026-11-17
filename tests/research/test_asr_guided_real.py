@@ -1,8 +1,7 @@
 """Real Parakeet and SEMamba++ checks for the unified environment.
 
-This is a real-model GPU test. It is not part of the ``.venvs/se`` GPU lane:
-that interpreter has no NeMo. Run it with ``.venvs/asr_guided_se`` and one
-free GPU. A missing package is a skip. Hidden CUDA is NOT_RUN. A wrong
+This is a real-model GPU test. Run it with ``.venvs/se`` and one free GPU.
+A missing package is a skip. Hidden CUDA is NOT_RUN. A wrong
 gradient or a failed launch is a failure.
 
 The one-step launches use the checked-in research YAML (official width,
@@ -37,7 +36,7 @@ def _reexec_numba_cuda() -> None:
 
     if os.environ.get("AUDIO_DB_NUMBA_CUDA") == "ready":
         return
-    if Path(sys.prefix).name != "asr_guided_se":
+    if Path(sys.prefix).name != "se":
         return
     if os.environ.get("CUDA_HOME"):
         os.environ["AUDIO_DB_NUMBA_CUDA"] = "ready"

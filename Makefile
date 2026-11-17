@@ -34,15 +34,15 @@ help:
 	  'Setup (platform is required only here):' \
 	  '  make setup PLATFORM=tsubame' \
 	  '  make setup PLATFORM=shinoda_lab' \
-	  '  make setup-env PLATFORM=tsubame ROLES=se,asr' \
-	  '  make setup-env PLATFORM=shinoda_lab ROLES=asr_guided_se' \
+	  '  make setup-env PLATFORM=tsubame ROLES=se' \
+	  '  make setup-env PLATFORM=shinoda_lab ROLES=official,deepfilternet' \
 	  '  make assets MODELS=mp_senet' \
 	  '  make assets-check' \
 	  '  make db-link ONLY=LibriSpeech DRY_RUN=1 ALLOW_PARTIAL=1' \
 	  '  make doctor' \
 	  '  make test-setup' \
 	  '' \
-	  'Roles: se, asr, official, semambapp, deepfilternet, asr_guided_se' \
+	  'Roles: se, official, deepfilternet' \
 	  'Platforms: tsubame, shinoda_lab' \
 	  'Default setup builds every role, fetches every pinned asset, links configured datasets, then runs doctor.' \
 	  'DB init, ingest, and bootstrap are separate and are not run by make setup.' \
@@ -69,7 +69,7 @@ setup:
 	$(WITH_ENV) $(ROOT)/scripts/setup/setup.sh $(PLATFORM)
 
 setup-env:
-	$(WITH_ENV) bash -c 'cd $(ROOT) && source scripts/setup/platforms/$(PLATFORM).sh && platform_prepare && source scripts/setup/env_roles.sh && install_roles "$(or $(ROLES),se,asr,official,semambapp,deepfilternet,asr_guided_se)"'
+	$(WITH_ENV) bash -c 'cd $(ROOT) && source scripts/setup/platforms/$(PLATFORM).sh && platform_prepare && source scripts/setup/env_roles.sh && install_roles "$(or $(ROLES),se,official,deepfilternet)"'
 
 assets:
 	$(WITH_ENV) $(SETUP_PY) $(ROOT)/scripts/setup/assets.py fetch --models "$(MODELS)"

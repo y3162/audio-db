@@ -205,7 +205,7 @@ class VoiceBankFileListTests(unittest.TestCase):
     def test_init_list_is_not_stored_under_official_code(self):
         root = Path(__file__).resolve().parents[2]
         text = (root / "configs/db/init.yaml").read_text(encoding="utf-8")
-        self.assertNotIn("src/se/official", text)
+        self.assertNotIn("src/official", text)
         listing = root / "configs/db/lists/voicebank_demand_test.txt"
         rows = [line for line in listing.read_text(encoding="utf-8").splitlines() if line.strip()]
         self.assertGreaterEqual(len(rows), 800)

@@ -5,7 +5,7 @@ write only under a temporary directory. all_off is expected to resume
 bitwise. ASR-on runs are measured even when TDT is not bitwise.
 
     CUDA_VISIBLE_DEVICES=3,5 scripts/setup/with_env.sh \\
-      .venvs/asr_guided_se/bin/python -m unittest tests.research.test_asr_guided_stability -v
+      .venvs/se/bin/python -m unittest tests.research.test_asr_guided_stability -v
 """
 
 from __future__ import annotations
@@ -23,7 +23,7 @@ if str(_ROOT) not in sys.path:
     sys.path.insert(0, str(_ROOT))
 
 _NEMO_MARKERS = ("preprocessor", "joint.", "decoder.prediction", "fastconformer")
-_PYTHON = _ROOT / ".venvs/asr_guided_se/bin/python"
+_PYTHON = _ROOT / ".venvs/se/bin/python"
 
 
 def _visible() -> list[str]:

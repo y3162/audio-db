@@ -1,7 +1,7 @@
 # VoiceBank-DEMAND test ids
 
 This list is the 824 utterance ids from MP-SENet's VoiceBank-DEMAND test split.
-It is stored here so `make db-init` does not read `src/se/official/`.
+It is stored here so `make db-init` does not read `src/official/`.
 
 Source: <https://github.com/yxlu-0102/MP-SENet> `VoiceBank+DEMAND/test.txt`  
 License: MIT  

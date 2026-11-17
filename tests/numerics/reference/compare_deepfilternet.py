@@ -55,7 +55,7 @@ EPOCHS = 120
 
 
 def _install_official():
-    package = ROOT / "src" / "se" / "official" / "deepfilternet" / "DeepFilterNet" / "df"
+    package = ROOT / "src" / "official" / "deepfilternet" / "DeepFilterNet" / "df"
     df = types.ModuleType("df")
     df.__path__ = [str(package)]
     df.__package__ = "df"

@@ -722,23 +722,12 @@ def require_group_size(data: object, accumulation: int, component_id: str) -> No
 
 # --- Step journal. The step save stays in ``_offer_step``. ---
 
-# Copied only when the update already computed them. Official steps omit both,
-# so an uncomputed TDT term is not recorded as zero.
-_OPTIONAL_STEP_KEYS = ("error_mask_fraction", "tdt")
-
 
 class StepLog:
-    def write(
-        self,
-        progress: SEMambaProgress,
-        runtime: ProcessRuntime,
-        journal: StepJournal,
-        local: dict[str, Any],
-        *,
-        epoch: int,
-    ) -> None:
-        shared = _shared_log(runtime, local)
-        entry = {
+    def entry(self, progress: SEMambaProgress, shared: dict[str, Any], *, epoch: int) -> dict[str, Any]:
+        """One official metrics row. A subclass may add keys before the row is written."""
+
+        return {
             "adversarial": shared["adversarial"],
             "applied_d": True,
             "applied_g": True,
@@ -762,9 +751,18 @@ class StepLog:
             "scan_configured": shared["scan_configured"],
             "scan_executed": shared["scan_executed"],
         }
-        for key in _OPTIONAL_STEP_KEYS:
-            if key in shared:
-                entry[key] = shared[key]
+
+    def write(
+        self,
+        progress: SEMambaProgress,
+        runtime: ProcessRuntime,
+        journal: StepJournal,
+        local: dict[str, Any],
+        *,
+        epoch: int,
+    ) -> None:
+        shared = _shared_log(runtime, local)
+        entry = self.entry(progress, shared, epoch=epoch)
         progress.step_log.append(entry)
         journal.write_metrics(entry)
         journal.write_sample(

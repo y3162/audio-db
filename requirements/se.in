@@ -1,20 +1,38 @@
-# Direct dependencies for .venvs/se. Compile with scripts/setup/compile_locks.sh.
+# Direct dependencies for .venvs/se, the only environment for ordinary work.
+# Compile with scripts/setup/compile_locks.sh.
+#
+# NeMo 2.2.1 requires numba==0.61.0, and that Numba rejects NumPy 2.2 and later.
+# numpy 2.1.3 is the newest NumPy that combination accepts. scipy 1.18.1,
+# librosa 1.0.0, and nnAudio 0.3.3 install on that NumPy. Do not raise NumPy
+# or Numba to the previous .venvs/se pins (2.5.4 / 0.68.1): TDTLossNumba will
+# not import. Do not copy requirements/official.in into this file.
+#
+# mamba-ssm and causal-conv1d are built from requirements/official-assets.toml.
+# openai-whisper==20240930 is installed after sync with --no-build-isolation.
 torch==2.6.0+cu124
 torchaudio==2.6.0+cu124
-numpy==2.5.4
+numpy==2.1.3
+numba==0.61.0
+llvmlite==0.44.0
+transformers==4.48.3
+nemo_toolkit[asr]==2.2.1
+duckdb==2.0.0
+pyyaml==6.0.3
 scipy==1.18.1
 librosa==1.0.0
 resampy==0.4.3
 soundfile==0.14.0
-pyyaml==6.0.3
 pystoi==0.4.1
 pesq==0.0.4
 einops==0.8.2
 nnAudio==0.3.3
-duckdb==2.0.0
 rotary-embedding-torch==0.8.3
-numba==0.68.1
-llvmlite==0.50.0
+setuptools==78.1.0
 nvidia-cuda-nvcc-cu12==12.2.140
+tiktoken==0.7.0
+more-itertools==10.5.0
 pytest==9.2.0
 tensorboard==2.20.0
+ninja==1.13.0
+packaging==24.2
+wheel==0.45.1

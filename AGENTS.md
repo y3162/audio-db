@@ -25,7 +25,7 @@
 - `na`・`unavailable`・skip を 0 として扱わない。部分音声に全文テキストを対応させた WER を計算しない。
 - CHiME3 の CH0 を clean 参照とみなさない。CHiME3 real と元 WSJ を、時間整合したペアとみなさない。
 - `src/asr/` は他の `src/` を import しない。`transcribe()` は推論専用。`src/models` の推論（`api`、`core`、各モデルの `inference` とネットワーク）は `src.experiments` を import しない。`enhance()` は推論専用。各モデルの Trainer は `src.experiments` を使う。
-- 独立 SE は `src/se/official/` に実行時依存しない。ESPnet 全体をコピーしない。
+- 独立 SE は `src/official/` に実行時依存しない。ESPnet 全体をコピーしない。
 - チェックポイントのパスをライブラリに固定しない。
 - 学習 checkpoint は `audio-db-experiment-v1`。`audio-db-training-v1` は読まない。
 - checkpoint の保存方針は Selector だけが持つ。Latest（`latest.pt`）は 1 つで、失敗した保存が以前の Latest を壊す経路を作らない。Selector の削除は `archive/` の外に届かない。再開は同じ実験の厳密な続きで、別の実験を始めるときは `initialize` を使い、元の実験のファイルを変更しない。

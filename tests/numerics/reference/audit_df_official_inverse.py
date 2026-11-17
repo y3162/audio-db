@@ -17,7 +17,7 @@ import torch
 ROOT = Path(__file__).resolve().parents[3]
 sys.path.insert(0, str(ROOT))
 sys.path.insert(0, str(ROOT / ".venvs/tsubame-libdf"))
-sys.path.insert(0, str(ROOT / "src/se/official/deepfilternet/DeepFilterNet"))
+sys.path.insert(0, str(ROOT / "src/official/deepfilternet/DeepFilterNet"))
 
 from libdf import DF  # noqa: E402
 from src.models.deepfilternet3.dsp import vorbis_window  # noqa: E402

@@ -18,8 +18,8 @@ from scripts.setup.assets import AssetError, check, load_manifest  # noqa: E402
 from src.data.corpora_catalog import CATALOG, corpus_env_var  # noqa: E402
 from src.data.constants import CORPORA_ROOT  # noqa: E402
 
-ROLES = ("se", "asr", "official", "semambapp", "deepfilternet", "asr_guided_se")
-REQUIRED_ROLES = {"se", "asr", "official", "semambapp"}
+ROLES = ("se", "official", "deepfilternet")
+REQUIRED_ROLES = {"se", "official"}
 
 
 class Report:
@@ -119,9 +119,9 @@ def _gpu_occupied() -> bool:
 
 
 def check_native(report: Report) -> None:
-    python = _python("semambapp")
+    python = _python("se")
     if not python.is_file():
-        report.add("FAIL", "mamba.import", "semambapp environment missing", required=True)
+        report.add("FAIL", "mamba.import", "se environment missing", required=True)
         return
     code = (
         "import torch\n"

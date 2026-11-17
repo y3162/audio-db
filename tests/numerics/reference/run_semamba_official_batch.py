@@ -7,7 +7,7 @@ the accumulation count. Each stage writes a new file and leaves existing
 outputs alone.
 
     CUDA_VISIBLE_DEVICES=<free> CUBLAS_WORKSPACE_CONFIG=:4096:8 \\
-        .venvs/semamba/bin/python tests/numerics/reference/run_semamba_official_batch.py \\
+        .venvs/se/bin/python tests/numerics/reference/run_semamba_official_batch.py \\
         prepare data/results/training/semamba-phaseA-20261101
 """
 

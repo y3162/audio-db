@@ -7,7 +7,7 @@ import duckdb
 import torch
 
 ROOT = Path(__file__).resolve().parents[3]
-sys.path[:0] = [str(ROOT), str(ROOT / 'src/se/official/semambapp')]
+sys.path[:0] = [str(ROOT), str(ROOT / 'src/official/semambapp')]
 from model.semambapp import SEMambapp
 from model.stfts import mag_phase_stft, mag_phase_istft
 from src.evaluation.audio.render import render_recipe

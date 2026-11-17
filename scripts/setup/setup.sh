@@ -26,7 +26,7 @@ fi
 if [[ -x .venvs/se/bin/python ]]; then
   py=".venvs/se/bin/python"
 fi
-install_roles "${ROLES:-se,asr,official,semambapp,deepfilternet,asr_guided_se}" || status=1
+install_roles "${ROLES:-se,official,deepfilternet}" || status=1
 if [[ -x .venvs/se/bin/python ]]; then
   py=".venvs/se/bin/python"
 fi

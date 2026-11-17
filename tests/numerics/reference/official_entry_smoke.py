@@ -81,7 +81,7 @@ def _demand(limit: int) -> list[Path]:
 
 
 def run_mp(out: Path) -> dict:
-    src = _source("MP-SENet", ROOT / "src/se/official/mp-senet")
+    src = _source("MP-SENet", ROOT / "src/official/mp-senet")
     work = out / "mp-senet"
     work.mkdir(parents=True)
     pairs = _pairs(5)
@@ -125,7 +125,7 @@ def run_mp(out: Path) -> dict:
 
 
 def run_moss(out: Path) -> dict:
-    src = _source("ClearerVoice-Studio", ROOT / "src/se/official/clearervoice-studio")
+    src = _source("ClearerVoice-Studio", ROOT / "src/official/clearervoice-studio")
     se = src / "train/speech_enhancement"
     work = out / "mossformergan"
     work.mkdir(parents=True)
@@ -172,7 +172,7 @@ def run_moss(out: Path) -> dict:
 
 def run_pesq(out: Path) -> dict:
     """Compare published batch_pesq with the probe's device-local replacement."""
-    src = _source("ClearerVoice-Studio", ROOT / "src/se/official/clearervoice-studio")
+    src = _source("ClearerVoice-Studio", ROOT / "src/official/clearervoice-studio")
     se = src / "train/speech_enhancement"
     work = out / "moss-pesq"
     work.mkdir(parents=True)
@@ -203,7 +203,7 @@ def run_pesq(out: Path) -> dict:
 def run_tf(out: Path) -> dict:
     work = out / "tf-gridnet"
     work.mkdir(parents=True)
-    esp = _source("espnet", ROOT / "src/se/official/espnet")
+    esp = _source("espnet", ROOT / "src/official/espnet")
     entry = esp / "espnet2/bin/enh_train.py"
     import_log = work / "enh_train_import.log"
     imported = _run([_python(), "-c", f"import sys; sys.path.insert(0, {str(esp)!r}); import espnet2.bin.enh_train"], import_log, ROOT)
@@ -240,7 +240,7 @@ def run_tf(out: Path) -> dict:
 
 
 def run_df(out: Path) -> dict:
-    src = _source("DeepFilterNet", ROOT / "src/se/official/deepfilternet")
+    src = _source("DeepFilterNet", ROOT / "src/official/deepfilternet")
     df_root = src / "DeepFilterNet"
     work = out / "deepfilternet3"
     work.mkdir(parents=True)
@@ -319,7 +319,7 @@ def run_df(out: Path) -> dict:
 
 
 def run_semamba(out: Path) -> dict:
-    src = _source("SEMambapp", ROOT / "src/se/official/semambapp")
+    src = _source("SEMambapp", ROOT / "src/official/semambapp")
     work = out / "semambapp"
     work.mkdir(parents=True)
     import yaml

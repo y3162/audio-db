@@ -5,7 +5,7 @@ the runs. This file does not change them to fit a result. Official checkouts
 and ``data/`` are not modified. Reports go to ``/tmp/audio-db-final-two-models``.
 
     CUDA_VISIBLE_DEVICES=<free> CUBLAS_WORKSPACE_CONFIG=:4096:8 \\
-        .venvs/semambapp/bin/python -u tests/numerics/reference/two_model_final.py semamba
+        .venvs/se/bin/python -u tests/numerics/reference/two_model_final.py semamba
     CUDA_VISIBLE_DEVICES=<free> CUBLAS_WORKSPACE_CONFIG=:4096:8 \\
         .venvs/se/bin/python -u tests/numerics/reference/two_model_final.py mp
 """
@@ -132,8 +132,8 @@ def protocol() -> dict:
     return {
         "written_before_measurement": True,
         "audio_db_head": _git(ROOT),
-        "semambapp_official": _git(ROOT / "src" / "se" / "official" / "semambapp"),
-        "mp_senet_official": _git(ROOT / "src" / "se" / "official" / "mp-senet"),
+        "semambapp_official": _git(ROOT / "src" / "official" / "semambapp"),
+        "mp_senet_official": _git(ROOT / "src" / "official" / "mp-senet"),
         "seeds": list(SEEDS),
         "steps": STEPS,
         "data_seed_offset": 10007,
@@ -151,7 +151,7 @@ def protocol() -> dict:
             "amp": None,
             "scheduler": "ExponentialLR gamma 0.99 once per finished epoch; not stepped in these 3 updates",
             "update": "discriminator on detached audio, then generator on the same forward",
-            "official_lines": "src/se/official/semambapp/train.py train() waveform step, about 239-307",
+            "official_lines": "src/official/semambapp/train.py train() waveform step, about 239-307",
             "call_label": "OFFICIAL_COMPONENT_STEP",
             "source": source_inventory(semamba, SEMAMBA_ORDER) if semamba else None,
         },
@@ -169,7 +169,7 @@ def protocol() -> dict:
             "amp": None,
             "scheduler": "ExponentialLR gamma 0.99 once per finished epoch; not stepped in these 3 updates",
             "update": "discriminator then generator, one generator forward",
-            "official_lines": "src/se/official/mp-senet/train.py train() step, about 121-184",
+            "official_lines": "src/official/mp-senet/train.py train() step, about 121-184",
             "call_label": "OFFICIAL_COMPONENT_STEP",
             "tiny_weight_atol": MP_TINY_WEIGHT_ATOL,
             "source": source_inventory(mp, MP_ORDER) if mp else None,

@@ -15,7 +15,7 @@ from pathlib import Path
 import torch
 
 ROOT = Path(__file__).resolve().parents[3]
-ESP = ROOT / 'src/se/official/espnet'
+ESP = ROOT / 'src/official/espnet'
 sys.path.insert(0, str(ROOT))
 
 

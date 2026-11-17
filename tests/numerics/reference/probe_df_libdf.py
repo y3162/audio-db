@@ -17,7 +17,7 @@ from tests.numerics.reference.common import gap, grad_report, weight_report
 
 
 def official_norm_alpha(params):
-    path = ROOT / 'src/se/official/deepfilternet/DeepFilterNet/df/utils.py'
+    path = ROOT / 'src/official/deepfilternet/DeepFilterNet/df/utils.py'
     tree = ast.parse(path.read_text(), filename=str(path))
     nodes = [node for node in tree.body if isinstance(node, ast.FunctionDef) and
              node.name in ('get_norm_alpha', '_calculate_norm_alpha')]

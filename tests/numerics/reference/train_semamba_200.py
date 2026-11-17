@@ -7,7 +7,7 @@ and discriminator-then-generator order follow ``train.py``. Time L1 and the
 metric weight are not in that executed sum.
 
     CUDA_VISIBLE_DEVICES=<free> CUBLAS_WORKSPACE_CONFIG=:4096:8 \
-        .venvs/semamba/bin/python tests/numerics/reference/train_semamba_200.py \
+        .venvs/se/bin/python tests/numerics/reference/train_semamba_200.py \
         official data/results/training/semamba-200step-20261101/official-a 200
 """
 

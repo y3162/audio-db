@@ -5,7 +5,7 @@ import unittest
 
 import torch
 
-REFERENCE = Path(__file__).resolve().parents[2] / 'src/se/official/semambapp/model/loss.py'
+REFERENCE = Path(__file__).resolve().parents[2] / 'src/official/semambapp/model/loss.py'
 
 
 @unittest.skipUnless(REFERENCE.is_file(), 'official SEMamba source required')

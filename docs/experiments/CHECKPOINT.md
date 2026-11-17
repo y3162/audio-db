@@ -13,7 +13,7 @@
 | `latest.pt` | Latest。常に 1 つ | 共通基盤 |
 | `latest.data_provenance.json` | Latest の来歴の sidecar | 共通基盤 |
 | `archive/<name>.pt` と sidecar | Archive。名前と保持数は Selector が決める | 共通基盤 |
-| `metrics.jsonl` | logical step ごとの記録。学習ログの正本。ASR-guided SEMamba++ v1 は、その step で計算したときだけ `tdt` と `error_mask_fraction` を足す。無いキーは未計算であり 0 ではない。定義は [損失](LOSS.md) | Trainer |
+| `metrics.jsonl` | logical step ごとの記録。学習ログの正本。公式 `StepLog` は研究キーを持たない。ASR-guided SEMamba++ v1 は、その step で計算したときだけ研究側の `ResearchStepLog` が `tdt` と `error_mask_fraction` を足す。無いキーは未計算であり 0 ではない。定義は [損失](LOSS.md) | Trainer |
 | `tensorboard/` | `metrics.jsonl` の有限スカラーから作ったイベント。再開の入力にはしない | rank 0 |
 | `status.json`、`complete.json` | 実行状態と完了の印 | 学習プロセス、または Launcher |
 | `launch.json`、`failure.rank<N>.json` | Launcher の記録 | Launcher、各 rank |

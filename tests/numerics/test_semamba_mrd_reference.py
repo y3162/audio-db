@@ -5,7 +5,7 @@ import unittest
 
 import torch
 
-REFERENCE = Path(__file__).resolve().parents[2] / 'src/se/official/semambapp/model/discriminator.py'
+REFERENCE = Path(__file__).resolve().parents[2] / 'src/official/semambapp/model/discriminator.py'
 
 
 @unittest.skipUnless(REFERENCE.is_file(), 'official SEMamba source required')

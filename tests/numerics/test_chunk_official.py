@@ -38,7 +38,7 @@ def resolve_espnet_source() -> Path:
     if override:
         candidates.append(Path(override))
     candidates.append(historical)
-    candidates.append(ROOT / "src/se/official/espnet")
+    candidates.append(ROOT / "src/official/espnet")
     for path in candidates:
         if not path.is_dir():
             continue

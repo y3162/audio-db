@@ -21,22 +21,19 @@ make setup PLATFORM=shinoda_lab
 
 | パス | 用途 |
 |---|---|
-| `.venvs/se` | 6 モデルの独立実装、DB、評価、通常のテスト |
-| `.venvs/asr` | NeMo、Whisper、Transformers。SE と ASR を同じプロセスでつなぐ |
-| `.venvs/official` | 公式実装との比較。NumPy 2.5 |
-| `.venvs/semambapp` | SEMamba++ の fused CUDA（`mamba-ssm` 2.3.2.post1、`causal-conv1d` 1.7.0） |
-| `.venvs/asr_guided_se` | NeMo 2.2.1 と SEMamba++ を同じプロセスで使う |
-| `.venvs/deepfilternet` | 公式 `libdf`。PyO3 が NumPy 1.26 を要求するため分けている |
+| `.venvs/se` | 通常の唯一の環境。6 モデル、ASR、DB、評価、テスト、fused scan |
+| `.venvs/official` | 公式実装との比較。NumPy 2.5。通常の学習には使わない |
+| `.venvs/deepfilternet` | 公式 `libdf`。PyO3 が NumPy 1.26 を要求し、`.venvs/se` の 2.1.3 とも `.venvs/official` の 2.5.4 とも共存しない |
 
-依存の正本は `requirements/<role>.in` と、そこから作った `requirements/<role>.lock.txt` である。通常の `make setup` は lock を更新しない。lock を作り直すときだけ `scripts/setup/compile_locks.sh` を実行する。
+依存の正本は `requirements/se.in`、`requirements/official.in`、`requirements/deepfilternet.in` と、それぞれの lock である。通常の `make setup` は lock を更新しない。lock を作り直すときだけ `scripts/setup/compile_locks.sh` を実行する。
 
-ASR-guided SEMamba++ v1 は `.venvs/asr_guided_se` で学習する。NeMo 2.2.1 は `numba==0.61.0` を要求し、その Numba は NumPy 2.2 以降を拒む。`.venvs/se` と `.venvs/semambapp` は numba 0.68.1 と numpy 2.5.4 のままである。lock は足し合わせない。`requirements/asr_guided_se.in` から `requirements/asr_guided_se.lock.txt` を作る。scipy 1.18.1、librosa 1.0.0、nnAudio 0.3.3 は SE に合わせ、numba、llvmlite、numpy は NeMo に合わせる。`mamba-ssm` と `causal-conv1d` は lock に入らない。`openai-whisper==20240930` も lock の外で、sync のあと `--no-build-isolation` で入れる。
+`.venvs/se` は NumPy 2.1.3、numba 0.61.0、llvmlite 0.44.0 である。NeMo 2.2.1 がこの Numba を要求し、その Numba は NumPy 2.2 以降を拒む。scipy 1.18.1、librosa 1.0.0、nnAudio 0.3.3 はこの NumPy に合わせる。以前の NumPy 2.5.4 と numba 0.68.1 は、NeMo と同じプロセスでは使わない。`mamba-ssm` と `causal-conv1d` は lock に入らない。`openai-whisper==20240930` も lock の外で、sync のあと `--no-build-isolation` で入れる。
 
 ```bash
-make setup-env PLATFORM=shinoda_lab ROLES=asr_guided_se
+make setup-env PLATFORM=shinoda_lab ROLES=se
 ```
 
-`scripts/setup/with_env.sh` は、この役割の Python を起動するときだけ、未設定の `CUDA_HOME` をその環境の `nvidia/cuda_nvcc` にする。`nvvm/lib64`、`lib64`、`nvidia/cuda_runtime/lib` を `LD_LIBRARY_PATH` の先頭に置く。呼び出し側が `CUDA_HOME` を置いていればそれを使う。他の役割には渡さない。この wheel は `libnvvm.so` と `ptxas` を含み、`nvcc` 本体は含まない。Numba は版付きの `libnvvm.so.*` を探すので wheel を見つけられないことがあり、そのときはこの `LD_LIBRARY_PATH` の `libnvvm.so` を読む。`.venvs/asr` で TDT だけを見るときの変数の渡し方は [ASR](ASR.md)。
+`scripts/setup/with_env.sh` は `.venvs/se` の Python を起動するときだけ、未設定の `CUDA_HOME` をその環境の `nvidia/cuda_nvcc` にする。`nvvm/lib64`、`lib64`、`nvidia/cuda_runtime/lib` を `LD_LIBRARY_PATH` の先頭に置く。呼び出し側が `CUDA_HOME` を置いていればそれを使う。公式役割には渡さない。この wheel は `libnvvm.so` と `ptxas` を含み、`nvcc` 本体は含まない。Numba は版付きの `libnvvm.so.*` を探すので wheel を見つけられないことがあり、そのときはこの `LD_LIBRARY_PATH` の `libnvvm.so` を読む。手で同じ変数を置く手順は [ASR](ASR.md)。
 
 SE 学習ログを TensorBoard で確認できるよう、`.venvs/se` に `tensorboard==2.20.0` を含める。TSUBAME と SHINODA-LAB のどちらも `make setup PLATFORM=...` で構築される同じ lock を使う。
 
@@ -59,9 +56,9 @@ make test-setup
 
 ## 融合カーネル
 
-`.venvs/semambapp` と `.venvs/asr_guided_se` の `mamba-ssm` と `causal-conv1d` は、`requirements/official-assets.toml` のピンしたソースからビルドする。lock には入っていない。インストール後、`scripts/apply_mamba_init_patch.py` が `patches/mamba_ssm-2.3.2.post1-init.patch` を当てる。対象は `mamba_ssm/__init__.py` の Mamba2、Mamba3、言語モデルヘッドの import だけである。selective scan のソースと CUDA 拡張は変えない。再実行は何もしない。
+`.venvs/se` の `mamba-ssm` と `causal-conv1d` は、`requirements/official-assets.toml` のピンしたソースからビルドする。lock には入っていない。インストール後、`scripts/apply_mamba_init_patch.py` が `patches/mamba_ssm-2.3.2.post1-init.patch` を当てる。対象は `mamba_ssm/__init__.py` の Mamba2、Mamba3、言語モデルヘッドの import だけである。selective scan のソースと CUDA 拡張は変えない。再実行は何もしない。
 
-`AUDIO_DB_REBUILD_MAMBA=1` は、入っている拡張と `build/native-src` の中間ビルドを消してから作り直す。`TORCH_CUDA_ARCH_LIST` はプラットフォームスクリプトが設定する。あるホストでビルドした `.so` を、別のアーキテクチャのホストへコピーしない。
+`AUDIO_DB_REBUILD_MAMBA=1` は、入っている拡張と `build/native-src` の中間ビルドを消してから作り直す。`TORCH_CUDA_ARCH_LIST` はプラットフォームスクリプトが設定する。ピンした causal-conv1d 1.7.0 と mamba-ssm 2.3.2.post1 の `setup.py` は CUDA 12.1 で `sm_75`、`sm_80`、`sm_87`、`sm_90` を `-gencode` に固定し、この環境変数では cubin の一覧を変えない。`sm_86` は含まれない。あるホストでビルドした `.so` を、別のアーキテクチャのホストへコピーしない。`uv` がホームのキャッシュへ `.so` を書けないときは、`UV_CACHE_DIR` を書けるローカルディレクトリにしてから同じビルドをやり直す。`build_mamba` に渡す Python は仮想環境の `bin/python` を絶対パスにする。そのシンボリックリンクを辿った先の uv 管理 Python へは入れない。
 
 ## 公式アセット
 
@@ -69,12 +66,12 @@ make test-setup
 
 | モデル | ソース | 重み |
 |---|---|---|
-| MP-SENet | `src/se/official/mp-senet` @ `89932cfe` | `data/checkpoints/mp-senet/g_best_vb` と `g_best_dns`（リポジトリ内の `best_ckpt`） |
-| DeepFilterNet3 | `src/se/official/deepfilternet` @ `d375b2d83` | `data/checkpoints/deepfilternet3/DeepFilterNet3/`（ピンした commit の公式 zip） |
-| SEMamba++ | `src/se/official/semambapp` @ `cd369c89` | `data/checkpoints/semambapp/semambapp.pth` |
-| MossFormerGAN | `src/se/official/clearervoice-studio` @ `6b3774dc` | `data/checkpoints/mossformergan/last_best_checkpoint.pt` |
-| TF-GridNet | `src/se/official/espnet` @ `0d136c54`（新規 clone は `espnet2` のみ） | `data/checkpoints/tf-gridnet/urgent24/.../21epoch.pth` と `ms-snsd/valid.loss.best.pth` |
-| TF-Locoformer | `src/se/official/tf-locoformer` @ `7a615460` | `data/checkpoints/tf-locoformer/dns/valid.loss.ave_5best.pth` |
+| MP-SENet | `src/official/mp-senet` @ `89932cfe` | `data/checkpoints/mp-senet/g_best_vb` と `g_best_dns`（リポジトリ内の `best_ckpt`） |
+| DeepFilterNet3 | `src/official/deepfilternet` @ `d375b2d83` | `data/checkpoints/deepfilternet3/DeepFilterNet3/`（ピンした commit の公式 zip） |
+| SEMamba++ | `src/official/semambapp` @ `cd369c89` | `data/checkpoints/semambapp/semambapp.pth` |
+| MossFormerGAN | `src/official/clearervoice-studio` @ `6b3774dc` | `data/checkpoints/mossformergan/last_best_checkpoint.pt` |
+| TF-GridNet | `src/official/espnet` @ `0d136c54`（新規 clone は `espnet2` のみ） | `data/checkpoints/tf-gridnet/urgent24/.../21epoch.pth` と `ms-snsd/valid.loss.best.pth` |
+| TF-Locoformer | `src/official/tf-locoformer` @ `7a615460` | `data/checkpoints/tf-locoformer/dns/valid.loss.ave_5best.pth` |
 
 既にピンした commit のツリーがあれば再取得しない。別 commit や手元の変更は上書きしない。チェックサムが違う既存ファイルも置き換えない。
 
@@ -86,4 +83,4 @@ TF-GridNet の重みカードは、コードの Apache-2.0 とは別に利用条
 
 公式 `libdfdata` は HDF5 が必要である。TSUBAME では `hdf5-parallel/1.14.3/gcc11.4.1` を読む。モジュールが無い場合、`libdf` 本体の成否と `libdfdata` の未構築は分けて表示する。
 
-`libdf` のビルドは `src/se/official/deepfilternet` を書き換えない。Cargo 1.99 はピンした `Cargo.lock`（version 3）を `--locked` のまま読めず、ロックの更新を拒否する。再ビルドが必要なときは `build/libdf-src` の共有 clone だけでロックを更新し、`--offline` で maturin する。既に `build/libdf-cargo/wheels` にある wheel が import できるときは、それを入れ直して再コンパイルしない。
+`libdf` のビルドは `src/official/deepfilternet` を書き換えない。Cargo 1.99 はピンした `Cargo.lock`（version 3）を `--locked` のまま読めず、ロックの更新を拒否する。再ビルドが必要なときは `build/libdf-src` の共有 clone だけでロックを更新し、`--offline` で maturin する。既に `build/libdf-cargo/wheels` にある wheel が import できるときは、それを入れ直して再コンパイルしない。

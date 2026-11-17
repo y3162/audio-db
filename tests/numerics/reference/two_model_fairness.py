@@ -4,7 +4,7 @@ Diagnostic only. Training code is not modified. Official checkouts are read-only
 Writes under AUDIO_DB_NUMERICS_OUT (default /tmp/audio-db-official-two-models).
 
     CUBLAS_WORKSPACE_CONFIG=:4096:8 AUDIO_DB_SEMAMBA_SCAN=fused \\
-        .venvs/semambapp/bin/python tests/numerics/reference/two_model_fairness.py semamba
+        .venvs/se/bin/python tests/numerics/reference/two_model_fairness.py semamba
     CUBLAS_WORKSPACE_CONFIG=:4096:8 \\
         .venvs/se/bin/python tests/numerics/reference/two_model_fairness.py mp
 """
@@ -68,8 +68,8 @@ def environment(device: torch.device) -> dict:
         "causal_conv1d": _package_version("causal-conv1d"),
         "triton": _package_version("triton"),
         "audio_db_head": _git(ROOT),
-        "mp_senet_official": _git(ROOT / "src" / "se" / "official" / "mp-senet"),
-        "semambapp_official": _git(ROOT / "src" / "se" / "official" / "semambapp"),
+        "mp_senet_official": _git(ROOT / "src" / "official" / "mp-senet"),
+        "semambapp_official": _git(ROOT / "src" / "official" / "semambapp"),
     }
     if device.type == "cuda":
         info["gpu"] = torch.cuda.get_device_name(device)

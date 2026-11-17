@@ -14,8 +14,5 @@ compile() {
   uv pip compile "${args[@]}" "$1" -o "$2"
 }
 compile requirements/se.in requirements/se.lock.txt
-compile requirements/semambapp.in requirements/semambapp.lock.txt
-compile requirements/asr.in requirements/asr.lock.txt
 compile requirements/official.in requirements/official.lock.txt
 compile requirements/deepfilternet.in requirements/deepfilternet.lock.txt
-compile requirements/asr_guided_se.in requirements/asr_guided_se.lock.txt

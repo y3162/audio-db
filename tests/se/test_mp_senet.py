@@ -11,7 +11,7 @@ from src.models import available_enhancers, build_model, load_enhancer
 
 ROOT = Path(__file__).resolve().parents[2]
 CHECKPOINTS = ROOT / 'data/checkpoints/mp-senet'
-OFFICIAL = ROOT / 'src/se/official/mp-senet'
+OFFICIAL = ROOT / 'src/official/mp-senet'
 
 
 def reference_model():

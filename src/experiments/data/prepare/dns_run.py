@@ -1767,10 +1767,7 @@ def _resample_probe(noise: dict[str, Path], corpus: Path) -> dict[str, Any]:
             "soxr_vs_scipy_max_abs": float(np.max(np.abs(converted[:overlap] - scipy_wave[:overlap]))),
             "kaiser_best": {
                 "status": "NOT_TESTED",
-                "reason": (
-                    "resampy from .venvs/asr imports numba, and that numba rejects the SE "
-                    "interpreter's NumPy 2.5. The comparison is not run inside this process."
-                ),
+                "reason": "resampy is not importable in this interpreter",
             },
         }
         if kaiser is not None:
@@ -1794,17 +1791,7 @@ def _kaiser_resampler():
     try:
         import resampy
     except ImportError:
-        site = ROOT / ".venvs" / "asr" / "lib" / "python3.12" / "site-packages"
-        if not site.is_dir():
-            return None
-        sys.path.insert(0, str(site))
-        try:
-            import resampy
-        except ImportError:
-            return None
-        finally:
-            if sys.path and sys.path[0] == str(site):
-                sys.path.pop(0)
+        return None
     def convert(audio, source_rate, target_rate):
         return resampy.resample(np.asarray(audio, dtype=np.float64), source_rate, target_rate, filter="kaiser_best")
     return convert

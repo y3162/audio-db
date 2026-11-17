@@ -13,13 +13,26 @@ from src.experiments.errors import BuildError, RuntimeFailure
 from src.experiments.runtime import ProcessRuntime
 from src.experiments.training.control import weight_loss
 from src.experiments.calc.errors import TrainingError
-from src.models.semambapp.trainer import SEMambaPPTrainer, SEMambaUpdate
+from src.models.semambapp.trainer import SEMambaPPTrainer, SEMambaUpdate, StepLog
 from src.research.asr_guided_se.asr import TeacherCache, fingerprint_text
 from src.research.asr_guided_se.error_mask import crop_error_mask, overlapping_tokens
 from src.research.asr_guided_se.semambapp.v1.config import ASR_HOP, STFT_HOP, GuidanceV1
 from src.research.asr_guided_se.semambapp.v1.evaluator import predict_audio
 from src.research.asr_guided_se.semambapp.v1.loss import guided_generator_loss
 from src.research.asr_guided_se.tdt import mean_tdt
+
+_RESEARCH_STEP_KEYS = ("error_mask_fraction", "tdt")
+
+
+class ResearchStepLog(StepLog):
+    """Official step row, plus TDT and the error-mask fraction when that step computed them."""
+
+    def entry(self, progress, shared, *, epoch: int):
+        row = super().entry(progress, shared, epoch=epoch)
+        for key in _RESEARCH_STEP_KEYS:
+            if key in shared:
+                row[key] = shared[key]
+        return row
 
 
 class GuidedSEMambaPPTrainer(SEMambaPPTrainer):
@@ -57,6 +70,7 @@ class GuidedSEMambaPPTrainer(SEMambaPPTrainer):
                 data=self.data,
                 cache=self._cache,
             )
+            self._log = ResearchStepLog()
 
     def research_predict(self, inputs: torch.Tensor, targets: torch.Tensor) -> torch.Tensor:
         """Enhanced waveform. Inputs are noisy and targets are clean."""

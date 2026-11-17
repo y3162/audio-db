@@ -68,7 +68,7 @@ ARCHITECTURE = {
 
 
 def _official_loss_class():
-    root = ROOT / "src" / "se" / "official" / "espnet"
+    root = ROOT / "src" / "official" / "espnet"
     def package(name: str, path: Path) -> None:
         module = types.ModuleType(name)
         module.__path__ = [str(path)]

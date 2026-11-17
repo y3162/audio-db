@@ -7,7 +7,7 @@ unchanged. Omega stays at the checkpoint value.
 Run with the integrated environment and one free GPU:
 
     CUDA_VISIBLE_DEVICES=3 scripts/setup/with_env.sh \\
-      .venvs/asr_guided_se/bin/python -m unittest tests.research.test_tdt_determinism -v
+      .venvs/se/bin/python -m unittest tests.research.test_tdt_determinism -v
 """
 
 from __future__ import annotations

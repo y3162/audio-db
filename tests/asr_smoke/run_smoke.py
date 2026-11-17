@@ -1,7 +1,7 @@
 """Real-model smoke checks. Not part of the fast unit-test run.
 
 Usage:
-    .venvs/asr/bin/python -m tests.asr_smoke.run_smoke parakeet whisper wav2vec2
+    .venvs/se/bin/python -m tests.asr_smoke.run_smoke parakeet whisper wav2vec2
 """
 
 from __future__ import annotations

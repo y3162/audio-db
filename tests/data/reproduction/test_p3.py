@@ -90,7 +90,7 @@ class OrderTests(unittest.TestCase):
     def test_official_clearervoice_sampler_and_audio_norm(self):
         import sys
 
-        root = ROOT / "src/se/official/clearervoice-studio/train/speech_enhancement"
+        root = ROOT / "src/official/clearervoice-studio/train/speech_enhancement"
         if not (root / "dataloader/dataloader.py").is_file():
             self.skipTest("ClearerVoice checkout is not present")
         inserted = str(root)

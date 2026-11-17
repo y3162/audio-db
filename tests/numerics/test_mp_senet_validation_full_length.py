@@ -21,7 +21,7 @@ from src.experiments.calc.stft import mag_pha_stft
 from tests.numerics.support import tiny_config
 
 ROOT = Path(__file__).resolve().parents[2]
-OFFICIAL_ROOT = ROOT / "src/se/official/mp-senet"
+OFFICIAL_ROOT = ROOT / "src/official/mp-senet"
 
 
 def _task(loss="reconstruction", **model):

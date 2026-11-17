@@ -18,7 +18,7 @@ sys.path.insert(0, str(ROOT))
 from src.models import load_enhancer
 from tests.se.reference.metrics import compare, format_row
 
-OFFICIAL_MP = ROOT / 'src/se/official/mp-senet'
+OFFICIAL_MP = ROOT / 'src/official/mp-senet'
 CKPT_MP = ROOT / 'data/checkpoints/mp-senet'
 CKPT_GRID = ROOT / 'data/checkpoints/tf-gridnet'
 
@@ -72,7 +72,7 @@ def official_mp_wave(model_cls, stft, istft, config, state, wave):
 
 
 def grid_v3():
-    path = ROOT / 'src/se/official/espnet/espnet2/enh/separator/tfgridnetv3_separator.py'
+    path = ROOT / 'src/official/espnet/espnet2/enh/separator/tfgridnetv3_separator.py'
     names = ['espnet2', 'espnet2.enh', 'espnet2.enh.layers', 'espnet2.enh.layers.complex_utils',
              'espnet2.enh.separator', 'espnet2.enh.separator.abs_separator',
              'espnet2.torch_utils', 'espnet2.torch_utils.get_layer_from_string']
@@ -95,7 +95,7 @@ def grid_v3():
 
 
 def grid_v1():
-    path = ROOT / 'src/se/official/espnet/espnet2/enh/separator/tfgridnet_separator.py'
+    path = ROOT / 'src/official/espnet/espnet2/enh/separator/tfgridnet_separator.py'
     names = ['espnet2', 'espnet2.enh', 'espnet2.enh.decoder', 'espnet2.enh.decoder.stft_decoder',
              'espnet2.enh.encoder', 'espnet2.enh.encoder.stft_encoder', 'espnet2.enh.layers',
              'espnet2.enh.layers.complex_utils', 'espnet2.enh.separator',

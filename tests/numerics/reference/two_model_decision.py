@@ -42,8 +42,8 @@ DISTRIBUTION_METRICS = (
     "discriminator_grad_max_abs",
 )
 ROOT = Path(__file__).resolve().parents[3]
-SEMAMBA_TRAIN = ROOT / "src" / "se" / "official" / "semambapp" / "train.py"
-MP_TRAIN = ROOT / "src" / "se" / "official" / "mp-senet" / "train.py"
+SEMAMBA_TRAIN = ROOT / "src" / "official" / "semambapp" / "train.py"
+MP_TRAIN = ROOT / "src" / "official" / "mp-senet" / "train.py"
 SEMAMBA_ORDER = (
     "optim_d.zero_grad()",
     "loss_disc_all.backward()",

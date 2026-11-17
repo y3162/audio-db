@@ -17,7 +17,7 @@ from pathlib import Path
 from types import SimpleNamespace
 
 ROOT = Path(__file__).resolve().parents[2]
-OFFICIAL = ROOT / "src/se/official/clearervoice-studio/train/speech_enhancement"
+OFFICIAL = ROOT / "src/official/clearervoice-studio/train/speech_enhancement"
 SEED = 777
 
 

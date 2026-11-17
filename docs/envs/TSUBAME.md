@@ -10,7 +10,7 @@ make doctor
 
 `scripts/setup/platforms/tsubame.sh` が読むモジュールは `cuda/12.3.2` と `hdf5-parallel/1.14.3/gcc11.4.1`。融合カーネルの `TORCH_CUDA_ARCH_LIST` は `9.0`。PyTorch の wheel は cu124。cargo が PATH に無いと、この準備の段階で止まる。求める Rust は 1.76 以上。
 
-GPU の計算と CUDA 拡張のビルドは、スケジューラで確保した計算ノードで行う。研究室でビルドした融合カーネルは使わない。fused 用の環境は `.venvs/semambapp` で、`make setup` がこのノードの `TORCH_CUDA_ARCH_LIST` で作る。
+GPU の計算と CUDA 拡張のビルドは、スケジューラで確保した計算ノードで行う。研究室でビルドした融合カーネルは使わない。fused 用の環境は `.venvs/se` で、`make setup` がこのノードの `TORCH_CUDA_ARCH_LIST` で作る。
 
 ## 資源
 

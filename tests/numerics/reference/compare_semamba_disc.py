@@ -1,9 +1,9 @@
 """Compare the independent SEMamba++ discriminators with the reference modules.
 
-The reference tree is imported only here. Run with the semamba environment,
-which has nnAudio, librosa, and torchaudio:
+The reference tree is imported only here. Run with ``.venvs/se``, which has
+nnAudio, librosa, and torchaudio:
 
-    .venvs/semamba/bin/python tests/numerics/reference/compare_semamba_disc.py
+    .venvs/se/bin/python tests/numerics/reference/compare_semamba_disc.py
 """
 
 from __future__ import annotations
@@ -15,7 +15,7 @@ from pathlib import Path
 import torch
 
 ROOT = Path(__file__).resolve().parents[3]
-OFFICIAL = ROOT / "src" / "se" / "official" / "semambapp"
+OFFICIAL = ROOT / "src" / "official" / "semambapp"
 sys.path.insert(0, str(ROOT))
 sys.path.insert(0, str(OFFICIAL))
 

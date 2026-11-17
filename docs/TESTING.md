@@ -9,7 +9,7 @@ make test-cpu     # CPU だけ。CUDA は隠す
 make test         # CPU に加え、空いている GPU があれば GPU レーンも実行する
 ```
 
-どちらも `scripts/tests/run_suite.py` を呼ぶ。`tests/asr`、`tests/data`、`tests/evaluation`、`tests/experiments`、`tests/se`、`tests/setup`、`tests/numerics`、`tests/research` のモジュールをプロセスプールで並列に実行する。通常のランナーは `.venvs/se` である。実 Parakeet の GPU テストは `.venvs/asr_guided_se` で、リポジトリルートをカレントにして `python -m unittest` するか、ランナーと同じくリポジトリルートを `sys.path` の先頭に置いて実行する。NeMo 2.2.1 はトップレベルの正規パッケージ `tests` を site-packages に入れる。リポジトリの `tests/__init__.py` が同じ名前を正規パッケージにし、ルートが site-packages より前にあるときリポジトリ側が勝つ。site-packages の `tests` は消さない。`tests/__init__.py` があるという理由で path 要素ごと捨てると、NeMo 環境では site-packages 自体が落ちて torch を import できなくなる。ランナーは解決先がリポジトリの `tests/suite_guard.py` でなければ起動しない。実 Parakeet の決定性調査と狭いネットの再開・NCCL は `tests/research/test_tdt_determinism.py` と `tests/research/test_asr_guided_stability.py` である。CPU レーンは CUDA を隠すので、これらは `NOT_RUN` になり NeMo を import しない。GPU レーンの対象リストには入っていない。実行するときは空き GPU だけを `CUDA_VISIBLE_DEVICES` に指定し、`.venvs/asr_guided_se` を `scripts/setup/with_env.sh` 経由で `python -m unittest` する。
+どちらも `scripts/tests/run_suite.py` を呼ぶ。`tests/asr`、`tests/data`、`tests/evaluation`、`tests/experiments`、`tests/se`、`tests/setup`、`tests/numerics`、`tests/research` のモジュールをプロセスプールで並列に実行する。通常のランナーは `.venvs/se` である。実 Parakeet の GPU テストも同じインタプリタで、リポジトリルートをカレントにして `python -m unittest` するか、ランナーと同じくリポジトリルートを `sys.path` の先頭に置いて実行する。NeMo 2.2.1 はトップレベルの正規パッケージ `tests` を site-packages に入れる。リポジトリの `tests/__init__.py` が同じ名前を正規パッケージにし、ルートが site-packages より前にあるときリポジトリ側が勝つ。site-packages の `tests` は消さない。`tests/__init__.py` があるという理由で path 要素ごと捨てると、NeMo 環境では site-packages 自体が落ちて torch を import できなくなる。ランナーは解決先がリポジトリの `tests/suite_guard.py` でなければ起動しない。実 Parakeet の決定性調査と狭いネットの再開・NCCL は `tests/research/test_tdt_determinism.py` と `tests/research/test_asr_guided_stability.py` である。CPU レーンは CUDA を隠すので、これらは `NOT_RUN` になり NeMo を import しない。GPU レーンの対象リストには入っていない。実行するときは空き GPU だけを `CUDA_VISIBLE_DEVICES` に指定し、`.venvs/se` を `scripts/setup/with_env.sh` 経由で `python -m unittest` する。
 時間のかかるモジュールは先に起動し、他のワーカーが先に遊休になる時間を減らす。
 
 ディレクトリ単体、モジュール単体は `unittest` をそのまま使う。本番データの保護を付けるときは `tests.suite_guard` を前に置く。
@@ -74,7 +74,7 @@ GPU レーンは、親プロセスの `CUDA_VISIBLE_DEVICES` の範囲で、使�
 |---|---|---|
 | Mock | `tests/evaluation`、`tests/experiments` の多く | 配線、集計、再開、設定の拒否 |
 | 実モデルのスモーク | `tests/se`、`tests/asr`、`tests/evaluation` の一部。チェックポイントが要る | その環境と入力で形状と有限値が正しい |
-| 公式一致 | `tests/numerics`、`tests/numerics/reference/`（`.venvs/official` と `src/se/official/` が要る） | 記録したモデル、長さ、sample rate、device、seed での最大絶対誤差 |
+| 公式一致 | `tests/numerics`、`tests/numerics/reference/`（`.venvs/official` と `src/official/` が要る） | 記録したモデル、長さ、sample rate、device、seed での最大絶対誤差 |
 | DDP と障害 | `tests/experiments/test_launcher.py`、`test_ddp.py`、`test_cuda_amp.py`、`test_phase6_interrupt.py` | 小さな設定で、rank の例外、kill、OOM、停止、猶予切れのあとの状態と、再開した結果が中断なしの実行と一致すること |
 
 `test_launcher.py` の CPU のテストは Gloo の 2 rank、`LauncherCudaTests` は GPU 2 枚の NCCL である。どちらも 1 ノードの小さな設定であり、TSUBAME の実ジョブ、複数ノード、本番規模の学習は含まない。

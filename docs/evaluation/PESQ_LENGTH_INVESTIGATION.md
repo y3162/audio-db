@@ -18,14 +18,14 @@
 
 PESQ のネイティブ関数 `pesq_psychoacoustic_model` 入口を `gdb` で観測すると、43,391 / 43,392 / 43,444 samples の全てで分割発話数は1、推定 delay は0。境界直前・直後の enhanced 差は約0.00066で、分割数や推定 delay の急変は観測しなかった。既存ガードの比較は隣接長ではなく、全文と直前の bin の最後（今回53 samples 差）であり、その間の PESQ 変動は約0.132。発話分割の異常を原因と断定できず、既存 reason 名はこの事例の機構を正確に表さない。score の長さ依存が PESQ 内部のどの計算に由来するか、全文の raw score が品質指標として妥当かは未確定である。したがって、より高い境界値への差し替えや、閾値を調整して全文値を無条件に採用する修正はしない。標準実装の全文 raw 値を記録し、保守的な `na` を維持する。PESQ の参照実装を含む勧告については [ITU-T P.862](https://www.itu.int/rec/t-rec-p.862) を参照。
 
-再現時は `R/config.yaml` の run_id を新規に変え、GPU 使用前に空きを確認する。`diagnose.py` は保存済みの `whisper-vb4-pesq-investigation-20261104` の音声を読む。
+再現時は `R/config.yaml` の run_id を新規に変え、GPU 使用前に空きを確認する。`diagnose.py` は保存済みの `whisper-vb4-pesq-investigation-20261104` の音声を読む。2026-11-04 の実行は当時の `.venvs/asr` だった。再現の Python は `.venvs/se` である。
 
 ```bash
 CUDA_VISIBLE_DEVICES=<空きGPU> OMP_NUM_THREADS=1 PYTHONPATH=. \
-  .venvs/asr/bin/python -m src.evaluation.cli --config data/results/training/pesq-investigation-20261104/config.yaml --run-id <新規run_id>
-OMP_NUM_THREADS=1 PYTHONPATH=. .venvs/asr/bin/python data/results/training/pesq-investigation-20261104/diagnose.py
+  .venvs/se/bin/python -m src.evaluation.cli --config data/results/training/pesq-investigation-20261104/config.yaml --run-id <新規run_id>
+OMP_NUM_THREADS=1 PYTHONPATH=. .venvs/se/bin/python data/results/training/pesq-investigation-20261104/diagnose.py
 # gdbscore.py の引数を 43391、43392、43444 に変え、入口で err_info を表示
-OMP_NUM_THREADS=1 gdb -batch -ex 'set breakpoint pending on' -ex 'break pesq_psychoacoustic_model' -ex run -ex 'p err_info->Nutterances' -ex 'p err_info->Utt_Delay[0]@err_info->Nutterances' --args .venvs/asr/bin/python data/results/training/pesq-investigation-20261104/gdbscore.py 43391
+OMP_NUM_THREADS=1 gdb -batch -ex 'set breakpoint pending on' -ex 'break pesq_psychoacoustic_model' -ex run -ex 'p err_info->Nutterances' -ex 'p err_info->Utt_Delay[0]@err_info->Nutterances' --args .venvs/se/bin/python data/results/training/pesq-investigation-20261104/gdbscore.py 43391
 ```
 
 ## 修正と再評価

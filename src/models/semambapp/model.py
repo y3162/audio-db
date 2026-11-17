@@ -16,7 +16,7 @@ The CQT stack uses hops ``(512, 256, 256)``, 8 octaves, bins per octave
 The magnitude stack uses resolutions ``(1024, 120, 600)``,
 ``(2048, 240, 1200)``, and ``(512, 50, 240)``. The CQT width that runs is
 128. Least-squares and feature matching live in ``spectral.py``. This file
-does not import ``src/se/official``.
+does not import ``src/official``.
 """
 
 from __future__ import annotations

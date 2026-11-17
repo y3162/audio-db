@@ -47,10 +47,8 @@ CUDA_VISIBLE_DEVICES="" .venvs/se/bin/python -m tests.suite_guard \
 
 | 役割 | パス |
 |---|---|
-| SE、評価、実験、通常テスト | `.venvs/se` |
-| 実 ASR | `.venvs/asr` |
+| SE、ASR、評価、実験、通常テスト、fused scan | `.venvs/se` |
 | 公式実装との比較 | `.venvs/official` |
-| SEMamba++ fused CUDA | `.venvs/semambapp` |
 | 公式 `libdf` | `.venvs/deepfilternet` |
 
 CPU テストは `CUDA_VISIBLE_DEVICES=""` で実行する。GPU を使う前に `nvidia-smi` を見る。

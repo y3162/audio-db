@@ -4,7 +4,7 @@ The generator is one ``src.models.build_model("mp_senet")`` MPNet. The
 discriminator network follows Yexin Lu's MIT-licensed MP-SENet
 (https://github.com/yxlu-0102/MP-SENet, commit 89932cfe). The license text is
 ``src/models/mp_senet/LICENSE``. This module does not import
-``src/se/official``.
+``src/official``.
 
 YAML still constructs ``src.models.mp_senet.models.MPSENetGANGenerator``
 and ``MPSENetMetricDiscriminator``. ``models.py`` re-exports those classes.

@@ -394,7 +394,7 @@ def _official_semamba(arch, device):
     import sys
     from pathlib import Path
     _allow_official_semamba_import()
-    root = Path(__file__).resolve().parents[3] / "src" / "se" / "official" / "semambapp"
+    root = Path(__file__).resolve().parents[3] / "src" / "official" / "semambapp"
     sys.path.insert(0, str(root))
     from model.discriminator import MultiResolutionDiscriminator, MultiScaleSubbandCQTDiscriminator
     from model.semambapp import SEMambapp
@@ -423,7 +423,7 @@ def _official_mel(device):
     import sys
     from pathlib import Path
     _allow_official_semamba_import()
-    root = Path(__file__).resolve().parents[3] / "src" / "se" / "official" / "semambapp"
+    root = Path(__file__).resolve().parents[3] / "src" / "official" / "semambapp"
     sys.path.insert(0, str(root))
     from model.loss import MultiScaleMelSpectrogramLoss
     return MultiScaleMelSpectrogramLoss(sampling_rate=16000).to(device)
@@ -509,7 +509,7 @@ def _semamba_generator(implementation, band, resolution, clean, parts, mel):
 def _official_moss(device):
     import sys
     from pathlib import Path
-    root = Path(__file__).resolve().parents[3] / "src" / "se" / "official" / "clearervoice-studio" / "train" / "speech_enhancement"
+    root = Path(__file__).resolve().parents[3] / "src" / "official" / "clearervoice-studio" / "train" / "speech_enhancement"
     sys.path.insert(0, str(root))
     from models.mossformer_gan.discriminator import Discriminator
     from models.mossformer_gan.generator import SyncANet
@@ -524,7 +524,7 @@ def _official_moss_losses(generator, discriminator, normalized, teacher, device)
     import sys
     from pathlib import Path
     from unittest.mock import patch
-    root = Path(__file__).resolve().parents[3] / "src" / "se" / "official" / "clearervoice-studio" / "train" / "speech_enhancement"
+    root = Path(__file__).resolve().parents[3] / "src" / "official" / "clearervoice-studio" / "train" / "speech_enhancement"
     sys.path.insert(0, str(root))
     from losses import loss as official_loss
     from utils.misc import istft, pesq_loss, power_compress, power_uncompress, stft
@@ -587,7 +587,7 @@ def _official_df(independent):
     import sys
     import types
     from pathlib import Path
-    package = Path(__file__).resolve().parents[3] / "src" / "se" / "official" / "deepfilternet" / "DeepFilterNet" / "df"
+    package = Path(__file__).resolve().parents[3] / "src" / "official" / "deepfilternet" / "DeepFilterNet" / "df"
     df = types.ModuleType("df")
     df.__path__ = [str(package)]
     df.__package__ = "df"

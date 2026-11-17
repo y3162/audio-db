@@ -69,4 +69,4 @@ ESPnet の v1 / v3 の推論用 GridNet を独立構成している。ESPnet は
 
 16 kHz、`n_fft=400`、hop 100、窓 400、Hann、圧縮 0.3、hidden 48、bottleneck 4。`semambapp.pth` の `generator` を `strict=True` で読む。variant は `semambapp`。省略できる。ピーク正規化のあと STFT し、出力は入力長に戻す。無音はそのまま返す。`n_fft // 2` 以下は拒否する。16 kHz 以外は torchaudio で変換する。
 
-選択的スキャンの既定は `scan_backend: reference` で、PyTorch の漸化式だけを使う。`mamba_ssm` は import しない。`scan_backend: fused` は CUDA 上で `mamba_inner_fn` と Triton RMSNorm を使う。CPU では参照スキャンに戻る。fused には `.venvs/semambapp` の `mamba-ssm` と `causal-conv1d` が要る。`src/models` の実行時依存には入れていない。
+選択的スキャンの既定は `scan_backend: reference` で、PyTorch の漸化式だけを使う。`mamba_ssm` は import しない。`scan_backend: fused` は CUDA 上で `mamba_inner_fn` と Triton RMSNorm を使う。CPU では参照スキャンに戻る。fused には `.venvs/se` の `mamba-ssm` と `causal-conv1d` が要る。`src/models` の実行時依存には入れていない。

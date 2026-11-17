@@ -31,9 +31,9 @@ platform_prepare() {
     export HDF5_DIR=/usr/lib/x86_64-linux-gnu/hdf5/serial
     export AUDIO_DB_HDF5=1
   fi
-  # One shared .venvs/semambapp is used on every lab host. A cubin built
-  # only for the machine running setup cannot load on the others:
-  # Turing 7.5, A100 8.0, RTX 3090 8.6.
+  # One shared .venvs/se is used on every lab host. The pinned
+  # causal-conv1d and mamba-ssm setup.py hardcode sm_75, sm_80, sm_87,
+  # and sm_90 on CUDA 12.1 and ignore this list. sm_86 is not built.
   export TORCH_CUDA_ARCH_LIST="${TORCH_CUDA_ARCH_LIST:-7.5;8.0;8.6}"
   if command -v nvidia-smi >/dev/null 2>&1; then
     local caps
@@ -51,6 +51,6 @@ platform_prepare() {
     echo "Official libdfdata needs HDF5 headers. Install libhdf5-dev or set HDF5_DIR, then rerun ROLES=deepfilternet." >&2
   fi
   if [[ "${AUDIO_DB_CUDA_FROM}" == wheel ]] && command -v nvidia-smi >/dev/null 2>&1; then
-    echo "Fused CUDA extensions need nvcc. Load cuda/12.1 (or cuda/12.8) via modules, then rerun ROLES=semambapp." >&2
+    echo "Fused CUDA extensions need nvcc. Load cuda/12.1 (or cuda/12.8) via modules, then rerun ROLES=se." >&2
   fi
 }

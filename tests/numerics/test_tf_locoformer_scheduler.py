@@ -21,7 +21,7 @@ from src.experiments.calc.optim import WarmupReduceLROnPlateau
 
 
 ROOT = Path(__file__).resolve().parents[2]
-ESP = ROOT / "src/se/official/espnet"
+ESP = ROOT / "src/official/espnet"
 PINNED = "90eed8e53498e7af682bc6ff39d9067ae440d6a4"
 SCHEDULER_PATH = "espnet2/schedulers/warmup_reducelronplateau.py"
 # Learning rates in these tests must match the pinned class exactly.

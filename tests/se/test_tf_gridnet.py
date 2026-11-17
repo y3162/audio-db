@@ -8,7 +8,7 @@ import torch
 from src.models import build_model, load_enhancer
 
 ROOT = Path(__file__).resolve().parents[2]
-REF = ROOT / 'src/se/official/espnet/espnet2/enh/separator/tfgridnetv3_separator.py'
+REF = ROOT / 'src/official/espnet/espnet2/enh/separator/tfgridnetv3_separator.py'
 CKPT = ROOT / 'data/checkpoints/tf-gridnet/urgent24/exp/enh_train_enh_tfgridnet_raw/21epoch.pth'
 
 

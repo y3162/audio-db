@@ -49,16 +49,13 @@
 
 | 環境 | 用途 |
 |---|---|
-| `.venvs/se` | Python 3.12、torch 2.6.0+cu124。SE、評価、実験、通常のテスト |
-| `.venvs/asr` | NeMo、Whisper、Transformers。実 ASR |
-| `.venvs/official` | 公式実装との比較 |
-| `.venvs/semambapp` | SEMamba++ の fused CUDA |
-| `.venvs/asr_guided_se` | NeMo の TDT と SEMamba++ を同じプロセスで動かす |
+| `.venvs/se` | 通常の唯一の環境。Python 3.12、torch 2.6.0+cu124、NumPy 2.1.3、Numba 0.61.0。SE、ASR、評価、実験、fused scan、通常のテスト |
+| `.venvs/official` | 公式実装との比較。通常の学習には使わない |
 | `.venvs/deepfilternet` | 公式 `libdf`。独立実装の実行時依存ではない |
 
-`.venvs/asr` の numba 0.61.0 と `.venvs/se` の numba 0.68.1 は同時に満たせない。ASR-guided SE の lock は `requirements/asr_guided_se.lock.txt` で、二つの lock は足し合わせない。公式 venv は変更しない。Numba 0.61 が `/usr/local/cuda` の 11.0 を掴むホストでは、`scripts/setup/with_env.sh` が `.venvs/asr_guided_se` の Python に限って wheel の CUDA 12 NVVM を見せる。手順は `docs/envs/SETUP.md`。
+NeMo 2.2.1 は numba 0.61.0 を要求し、その Numba は NumPy 2.2 以降を拒む。通常環境の lock は `requirements/se.lock.txt` だけである。公式 venv の依存は混ぜない。公式 `libdf` は NumPy 1.26 のまま `.venvs/deepfilternet` に置く。Numba 0.61 が `/usr/local/cuda` の 11.0 を掴むホストでは、`scripts/setup/with_env.sh` が `.venvs/se` の Python に限って wheel の CUDA 12 NVVM を見せる。手順は `docs/envs/SETUP.md`。
 
-`src/se/official/` は Git 管理外。独立実装はここを import しない。テストの公式比較だけが読む。
+`src/official/` は Git 管理外。独立実装はここを import しない。テストの公式比較だけが読む。
 
 ## GPU
 
