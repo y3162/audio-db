@@ -1,6 +1,9 @@
 # A0: ASR features off, TDT off, error weighting off.
-# Shared training condition for A1–A7. Those files change only the three
-# switches, the frozen-ASR wiring, and the output directory.
+# Model id asr_guided_se.semambapp.v1, experiment voicebank_m15db_ablation.
+# Shared training condition for A1–A7. Those files change the three switches,
+# the frozen-ASR wiring, the condition id, and the output directory.
+# valid_frame_aggregation makes this research A0 use the same valid-frame
+# mean as A1–A7. The official all-off reference does not set this flag.
 extends: ../all_off.yaml
 seed: 42
 deterministic: true
@@ -9,7 +12,7 @@ runtime:
     device: cuda
     precision: fp32
 output:
-  directory: data/results/experiments/error_aware_se_mamba_pp/ablation/A0
+  directory: data/results/experiments/asr_guided_se/semambapp/v1/voicebank_m15db_ablation/A0
 checkpoint:
   selector:
     class: src.experiments.selectors.TopKSelector
@@ -130,6 +133,10 @@ components:
       best_checkpoint_start_epoch: 0
       claim_label: research
       experiment_claim: research
+      valid_frame_aggregation: true
+      model_id: asr_guided_se.semambapp.v1
+      experiment_id: voicebank_m15db_ablation
+      condition_id: A0
     inject:
       evaluators: {ref: validation_eval}
       model_selection: {ref: selection}

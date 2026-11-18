@@ -1,10 +1,18 @@
-"""SEMamba++ research trainer. All three switches off keeps the official update object."""
+"""SEMamba++ research trainer.
+
+All three switches off keep the official update object. The VoiceBank ablation
+sets ``valid_frame_aggregation`` so A0 uses the same valid-frame mean as A1–A7.
+That research A0 is not the bitwise official SEMamba++ reference.
+"""
 
 from __future__ import annotations
 
 import hashlib
 import json
 import os
+import socket
+import subprocess
+import sys
 from pathlib import Path
 from typing import Any
 
@@ -19,7 +27,7 @@ from src.experiments.calc.errors import TrainingError
 from src.models.semambapp.trainer import SEMambaPPTrainer, SEMambaProgress, SEMambaUpdate, StepLog
 from src.research.asr_guided_se.asr import TeacherCache, fingerprint_text
 from src.research.asr_guided_se.error_mask import crop_error_mask, overlapping_tokens
-from src.research.asr_guided_se.semambapp.v1.config import ASR_HOP, STFT_HOP, GuidanceV1
+from src.research.asr_guided_se.semambapp.v1.config import ASR_HOP, MODEL_ID, STFT_HOP, TDT_LAMBDA, GuidanceV1
 from src.research.asr_guided_se.semambapp.v1.evaluator import predict_audio
 from src.research.asr_guided_se.semambapp.v1.loss import guided_generator_loss
 from src.research.asr_guided_se.tdt import mean_tdt
@@ -87,22 +95,46 @@ class ResearchStepLog(StepLog):
 class GuidedSEMambaPPTrainer(SEMambaPPTrainer):
     """Official GAN loop with the v1 switches. ``experiment_claim`` is ``research``."""
 
-    def __init__(self, *args: Any, guidance: GuidanceV1, asr: Any = None, experiment_claim: str = "research", **kwargs: Any) -> None:
+    def __init__(
+        self,
+        *args: Any,
+        guidance: GuidanceV1,
+        asr: Any = None,
+        experiment_claim: str = "research",
+        valid_frame_aggregation: bool = False,
+        model_id: str = MODEL_ID,
+        experiment_id: str | None = None,
+        condition_id: str | None = None,
+        **kwargs: Any,
+    ) -> None:
         if not isinstance(guidance, GuidanceV1):
             raise BuildError("guidance must be GuidanceV1")
         if experiment_claim != "research":
             raise BuildError("ASR-guided SEMamba++ v1 requires experiment_claim research")
+        if not isinstance(valid_frame_aggregation, bool):
+            raise BuildError("valid_frame_aggregation must be a boolean")
+        if model_id != MODEL_ID:
+            raise BuildError(f"model_id must be {MODEL_ID}")
+        if experiment_id is not None and not isinstance(experiment_id, str):
+            raise BuildError("experiment_id must be a string")
+        if condition_id is not None and not isinstance(condition_id, str):
+            raise BuildError("condition_id must be a string")
         kwargs.setdefault("claim_label", "research")
         super().__init__(*args, **kwargs)
         self.guidance = guidance
         self.asr = asr
         self.experiment_claim = experiment_claim
+        self.valid_frame_aggregation = valid_frame_aggregation
+        self.model_id = model_id
+        self.experiment_id = experiment_id
+        self.condition_id = condition_id
         self._hypotheses: Path | None = None
         self._cache: TeacherCache | None = None
         if guidance.uses_asr:
             self._require_asr()
         if guidance.uses_asr or guidance.asr_features_enabled:
             self._cache = TeacherCache(self._fingerprint(), writer=None)
+        if guidance.uses_asr or guidance.asr_features_enabled or valid_frame_aggregation:
             previous = self._update
             self._update = GuidedUpdate(
                 generator=previous.generator,
@@ -161,27 +193,33 @@ class GuidedSEMambaPPTrainer(SEMambaPPTrainer):
         return component_id
 
     def _record_initial_generator(self, runtime: ProcessRuntime) -> None:
-        """Rank 0 writes the generator hash once. A resume keeps the first file."""
+        """Rank 0 writes the initial hashes and run identity once. A resume keeps both files."""
 
         if int(getattr(runtime, "rank", 0)) != 0:
             return
         directory = Path(self.lifecycle.output_directory)
+        directory.mkdir(parents=True, exist_ok=True)
         path = directory / "initial_generator.json"
-        if path.is_file():
+        identity_path = directory / "run_identity.json"
+        if path.is_file() and identity_path.is_file():
             return
-        digest = hashlib.sha256()
-        module = self.generator.unwrapped()
-        for key, value in sorted(module.state_dict().items()):
-            tensor = value.detach().to(device="cpu", dtype=torch.float32).contiguous()
-            digest.update(key.encode("utf-8"))
-            digest.update(tensor.numpy().tobytes())
-        record = {
-            "accumulation": int(self.accumulation),
-            "cuda_visible_devices": os.environ.get("CUDA_VISIBLE_DEVICES"),
-            "generator_state_sha256": digest.hexdigest(),
-            "world_size": int(getattr(runtime, "world_size", 1)),
-        }
-        path.write_text(json.dumps(record, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+        generator_sha = _module_sha256(self.generator)
+        discriminator_sha = {"cqt": _module_sha256(self.cqt), "mrd": _module_sha256(self.mrd)}
+        if not path.is_file():
+            record = {
+                "accumulation": int(self.accumulation),
+                "condition_id": self.condition_id,
+                "cuda_visible_devices": os.environ.get("CUDA_VISIBLE_DEVICES"),
+                "discriminator_state_sha256": discriminator_sha,
+                "experiment_id": self.experiment_id,
+                "generator_state_sha256": generator_sha,
+                "model_id": self.model_id,
+                "world_size": int(getattr(runtime, "world_size", 1)),
+            }
+            path.write_text(json.dumps(record, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+        if not identity_path.is_file():
+            identity = _run_identity(self, runtime, generator_sha, discriminator_sha)
+            identity_path.write_text(json.dumps(identity, indent=2, sort_keys=True, default=str) + "\n", encoding="utf-8")
 
     def _require_asr(self) -> None:
         if self.asr is None:
@@ -469,6 +507,8 @@ class GuidedUpdate(SEMambaUpdate):
         return full_clean, full_noisy
 
     def _reject_asr_grad(self, runtime: ProcessRuntime) -> None:
+        if self.asr is None:
+            return
         error = None
         try:
             for parameter in self.asr.parameters():
@@ -540,3 +580,135 @@ def _check_span(span, width: int) -> tuple[int, int, int, int]:
     if crop_start + content_length > full_length:
         raise RuntimeFailure("crop extends past the full utterance")
     return crop_start, content_length, window, full_length
+
+
+def _module_sha256(component: Any) -> str:
+    module = component.unwrapped() if hasattr(component, "unwrapped") else component
+    digest = hashlib.sha256()
+    for key, value in sorted(module.state_dict().items()):
+        digest.update(str(key).encode("utf-8"))
+        if torch.is_tensor(value):
+            tensor = value.detach().to(device="cpu", dtype=torch.float32).contiguous()
+            digest.update(tensor.numpy().tobytes())
+        else:
+            digest.update(repr(value).encode("utf-8"))
+    return digest.hexdigest()
+
+
+def _repo_root() -> Path:
+    return Path(__file__).resolve().parents[5]
+
+
+def _git_text(root: Path, args: list[str]) -> str | None:
+    try:
+        completed = subprocess.run(args, cwd=root, check=False, capture_output=True, text=True)
+    except OSError as exc:
+        return f"error: {exc}"
+    if completed.returncode != 0:
+        return None
+    return completed.stdout
+
+
+def _code_record() -> dict[str, Any]:
+    root = _repo_root()
+    head = _git_text(root, ["git", "rev-parse", "HEAD"])
+    porcelain = _git_text(root, ["git", "status", "--porcelain"])
+    diff = _git_text(root, ["git", "diff", "HEAD"])
+    untracked: list[dict[str, str]] = []
+    if porcelain:
+        for line in porcelain.splitlines():
+            if not line.startswith("??"):
+                continue
+            rel = line[3:].strip().strip('"')
+            path = root / rel
+            files = [path] if path.is_file() else sorted(path.rglob("*")) if path.is_dir() else []
+            for child in files:
+                if not child.is_file() or "__pycache__" in child.parts or child.suffix == ".pyc":
+                    continue
+                if child.stat().st_size > 2_000_000:
+                    continue
+                relative = child.relative_to(root).as_posix()
+                if not relative.startswith(("src/", "configs/", "tests/", "scripts/", "docs/", ".agents/")):
+                    continue
+                untracked.append({"path": relative, "sha256": hashlib.sha256(child.read_bytes()).hexdigest()})
+    diff_text = diff or ""
+    return {
+        "diff_sha256": hashlib.sha256(diff_text.encode("utf-8")).hexdigest() if diff is not None else None,
+        "dirty": bool(porcelain and porcelain.strip()),
+        "git_commit": None if head is None else head.strip(),
+        "untracked_sources": untracked,
+    }
+
+
+def _library_versions() -> dict[str, str | None]:
+    from importlib.metadata import PackageNotFoundError, version
+
+    versions: dict[str, str | None] = {"cuda": torch.version.cuda, "torch": torch.__version__}
+    for dist in ("numpy", "mamba-ssm", "nemo-toolkit"):
+        try:
+            versions[dist] = version(dist)
+        except PackageNotFoundError:
+            versions[dist] = None
+    return versions
+
+
+def _speaker_split(trainer: GuidedSEMambaPPTrainer) -> dict[str, Any] | None:
+    source = getattr(trainer.data, "source", None)
+    if source is None:
+        return None
+    if hasattr(source, "open"):
+        source.open()
+    record = getattr(source, "ablation_record", None)
+    return dict(record) if isinstance(record, dict) else None
+
+
+def _run_identity(
+    trainer: GuidedSEMambaPPTrainer,
+    runtime: ProcessRuntime,
+    generator_sha: str,
+    discriminator_sha: dict[str, str],
+) -> dict[str, Any]:
+    config = trainer.lifecycle.config
+    trainer_spec = config.components.get("trainer")
+    batcher_spec = config.components.get("batcher")
+    trainer_kwargs = {} if trainer_spec is None else dict(trainer_spec.kwargs)
+    batcher_kwargs = {} if batcher_spec is None else dict(batcher_spec.kwargs)
+    asr_record = None
+    if trainer.asr is not None:
+        flags = [bool(parameter.requires_grad) for parameter in trainer.asr.parameters()]
+        metadata = trainer.asr.metadata() if hasattr(trainer.asr, "metadata") else {}
+        asr_record = {"frozen": not any(flags), "metadata": metadata, "parameter_count": len(flags)}
+    scan = getattr(trainer._update, "scan_report", None)
+    return {
+        "accumulation": int(trainer.accumulation),
+        "asr": asr_record,
+        "batcher": batcher_kwargs,
+        "code": _code_record(),
+        "condition_id": trainer.condition_id,
+        "config_sha256": trainer.lifecycle.config_identity,
+        "cuda_home": os.environ.get("CUDA_HOME"),
+        "cuda_visible_devices": os.environ.get("CUDA_VISIBLE_DEVICES"),
+        "discriminator_state_sha256": discriminator_sha,
+        "experiment_id": trainer.experiment_id,
+        "generator_state_sha256": generator_sha,
+        "gpu_name": torch.cuda.get_device_name(0) if torch.cuda.is_available() else None,
+        "guidance": {
+            "asr_features_enabled": trainer.guidance.asr_features_enabled,
+            "encoder_layer": trainer.guidance.encoder_layer,
+            "error_weight_alpha": trainer.guidance.error_weight_alpha,
+            "error_weight_enabled": trainer.guidance.error_weight_enabled,
+            "tdt_lambda": TDT_LAMBDA,
+            "tdt_loss_enabled": trainer.guidance.tdt_loss_enabled,
+        },
+        "hostname": socket.gethostname(),
+        "launch_command": os.environ.get("AUDIO_DB_LAUNCH_COMMAND"),
+        "libraries": _library_versions(),
+        "micro_batch_size": trainer_kwargs.get("micro_batch_size"),
+        "model_id": trainer.model_id,
+        "process_argv": list(sys.argv),
+        "scan": None if scan is None else dict(scan),
+        "seed": config.seed,
+        "speakers": _speaker_split(trainer),
+        "valid_frame_aggregation": trainer.valid_frame_aggregation,
+        "world_size": int(getattr(runtime, "world_size", 1)),
+    }

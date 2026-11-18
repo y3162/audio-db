@@ -11,6 +11,7 @@ GUIDANCE_DIM = 128
 STFT_HOP = 100
 ASR_HOP = 1280
 TDT_LAMBDA = 1.0
+MODEL_ID = "asr_guided_se.semambapp.v1"
 
 
 @dataclass

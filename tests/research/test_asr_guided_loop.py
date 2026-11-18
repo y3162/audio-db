@@ -7,6 +7,7 @@ official-width model and it does not load Parakeet.
 from __future__ import annotations
 
 import json
+import math
 import tempfile
 import unittest
 from dataclasses import replace
@@ -35,6 +36,7 @@ def _research_yaml(directory: Path, **kwargs) -> Path:
     error = bool(kwargs.pop("error", False))
     tdt = bool(kwargs.pop("tdt", False))
     real_asr = bool(kwargs.pop("real_asr", False))
+    valid_frames = bool(kwargs.pop("valid_frames", False))
     alpha = float(kwargs.pop("alpha", 1.0 if error else 0.0))
     layer = int(kwargs.pop("layer", 3))
     if error or tdt:
@@ -63,11 +65,10 @@ def _research_yaml(directory: Path, **kwargs) -> Path:
         "class: src.research.asr_guided_se.semambapp.v1.trainer.GuidedSEMambaPPTrainer",
         1,
     )
-    text = text.replace(
-        "claim_label: research\n",
-        "claim_label: research\n      experiment_claim: research\n",
-        1,
-    )
+    claim_lines = "claim_label: research\n      experiment_claim: research\n"
+    if valid_frames:
+        claim_lines += "      valid_frame_aggregation: true\n"
+    text = text.replace("claim_label: research\n", claim_lines, 1)
     inject = "      guidance: {ref: guidance}\n"
     generator_inject = """    prepare:
       trainable: true
@@ -166,6 +167,22 @@ class ResearchLoopTest(unittest.TestCase):
             finally:
                 official.close()
                 research.close()
+
+    def test_valid_frame_aggregation_keeps_all_off_on_the_guided_update(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            experiment = build_experiment(
+                load_experiment(
+                    _research_yaml(root, steps=1, count=1, with_spans=True, valid_frames=True)
+                )
+            )
+            trainer = experiment.get("trainer")
+            self.assertIsInstance(trainer._update, GuidedUpdate)
+            self.assertTrue(trainer.valid_frame_aggregation)
+            experiment.run()
+            row = json.loads(_metric_lines(root)[0])
+            self.assertTrue(math.isfinite(row["generator"]))
+            self.assertNotIn("tdt", row)
 
     def test_features_stay_out_of_the_optimizer_and_error_tdt_uses_the_span(self) -> None:
         with tempfile.TemporaryDirectory() as directory:

@@ -11,7 +11,7 @@ from src.experiments.calc.batch import exact_accumulation
 from src.experiments.config import load_experiment
 from src.experiments.losses import MagnitudeMSE, WeightedObjective
 from src.experiments.stopping import MetricEvent, PatienceStopPolicy
-from src.research.asr_guided_se.semambapp.v1.config import GuidanceV1
+from src.research.asr_guided_se.semambapp.v1.config import MODEL_ID, GuidanceV1
 from src.research.asr_guided_se.semambapp.v1.loss import frame_weight_and_valid, guided_generator_loss
 from src.research.asr_guided_se.semambapp.v1.voicebank import ablation_holdout
 
@@ -35,6 +35,17 @@ def _guidance(error: bool, alpha: float) -> GuidanceV1:
     return GuidanceV1(False, 15, error, alpha, False)
 
 
+_OLD_IDS = (
+    "error_aware_se_mamba_pp",
+    "error_aware_semambapp",
+    "error-aware-se-mamba-pp",
+    "error-aware-semambapp",
+    "Error-aware SE-Mamba++",
+    "semamabapp",
+)
+_SCAN_ROOTS = ("src", "configs", "tests", "scripts", "docs", ".agents", "AGENTS.md", "README.md")
+
+
 class AblationConfigTest(unittest.TestCase):
     def test_eight_configs_share_the_run_and_differ_by_switches(self) -> None:
         base = load_experiment(_ABLATION / "A0.yaml")
@@ -54,6 +65,15 @@ class AblationConfigTest(unittest.TestCase):
             self.assertEqual(guidance["error_weight_alpha"], 1.0)
             self.assertEqual(spec.components["trainer"].kwargs["global_batch_size"], 8)
             self.assertEqual(spec.components["trainer"].kwargs["micro_batch_size"], 1)
+            self.assertEqual(spec.components["trainer"].kwargs["model_id"], MODEL_ID)
+            self.assertEqual(spec.components["trainer"].kwargs["experiment_id"], "voicebank_m15db_ablation")
+            self.assertEqual(spec.components["trainer"].kwargs["condition_id"], name)
+            self.assertIs(spec.components["trainer"].kwargs["valid_frame_aggregation"], True)
+            self.assertTrue(
+                str(spec.output_directory).endswith(
+                    f"data/results/experiments/asr_guided_se/semambapp/v1/voicebank_m15db_ablation/{name}"
+                )
+            )
             self.assertEqual(spec.components["trainer"].kwargs["max_epochs"], 100)
             self.assertEqual(spec.components["trainer"].kwargs["experiment_claim"], "research")
             self.assertEqual(exact_accumulation(8, 1, 1), 8)
@@ -80,6 +100,22 @@ class AblationConfigTest(unittest.TestCase):
                 self.assertNotIn("asr", spec.components["generator"].inject)
             directories.add(str(spec.output_directory))
         self.assertEqual(len(directories), 8)
+
+    def test_old_model_ids_are_absent_from_the_source_tree(self) -> None:
+        found: list[str] = []
+        for relative in _SCAN_ROOTS:
+            path = _ROOT / relative
+            files = [path] if path.is_file() else path.rglob("*") if path.exists() else []
+            for child in files:
+                if not child.is_file() or child.suffix in {".pyc", ".pt"} or "__pycache__" in child.parts:
+                    continue
+                if child.name == "test_ablation_voicebank.py":
+                    continue
+                text = child.read_text(encoding="utf-8", errors="ignore")
+                for token in _OLD_IDS:
+                    if token in text:
+                        found.append(f"{child.relative_to(_ROOT)}: {token}")
+        self.assertEqual(found, [])
 
     def test_patience_stops_after_ten_non_improvements(self) -> None:
         policy = PatienceStopPolicy("validation.wer", "min", 10, 0.0)

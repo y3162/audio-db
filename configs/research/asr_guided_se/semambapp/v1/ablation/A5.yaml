@@ -1,7 +1,7 @@
 # A5: ASR features on, TDT off, error weighting on.
 extends: A0.yaml
 output:
-  directory: data/results/experiments/error_aware_se_mamba_pp/ablation/A5
+  directory: data/results/experiments/asr_guided_se/semambapp/v1/voicebank_m15db_ablation/A5
 components:
   guidance:
     kwargs:
@@ -11,5 +11,7 @@ components:
     inject:
       asr: {ref: asr}
   trainer:
+    kwargs:
+      condition_id: A5
     inject:
       asr: {ref: asr}
