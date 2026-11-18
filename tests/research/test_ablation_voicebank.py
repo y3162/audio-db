@@ -4,7 +4,9 @@ from __future__ import annotations
 
 import unittest
 from pathlib import Path
+from unittest.mock import patch
 
+import numpy as np
 import torch
 
 from src.experiments.calc.batch import exact_accumulation
@@ -83,6 +85,15 @@ class AblationConfigTest(unittest.TestCase):
             self.assertEqual(spec.components["selection"].kwargs["metric"], "validation.wer")
             self.assertEqual(spec.components["source"].kwargs["split_seed"], 42)
             self.assertEqual(spec.components["source"].kwargs["valid_count"], 3)
+            self.assertEqual(
+                spec.components["protocol"].class_path,
+                "src.research.asr_guided_se.semambapp.v1.voicebank.VoicebankAblationProtocol",
+            )
+            self.assertEqual(spec.components["protocol"].kwargs, base.components["protocol"].kwargs)
+            self.assertEqual(
+                spec.components["source"].class_path,
+                base.components["source"].class_path,
+            )
             self.assertEqual(spec.components["asr"].kwargs["tdt_loss"], flags[2])
             self.assertEqual(spec.seed, base.seed)
             self.assertEqual(spec.components["generator"].kwargs, base.components["generator"].kwargs)
@@ -271,6 +282,77 @@ class VoicebankSplitTest(unittest.TestCase):
         crop = protocol.locate(case_id, length, 0)
         self.assertLessEqual(crop.length, 48000)
         self.assertEqual(crop.pad_to, 48000)
+        self.assertEqual(protocol.normalize, "noisy_peak_v1")
+        from src.experiments.data.sampling.planner import fixed_pair_pad_name
+        from src.research.asr_guided_se.semambapp.v1.voicebank import _resample
+
+        self.assertEqual(fixed_pair_pad_name("noisy_peak_v1"), "tail_zero")
+        noisy_out, clean_out = protocol._peak_pair(case_id)
+        self.assertEqual(noisy_out.shape, (length,))
+        self.assertEqual(clean_out.shape, (length,))
+        clean_16 = _resample(shifted_clean)
+        noisy_16 = _resample(shifted)
+        scale = np.max(np.abs(noisy_16)) + 1e-9
+        np.testing.assert_allclose(noisy_out, np.float32(noisy_16 / scale), atol=0, rtol=0)
+        np.testing.assert_allclose(clean_out, np.float32(clean_16 / scale), atol=0, rtol=0)
+        self.assertGreater(float(np.max(np.abs(noisy_out))), 0.999)
+        self.assertLessEqual(float(np.max(np.abs(noisy_out))), 1.0)
+
+
+class SharedNoisyPeakTest(unittest.TestCase):
+    def test_one_noisy_scale_keeps_relative_level_and_silent_input(self) -> None:
+        from src.research.asr_guided_se.semambapp.v1.voicebank import (
+            VoicebankAblationProtocol,
+            _shared_noisy_peak,
+        )
+
+        clean = np.array([2.0, -0.5, 0.25, 0.0], dtype=np.float32)
+        noisy = np.array([0.5, -0.25, 0.0, 0.1], dtype=np.float32)
+        clean_peak, noisy_peak = _shared_noisy_peak(clean, noisy)
+        scale = np.max(np.abs(noisy)) + 1e-9
+        np.testing.assert_allclose(clean_peak, clean / scale)
+        np.testing.assert_allclose(noisy_peak, noisy / scale)
+        usable = np.abs(noisy) > 0
+        np.testing.assert_allclose(clean_peak[usable] / noisy_peak[usable], clean[usable] / noisy[usable])
+        self.assertGreater(float(np.max(np.abs(clean_peak))), 1.0)
+        self.assertAlmostEqual(float(np.max(np.abs(noisy_peak))), 1.0, places=5)
+        speech = clean
+        noise = noisy - clean
+        before = float(np.mean(noise**2) / np.mean(speech**2))
+        after_noise = noisy_peak - clean_peak
+        after = float(np.mean(after_noise**2) / np.mean(clean_peak**2))
+        self.assertAlmostEqual(before, after, places=5)
+        silent_clean, silent_noisy = _shared_noisy_peak(np.zeros(4, np.float32), np.zeros(4, np.float32))
+        self.assertTrue(np.isfinite(silent_clean).all())
+        self.assertTrue(np.isfinite(silent_noisy).all())
+        self.assertTrue(np.all(silent_clean == 0))
+        self.assertTrue(np.all(silent_noisy == 0))
+
+        protocol = VoicebankAblationProtocol.__new__(VoicebankAblationProtocol)
+        protocol._full = {}
+        protocol._shift = -15.0
+        protocol.verify_on_read = False
+        protocol.source = type("Source", (), {"store": object()})()
+        protocol.case_length = lambda _case_id: int(clean.shape[0])
+        with (
+            patch(
+                "src.research.asr_guided_se.semambapp.v1.voicebank.render_case",
+                return_value=(clean, noisy),
+            ),
+            patch(
+                "src.research.asr_guided_se.semambapp.v1.voicebank._resample",
+                side_effect=lambda audio: np.ascontiguousarray(audio, dtype=np.float32),
+            ),
+        ):
+            rendered_noisy, rendered_clean = protocol._peak_pair("case-shared")
+        np.testing.assert_allclose(rendered_noisy, np.asarray(noisy_peak, dtype=np.float32))
+        np.testing.assert_allclose(rendered_clean, np.asarray(clean_peak, dtype=np.float32))
+        self.assertEqual(rendered_noisy.shape, clean.shape)
+        self.assertEqual(rendered_clean.shape, clean.shape)
+        from src.experiments.data.sampling.planner import fixed_pair_pad_name
+
+        self.assertEqual(fixed_pair_pad_name("noisy_peak_v1"), fixed_pair_pad_name("independent_peak_v1"))
+        self.assertEqual(fixed_pair_pad_name("noisy_peak_v1"), "tail_zero")
 
 
 if __name__ == "__main__":

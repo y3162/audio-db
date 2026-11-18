@@ -298,7 +298,7 @@ def _pair_length(
         raise ReproductionError(f"case {case_id} has an empty asset")
     if normalize == "noisy_rms_unit_v1":
         return min(clean, noisy)
-    if normalize in {"independent_audio_norm_v1", "independent_peak_v1"}:
+    if normalize in {"independent_audio_norm_v1", "independent_peak_v1", "noisy_peak_v1"}:
         if clean != noisy:
             raise ReproductionError(f"case {case_id} clean and noisy durations differ")
         return clean
@@ -310,7 +310,7 @@ def _pad_name(normalize: str) -> str:
         return "tail_zero"
     if normalize == "independent_audio_norm_v1":
         return "head_place"
-    if normalize == "independent_peak_v1":
+    if normalize in {"independent_peak_v1", "noisy_peak_v1"}:
         return "tail_zero"
     raise ReproductionError(f"normalization {normalize} is not implemented")
 

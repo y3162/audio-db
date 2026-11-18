@@ -19,7 +19,6 @@ import numpy as np
 from src.experiments.calc.dataset import resampled_frame_count
 from src.experiments.data.fixed_pair import SnapshotSource
 from src.experiments.data.mix.voicebank_snr import dataset_shift, render_case
-from src.experiments.data.protocols.online_semamba import independent_peak
 from src.experiments.data.render.transform import apply_window
 from src.experiments.data.render.types import CropSpec
 from src.experiments.data.sample import Crop, SampleRef
@@ -139,7 +138,12 @@ class VoicebankAblationSource(SnapshotSource):
 
 
 class VoicebankAblationProtocol:
-    """16 kHz peak-normalized VoiceBank windows. Validation keeps the full utterance."""
+    """16 kHz VoiceBank windows scaled by the noisy peak.
+
+    Clean and noisy share that one coefficient, so their relative amplitude
+    stays put and a louder clean waveform is not clipped back to 1. Validation
+    keeps the full utterance.
+    """
 
     supply = "fixed_pair"
 
@@ -161,7 +165,7 @@ class VoicebankAblationProtocol:
         self.verify_on_read = verify_on_read
         self.sample_rate = _TARGET_RATE
         self.window = _WINDOW
-        self.normalize = "independent_peak_v1"
+        self.normalize = "noisy_peak_v1"
         self.validation_crop = "full_length"
         self.resample = {
             "from_hz": _SOURCE_RATE,
@@ -298,8 +302,7 @@ class VoicebankAblationProtocol:
             raise DataError(
                 f"{case_id} resampled to {clean_16.shape[0]}/{noisy_16.shape[0]}, expected {expected}"
             )
-        clean_peak, _clean_level = independent_peak(clean_16)
-        noisy_peak, _noisy_level = independent_peak(noisy_16)
+        clean_peak, noisy_peak = _shared_noisy_peak(clean_16, noisy_16)
         pair = (
             np.ascontiguousarray(noisy_peak, dtype=np.float32),
             np.ascontiguousarray(clean_peak, dtype=np.float32),
@@ -348,6 +351,17 @@ def _items(case_set_id: str, case_ids: list[str]) -> list[dict[str, object]]:
         {"case_set_id": case_set_id, "position": index, "case_id": case_id}
         for index, case_id in enumerate(case_ids)
     ]
+
+
+def _shared_noisy_peak(clean: np.ndarray, noisy: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
+    """Scale clean and noisy by the noisy peak.
+
+    The coefficient is ``max(|noisy|) + 1e-9``. Both waveforms use it, clean is
+    not scaled again, and values above 1 are left as they are.
+    """
+
+    scale = np.max(np.abs(noisy)) + 1e-9
+    return clean / scale, noisy / scale
 
 
 def _resample(audio: np.ndarray) -> np.ndarray:
