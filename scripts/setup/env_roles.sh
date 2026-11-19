@@ -7,7 +7,9 @@ install_roles() {
   for role in "${role_list[@]}"; do
     install_role "$role" || status=1
   done
-  build_df_rfft || status=1
+  if [[ ",$roles," == *,se,* ]]; then
+    build_df_rfft || status=1
+  fi
   return "$status"
 }
 
@@ -27,7 +29,8 @@ install_role() {
   local digest
   digest=$(sha256sum "$lock" | awk '{print $1}')
   local stamp="${venv}/.audio-db-setup-stamp"
-  if [[ "${FORCE_SETUP:-}" != 1 && -f "$stamp" && $(cat "$stamp") == "$digest" ]] && role_imports "$role"; then
+  if [[ "${FORCE_SETUP:-}" != 1 && -f "$stamp" && $(cat "$stamp") == "$digest" ]] \
+      && [[ "$role" != se || "${AUDIO_DB_REBUILD_MAMBA:-}" != 1 ]] && role_imports "$role"; then
     echo "unchanged venv ${role}"
     return 0
   fi
@@ -98,22 +101,10 @@ build_mamba() {
     echo "Pinned causal-conv1d or mamba checkout is missing. Run: make assets" >&2
     return 1
   fi
-  local cuda_home=${CUDA_HOME:-}
-  if [[ "${AUDIO_DB_CUDA_FROM:-}" == wheel ]]; then
-    local site
-    site=$("$python" -c 'import site; print(site.getsitepackages()[0])')
-    cuda_home="${site}/nvidia/cuda_nvcc"
-  fi
-  if [[ -z "$cuda_home" || ! -x "${cuda_home}/bin/nvcc" ]]; then
-    if [[ -n "${CUDA_HOME:-}" && -x "${CUDA_HOME}/bin/nvcc" ]]; then
-      cuda_home="$CUDA_HOME"
-    fi
-  fi
-  if [[ -z "$cuda_home" || ! -x "${cuda_home}/bin/nvcc" ]]; then
-    echo "nvcc was not found. On TSUBAME: module load cuda/12.3.2. On SHINODA-LAB: module load cuda/12.1" >&2
+  if [[ -z "${CUDA_HOME:-}" || ! -x "${CUDA_HOME}/bin/nvcc" ]]; then
+    echo "nvcc was not found. Put the CUDA Toolkit on PATH or set CUDA_HOME to its root, then rerun setup." >&2
     return 1
   fi
-  export CUDA_HOME="$cuda_home"
   export PATH="${CUDA_HOME}/bin:${PATH}"
   export MAX_JOBS="${MAX_JOBS:-4}"
   export CAUSAL_CONV1D_FORCE_BUILD=TRUE
@@ -123,8 +114,7 @@ build_mamba() {
   if [[ "${AUDIO_DB_REBUILD_MAMBA:-}" == 1 ]]; then
     uv pip uninstall --python "$python" causal-conv1d mamba-ssm >/dev/null 2>&1 || true
     rm -f "${site}"/causal_conv1d_cuda*.so "${site}"/selective_scan_cuda*.so
-    # Incremental objects compiled on a newer glibc stay in these trees and
-    # are linked into the next .so. Shannon cannot load that GLIBC_2.32 symbol.
+    # Objects from a different toolchain can be reused by an incremental build.
     rm -rf "${causal}/build" "${mamba}/build"
   fi
   init="${site}/mamba_ssm/__init__.py"
@@ -150,43 +140,24 @@ libdf_imports() {
   "$python" -c 'import libdf, libdfdata' >/dev/null 2>&1
 }
 
-install_libdf_wheels() {
-  local python=$1
-  local lib_wheel data_wheel
-  lib_wheel=$(ls -1 build/libdf-cargo/wheels/DeepFilterLib-*.whl 2>/dev/null | head -1 || true)
-  data_wheel=$(ls -1 build/libdf-cargo/wheels/DeepFilterDataLoader-*.whl 2>/dev/null | head -1 || true)
-  if [[ -z "$lib_wheel" || -z "$data_wheel" ]]; then
-    return 1
-  fi
-  uv pip install --python "$python" --no-deps "$lib_wheel" "$data_wheel" || return 1
-  libdf_imports "$python"
-}
-
-# Cargo 1.99 rewrites the pinned lock (version 3) and refuses that rewrite
-# when --locked is set. The official checkout stays at its commit. A shared
-# clone under build/libdf-src may refresh its own lock, offline.
 libdf_build_tree() {
   local src dest commit
   src="$(pwd)/src/official/deepfilternet"
   dest="$(pwd)/build/libdf-src"
-  commit=$(git -C "$src" rev-parse HEAD)
+  commit=$(git -C "$src" rev-parse HEAD) || return 1
   if [[ ! -d "$dest/.git" ]] || [[ "$(git -C "$dest" rev-parse HEAD 2>/dev/null || true)" != "$commit" ]]; then
-    rm -rf "$dest"
-    git clone --shared "$src" "$dest"
-    git -C "$dest" checkout --detach "$commit"
+    rm -rf "$dest" || return 1
+    git clone --shared "$src" "$dest" || return 1
+    git -C "$dest" checkout --detach "$commit" || return 1
   fi
+  # The upstream workspace also includes a GUI demo and a LADSPA plugin.
+  # Prune those members from the build copy so their dependencies are not resolved.
+  sed '/^  "ladspa",$/d; /^  "demo",$/d' "$src/Cargo.toml" >"$dest/Cargo.toml" || return 1
+  cp "$src/Cargo.lock" "$dest/Cargo.lock" || return 1
   printf '%s\n' "$dest"
 }
 
-maturin_release() {
-  local python=$1
-  if "$python" -m maturin build --release --offline --locked --interpreter "$python"; then
-    return 0
-  fi
-  "$python" -m maturin build --release --offline --interpreter "$python"
-}
-
-build_libdf() {
+build_libdf() (
   local python=$1
   local repo="src/official/deepfilternet"
   if [[ ! -f "$repo/pyDF/Cargo.toml" ]]; then
@@ -196,37 +167,53 @@ build_libdf() {
   if libdf_imports "$python"; then
     return 0
   fi
-  if install_libdf_wheels "$python"; then
-    echo "reinstalled libdf wheels"
-    return 0
-  fi
   export PATH="$(dirname "$python"):${PATH}"
-  export CARGO_TARGET_DIR="${PWD}/build/libdf-cargo"
-  local tree
-  tree=$(libdf_build_tree)
+  local tree temporary
+  tree=$(libdf_build_tree) || return 1
   (
-    cd "$tree/pyDF"
-    maturin_release "$python"
+    cd "$tree" || exit 1
+    cargo tree -p DeepFilterLib -p DeepFilterDataLoader >/dev/null
   ) || return 1
-  local wheel
-  wheel=$(ls -1 "${CARGO_TARGET_DIR}/wheels"/DeepFilterLib-*.whl | head -1)
-  uv pip install --python "$python" --no-deps "$wheel" || return 1
-  if [[ "${AUDIO_DB_HDF5:-0}" != 1 && -z "${HDF5_DIR:-}" ]]; then
-    echo "libdf imported path is installed. libdfdata was not built because HDF5_DIR is unset." >&2
-    echo "On TSUBAME: module load hdf5-parallel/1.14.3/gcc11.4.1 && make setup-env PLATFORM=tsubame ROLES=deepfilternet" >&2
+  "$python" - "$repo/Cargo.lock" "$tree/Cargo.lock" <<'PY' || return 1
+import sys
+import tomllib
+
+
+def packages(path):
+    with open(path, "rb") as lock:
+        return {
+            (pkg["name"], pkg["version"], pkg.get("source"), pkg.get("checksum"))
+            for pkg in tomllib.load(lock)["package"]
+        }
+
+
+added = packages(sys.argv[2]) - packages(sys.argv[1])
+if added:
+    names = ", ".join(sorted(f"{name} {version}" for name, version, _, _ in added))
+    sys.exit(f"DeepFilterNet build would change pinned Rust dependencies: {names}")
+PY
+  temporary=$(mktemp -d) || return 1
+  trap 'rm -rf "$temporary"' EXIT
+  # Maturin copies Cargo's shared objects before packing the wheel. Keep
+  # that copy on local storage by default when the checkout is on a share.
+  export CARGO_TARGET_DIR="${CARGO_TARGET_DIR:-$temporary/cargo}"
+  (
+    cd "$tree/pyDF" || exit 1
+    "$python" -m maturin build --release --locked --compatibility linux \
+      --interpreter "$python" --out "$temporary/lib"
+  ) || return 1
+  uv pip install --python "$python" --no-deps "$temporary/lib/"*.whl || return 1
+  if [[ "${AUDIO_DB_HDF5:-0}" != 1 && -z "${HDF5_DIR:-}" ]] && ! pkg-config --exists hdf5; then
+    echo "libdf was installed. libdfdata needs HDF5 headers. Make HDF5 visible to pkg-config or set HDF5_DIR, then rerun make setup-env ROLES=deepfilternet." >&2
     return 1
   fi
-  if ! command -v patchelf >/dev/null 2>&1; then
-    echo "patchelf is required to build libdfdata and was not found." >&2
-    return 1
-  fi
   (
-    cd "$tree/pyDF-data"
-    maturin_release "$python"
+    cd "$tree/pyDF-data" || exit 1
+    "$python" -m maturin build --release --locked --compatibility linux \
+      --interpreter "$python" --out "$temporary/data"
   ) || return 1
-  wheel=$(ls -1 "${CARGO_TARGET_DIR}/wheels"/DeepFilterDataLoader-*.whl | head -1)
-  uv pip install --python "$python" --no-deps "$wheel" || return 1
-}
+  uv pip install --python "$python" --no-deps "$temporary/data/"*.whl
+)
 
 build_df_rfft() {
   if ! command -v cargo >/dev/null 2>&1; then
@@ -234,9 +221,7 @@ build_df_rfft() {
     return 1
   fi
   local manifest="src/models/deepfilternet3/rfft_kernel/Cargo.toml"
-  if ! cargo build --release --locked --manifest-path "$manifest" --target-dir build/df-rfft; then
-    cargo build --release --manifest-path "$manifest" --target-dir build/df-rfft || return 1
-  fi
+  cargo build --release --locked --manifest-path "$manifest" --target-dir build/df-rfft || return 1
   local built="build/df-rfft/release/libdf_rfft.so"
   local tracked="src/models/deepfilternet3/libdf_rfft.so"
   if [[ -f "$tracked" ]] && ! cmp -s "$built" "$tracked"; then

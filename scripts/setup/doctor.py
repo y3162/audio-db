@@ -103,19 +103,17 @@ def check_torch(report: Report) -> None:
 
 
 def _gpu_occupied() -> bool:
-    result = subprocess.run(
-        ["nvidia-smi", "--query-gpu=memory.used", "--format=csv,noheader,nounits"],
-        text=True, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, check=False,
-    )
-    if result.returncode != 0:
-        return False
-    for line in result.stdout.splitlines():
-        try:
-            if int(line.strip()) >= 1024:
-                return True
-        except ValueError:
-            return True
-    return False
+    device = os.environ.get("CUDA_VISIBLE_DEVICES", "0").split(",")[0].strip()
+    if not device:
+        return True
+    try:
+        result = subprocess.run(
+            ["nvidia-smi", "--id", device, "--query-gpu=memory.used", "--format=csv,noheader,nounits"],
+            text=True, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, check=False,
+        )
+        return result.returncode != 0 or int(result.stdout.strip()) >= 1024
+    except (OSError, ValueError):
+        return True
 
 
 def check_native(report: Report) -> None:

@@ -3,7 +3,7 @@
 PESQ uses the library gate: a downsample-boundary jump is ``na``, not a
 corrected score. Existing JSON files are not overwritten.
 
-    .venvs/lab/bin/python tests/numerics/reference/summarize_valid64.py \\
+    .venvs/se/bin/python tests/numerics/reference/summarize_valid64.py \\
         data/results/training/semamba-valid64-20261101
 """
 

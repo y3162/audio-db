@@ -12,7 +12,8 @@
 ROOT := $(abspath $(dir $(lastword $(MAKEFILE_LIST))))
 WITH_ENV := $(ROOT)/scripts/setup/with_env.sh
 PYTHON ?= $(shell if [ -x $(ROOT)/.venvs/se/bin/python ]; then echo $(ROOT)/.venvs/se/bin/python; else echo python; fi)
-SETUP_PY := $(shell if [ -x $(ROOT)/.venvs/se/bin/python ]; then echo $(ROOT)/.venvs/se/bin/python; else uv python find 3.12; fi)
+SETUP_PY = $(shell if [ -x $(ROOT)/.venvs/se/bin/python ]; then echo $(ROOT)/.venvs/se/bin/python; else uv python find 3.12; fi)
+PLATFORM ?= local
 
 DF_RFFT_MANIFEST := src/models/deepfilternet3/rfft_kernel/Cargo.toml
 DF_RFFT_TARGET ?= $(CURDIR)/build/df-rfft
@@ -31,11 +32,10 @@ endif
 
 help:
 	@printf '%s\n' \
-	  'Setup (platform is required only here):' \
-	  '  make setup PLATFORM=tsubame' \
-	  '  make setup PLATFORM=shinoda_lab' \
-	  '  make setup-env PLATFORM=tsubame ROLES=se' \
-	  '  make setup-env PLATFORM=shinoda_lab ROLES=official,deepfilternet' \
+	  'Setup:' \
+	  '  make setup' \
+	  '  make setup-env ROLES=se' \
+	  '  make setup-env ROLES=official,deepfilternet' \
 	  '  make assets MODELS=mp_senet' \
 	  '  make assets-check' \
 	  '  make db-link ONLY=LibriSpeech DRY_RUN=1 ALLOW_PARTIAL=1' \
@@ -43,7 +43,7 @@ help:
 	  '  make test-setup' \
 	  '' \
 	  'Roles: se, official, deepfilternet' \
-	  'Platforms: tsubame, shinoda_lab' \
+	  'See docs/envs/SETUP.md for prerequisites and platform instructions.' \
 	  'Default setup builds every role, fetches every pinned asset, links configured datasets, then runs doctor.' \
 	  'DB init, ingest, and bootstrap are separate and are not run by make setup.' \
 	  '' \
@@ -69,25 +69,23 @@ setup:
 	$(WITH_ENV) $(ROOT)/scripts/setup/setup.sh $(PLATFORM)
 
 setup-env:
-	$(WITH_ENV) bash -c 'cd $(ROOT) && source scripts/setup/platforms/$(PLATFORM).sh && platform_prepare && source scripts/setup/env_roles.sh && install_roles "$(or $(ROLES),se,official,deepfilternet)"'
+	$(WITH_ENV) $(ROOT)/scripts/setup/setup.sh $(PLATFORM) --env-only
 
 assets:
-	$(WITH_ENV) $(SETUP_PY) $(ROOT)/scripts/setup/assets.py fetch --models "$(MODELS)"
+	$(SETUP_PY) $(ROOT)/scripts/setup/assets.py fetch --models "$(MODELS)"
 
 assets-check:
-	$(WITH_ENV) $(SETUP_PY) $(ROOT)/scripts/setup/assets.py check --models "$(MODELS)"
+	$(SETUP_PY) $(ROOT)/scripts/setup/assets.py check --models "$(MODELS)"
 
 doctor:
 	$(WITH_ENV) $(SETUP_PY) $(ROOT)/scripts/setup/doctor.py
 
 test-setup:
-	$(WITH_ENV) uv run --python 3.12 --no-project python -m unittest discover -s $(ROOT)/tests/setup -v
+	$(WITH_ENV) uv run --python 3.12 --no-project python -m tests.suite_guard \
+	  python -m unittest discover -s $(ROOT)/tests/setup -v
 
 df-rfft:
 	cargo build --release --locked \
-		--manifest-path $(DF_RFFT_MANIFEST) \
-		--target-dir $(DF_RFFT_TARGET) \
-	|| cargo build --release \
 		--manifest-path $(DF_RFFT_MANIFEST) \
 		--target-dir $(DF_RFFT_TARGET)
 	@if [ -f $(DF_RFFT_SO) ] && ! cmp -s $(DF_RFFT_TARGET)/release/libdf_rfft.so $(DF_RFFT_SO); then \

@@ -3,7 +3,7 @@
 PESQ is not computed here. The 2026-11 ``.venvs/semamba`` had no PESQ
 library, and the reference loss module imports ``pesq`` at import time. A
 dummy module is installed only so that import succeeds. Metric values come
-from ``semamba_quality.py score`` under ``.venvs/lab``.
+from ``semamba_quality.py score`` under ``.venvs/se``.
 
     CUDA_VISIBLE_DEVICES=<free> CUBLAS_WORKSPACE_CONFIG=:4096:8 \\
         .venvs/se/bin/python tests/numerics/reference/compare_semamba_quality.py \\

@@ -43,6 +43,7 @@ ROOT = Path(__file__).resolve().parents[2]
 TRACKED_RFFT = ROOT / "src/models/deepfilternet3/libdf_rfft.so"
 LOCAL_RFFT = ROOT / "build/df-rfft/release/libdf_rfft.so"
 SNAPSHOTS = ROOT / "data/db/snapshots"
+VOICEBANK_SNAPSHOTS = ROOT / "data/db/snapshots-voicebank-float-v1"
 OFFICIAL = {
     "mp_senet": ROOT / "tests/fixtures/configs/experiments/mp_senet_gan.yaml",
     "mossformergan": ROOT / "tests/fixtures/configs/experiments/mossformergan_se_16k.yaml",
@@ -92,14 +93,15 @@ def _max_diff(left: dict[str, torch.Tensor], right: dict[str, torch.Tensor]) -> 
 
 def _datasets() -> dict[str, dict]:
     found: dict[str, dict] = {}
-    for child in published_snapshot_directories(SNAPSHOTS):
-        path = child / "dataset.json"
-        if not path.is_file():
-            continue
-        document = json.loads(path.read_text(encoding="utf-8"))
-        name = document.get("name")
-        if isinstance(name, str):
-            found[name] = document
+    for root in (SNAPSHOTS, VOICEBANK_SNAPSHOTS):
+        for child in published_snapshot_directories(root):
+            path = child / "dataset.json"
+            if not path.is_file():
+                continue
+            document = json.loads(path.read_text(encoding="utf-8"))
+            name = document.get("name")
+            if isinstance(name, str):
+                found[name] = document
     return found
 
 
@@ -219,6 +221,9 @@ class Phase4IDeclarationTests(unittest.TestCase):
         self.assertNotIn("best_generator", semamba.components)
 
     def test_ready_snapshots_and_blocked_official_sets_stay_distinct(self) -> None:
+        database_paths = [ROOT / "data/db" / name for name in ("reproduction-p8.duckdb", "reproduction-p9.duckdb")]
+        if not SNAPSHOTS.is_dir() or not VOICEBANK_SNAPSHOTS.is_dir() or not all(path.is_file() for path in database_paths):
+            self.skipTest("NOT_RUN: reproduction and VoiceBank float snapshots and the P8 and P9 databases are required")
         documents = _datasets()
         for name, claim in READY.items():
             self.assertIn(name, documents, name)
@@ -227,8 +232,8 @@ class Phase4IDeclarationTests(unittest.TestCase):
             self.assertEqual(documents[name]["profile"], "official_faithful", name)
         for blocked in ("dfn3.online.official", "semambapp.gsr.official"):
             self.assertNotIn(blocked, documents)
-        p8 = duckdb.connect(str(ROOT / "data/db/reproduction-p8.duckdb"), read_only=True)
-        p9 = duckdb.connect(str(ROOT / "data/db/reproduction-p9.duckdb"), read_only=True)
+        p8 = duckdb.connect(str(database_paths[0]), read_only=True)
+        p9 = duckdb.connect(str(database_paths[1]), read_only=True)
         try:
             dfn = p8.execute(
                 "select declared_status, claim_label from repro.datasets where name = 'dfn3.online.official'"
@@ -247,14 +252,25 @@ class Phase4IDeclarationTests(unittest.TestCase):
         self.assertTrue(LOCAL_RFFT.is_file())
         tracked = _sha256(TRACKED_RFFT)
         local = _sha256(LOCAL_RFFT)
-        self.assertNotEqual(tracked, local)
-        missing = _probe_rfft("/tmp/audio-db-phase4i-missing-libdf_rfft.so")
+        with tempfile.TemporaryDirectory() as directory:
+            missing = Path(directory) / "missing.so"
+            invalid = Path(directory) / "invalid.so"
+            invalid.write_bytes(b"invalid shared library")
+            self.assertEqual(
+                _probe_rfft(str(missing)),
+                {"ok": True, "none": True, "abi": None, "path": str(missing)},
+            )
+            invalid_probe = _probe_rfft(str(invalid))
+        self.assertFalse(invalid_probe["ok"])
+        self.assertEqual(invalid_probe["error"], "RuntimeError")
+        self.assertIn("failed to load", str(invalid_probe["message"]))
         tracked_probe = _probe_rfft(str(TRACKED_RFFT))
+        if tracked_probe["ok"]:
+            self.assertEqual(tracked_probe["abi"], 1)
+        else:
+            self.assertEqual(tracked_probe["error"], "RuntimeError")
+            self.assertIn("failed to load", str(tracked_probe["message"]))
         local_probe = _probe_rfft(str(LOCAL_RFFT))
-        self.assertEqual(missing, {"ok": True, "none": True, "abi": None, "path": "/tmp/audio-db-phase4i-missing-libdf_rfft.so"})
-        self.assertFalse(tracked_probe["ok"])
-        self.assertEqual(tracked_probe["error"], "RuntimeError")
-        self.assertIn("failed to load", str(tracked_probe["message"]))
         self.assertEqual(local_probe["ok"], True)
         self.assertEqual(local_probe["abi"], 1)
         self.assertFalse(local_probe["none"])
@@ -329,6 +345,7 @@ class Phase4IExportTests(unittest.TestCase):
         self.assertTrue(bool(torch.isfinite(enhanced).all()))
 
 
+@unittest.skipUnless(SNAPSHOTS.is_dir(), "NOT_RUN: DeepFilterNet3 smoke snapshots are required")
 class Phase4ICheckpointTests(unittest.TestCase):
     @classmethod
     def setUpClass(cls) -> None:

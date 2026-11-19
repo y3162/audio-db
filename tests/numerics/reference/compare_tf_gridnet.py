@@ -12,7 +12,7 @@ SI-SNR weight 0. ESPnet's default gradient clip is 5.0 because that yaml does
 not set ``grad_clip``. The urgent24 yaml in this repo is a different recipe.
 
     CUDA_VISIBLE_DEVICES=<free> CUBLAS_WORKSPACE_CONFIG=:4096:8 \\
-        .venvs/lab/bin/python tests/numerics/reference/compare_tf_gridnet.py
+        .venvs/se/bin/python tests/numerics/reference/compare_tf_gridnet.py
 """
 
 from __future__ import annotations

@@ -4,7 +4,10 @@ Hidden CUDA is NOT_RUN. The launches go through the existing launcher and
 write only under a temporary directory. all_off is expected to resume
 bitwise. ASR-on runs are measured even when TDT is not bitwise.
 
-    CUDA_VISIBLE_DEVICES=3,5 scripts/setup/with_env.sh \\
+Set GPU_IDS to the comma-separated numbers of free GPUs:
+
+    CUDA_VISIBLE_DEVICES="$GPU_IDS" scripts/setup/with_env.sh \\
+      .venvs/se/bin/python -m tests.suite_guard \\
       .venvs/se/bin/python -m unittest tests.research.test_asr_guided_stability -v
 """
 

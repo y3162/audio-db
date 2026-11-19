@@ -222,7 +222,10 @@ class EvaluationPropagationTests(unittest.TestCase):
 class RealSnapshotSmokeTests(unittest.TestCase):
     def test_four_datasets_round_trip_provenance(self) -> None:
         resource = DEFAULT_RESOURCE_DB
+        snapshots = ROOT / "data/db/snapshots-voicebank-float-v1"
         reproduction = ROOT / "data" / "db" / "reproduction.duckdb"
+        if not resource.is_file() or not reproduction.is_file() or not snapshots.is_dir():
+            self.skipTest("NOT_RUN: resource and reproduction databases and VoiceBank float snapshots are required")
         before = (_stat(resource), _stat(reproduction), _schema_catalog(resource))
         process = cpu_process()
         with tempfile.TemporaryDirectory() as directory:
@@ -238,7 +241,7 @@ class RealSnapshotSmokeTests(unittest.TestCase):
                     micro_batch=1,
                     accumulation=1,
                     world_size=1,
-                    snapshot_root=ROOT / "data/db/snapshots-voicebank-float-v1",
+                    snapshot_root=snapshots,
                     load_workers=1,
                 )
                 try:

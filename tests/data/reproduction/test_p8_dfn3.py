@@ -17,6 +17,7 @@ import torch
 from src.experiments.data.ids import DFN3_ONLINE_V1
 from src.experiments.data.mix.online_dfn3 import plan_online_epoch, schedule_update_count
 from src.experiments.data.fixed_pair_stream import open_training_data
+from src.experiments.data.paths import DEFAULT_DB, DEFAULT_SNAPSHOTS
 from src.experiments.data.protocols.online_dfn3 import (
     NUM_SAMPLES,
     SAMPLE_RATE,
@@ -227,7 +228,10 @@ class SnapshotTests(unittest.TestCase):
     def test_smoke_snapshot_is_repeatable_and_official_stays_blocked(self):
         import duckdb
 
-        connection = duckdb.connect("data/db/reproduction-p8.duckdb", read_only=True)
+        database = DEFAULT_DB.with_name("reproduction-p8.duckdb")
+        if not database.is_file() or not DEFAULT_SNAPSHOTS.is_dir():
+            self.skipTest("NOT_RUN: reproduction-p8.duckdb and DeepFilterNet3 smoke snapshots are required")
+        connection = duckdb.connect(str(database), read_only=True)
         try:
             status = connection.execute(
                 "select declared_status, claim_label from repro.datasets where name = 'dfn3.online.official'"
@@ -278,6 +282,7 @@ class SnapshotTests(unittest.TestCase):
 
 
 class TrainerSmokeTests(unittest.TestCase):
+    @unittest.skipUnless(DEFAULT_SNAPSHOTS.is_dir(), "NOT_RUN: DeepFilterNet3 smoke snapshots are required")
     def test_one_deepfilternet_step_is_finite(self):
         from src.experiments.calc.rng import set_determinism
         from tests.numerics.reference.deepfilternet_task import DeepFilterNetTask

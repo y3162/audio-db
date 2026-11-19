@@ -2,13 +2,27 @@
 
 評価用 DB の操作は [セットアップ](SETUP.md)、再現用 DB の仕様は [再現用 DB](REPRODUCTION_DB_DESIGN.md)、コーパスの内訳は [データセット](DATASETS.md)。ここは、どのファイルに何があるかと、日付つきの測定・構築記録だけを置く。
 
+## 2026-11-19 新規作業ツリーでの構築
+
+別の作業ツリーに保存されていた staging を取り込み、17 コーパスのリンク先が一致することを確かめてから DB を用意した。
+
+| ファイル | 内容と確認結果 |
+|---|---|
+| `data/db/resource.duckdb` | `data/staging/resource-20261112/` から再構築。コーパス索引 1,375,691 行、評価セット 5 件、case 11,922 件。全 6 表を元 DB と双方向に比較し、差分は 0 行 |
+| `data/db/voicebank.duckdb` | `data/staging/voicebank-current/` から再構築。28 話者の train 10,700 件、valid 872 件。全 5 表の差分は 0 行 |
+| `data/db/training.duckdb` | `data/staging/training/` を作成してから登録。LibriSpeech と DEMAND による学習スモーク用の train 8 件、valid 4 件 |
+| `data/db/reproduction.duckdb` | `data/staging/reproduction/` の全登録行と一致する保存版を配置。コピー元とコピー後の SHA-256 は `c4f8f786c67d0ade73ef8be3eb46d490c12f688ab970feaa01c46745e4d32ca0` |
+| `data/db/reproduction-p8.duckdb`、`reproduction-p9.duckdb`、`reproduction-voicebank-float-v1.duckdb`、`reproduction-voicebank-snr-v1.duckdb` | それぞれに対応する staging から再構築。各 DB の全 15 表のハッシュが元 DB と一致 |
+
+`data/db/snapshots/` に 10 件、`data/db/snapshots-voicebank-float-v1/` に 4 件を配置し、すべて現行のローダーでハッシュを検証した。旧量子化規則の VoiceBank DB とスナップショットは元の作業ツリーに残した。
+
 2026-11-12 の確認は、ファイルの一覧と `stat`、および `tests.suite_guard` の読み取り専用マウントの中で `duckdb.connect(..., read_only=True)` したクエリである。時間（時）の再計算と、コーパス音声の全件ハッシュはしていない。
 
 ## 2026-11-13 00:21: ヘッダ確認とパス計算を短くした再構築
 
 本番 `data/db/resource.duckdb` は置換していない。同じ時刻のまま（191,901,696 バイト、2026-11-12 18:27:03 +0900）。`data/db/resource-next.duckdb`、`data/db/resource-roundtrip-20261112.duckdb`、`data/db/resource-speed-20261112.duckdb`、既存 staging も変えていない。読めないファイルの記録は無い。新しいファイルは `data/db/resource-speed3-20261112.duckdb`（191,639,552 バイト、2026-11-13 00:21:50 +0900）。DuckDB のバイト数は本番と違う。論理内容は下の 6 ハッシュで前節の目録と一致した。
 
-構築は 1 回。コマンドは `AUDIO_DB_DATASET_ROOT=/net/spring/work/seki/database`、`CUDA_VISIBLE_DEVICES=""`、`python -m src.data.bootstrap --database data/db/resource-speed3-20261112.duckdb`。音声と DB は NFS4（`spring:/work`）。ページキャッシュは落としていない。ログは `data/results/eval-db-bootstrap-speed3-20261112/bootstrap.log`。
+構築は 1 回。コーパスルートを `AUDIO_DB_DATASET_ROOT` に設定し、`CUDA_VISIBLE_DEVICES=""` で `python -m src.data.bootstrap --database data/db/resource-speed3-20261112.duckdb` を実行した。音声と DB は NFSv4。ページキャッシュは落としていない。ログは `data/results/eval-db-bootstrap-speed3-20261112/bootstrap.log`。
 
 壁時計は **334.6 秒**。読めないファイルは 0。コーパス 17、合計 1,375,691。評価セットは 1,320 / 1,320 / 1,320 / 7,138 / 824。`eval.cases` と `eval.set_items` は 11,922。`eval.runs` と `eval.results` は 0。
 
@@ -64,7 +78,7 @@
 
 本番 `data/db/resource.duckdb` は置換していない。同じ時刻のまま（191,901,696 バイト、2026-11-12 18:27:03 +0900）。`data/db/resource-next.duckdb` と `data/db/resource-roundtrip-20261112.duckdb`、既存の `data/staging/resource-20261112/` も変えていない。新しいファイルは `data/db/resource-speed-20261112.duckdb`（192,163,840 バイト、2026-11-12 23:39:41 +0900）。DuckDB のバイト数は本番と違う。論理内容は下の 6 ハッシュで本番の目録と一致した。
 
-構築は 1 回。コマンドは `AUDIO_DB_DATASET_ROOT=/net/spring/work/seki/database`、`CUDA_VISIBLE_DEVICES=""`、`python -m src.data.bootstrap --database data/db/resource-speed-20261112.duckdb`。音声と DB は NFS4（`spring:/work`）。ページキャッシュは落としていない。他ジョブの負荷は制御していない。最適化前の全件はやり直していない。比較の参考は `data/results/demand48-handoff-20261112/bootstrap-20261112.log` の `bootstrap finished in 1687.0s` で、この 1 回の成否はその差だけでは見ていない。ログは `data/results/eval-db-bootstrap-speed-20261112/bootstrap.log`。
+構築は 1 回。コーパスルートを `AUDIO_DB_DATASET_ROOT` に設定し、`CUDA_VISIBLE_DEVICES=""` で `python -m src.data.bootstrap --database data/db/resource-speed-20261112.duckdb` を実行した。音声と DB は NFSv4。ページキャッシュは落としていない。他ジョブの負荷は制御していない。最適化前の全件はやり直していない。比較の参考は `data/results/demand48-handoff-20261112/bootstrap-20261112.log` の `bootstrap finished in 1687.0s` で、この 1 回の成否はその差だけでは見ていない。ログは `data/results/eval-db-bootstrap-speed-20261112/bootstrap.log`。
 
 壁時計は **827.6 秒**。読めないファイルは 0。`data/staging/ingest/unreadable.jsonl` は無い。コーパス 17、合計 1,375,691。評価セットは 1,320 / 1,320 / 1,320 / 7,138 / 824。`eval.cases` と `eval.set_items` は 11,922。`eval.runs` と `eval.results` は 0。
 
@@ -167,7 +181,7 @@
 | `eval.runs` | `4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945` |
 | `eval.results` | `4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945` |
 
-実体は `/net/spring/work/seki/database/`。リンクは `data/corpora/DEMAND` → `DEMAND`、`DEMAND48` → `DEMAND48`、`Babble` → `Babble`、`SSN` → `SSN`。ファイルごとの SHA-256 は `data/results/demand48-handoff-20261112/demand48-raw.json`（DEMAND48 の WAV 208、`ch01_mismatches` は空）。代表値は次のとおり。
+リンクは `data/corpora/DEMAND` → `DEMAND`、`DEMAND48` → `DEMAND48`、`Babble` → `Babble`、`SSN` → `SSN`。ファイルごとの SHA-256 は `data/results/demand48-handoff-20261112/demand48-raw.json`（DEMAND48 の WAV 208、`ch01_mismatches` は空）。代表値は次のとおり。
 
 | パス | SHA-256 |
 |---|---|
@@ -216,7 +230,7 @@ Babble は 48,000 Hz、2,880,000 frames、1 ch、5,760,044 バイト。SSN は 4
 
 `data/db/snapshots/` は 11 ディレクトリ。中身は後の表。`data/staging/` は `reproduction`、`reproduction-p8`、`reproduction-p9`、`reproduction-vb-ondemand`、`voicebank-current`、`semamba-voicebank-test-20261101-v2`。
 
-`data/corpora/` は 14 本のシンボリックリンクで、実体は `/net/spring/work/seki/database/` 配下。その置き場には、カタログにもリンクにも無い `Arni-RIR`、`VCTK-0.92`、`VCTK-RVA`、`FSD50K`、`SpeechCommands`、`LibriLM`、`VoxCelebMeta`、`cmudict`、`_ingest` という名前のディレクトリも在った。確認したのは名前だけで、中身と、SEMamba++ の公式素材（VCTK 0.92、Arni RIR）として使えるかは見ていない。`data/results/` と `data/checkpoints/` はディレクトリとして在った。中身はここには書かない。
+`data/corpora/` は 14 本のシンボリックリンクだった。リンク先のコーパスルートには、カタログにもリンクにも無い `Arni-RIR`、`VCTK-0.92`、`VCTK-RVA`、`FSD50K`、`SpeechCommands`、`LibriLM`、`VoxCelebMeta`、`cmudict`、`_ingest` という名前のディレクトリも在った。確認したのは名前だけで、中身と、SEMamba++ の公式素材（VCTK 0.92、Arni RIR）として使えるかは見ていない。`data/results/` と `data/checkpoints/` はディレクトリとして在った。中身はここには書かない。
 
 ## 2026-11-12 に無かったパス
 
@@ -421,7 +435,7 @@ DB と staging のコーパス全行について、件数と DuckDB の全列ハ
 
 ### 2026-11-04 再索引
 
-SHINODA-LAB の `resource.duckdb` を、14 コーパスを最初から含む索引として作り直した。退避は `data/db/backups/resource-before-dns-mssnsd-20261104.duckdb`（SHA-256 は上で 2026-11-12 に再計算した値）。再索引は 1,375,481 行、読めないファイルは 0。DNS2020 は 132,150、MS-SNSD は 24,374（内訳は上の 2026-11-12 の件数と同じ）。その後の `make db-init` は既存の評価セットを増やさず、`corpora.audio_files` の指紋は変わらなかった。
+`resource.duckdb` を、14 コーパスを最初から含む索引として作り直した。退避は `data/db/backups/resource-before-dns-mssnsd-20261104.duckdb`（SHA-256 は上で 2026-11-12 に再計算した値）。再索引は 1,375,481 行、読めないファイルは 0。DNS2020 は 132,150、MS-SNSD は 24,374（内訳は上の 2026-11-12 の件数と同じ）。その後の `make db-init` は既存の評価セットを増やさず、`corpora.audio_files` の指紋は変わらなかった。
 
 2026-11-12 の `resource.duckdb` のコーパス件数と評価セット件数は、この記録と一致した。指紋そのものは再計算していない。
 

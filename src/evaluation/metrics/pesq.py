@@ -36,8 +36,8 @@ def library_status() -> str | None:
         import pesq  # noqa: F401
     except ImportError:
         return (
-            "pesq is not installed. Install it in .venvs/lab with "
-            "uv pip install --python .venvs/lab/bin/python pesq"
+            "pesq is not installed. Install it in .venvs/se with "
+            "uv pip install --python .venvs/se/bin/python pesq"
         )
     return None
 

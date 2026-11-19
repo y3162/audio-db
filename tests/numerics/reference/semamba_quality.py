@@ -1,15 +1,15 @@
 """Quality-metric helpers for the SEMamba++ official comparison.
 
-PESQ and STOI are the libraries in ``.venvs/lab``. This module does not import
+PESQ and STOI are the libraries in ``.venvs/se``. This module does not import
 the reference tree and does not install a dummy ``pesq`` module.
 
 Tolerances below were chosen before any score in
 ``data/results/training/semamba-quality-20261101/`` was computed. They are an
 equivalence band for a short run, not a claim about a fully trained model.
 
-    .venvs/lab/bin/python tests/numerics/reference/semamba_quality.py prepare \\
+    .venvs/se/bin/python tests/numerics/reference/semamba_quality.py prepare \\
         --out data/results/training/semamba-quality-20261101/phase-a
-    .venvs/lab/bin/python tests/numerics/reference/semamba_quality.py score \\
+    .venvs/se/bin/python tests/numerics/reference/semamba_quality.py score \\
         --run data/results/training/semamba-quality-20261101/phase-a
 """
 

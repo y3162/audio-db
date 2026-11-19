@@ -5,7 +5,9 @@ set -euo pipefail
 root=$(CDPATH= cd -- "$(dirname "$0")/../.." && pwd)
 cd "$root"
 if [[ -f .env ]]; then
-  eval "$(python3 "$root/scripts/setup/dotenv.py" --emit-unset "$root/.env")"
+  _audio_db_exports=$(python3 "$root/scripts/setup/dotenv.py" --emit-unset "$root/.env")
+  eval "$_audio_db_exports"
+  unset _audio_db_exports
 fi
 if [[ $# -eq 0 ]]; then
   echo "usage: scripts/setup/with_env.sh command..." >&2

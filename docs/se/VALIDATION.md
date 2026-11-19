@@ -10,11 +10,11 @@
 
 | 測定時 | 内容 |
 |---|---|
-| `.venvs/lab` | Python 3.13.9、PyTorch 2.6.0+cu124、torchaudio 2.6.0+cu124、NumPy 2.5.4。ホスト turing。CPU の初期比較と、後述の CPU/CUDA 自己差の一部 |
-| `.venvs/ref` | Python 3.10.12、PyTorch 2.6.0+cu124、torchaudio 2.6.0+cu124、NumPy 1.26.4。追加は `einops==0.8.2`、`rotary-embedding-torch==0.8.3`、`torchdiffeq==0.2.5`、`x-transformers==2.14.2`、`omegaconf==2.3.0`、`librosa==0.10.2.post1`、`yamlargparse==1.31.1`、`pydub==0.25.1`、`maturin==1.4.0`。`libdf` は Rust 1.76.0 で `pyDF` をビルドした wheel `DeepFilterLib-0.5.7rc0`（`CARGO_TARGET_DIR=data/results/se-repro/cargo-target`）。公式ツリーは編集していない。GPU は `CUDA_VISIBLE_DEVICES=1` の Quadro RTX 5000 |
+| 通常比較用の旧環境 | Python 3.13.9、PyTorch 2.6.0+cu124、torchaudio 2.6.0+cu124、NumPy 2.5.4。CPU の初期比較と、後述の CPU/CUDA 自己差の一部 |
+| `.venvs/ref` | Python 3.10.12、PyTorch 2.6.0+cu124、torchaudio 2.6.0+cu124、NumPy 1.26.4。追加は `einops==0.8.2`、`rotary-embedding-torch==0.8.3`、`torchdiffeq==0.2.5`、`x-transformers==2.14.2`、`omegaconf==2.3.0`、`librosa==0.10.2.post1`、`yamlargparse==1.31.1`、`pydub==0.25.1`、`maturin==1.4.0`。`libdf` は Rust 1.76.0 で `pyDF` をビルドした wheel `DeepFilterLib-0.5.7rc0`（`CARGO_TARGET_DIR=data/results/se-repro/cargo-target`）。公式ツリーは編集していない。GPU は Quadro RTX 5000 |
 | `.venvs/semamba` | スクリプトの注記は Python 3.10、PyTorch 2.6.0+cu124、`causal-conv1d==1.7.0`、`mamba-ssm==2.3.2.post1`。公開 wheel `mamba_ssm-2.3.2.post1+cu12torch2.6cxx11abiFALSE` は `std::__cxx11::basic_string` を参照し、この PyTorch（CXX11 ABI false）では `selective_scan_cuda` がロードできなかった。`.venvs/cuda-nvcc`（conda-forge `cuda-nvcc=12.9`）で sm_75 だけをソースビルドした。`src/models` はこの環境を import しない |
 
-2026-10-31 の最終比較の作業開始 HEAD は `6ea86f3`。ホスト turing。GPU 0 は他ユーザーが使用中のため、比較は GPU 1・2・3（Quadro RTX 5000、ドライバ 535.274.02）。
+2026-10-31 の最終比較の作業開始 HEAD は `6ea86f3`。GPU は Quadro RTX 5000、ドライバは 535.274.02。
 
 無音の MP-SENet は、公式のエネルギー正規化がゼロ除算になる。API は無音を無音のまま返す。この差は下の表に入れていない。
 
@@ -35,14 +35,14 @@
 | MossFormerGAN | CPU | 16 kHz | 1 秒 | 3 | 公式 decode | 0 |
 | MossFormerGAN | CPU | 16 kHz | 11 秒 | 未記載 | 公式 decode（10 秒窓の修正後） | 0 |
 | MossFormerGAN | CPU | 16 kHz | 20 秒 | 3 | 公式 decode | 0 |
-| MossFormerGAN | GPU（`CUDA_VISIBLE_DEVICES=3`、Quadro RTX 5000） | 16 kHz | 15 秒 / 20 秒 / 25 秒 | 3 | 公式 decode | 1.40e-6 / 2.09e-6 / 2.33e-6 |
+| MossFormerGAN | GPU（Quadro RTX 5000） | 16 kHz | 15 秒 / 20 秒 / 25 秒 | 3 | 公式 decode | 1.40e-6 / 2.09e-6 / 2.33e-6 |
 | DeepFilterNet3 | CPU | 48 kHz | 0.1 秒 / 1 秒 / 20 秒 / 正弦 / 小振幅 | 0.1 秒と 1 秒は現行スクリプトが 12。20 秒・正弦・小振幅は未記載 | `libdf` の `enhance` | 1.19e-7 / 4.10e-8 / 6.52e-8 / 8.94e-7 / 1.62e-8 |
 | DeepFilterNet3 | CPU | 入力 16 kHz | 現行スクリプトは 16000 サンプル | 12 | torchaudio で 48 kHz にして `libdf` `enhance` し、同じ torchaudio で 16 kHz へ戻す | 3.86e-6 |
 | SEMamba++ 波形 | CPU | 16 kHz | 1 秒 | 9 | 公式グラフと参照スキャン。融合カーネルではない | 2.38e-8 |
 | SEMamba++ 位相 | CPU | 16 kHz | 1 秒 | 9 | 同上 | 6.02e-4 |
 | SEMamba++ 単一 Mamba | GPU | — | 入力 `(1, 64, d_model)` | 9 | 融合カーネルと CUDA scan | 0 |
 | SEMamba++ 単一 Mamba | GPU | — | 入力 `(1, 64, d_model)` | 9 | 融合カーネルと PyTorch 漸化式 | 3.28e-7 |
-| SEMamba++ 波形 | GPU（`CUDA_VISIBLE_DEVICES=1`） | 16 kHz | 1 秒 / 5 秒 / 20 秒 | 9 | 公式 `mamba_inner_fn`。missing=unexpected=0 | 3.97e-5 / 1.56e-5 / 1.80e-5 |
+| SEMamba++ 波形 | GPU | 16 kHz | 1 秒 / 5 秒 / 20 秒 | 9 | 公式 `mamba_inner_fn`。missing=unexpected=0 | 3.97e-5 / 1.56e-5 / 1.80e-5 |
 | SEMamba++ 位相 | GPU（同上） | 16 kHz | 1 秒 / 5 秒 / 20 秒 | 9 | 同上。差の最大は約 π で、振幅の小さいビンの折り返し | 6.28 |
 
 MP-SENet の GPU 行に sample rate の再掲は無い。処理レートは 16 kHz である。TF-GridNet の 1 秒を再現する現行スクリプトは seed 11 である。20 秒の seed は記録に無い。
@@ -79,7 +79,7 @@ SEMamba++ の 20 秒は、公式 0.79 秒（RTF 0.039、peak VRAM 1.3 GiB）、�
 
 ## 再現コマンド
 
-現行の仮想環境名で、実在するスクリプトに対して書けるものだけを載せる。測定値そのものは上の旧環境の記録である。
+現行の仮想環境名で、実在するスクリプトに対して書けるものだけを載せる。測定値は上の旧環境で得たものである。GPU を使う例では、`nvidia-smi` で空きを確認し、選んだ番号を `GPU_ID` に設定する。
 
 ```bash
 # MP-SENet の 1 秒・5 秒（seed 11）と TF-GridNet の 1 秒（seed 11）。20 秒は含まない。
@@ -90,13 +90,13 @@ CUDA_VISIBLE_DEVICES="" .venvs/official/bin/python tests/se/reference/run_ref.py
 
 # MossFormerGAN。--seconds と --seed と --device を変える。測定時は .venvs/ref。
 CUDA_VISIBLE_DEVICES="" .venvs/official/bin/python tests/se/reference/run_long.py mossformer --seconds 20 --seed 3 --device cpu
-CUDA_VISIBLE_DEVICES=3 .venvs/official/bin/python tests/se/reference/run_long.py mossformer --seconds 20 --seed 3 --device cuda
+CUDA_VISIBLE_DEVICES="$GPU_ID" .venvs/official/bin/python tests/se/reference/run_long.py mossformer --seconds 20 --seed 3 --device cuda
 
 # SEMamba++ の CPU。参照スキャン。融合カーネルは要らない。
 CUDA_VISIBLE_DEVICES="" .venvs/se/bin/python tests/se/reference/run_semamba.py
 
 # SEMamba++ の GPU。測定時は .venvs/semamba。現行の fused は .venvs/se。
-CUDA_VISIBLE_DEVICES=1 .venvs/se/bin/python tests/se/reference/run_semamba_cuda.py 1 5 20
+CUDA_VISIBLE_DEVICES="$GPU_ID" .venvs/se/bin/python tests/se/reference/run_semamba_cuda.py 1 5 20
 ```
 
 `tests/se/reference/run_df.py` と `run_df_api.py` は `libdf` と `src.models` の両方を読む。`src.models` は TF-Locoformer 経由で `rotary_embedding_torch` を import する。`.venvs/deepfilternet` は `libdf` 用で、`requirements/deepfilternet.in` に `rotary-embedding-torch` が無い。`.venvs/se` は NumPy 2.1.3、`.venvs/official` は NumPy 2.5.4 で、`libdf` は NumPy 1.26.4 の `.venvs/deepfilternet` に分けている。測定時の `.venvs/ref` は NumPy 1.26.4 に両方を入れていた。現行の役割名では同じコマンドを書けない。
@@ -104,14 +104,15 @@ CUDA_VISIBLE_DEVICES=1 .venvs/se/bin/python tests/se/reference/run_semamba_cuda.
 通常の CPU テストは次である。この実行結果を上の表の一致とは呼ばない。
 
 ```bash
-CUDA_VISIBLE_DEVICES="" .venvs/se/bin/python -m unittest discover -s tests/se -v
+CUDA_VISIBLE_DEVICES="" scripts/setup/with_env.sh .venvs/se/bin/python -m tests.suite_guard \
+  .venvs/se/bin/python -m unittest discover -s tests/se -v
 ```
 
 ## CPU と CUDA の自己差
 
 独立実装の CPU 出力と CUDA 出力の差である。公式一致の証拠にしない。
 
-ampere の RTX 3090 GPU 0。Python 3.13.9、PyTorch 2.6.0+cu124、seed 11、1000 サンプルのランダム入力。長さは 1000。出力は有限。
+GeForce RTX 3090。Python 3.13.9、PyTorch 2.6.0+cu124、seed 11、1000 サンプルのランダム入力。長さは 1000。出力は有限。
 
 | モデル | 最大絶対差 | MAE | MSE |
 |---|---:|---:|---:|
@@ -121,7 +122,7 @@ ampere の RTX 3090 GPU 0。Python 3.13.9、PyTorch 2.6.0+cu124、seed 11、1000
 
 同じ MP-SENet の入力で cuDNN を無効化すると、最大差 0.00438077、MAE 0.000922169 だった。cuDNN の有無だけでは説明できず、原因は未特定。許容誤差は決めていない。
 
-別の測定。`CUDA_VISIBLE_DEVICES=1` の Quadro RTX 5000。公式実装との比較ではない。
+別の測定では Quadro RTX 5000 を使用した。公式実装との比較ではない。
 
 | モデル | 入力 | 最大絶対差 | 平均絶対差 |
 |---|---|---:|---:|

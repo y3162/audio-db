@@ -1,4 +1,4 @@
-"""Official-package comparisons. Run with .venvs/ref, not .venvs/lab."""
+"""Official-package comparisons. Run with .venvs/official."""
 import sys
 import traceback
 from pathlib import Path

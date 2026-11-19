@@ -1,8 +1,7 @@
 """Real Parakeet TDT v2 checks. They load the cached 0.6B checkpoint on one GPU.
 
-Run with the ASR environment and one free GPU, for example
-``CUDA_VISIBLE_DEVICES=4 HF_HUB_OFFLINE=1``. The SE environment has no NeMo,
-so collection there skips. This does not train SEMamba++.
+Run with .venvs/se and set CUDA_VISIBLE_DEVICES to one free GPU.
+Set HF_HUB_OFFLINE=1 to use only cached model files.
 """
 
 from __future__ import annotations
