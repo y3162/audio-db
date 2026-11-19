@@ -2,9 +2,7 @@
 
 from __future__ import annotations
 
-import hashlib
-import json
-from collections.abc import Callable, Sequence
+from collections.abc import Sequence
 from typing import Any
 
 import torch
@@ -130,42 +128,3 @@ class FrozenParakeet(nn.Module):
 
     def forward(self, waveforms: torch.Tensor, lengths: torch.Tensor) -> torch.Tensor:
         raise RuntimeError("FrozenParakeet is not a generator layer; call encode_layer or loss_from_ids")
-
-
-class TeacherCache:
-    """Full-utterance recognitions keyed by audio bytes and the ASR fingerprint."""
-
-    def __init__(self, fingerprint: str, writer: Callable[[dict[str, Any]], None] | None = None) -> None:
-        self.fingerprint = fingerprint
-        self.writer = writer
-        self._items: dict[tuple[str, str, str], Any] = {}
-
-    def recognize(self, asr: Any, audio: torch.Tensor, kind: str):
-        if audio.ndim != 1:
-            raise ValueError(f"teacher audio must be one utterance, got {tuple(audio.shape)}")
-        blob = audio.detach().to(device="cpu", dtype=torch.float32).contiguous().numpy().tobytes()
-        digest = hashlib.sha256(blob).hexdigest()
-        key = (digest, kind, self.fingerprint)
-        found = self._items.get(key)
-        if found is not None:
-            return found
-        length = torch.tensor([audio.shape[0]], device=audio.device, dtype=torch.long)
-        recognition = asr.recognize(audio.view(1, -1), length)[0]
-        self._items[key] = recognition
-        if self.writer is not None:
-            self.writer(
-                {
-                    "audio_sha256": digest,
-                    "kind": kind,
-                    "text": recognition.text,
-                    "token_ids": [token.token_id for token in recognition.tokens],
-                    "start_offsets": [token.start_offset for token in recognition.tokens],
-                    "end_offsets": [token.end_offset for token in recognition.tokens],
-                    "fingerprint": self.fingerprint,
-                }
-            )
-        return recognition
-
-
-def fingerprint_text(metadata: dict[str, Any]) -> str:
-    return json.dumps(metadata, sort_keys=True, default=str)

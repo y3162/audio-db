@@ -259,7 +259,7 @@ WER を計算するかは、欠けた値からは判断しません。
 
 計画の時点で音声パスが無い実行は、推論の前に「not ready」で拒否します。終了コードは 2 です。
 
-正規化は `wer-norm-v1` です。NFKC、小文字化、Unicode の句読点を空白に置換、空白の圧縮、です。生の空白区切りも同時に保存します。正規化バージョンを変えると設定ハッシュが変わり、以前の結果は再利用しません。
+正規化は `wer-norm-v1` です。`../speech-enhancement` と同じ Open ASR Leaderboard の `EnglishTextNormalizer` を使います。アポストロフィの異体字を ASCII に揃えてから、フィラー、短縮形、数字、英米綴りなどを正規化します。正規化器と辞書は `src/evaluation/metrics/open_asr_leaderboard/` に同梱しています。生の空白区切りも同時に保存します。WER を有効にした実行の設定ハッシュには正規化の実装 ID を含めます。
 
 PESQ は 16 kHz なら wideband、8 kHz なら narrowband です。それ以外のサンプリングレートは 16 kHz へ変換してから wideband を計算し、変換したことを記録します。STOI も 16 kHz 以外は 16 kHz へ変換します。長さが違う参照と推定は短い方に揃え、削ったサンプル数を記録します。時間ずれの推定はしません。
 

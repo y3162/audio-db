@@ -420,13 +420,13 @@ class WerCompletenessTests(unittest.TestCase):
     def _samples(self):
         samples = make_synthetic_samples(2, 16000, 0.25, 0)
         samples[0].transcript = "alpha beta"
-        samples[1].transcript = "one two three"
+        samples[1].transcript = "red green blue"
         return samples
 
     def _texts(self):
         return {
             "synthetic-0000": {"noisy": "alpha beta", "enhanced": "alpha"},
-            "synthetic-0001": {"noisy": "one two three", "enhanced": "one two"},
+            "synthetic-0001": {"noisy": "red green blue", "enhanced": "red green"},
         }
 
     def _config(self, root, run_id):

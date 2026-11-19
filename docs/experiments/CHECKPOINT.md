@@ -14,6 +14,7 @@
 | `latest.data_provenance.json` | Latest の来歴の sidecar | 共通基盤 |
 | `archive/<name>.pt` と sidecar | Archive。名前と保持数は Selector が決める | 共通基盤 |
 | `metrics.jsonl` | logical step ごとの記録。学習ログの正本。公式 `StepLog` は研究キーを持たない。ASR-guided SEMamba++ v1 は、その step で計算したときだけ研究側の `ResearchStepLog` が `tdt` と `error_mask_fraction` を足す。無いキーは未計算であり 0 ではない。定義は [損失](LOSS.md) | Trainer |
+| `asr_hypotheses.rank<N>.jsonl` | ASR-guided SEMamba++ v1 の損失で得た clean と enhanced の認識記録。enhanced のタイムスタンプはクロップ先頭を基準とする | 各 rank |
 | `tensorboard/` | `metrics.jsonl` の有限スカラーから作ったイベント。再開の入力にはしない | rank 0 |
 | `status.json`、`complete.json` | 実行状態と完了の印 | 学習プロセス、または Launcher |
 | `launch.json`、`failure.rank<N>.json` | Launcher の記録 | Launcher、各 rank |
@@ -23,6 +24,8 @@
 | `best_generator.pt`、`valid.loss.best.pt`、`valid.loss.ave_<n>best.pt` など | 公式手順が定める推論用の重み。再開には使えない | 各公式 Trainer |
 
 推論用の重みは公式再現の成果物であり、checkpoint ではない。Selector はこれらを扱わない。再開できる Best や Top-K が要るときは、Selector で Archive として残す。
+
+ASR-guided SEMamba++ v1 の学習を再開するときは、Trainer の状態に `guidance_implementation: enhanced-errors-v1` が必要である。
 
 ## 保存点
 

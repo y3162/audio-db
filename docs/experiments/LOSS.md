@@ -85,6 +85,8 @@ SEMamba++ の蓄積 1 は Generator グラフを再利用する。蓄積 2 以�
 
 ASR-guided SEMamba++ v1（`configs/research/asr_guided_se/semambapp/v1/`）は `research` だけを受ける。3 スイッチが off のときは上の Objective をそのまま呼ぶ。誤り重みが on のときだけ、magnitude、phase（`matrix`）、complex、consistency、mel を、パディングを除いた `sum(valid * w * l) / sum(valid * w)` に替える。`w = 1 + alpha * m` で、`alpha = 0` は全ゼロの誤りマスクと同じである。adversarial、matching、Discriminator は替えない。TDT が on のときは項名 `tdt` を係数 1 で足す。係数 1 は乗算しない。既に `tdt` がある Objective は拒否する。決定的な CUDA では、mel 項の幅 0 の reflection pad を掛けない。その CUDA backward に決定的実装が無い。値は幅 0 の pad と同じである。
 
+誤り重みか TDT が on の場合、現在の Generator が出した enhanced 波形の有効区間と、clean の全発話を凍結 ASR で毎回認識する。認識結果のキャッシュは使わない。clean の認識トークンを有効区間と重なるものに絞り、enhanced の認識トークンと token ID で整列する。置換・削除に対応する clean 側のタイムスタンプをクロップへ投影して誤りマスクを作る。マスクのための認識は勾配を記録せず、TDT は clean 側のトークン列を教師として enhanced 波形に勾配を返す。
+
 `metrics.jsonl` の公式キーは変えない。公式 `StepLog` は研究キーを持たない。`tdt` と `error_mask_fraction` は、その step で計算したときだけ研究側の `ResearchStepLog` が足す。誤り重みが on のとき、magnitude、phase、complex、consistency、mel はその重み適用後の項である。TDT をその step で計算したときだけ `tdt` を書く。値は Objective へ加える前の項で、micro-batch ごとに detach したものを足し、batch 数で割る。係数 1 なので加えるテンソルと同じ値である。計算していない step に `tdt: 0` は書かない。研究損失が誤りマスクを作った step だけ `error_mask_fraction` を書く。内容区間のサンプルのうち S/D の割合で、0 はそのマスクに誤りが無かった観測である。経路がマスクを作っていない step にはこのキーは無い。どちらも既存の計算結果を detach したもので、加算順、backward 回数、勾配蓄積、Optimizer、collective の順は変えない。ログのために ASR や TDT を追加実行しない。
 
 NeMo の `TDTLossNumba` は、checkpoint の omega が 0 より大きいとき、呼び出しごとに Python の `random.uniform(0, 1)` を引き、その値が omega 未満なら標準 RNN-T、それ以外は TDT を計算する。この乱数は CUDA カーネルの内部状態ではなく、checkpoint が保存する Python RNG に含まれる。同じ logits で omega 0 の損失は繰り返して bitwise に一致する。omega を 0 に変えない。同じプロセスでの連続呼び出しがずれることと、RNG を戻した再開が一致することは別である。

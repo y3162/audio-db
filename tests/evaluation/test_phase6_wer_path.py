@@ -36,9 +36,9 @@ def _scripts() -> dict[str, dict[str, str]]:
             "enhanced": "alpha beta delta",
         },
         "synthetic-0001": {
-            "clean": "one two",
-            "noisy": "one two two",
-            "enhanced": "two",
+            "clean": "red blue",
+            "noisy": "red blue blue",
+            "enhanced": "blue",
         },
     }
 
@@ -46,7 +46,7 @@ def _scripts() -> dict[str, dict[str, str]]:
 def _samples():
     samples = make_synthetic_samples(2, 16000, 0.4, 0)
     samples[0].transcript = "alpha beta gamma"
-    samples[1].transcript = "one two"
+    samples[1].transcript = "red blue"
     return samples
 
 

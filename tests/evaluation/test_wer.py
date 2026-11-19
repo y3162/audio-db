@@ -34,6 +34,12 @@ class WordErrorTests(unittest.TestCase):
         self.assertGreater(scored["raw"]["wer"], 0.0)
         self.assertEqual(normalize_text("hello-world"), "hello world")
 
+    def test_leaderboard_normalization_matches_spellings_contractions_and_numbers(self):
+        reference = "Uuuh, I can’t find twenty colour photos on the Wi-Fi. [noise]"
+        hypothesis = "I can not find 20 color photos on the wifi"
+        self.assertEqual(normalize_text(reference), "i can not find 20 color photos on the wifi")
+        self.assertEqual(score_pair(reference, hypothesis, "wer-norm-v1")["normalized"]["wer"], 0.0)
+
     def test_summary_uses_micro_average(self):
         records = [
             _record("u1", substitutions=1, length=1),

@@ -22,7 +22,7 @@
 - `LossMetric` は注入した objective のバッチ平均を、発話数で加重平均する。非有限は失敗であり、0 にしない。公式の検証損失とは別の名前で記録する。`validation.loss` は公式検証が橋渡しした値である。
 - `SISDRMetric` は `src.evaluation.metrics.score_si_sdr` の正の dB。`si_sdr_loss` の符号を反転した訓練損失ではない。完全再構成は有限値にしない。
 - `PESQMetric`、`STOIMetric`、`ESTOIMetric` は同じ評価実装を使う。`na`、`unavailable`、失敗は平均に入れず、0 にも公式の −1 にもしない。
-- `WerMetric` は `wer-norm-v1` のコーパス micro `(S+D+I)/N`。認識器は `transcribe(audio, sample_rate)` を注入する。参照テキストは `data.reference_transcript(sample_id)`。参照欠落、仮説の失敗、空のトークン列は失敗または除外であり、0.0 にしない。1 件でも欠けると status は `incomplete` で、`value` は None。この値では順位を付けない。
+- `WerMetric` は [評価パイプラインと共通の正規化](../evaluation/PIPELINE.md) を使う `wer-norm-v1` のコーパス micro `(S+D+I)/N`。認識器は `transcribe(audio, sample_rate)` を注入する。参照テキストは `data.reference_transcript(sample_id)`。参照欠落、仮説の失敗、空の参照トークン列は失敗または除外であり、0.0 にしない。1 件でも欠けると status は `incomplete` で、`value` は None。この値では順位を付けない。
 
 ## タイミング
 

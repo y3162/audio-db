@@ -1,4 +1,4 @@
-"""VoiceBank-DEMAND at a −15 dB SNR shift for the ablation runs.
+"""VoiceBank-DEMAND SNR-shift snapshots for the ablation runs.
 
 The published snapshot keeps p286 and p287 as validation. These runs reassign
 the 28 training speakers in memory: a SHA-256 ranking of the speaker id at
@@ -29,7 +29,6 @@ from src.experiments.data.errors import ReproductionError
 _SOURCE_RATE = 48000
 _TARGET_RATE = 16000
 _WINDOW = 48000
-_SHIFT = -15.0
 
 
 def ablation_holdout(
@@ -187,10 +186,7 @@ class VoicebankAblationProtocol:
             raise DataError("VoiceBank snapshot is not 48 kHz")
         if rule.get("teacher") != "dry_clean":
             raise DataError("VoiceBank teacher is not dry_clean")
-        shift = float(dataset_shift(dataset))
-        if shift != _SHIFT:
-            raise DataError(f"ablation snapshot shift is {shift}, expected {_SHIFT}")
-        self._shift = shift
+        self._shift = float(dataset_shift(dataset))
         self.teacher = "dry_clean"
         self._full.clear()
         self._utterances.clear()
@@ -234,7 +230,6 @@ class VoicebankAblationProtocol:
             _Utterance(
                 example=_CropExample(start),
                 full_clean=np.array(clean, dtype=np.float32, copy=True),
-                full_degraded=np.array(noisy, dtype=np.float32, copy=True),
                 full_length=int(clean.shape[0]),
             ),
         )
@@ -326,7 +321,6 @@ class _CropExample:
 class _Utterance:
     example: _CropExample
     full_clean: np.ndarray
-    full_degraded: np.ndarray
     full_length: int
 
 

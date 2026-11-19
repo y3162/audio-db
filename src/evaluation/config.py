@@ -11,9 +11,9 @@ from typing import Any
 from src.data.models.audio_file import AUDIO_FILE_COLUMNS
 from src.evaluation.errors import ConfigError
 from src.evaluation.identity import sha256_json
+from src.evaluation.metrics.wer import WER_NORMALIZATION_IMPLEMENTATION, WER_NORM_V1
 
 PROTOCOL_RMS_V1 = "rms_v1"
-WER_NORM_V1 = "wer-norm-v1"
 MOCK_MODEL = "mock"
 ASR_CONDITIONS = ("noisy", "enhanced", "clean")
 DATASET_SOURCES = ("duckdb", "synthetic")
@@ -133,13 +133,16 @@ class ExperimentConfig:
     def canonical_dict(self) -> dict[str, Any]:
         """Settings that change results. Output location and the execution cap are omitted."""
         dataset = asdict(self.dataset)
+        metrics = asdict(self.metrics)
+        if self.metrics.wer:
+            metrics["normalization_implementation"] = WER_NORMALIZATION_IMPLEMENTATION
         return {
             "experiment": {"name": self.experiment.name, "seed": self.experiment.seed},
             "dataset": dataset,
             "mixing": asdict(self.mixing),
             "models": [_model_dict(model) for model in self.models],
             "asr": asdict(self.asr),
-            "metrics": asdict(self.metrics),
+            "metrics": metrics,
             "device": self.runtime.device,
         }
 

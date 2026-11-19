@@ -60,10 +60,10 @@ class PipelineTests(unittest.TestCase):
         with self._temporary_dir() as directory:
             config = experiment_config(directory, run_id="e2e")
             samples = make_synthetic_samples(2, 16000, 1.0, 0)
-            samples[0].transcript = "a"
-            samples[1].transcript = " ".join(["w"] * 100)
+            samples[0].transcript = "alpha"
+            samples[1].transcript = " ".join(["word"] * 100)
             config.asr.scripts = {
-                "synthetic-0000": {"enhanced": "a", "noisy": "b"},
+                "synthetic-0000": {"enhanced": "alpha", "noisy": "beta"},
                 "synthetic-0001": {
                     "enhanced": samples[1].transcript,
                     "noisy": samples[1].transcript,

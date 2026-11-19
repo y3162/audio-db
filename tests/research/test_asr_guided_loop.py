@@ -12,6 +12,8 @@ import tempfile
 import unittest
 from dataclasses import replace
 from pathlib import Path
+from types import SimpleNamespace
+from unittest.mock import Mock
 
 import torch
 
@@ -249,6 +251,49 @@ class ResearchLoopTest(unittest.TestCase):
             self.assertEqual(second.run(resume=interrupted / "archive/step_00000001.pt").stop_reason, "completed")
             _assert_same_checkpoint(continuous / "archive/step_00000002.pt", interrupted / "archive/step_00000002.pt")
             self.assertEqual(_metric_lines(continuous), _metric_lines(interrupted))
+
+    def test_error_mask_redecodes_the_current_enhanced_crop(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            experiment = build_experiment(
+                load_experiment(_research_yaml(Path(directory), steps=1, count=1, error=True))
+            )
+            try:
+                update = experiment.get("trainer")._update
+                batch = replace(_random_batch(), spans=((1280, 1500, 2048, 4096),))
+                update._rows[id(batch.targets)] = batch
+                full_clean = torch.full((4096,), -1.0)
+                update.protocol = SimpleNamespace(utterance_for_id=lambda _: SimpleNamespace(
+                    full_clean=full_clean,
+                    full_length=4096,
+                    example=SimpleNamespace(crop_start=1280),
+                ))
+                matched = torch.zeros_like(batch.targets, requires_grad=True)
+                substituted = torch.ones_like(matched, requires_grad=True)
+
+                def token(token_id, start, end):
+                    return SimpleNamespace(token_id=token_id, start_offset=start, end_offset=end)
+
+                def recognize(waves, lengths):
+                    self.assertFalse(torch.is_grad_enabled())
+                    self.assertFalse(waves.requires_grad)
+                    if lengths.tolist() == [4096]:
+                        torch.testing.assert_close(waves[0], full_clean)
+                        return [SimpleNamespace(tokens=[token(4, 0, 1), token(7, 1, 2)])]
+                    self.assertEqual(lengths.tolist(), [1500])
+                    self.assertEqual(waves.shape, (1, 1500))
+                    token_id = 7 if waves[0, 0].item() == 0 else 9
+                    return [SimpleNamespace(tokens=[token(token_id, 0, 1)])]
+
+                update.asr.recognize = Mock(side_effect=recognize)
+                first, _, _ = update._research_terms(batch.targets, matched)
+                second, lengths, _ = update._research_terms(batch.targets, substituted)
+                self.assertEqual(update.asr.recognize.call_count, 4)
+                self.assertEqual(lengths.tolist(), [1500])
+                self.assertFalse(first.any())
+                self.assertTrue(second[0, :1280].all())
+                self.assertFalse(second[0, 1280:].any())
+            finally:
+                experiment.close()
 
     def test_step_log_records_computed_tdt_and_omits_it_when_disabled(self) -> None:
         official_keys = {

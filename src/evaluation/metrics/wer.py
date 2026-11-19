@@ -8,11 +8,13 @@ the reference and the hypothesis.
 
 from __future__ import annotations
 
-import unicodedata
-
 from src.evaluation.errors import ConfigError
+from src.evaluation.metrics.open_asr_leaderboard.normalizer import EnglishTextNormalizer
 
 WER_NORM_V1 = "wer-norm-v1"
+WER_NORMALIZATION_IMPLEMENTATION = "open-asr-leaderboard-english-v1"
+_APOSTROPHES = str.maketrans({"’": "'", "‘": "'", "ʼ": "'", "`": "'"})
+_ENGLISH = EnglishTextNormalizer()
 
 
 def tokenize_raw(text: str) -> list[str]:
@@ -22,14 +24,7 @@ def tokenize_raw(text: str) -> list[str]:
 def normalize_text(text: str, version: str = WER_NORM_V1) -> str:
     if version != WER_NORM_V1:
         raise ConfigError(f"unknown WER normalization: {version}")
-    normalized = unicodedata.normalize("NFKC", text).lower()
-    characters = []
-    for char in normalized:
-        if unicodedata.category(char).startswith("P"):
-            characters.append(" ")
-        else:
-            characters.append(char)
-    return " ".join("".join(characters).split())
+    return _ENGLISH(text.translate(_APOSTROPHES)).strip()
 
 
 def tokenize(text: str, version: str | None) -> list[str]:

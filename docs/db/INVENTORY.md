@@ -572,3 +572,13 @@ Build の `recipe_sha256` は、登録時に読んだ JSONL の SHA-256 `d92609b
 公式 SNR ラベルは、共通ピークゲインの前の P.56 と一致する（`g != 1` の 55 発話で最大絶対誤差 7.11e-14 dB）。出力波形にゲインを掛けたあとの P.56 は、その 55 発話で最大 0.489 dB ずれる。−15 dB の変化量は全 12,396 発話で −15 dB と 7.11e-15 dB 以内で一致する。float 出力はクリップしない。絶対値が 1 以上になるのは 5,416 発話、11,179,504 サンプル、最大絶対値 6.0103019105279536。
 
 Train と Validation の話者・発話・音声素材は重ならない。雑音区間は 118,129,608 / 118,136,696 samples、872 発話すべてで重なる。Train / Test と Validation / Test の雑音の重なりは 0。leak 監査は WARN で、独立とは扱わない。
+
+## 2026-11-19 VoiceBank SNR shift
+
+同じ正本レシピから 0、−5、−10 dB を `data/db/reproduction-voicebank-snr-0-m5-m10-v1.duckdb` と `data/staging/reproduction-voicebank-snr-0-m5-m10-v1/` に登録した。3 条件は共通の 12,396 発話（train 10,700、validation 872、test 824）を使う。波形は `data/db/snapshots/<dataset_id>/` からオンデマンドで描画する。
+
+| Shift | Dataset | Dataset ID | Snapshot hash |
+|---:|---|---|---|
+| 0 dB | `voicebank.snr_shift.no@1` | `e5bf6df784af7b3fd6acbb225146eea206399b18152d8445bc7d214824941d82` | `d8ac7336fe0fa003573eefb785f90f66c93cadb4afcd365e4917560bbdff4409` |
+| −5 dB | `voicebank.snr_shift.minus_5db@1` | `69dab3393b725f20b9f846dc6fd1f5673c188998b9ff62b4a9087b8266820f37` | `5b3a22127962a97537617e9b44cba506e10161f0e2fbb7617a8f1d453e9abc43` |
+| −10 dB | `voicebank.snr_shift.minus_10db@1` | `2ad9c87ece12bbd5954aa703eea0fd0f1a6ec34b5594b1b9adb0451653daaaea` | `5cbb2bef38037b5542149dc11401cd089fadb8e9ae8faba87bb3296962e9592b` |

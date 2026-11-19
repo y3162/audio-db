@@ -13,19 +13,19 @@ import os
 import socket
 import subprocess
 import sys
+from collections.abc import Callable
 from pathlib import Path
 from typing import Any
 
 import torch
 
 import src.models.semambapp.trainer as semamba_trainer
-from src.experiments.errors import BuildError, RuntimeFailure
+from src.experiments.errors import BuildError, DataError, RuntimeFailure, StateError
 from src.experiments.execution.journal import StepJournal
 from src.experiments.runtime import ProcessRuntime
 from src.experiments.training.control import weight_loss
 from src.experiments.calc.errors import TrainingError
 from src.models.semambapp.trainer import SEMambaPPTrainer, SEMambaProgress, SEMambaUpdate, StepLog
-from src.research.asr_guided_se.asr import TeacherCache, fingerprint_text
 from src.research.asr_guided_se.error_mask import crop_error_mask, overlapping_tokens
 from src.research.asr_guided_se.semambapp.v1.config import ASR_HOP, MODEL_ID, STFT_HOP, TDT_LAMBDA, GuidanceV1
 from src.research.asr_guided_se.semambapp.v1.evaluator import predict_audio
@@ -33,6 +33,7 @@ from src.research.asr_guided_se.semambapp.v1.loss import guided_generator_loss
 from src.research.asr_guided_se.tdt import mean_tdt
 
 _RESEARCH_STEP_KEYS = ("error_mask_fraction", "tdt")
+_GUIDANCE_IMPLEMENTATION = "enhanced-errors-v1"
 
 
 class ResearchStepLog(StepLog):
@@ -128,13 +129,9 @@ class GuidedSEMambaPPTrainer(SEMambaPPTrainer):
         self.model_id = model_id
         self.experiment_id = experiment_id
         self.condition_id = condition_id
-        self._hypotheses: Path | None = None
-        self._cache: TeacherCache | None = None
         if guidance.uses_asr:
             self._require_asr()
-        if guidance.uses_asr or guidance.asr_features_enabled:
-            self._cache = TeacherCache(self._fingerprint(), writer=None)
-        if guidance.uses_asr or guidance.asr_features_enabled or valid_frame_aggregation:
+        if guidance.uses_asr or valid_frame_aggregation:
             previous = self._update
             self._update = GuidedUpdate(
                 generator=previous.generator,
@@ -149,9 +146,16 @@ class GuidedSEMambaPPTrainer(SEMambaPPTrainer):
                 guidance=guidance,
                 asr=asr,
                 data=self.data,
-                cache=self._cache,
             )
             self._log = ResearchStepLog()
+
+    def state_dict(self) -> dict[str, Any]:
+        return {**super().state_dict(), "guidance_implementation": _GUIDANCE_IMPLEMENTATION}
+
+    def load_state_dict(self, state: dict[str, Any]) -> None:
+        if not isinstance(state, dict) or state.get("guidance_implementation") != _GUIDANCE_IMPLEMENTATION:
+            raise StateError("checkpoint does not use the enhanced-error v1 implementation")
+        super().load_state_dict({key: value for key, value in state.items() if key != "guidance_implementation"})
 
     def research_predict(self, inputs: torch.Tensor, targets: torch.Tensor) -> torch.Tensor:
         """Enhanced waveform. Inputs are noisy and targets are clean."""
@@ -175,21 +179,17 @@ class GuidedSEMambaPPTrainer(SEMambaPPTrainer):
             return component_id
         directory = Path(self.lifecycle.output_directory)
         directory.mkdir(parents=True, exist_ok=True)
+        metadata = self.asr.metadata() if hasattr(self.asr, "metadata") else {"model_id": type(self.asr).__name__}
         if int(getattr(runtime, "rank", 0)) == 0:
-            payload = self.asr.metadata() if hasattr(self.asr, "metadata") else {"model_id": self._fingerprint()}
-            (directory / "asr_decode.json").write_text(json.dumps(payload, indent=2, sort_keys=True, default=str) + "\n")
-        if self._cache is not None:
+            (directory / "asr_decode.json").write_text(json.dumps(metadata, indent=2, sort_keys=True, default=str) + "\n")
+        if isinstance(self._update, GuidedUpdate) and self.guidance.changes_loss:
             path = directory / f"asr_hypotheses.rank{int(getattr(runtime, 'rank', 0))}.jsonl"
-            self._hypotheses = path
-            header = self.asr.metadata() if hasattr(self.asr, "metadata") else {}
 
             def write(record: dict[str, Any]) -> None:
-                row = dict(header)
-                row.update(record)
                 with path.open("a", encoding="utf-8") as handle:
-                    handle.write(json.dumps(row, sort_keys=True, default=str) + "\n")
+                    handle.write(json.dumps({**metadata, **record}, sort_keys=True, default=str) + "\n")
 
-            self._cache.writer = write
+            self._update.write_hypothesis = write
         return component_id
 
     def _record_initial_generator(self, runtime: ProcessRuntime) -> None:
@@ -247,50 +247,16 @@ class GuidedSEMambaPPTrainer(SEMambaPPTrainer):
                 raise BuildError("the ASR component cannot build the TDT loss")
             ensure()
 
-    def _fingerprint(self) -> str:
-        if hasattr(self.asr, "metadata"):
-            return fingerprint_text(self.asr.metadata())
-        return type(self.asr).__name__
-
-    def preflight_probe(self) -> dict[str, Any]:
-        """Official probe, then drop ASR cache entries the probe created.
-
-        Python, NumPy, and torch generators are restored by the experiment
-        probe. The teacher cache is not one of those generators. Leaving the
-        probe's recognitions in place would make step 1 read a cache that a
-        run without the probe does not have. Numba's own device state is not
-        part of this snapshot.
-        """
-
-        cache = self._cache
-        items = getattr(cache, "_items", None)
-        before = set(items) if isinstance(items, dict) else None
-        path = self._hypotheses
-        before_size = path.stat().st_size if path is not None and path.is_file() else None
-        try:
-            return super().preflight_probe()
-        finally:
-            if isinstance(items, dict) and before is not None:
-                for key in list(items):
-                    if key not in before:
-                        del items[key]
-            if path is not None and before_size is None and path.is_file():
-                path.unlink()
-            elif path is not None and before_size is not None and path.is_file():
-                with path.open("a+b") as handle:
-                    handle.truncate(before_size)
-
-
 class GuidedUpdate(SEMambaUpdate):
     """Official step, with a batch lookup and a different generator loss when a switch needs it."""
 
-    def __init__(self, *args: Any, guidance: GuidanceV1, asr: Any, data: Any, cache: TeacherCache | None, **kwargs: Any) -> None:
+    def __init__(self, *args: Any, guidance: GuidanceV1, asr: Any, data: Any, **kwargs: Any) -> None:
         super().__init__(*args, **kwargs)
         self.guidance = guidance
         self.asr = asr
         self.data = data
-        self.cache = cache
         self.protocol = getattr(data, "protocol", None)
+        self.write_hypothesis: Callable[[dict[str, Any]], None] | None = None
         self._rows: dict[int, Any] = {}
         self._tdt_terms: list[torch.Tensor] = []
         self._mask_errors = 0
@@ -329,11 +295,15 @@ class GuidedUpdate(SEMambaUpdate):
             self._rows[id(clean)] = moved
             return clean, noisy
 
+        writer = self.write_hypothesis
+        if not apply_optimizer:
+            self.write_hypothesis = None
         semamba_trainer._waveforms = wrapped
         try:
             result = super().run(batches, runtime, phase_hook, apply_optimizer=apply_optimizer)
         finally:
             semamba_trainer._waveforms = original
+            self.write_hypothesis = writer
             module.bind_batch_lookup(None)
             self._rows.clear()
         observed: dict[str, float] = {}
@@ -408,7 +378,7 @@ class GuidedUpdate(SEMambaUpdate):
             terms = result.terms
             held_error = observed_error
             held_content = observed_content
-        except (TrainingError, RuntimeFailure, RuntimeError, ValueError) as exc:
+        except (DataError, OSError, TrainingError, RuntimeFailure, RuntimeError, ValueError) as exc:
             error = f"{type(exc).__name__}: {exc}"
         errors = runtime.gather_objects(error)
         if any(errors):
@@ -444,14 +414,15 @@ class GuidedUpdate(SEMambaUpdate):
         self,
         clean: torch.Tensor,
         audio: torch.Tensor,
-    ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor | None]:
+    ) -> tuple[torch.Tensor | None, torch.Tensor, torch.Tensor | None]:
+        """Align the current enhanced crop to the timed clean reference tokens."""
         batch = self._rows.get(id(clean))
         if batch is None or getattr(batch, "spans", None) is None:
             raise RuntimeFailure("crop correspondence is missing")
         spans = tuple(batch.spans)
         if len(spans) != clean.shape[0]:
             raise RuntimeFailure("span count does not match the micro-batch")
-        if not self.guidance.error_weight_enabled and not self.guidance.tdt_loss_enabled:
+        if not self.guidance.changes_loss:
             lengths = [_check_span(span, int(clean.shape[-1]))[1] for span in spans]
             return None, torch.tensor(lengths, device=clean.device, dtype=torch.long), None
         ids = _realization_ids(batch, int(clean.shape[0]))
@@ -459,20 +430,17 @@ class GuidedUpdate(SEMambaUpdate):
         contents: list[int] = []
         targets: list[list[int]] = []
         hop = int(self.asr.samples_per_frame)
-        if self.cache is None:
-            raise RuntimeFailure("teacher cache is missing")
         for row, span in enumerate(spans):
             checked = _check_span(span, int(clean.shape[-1]))
-            full_clean, full_noisy = self._utterance_audio(batch, row, checked, ids[row], clean)
-            clean_recognition = self.cache.recognize(self.asr, full_clean, "clean")
-            noisy_recognition = self.cache.recognize(self.asr, full_noisy, "noisy")
             crop_start, content_length, _window, full_length = checked
+            full_clean = self._clean_utterance(clean[row], checked, ids[row])
+            clean_recognition = self._recognize(full_clean, "clean")
+            enhanced_recognition = self._recognize(audio[row, :content_length], "enhanced")
             clean_tokens = overlapping_tokens(clean_recognition.tokens, crop_start, content_length, hop)
-            noisy_tokens = overlapping_tokens(noisy_recognition.tokens, crop_start, content_length, hop)
             masks.append(
                 crop_error_mask(
                     clean_tokens,
-                    noisy_tokens,
+                    enhanced_recognition.tokens,
                     crop_start=crop_start,
                     content_length=content_length,
                     window=int(clean.shape[-1]),
@@ -490,21 +458,39 @@ class GuidedUpdate(SEMambaUpdate):
             tdt = mean_tdt(per_sample)
         return sample_error, content, tdt
 
-    def _utterance_audio(self, batch, row: int, span: tuple[int, int, int, int], realization_id: str, clean: torch.Tensor):
-        """Full peak-normalized utterance. A crop uses the protocol; a whole row uses its prefix."""
+    @torch.no_grad()
+    def _recognize(self, audio: torch.Tensor, kind: str) -> Any:
+        waveform = audio.detach()
+        length = torch.tensor([waveform.numel()], device=waveform.device, dtype=torch.long)
+        recognition = self.asr.recognize(waveform.unsqueeze(0), length)[0]
+        if self.write_hypothesis is not None:
+            blob = waveform.to(device="cpu", dtype=torch.float32).contiguous().numpy().tobytes()
+            self.write_hypothesis(
+                {
+                    "audio_sha256": hashlib.sha256(blob).hexdigest(),
+                    "kind": kind,
+                    "text": recognition.text,
+                    "token_ids": [token.token_id for token in recognition.tokens],
+                    "start_offsets": [token.start_offset for token in recognition.tokens],
+                    "end_offsets": [token.end_offset for token in recognition.tokens],
+                }
+            )
+        return recognition
 
+    def _clean_utterance(
+        self, clean: torch.Tensor, span: tuple[int, int, int, int], realization_id: str
+    ) -> torch.Tensor:
+        """Full peak-normalized reference for clean-side token timestamps."""
         crop_start, content_length, window, full_length = span
         if crop_start == 0 and full_length <= window and content_length == full_length:
-            return clean[row, :full_length], batch.inputs[row, :full_length]
+            return clean[:full_length]
         protocol = self.protocol
         if protocol is None or not hasattr(protocol, "utterance_for_id"):
             raise RuntimeFailure("crop correspondence is missing; the full utterance is not available")
         utterance = protocol.utterance_for_id(realization_id)
         if int(utterance.full_length) != full_length or int(utterance.example.crop_start) != crop_start:
-            raise RuntimeFailure("cached utterance does not match the batch span")
-        full_clean = torch.tensor(utterance.full_clean, device=clean.device, dtype=clean.dtype)
-        full_noisy = torch.tensor(utterance.full_degraded, device=clean.device, dtype=clean.dtype)
-        return full_clean, full_noisy
+            raise RuntimeFailure("clean utterance does not match the batch span")
+        return torch.as_tensor(utterance.full_clean, device=clean.device, dtype=clean.dtype)
 
     def _reject_asr_grad(self, runtime: ProcessRuntime) -> None:
         if self.asr is None:
@@ -693,6 +679,7 @@ def _run_identity(
         "generator_state_sha256": generator_sha,
         "gpu_name": torch.cuda.get_device_name(0) if torch.cuda.is_available() else None,
         "guidance": {
+            "implementation": _GUIDANCE_IMPLEMENTATION,
             "asr_features_enabled": trainer.guidance.asr_features_enabled,
             "encoder_layer": trainer.guidance.encoder_layer,
             "error_weight_alpha": trainer.guidance.error_weight_alpha,

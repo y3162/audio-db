@@ -11,14 +11,14 @@ from typing import Any
 
 def align_token_ids(
     clean_ids: Sequence[int],
-    noisy_ids: Sequence[int],
+    hypothesis_ids: Sequence[int],
 ) -> list[tuple[str, int | None, int | None]]:
     """Token-id Levenshtein. Equal cost prefers C, then S, then D, then I."""
 
     clean = [int(token) for token in clean_ids]
-    noisy = [int(token) for token in noisy_ids]
+    hypothesis = [int(token) for token in hypothesis_ids]
     n = len(clean)
-    m = len(noisy)
+    m = len(hypothesis)
     inf = n + m + 1
     dp = [[inf] * (m + 1) for _ in range(n + 1)]
     back: list[list[str | None]] = [[None] * (m + 1) for _ in range(n + 1)]
@@ -33,7 +33,7 @@ def align_token_ids(
     for i in range(1, n + 1):
         for j in range(1, m + 1):
             candidates = []
-            if clean[i - 1] == noisy[j - 1]:
+            if clean[i - 1] == hypothesis[j - 1]:
                 candidates.append((dp[i - 1][j - 1], rank["C"], "C"))
             else:
                 candidates.append((dp[i - 1][j - 1] + 1, rank["S"], "S"))
@@ -73,7 +73,7 @@ def error_frames_from_alignment(
     """Union of clean-token frames for substitution and deletion."""
 
     frames: set[int] = set()
-    for operation, clean_index, _noisy_index in alignment:
+    for operation, clean_index, _hypothesis_index in alignment:
         if operation not in ("S", "D") or clean_index is None:
             continue
         start = _offset(clean_tokens[clean_index], "start_offset")
@@ -123,7 +123,7 @@ def overlapping_tokens(
 
 def crop_error_mask(
     clean_tokens: Sequence[Any],
-    noisy_tokens: Sequence[Any],
+    hypothesis_tokens: Sequence[Any],
     *,
     crop_start: int,
     content_length: int,
@@ -135,7 +135,7 @@ def crop_error_mask(
 
     alignment = align_token_ids(
         [_token_id(token) for token in clean_tokens],
-        [_token_id(token) for token in noisy_tokens],
+        [_token_id(token) for token in hypothesis_tokens],
     )
     frames = error_frames_from_alignment(clean_tokens, alignment)
     intervals = sample_intervals_from_frames(frames, full_length, hop)

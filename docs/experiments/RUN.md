@@ -73,6 +73,8 @@ CUDA_VISIBLE_DEVICES=<空きGPU> \
 
 2026-11-17 に単一 GPU で、公式幅（`hid_feature` 48、`num_tfmamba` 4、reference scan）の 8 つのスイッチ組み合わせを 1 logical step ずつ完了した。TDT を含む step の損失は、preflight を省いた再実行と一致した。NCCL の 2 プロセスは未実行である。
 
+VoiceBank+DEMAND の SNR shift を変えるには、`configs/research/asr_guided_se/semambapp/v1/ablation/` の条件 YAML を継承し、子 YAML の `components.source.kwargs.snapshot` に目的の Dataset 名を指定する。`output.directory` と `components.trainer.kwargs.experiment_id` は新しい条件用の値を指定する。登録済みの名前は [Dataset の配置記録](../db/INVENTORY.md#2026-11-19-voicebank-snr-shift) にある。
+
 DDP は `--nproc` を world size にする。学習する module の `prepare` に `distribute: ddp` が要る。`runtime.kwargs.world_size` を書いた設定は、その値と `--nproc` が違うと拒否する。CUDA では rank ごとに GPU を 1 枚使い、2 つの rank が同じ GPU を使う起動は拒否する。`CUDA_VISIBLE_DEVICES` で隠すと、見える番号は 0 から振り直される。実験 runtime は、指定された CUDA デバイスを他プロセスの使用率や使用メモリでは拒否しない。CUDA が使えない、見えるデバイスが無い、`LOCAL_RANK` が範囲外、world size がデバイス数を超える起動は拒否する。実際の CUDA OOM はエラーとして記録する。Launcher はデバイス全体の使用メモリを `gpu_memory.jsonl` に追記する。これは起動の可否には使わない。
 
 ChunkSampler の `global_batch` は `micro_batch × world_size × group_size` と一致させ、`group_size` は Trainer の勾配蓄積回数と一致させる。チャンクの計画は実効 batch 単位で作り、各 rank の計画を micro-batch に分けて蓄積する。world size が変わるとデータの順序も変わるため、実効 batch が同じでも別の実験である。
