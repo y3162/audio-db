@@ -73,7 +73,7 @@ class AblationConfigTest(unittest.TestCase):
             self.assertIs(spec.components["trainer"].kwargs["valid_frame_aggregation"], True)
             self.assertTrue(
                 str(spec.output_directory).endswith(
-                    f"data/results/experiments/asr_guided_se/semambapp/v1/voicebank_m15db_ablation/{name}"
+                    f"data/results/research/asr_guided_se/semambapp/v1/voicebank_m15db_ablation/{name}"
                 )
             )
             self.assertEqual(spec.components["trainer"].kwargs["max_epochs"], 100)

@@ -1,7 +1,7 @@
 # A1: ASR features on, TDT off, error weighting off.
 extends: A0.yaml
 output:
-  directory: data/results/experiments/asr_guided_se/semambapp/v1/voicebank_m15db_ablation/A1
+  directory: data/results/research/asr_guided_se/semambapp/v1/voicebank_m15db_ablation/A1
 components:
   guidance:
     kwargs:
