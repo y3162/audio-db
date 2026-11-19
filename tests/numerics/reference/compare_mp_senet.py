@@ -15,7 +15,7 @@ comparison does not enable ``torch.use_deterministic_algorithms``. Launch with
 ``CUBLAS_WORKSPACE_CONFIG=:4096:8``.
 
     CUDA_VISIBLE_DEVICES=<free> CUBLAS_WORKSPACE_CONFIG=:4096:8 \\
-        .venvs/lab/bin/python tests/numerics/reference/compare_mp_senet.py
+        .venvs/se/bin/python tests/numerics/reference/compare_mp_senet.py
 """
 
 from __future__ import annotations

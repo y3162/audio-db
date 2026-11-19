@@ -4,9 +4,10 @@ This is a real-model GPU test. It is not part of the CPU suite's work: hidden
 CUDA is NOT_RUN, and a missing NeMo install is a skip. The research loss is
 unchanged. Omega stays at the checkpoint value.
 
-Run with the integrated environment and one free GPU:
+Set GPU_ID to one free GPU:
 
-    CUDA_VISIBLE_DEVICES=3 scripts/setup/with_env.sh \\
+    CUDA_VISIBLE_DEVICES="$GPU_ID" scripts/setup/with_env.sh \\
+      .venvs/se/bin/python -m tests.suite_guard \\
       .venvs/se/bin/python -m unittest tests.research.test_tdt_determinism -v
 """
 

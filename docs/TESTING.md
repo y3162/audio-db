@@ -9,19 +9,20 @@ make test-cpu     # CPU だけ。CUDA は隠す
 make test         # CPU に加え、空いている GPU があれば GPU レーンも実行する
 ```
 
-どちらも `scripts/tests/run_suite.py` を呼ぶ。`tests/asr`、`tests/data`、`tests/evaluation`、`tests/experiments`、`tests/se`、`tests/setup`、`tests/numerics`、`tests/research` のモジュールをプロセスプールで並列に実行する。通常のランナーは `.venvs/se` である。実 Parakeet の GPU テストも同じインタプリタで、リポジトリルートをカレントにして `python -m unittest` するか、ランナーと同じくリポジトリルートを `sys.path` の先頭に置いて実行する。NeMo 2.2.1 はトップレベルの正規パッケージ `tests` を site-packages に入れる。リポジトリの `tests/__init__.py` が同じ名前を正規パッケージにし、ルートが site-packages より前にあるときリポジトリ側が勝つ。site-packages の `tests` は消さない。`tests/__init__.py` があるという理由で path 要素ごと捨てると、NeMo 環境では site-packages 自体が落ちて torch を import できなくなる。ランナーは解決先がリポジトリの `tests/suite_guard.py` でなければ起動しない。実 Parakeet の決定性調査と狭いネットの再開・NCCL は `tests/research/test_tdt_determinism.py` と `tests/research/test_asr_guided_stability.py` である。CPU レーンは CUDA を隠すので、これらは `NOT_RUN` になり NeMo を import しない。GPU レーンの対象リストには入っていない。実行するときは空き GPU だけを `CUDA_VISIBLE_DEVICES` に指定し、`.venvs/se` を `scripts/setup/with_env.sh` 経由で `python -m unittest` する。
-時間のかかるモジュールは先に起動し、他のワーカーが先に遊休になる時間を減らす。
+リポジトリのルートで実行する。どちらも `.venvs/se` で `scripts/tests/run_suite.py` を起動し、テストモジュールを並列に実行する。セットアップだけを確かめるなら `make test-setup` を使う。
 
-ディレクトリ単体、モジュール単体は `unittest` をそのまま使う。本番データの保護を付けるときは `tests.suite_guard` を前に置く。
+既存の DuckDB や学習スナップショットを使う統合テストもある。必要な成果物が無いケースは、欠けているものを理由に未実行とする。DB の準備は [DB の手順](db/SETUP.md) を参照する。
+
+ディレクトリやモジュールを選んで実行する場合も、`tests.suite_guard` を通す。
 
 ```bash
-CUDA_VISIBLE_DEVICES="" .venvs/se/bin/python -m tests.suite_guard \
+CUDA_VISIBLE_DEVICES="" scripts/setup/with_env.sh .venvs/se/bin/python -m tests.suite_guard \
   .venvs/se/bin/python -m unittest discover -s tests/experiments -v
-CUDA_VISIBLE_DEVICES="" .venvs/se/bin/python -m tests.suite_guard \
+CUDA_VISIBLE_DEVICES="" scripts/setup/with_env.sh .venvs/se/bin/python -m tests.suite_guard \
   .venvs/se/bin/python -m unittest tests.experiments.test_checkpoint -v
 ```
 
-`tests.suite_guard` を付けない `unittest` は保護なしで走る。スレッドは起動前の `OMP_NUM_THREADS` に従う。
+実 Parakeet TDT の `tests.asr.test_parakeet_tdt_gpu`、決定性の `tests.research.test_tdt_determinism`、再開と NCCL の `tests.research.test_asr_guided_stability` は個別に GPU で実行する。上のモジュール指定の例でテスト名を変更し、`CUDA_VISIBLE_DEVICES` に使う GPU を設定する。CPU レーンではこれらは `NOT_RUN` になる。
 
 ## 本番データの保護
 
@@ -46,6 +47,8 @@ CPU のモジュールは `CUDA_VISIBLE_DEVICES=""` で走る。CPU の成功は
 GPU レーンは、親プロセスの `CUDA_VISIBLE_DEVICES` の範囲で、使用メモリ 1024 MiB 未満かつ計算プロセスの無い GPU があるときだけ走る。変数が未設定なら全物理 GPU が範囲で、空文字なら GPU レーンは NOT_RUN になる。対象は、CUDA / NCCL の `tests/experiments/test_cuda_amp.py`、`tests.experiments.test_launcher.LauncherCudaTests`、`tests/numerics/test_model_tasks.py`、および GPU が要る実モデルの少数のテストである。2 枚必要なテストは、見える GPU が 1 枚なら NOT_RUN である。
 
 ランナーは選んだ物理番号を `CUDA_VISIBLE_DEVICES` と `AUDIO_DB_CUDA_GPU0` / `AUDIO_DB_CUDA_GPU1` に入れる。CUDA の子プロセスは後者を自分の `CUDA_VISIBLE_DEVICES` に書き戻す。
+
+GPU を明示した場合も、一部のテストが開始時に空きメモリを確認する。指定した GPU が使用中なら、そのテストは `NOT_RUN` となる。
 
 ## 調整
 

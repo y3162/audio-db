@@ -1,6 +1,6 @@
 """Compare four SEMamba++ 200-step runs and score STOI on the saved validation audio.
 
-    .venvs/lab/bin/python tests/numerics/reference/compare_semamba_200.py \
+    .venvs/se/bin/python tests/numerics/reference/compare_semamba_200.py \
         data/results/training/semamba-200step-20261101
 """
 

@@ -18,6 +18,7 @@ import unittest
 from pathlib import Path
 
 _ROOT = Path(__file__).resolve().parents[2]
+_SNAPSHOTS = _ROOT / "data/db/snapshots"
 _LOCAL_RFFT = _ROOT / "build" / "df-rfft" / "release" / "libdf_rfft.so"
 if _LOCAL_RFFT.is_file():
     os.environ.setdefault("DF_RFFT_LIBRARY", str(_LOCAL_RFFT))
@@ -344,8 +345,9 @@ class DeepFilterNet3AlgorithmTests(unittest.TestCase):
         self.assertTrue(stop)
         self.assertEqual(count, 2)
 
+    @unittest.skipUnless(_SNAPSHOTS.is_dir(), "NOT_RUN: DeepFilterNet3 smoke snapshots are required")
     def test_smoke_plan_changes_width_without_reusing_the_old_groups(self) -> None:
-        source = SnapshotSource(snapshot="dfn3.online.smoke@1", snapshot_root="data/db/snapshots", split="train")
+        source = SnapshotSource(snapshot="dfn3.online.smoke@1", snapshot_root=_SNAPSHOTS, split="train")
         sampler = Dfn3IndexSampler(source, seed=7, global_batch=None)
         protocol = Dfn3Protocol(source)
         data = SnapshotDataModule(source, sampler, protocol, MicroBatcher(1, 1, True), prefetch=False)
@@ -387,6 +389,7 @@ class DeepFilterNet3AlgorithmTests(unittest.TestCase):
             data.close()
 
 
+@unittest.skipUnless(_SNAPSHOTS.is_dir(), "NOT_RUN: DeepFilterNet3 smoke snapshots are required")
 class DeepFilterNet3ExperimentTests(unittest.TestCase):
     def test_parameter_identity_and_resume_on_the_smoke_snapshot(self) -> None:
         directory = Path(self.enterContext(tempfile.TemporaryDirectory(prefix="audio-db-dfn3-resume-")))

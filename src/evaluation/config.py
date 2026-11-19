@@ -594,8 +594,8 @@ def _load_yaml(text: str, path: Path) -> Any:
         import yaml
     except ImportError as exc:
         raise ConfigError(
-            "YAML configuration requires PyYAML. Install it in .venvs/lab: "
-            "uv pip install --python .venvs/lab/bin/python pyyaml"
+            "YAML configuration requires PyYAML. Install it in .venvs/se: "
+            "uv pip install --python .venvs/se/bin/python pyyaml"
         ) from exc
     try:
         return yaml.safe_load(text)

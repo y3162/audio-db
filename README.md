@@ -8,7 +8,7 @@
 
 手順
 
-- [セットアップ・環境構築](docs/envs/SETUP.md)（[TSUBAME 4.0](docs/envs/TSUBAME.md)、[SHINODA-LAB](docs/envs/SHINODA_LAB.md)、[ASR 用の環境](docs/envs/ASR.md)）
+- [セットアップ・環境構築](docs/envs/SETUP.md)（[TSUBAME 4.0](docs/envs/TSUBAME.md)、[SHINODA_LAB.md](docs/envs/SHINODA_LAB.md)、[ASR 用の環境](docs/envs/ASR.md)）
 - [データベースの操作](docs/db/SETUP.md)
 - [学習・実験の実行と再開](docs/experiments/RUN.md)
 - [テスト](docs/TESTING.md)

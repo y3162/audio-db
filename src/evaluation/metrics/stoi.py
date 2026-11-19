@@ -19,8 +19,8 @@ def library_status() -> str | None:
         import pystoi  # noqa: F401
     except ImportError:
         return (
-            "pystoi is not installed. Install it in .venvs/lab with "
-            "uv pip install --python .venvs/lab/bin/python pystoi scipy"
+            "pystoi is not installed. Install it in .venvs/se with "
+            "uv pip install --python .venvs/se/bin/python pystoi scipy"
         )
     return None
 

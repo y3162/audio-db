@@ -30,8 +30,11 @@ def _sha256(path: Path) -> str:
     return digest.hexdigest()
 
 
-def _fingerprint(path: Path) -> tuple[int, int, str]:
-    stat = path.stat()
+def _fingerprint(path: Path) -> tuple[int, int, str] | None:
+    try:
+        stat = path.stat()
+    except FileNotFoundError:
+        return None
     return stat.st_size, stat.st_mtime_ns, _sha256(path)
 
 

@@ -17,7 +17,7 @@ steps_per_epoch is 8 and epochs is 120, matching the smoke set at batch 1
 and the shipped ``max_epochs``. Only the first 20 schedule values are applied.
 
     CUDA_VISIBLE_DEVICES=<free> CUBLAS_WORKSPACE_CONFIG=:4096:8 \\
-        .venvs/lab/bin/python tests/numerics/reference/compare_deepfilternet.py
+        .venvs/se/bin/python tests/numerics/reference/compare_deepfilternet.py
 """
 
 from __future__ import annotations

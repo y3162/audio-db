@@ -1,88 +1,62 @@
 # セットアップ
 
-利用者が編集するのは `.env` だけである。プラットフォームは構築コマンドの引数で、仮想環境名には入らない。
+初回はリポジトリのルートで作業する。
+
+## 1. ツールを用意する
+
+- Git、Git LFS、GNU Make、uv、Python 3 を PATH に置く。仮想環境で使う Python 3.12 は `uv python install 3.12` で用意する。
+- 通常環境のビルドには C/C++ コンパイラ、Rust 1.76 以降と Cargo、CUDA 12 系の Toolkit が要る。`nvcc --version` が表示できることを確認する。Toolkit が PATH に無い場合は、そのルートを `CUDA_HOME` に指定する。
+- 公式 DeepFilterNet の比較も行う場合は、HDF5 の開発用ヘッダーを用意する。`pkg-config --modversion hdf5` で確認する。別の場所にある HDF5 を使う場合は `HDF5_DIR` にそのルートを指定する。
+- GPU を使う前に `nvidia-smi` で空きを確認する。使用する番号を `CUDA_VISIBLE_DEVICES` に指定できる。
+
+ホスト上でツールを有効にする手順は、[SHINODA_LAB.md](SHINODA_LAB.md) または [TSUBAME.md](TSUBAME.md) を参照する。
+
+## 2. データの置き場を指定する
+
+まだ `.env` が無ければ `cp .env.example .env` で作る。`.env` の `AUDIO_DB_DATASET_ROOT` に、`LibriSpeech` や `VoiceBank+DEMAND` などを直接含むディレクトリの絶対パスを書く。
 
 ```bash
-cp .env.example .env
-# AUDIO_DB_DATASET_ROOT と、必要なら UV_CACHE_DIR を書く
-make setup PLATFORM=tsubame
-make doctor
+export AUDIO_DB_DATASET_ROOT="/path/to/datasets"
 ```
 
-SHINODA-LAB では最後の構築コマンドだけを変える。ホスト差は [TSUBAME](TSUBAME.md) と [SHINODA-LAB](SHINODA_LAB.md)、ASR 用の環境は [ASR](ASR.md)。作り直しは同じ `make setup` の再実行である。2026-11-04 の一回の記録は [CLEAN_REBUILD](CLEAN_REBUILD.md)。
+コーパスごとに別の場所を使うときは、対応する `AUDIO_DB_CORPUS_...` にそのコーパス自体の絶対パスを書く。いずれも `.env.example` にある。シェルから export した値は `.env` より優先される。
+
+## 3. 構築してテストする
 
 ```bash
-make setup PLATFORM=shinoda_lab
+make setup
+make test
 ```
 
-`source .env` は任意である。既に export した変数は `.env` より優先される。`make` は `.env` を、未設定の変数に限って読む。
+`make setup` は、バージョンを固定した公式アセットと仮想環境を用意し、コーパスへのリンクを `data/corpora/` に作り、最後に `doctor` を実行する。リンク元が無いコーパスは表示して残りを結ぶ。既存リンクが指定先と違う場合はエラーになる。DB の準備が必要な場合は、別途 [DB の手順](../db/SETUP.md) を参照する。
 
-## 役割
+`make test` はデータを読み取り専用にして、CPU テストと、空き GPU がある場合の GPU テストを実行する。CPU だけなら `make test-cpu` を使う。結果とスキップの読み方は [テスト](../TESTING.md) にある。
+
+## 部分実行と再実行
+
+| コマンド | 用途 |
+|---|---|
+| `make doctor` | 構築済みの環境、アセット、コーパスリンクを診断する |
+| `make setup-env ROLES=se` | 通常環境だけを構築する。初回は先に `make assets MODELS=causal_conv1d,mamba` を実行する |
+| `make setup-env ROLES=official,deepfilternet` | 公式比較用の環境を構築する。初回は先に `make assets MODELS=deepfilternet` を実行する |
+| `make assets MODELS=mp_senet` / `make assets-check` | アセットを取得する / 既存のアセットを検証する |
+| `make db-link DRY_RUN=1 ALLOW_PARTIAL=1` | コーパスリンクの作成予定を確認する |
+| `make test-setup` | セットアップ用のテストだけを実行する |
+
+失敗したら原因を直し、同じコマンドを再実行する。lock のハッシュが一致して import できる仮想環境と、検証済みのアセットは再利用される。`FORCE_SETUP=1` を付けると、仮想環境の依存を再同期する。キャッシュの書き込みに失敗する場合は `UV_CACHE_DIR` を書き込み可能なディレクトリに設定する。
+
+## 仮想環境とビルド
 
 | パス | 用途 |
 |---|---|
-| `.venvs/se` | 通常の唯一の環境。6 モデル、ASR、DB、評価、テスト、fused scan |
-| `.venvs/official` | 公式実装との比較。NumPy 2.5。通常の学習には使わない |
-| `.venvs/deepfilternet` | 公式 `libdf`。PyO3 0.20 と numpy crate 0.20 が NumPy 2 を読み込めず、公式パッケージも NumPy 2 未満に固定している。`.venvs/se` の 2.1.3 にも `.venvs/official` の 2.5.4 にも移さない。`.venvs/official` の NumPy は変えない |
+| `.venvs/se` | 通常の SE、ASR、評価、学習、テスト。PyTorch 2.6.0+cu124。ASR の依存は [ASR](ASR.md) を参照 |
+| `.venvs/official` | 公式実装との比較。NumPy 2.5.4 |
+| `.venvs/deepfilternet` | 公式 `libdf` と `libdfdata` との比較。これらの拡張は NumPy 1.26.4 を使う |
 
-導入済みの `libdf` と `libdfdata` の wheel は `manylinux_2_35` である。tensor と shannon の glibc は 2.31 なので、その共有ライブラリは `GLIBC_2.35` が無くロードできない。`uv` もこのプラットフォーム向けとしてその wheel を入れ直さない。ピンした `src/official/deepfilternet` は書き換えない。このホストの Cargo 1.76 は、ワークスペース直下の `--locked` は受けるが、`maturin --locked` を `pyDF` から起動すると lock の更新を求める。lock を外すと `rubato` が 0.14.1 から 0.15.0 に上がるので、その成果物は公式の依存ではない。独立実装の DeepFilterNet3 は `libdf` を import せず、`.venvs/se` とローカルの `libdf_rfft.so` で動く。追跡中の `libdf_rfft.so` は `GLIBC_2.33` を要求してこのホストでは読めない。
+Python パッケージのバージョンは役割ごとの `requirements/<role>.lock.txt` で固定している。`setup` は lock を更新しない。依存を変更するときは `requirements/<role>.in` を編集し、`scripts/setup/compile_locks.sh` で lock を作り直す。
 
-依存の正本は `requirements/se.in`、`requirements/official.in`、`requirements/deepfilternet.in` と、それぞれの lock である。通常の `make setup` は lock を更新しない。lock を作り直すときだけ `scripts/setup/compile_locks.sh` を実行する。
+- 融合カーネルの `mamba-ssm` と `causal-conv1d` は、`requirements/official-assets.toml` が指定するソースからビルドする。`mamba-ssm` には import 用のパッチも当てる。Toolkit と各ソースのビルド設定によって対応する GPU が決まる。別ホストで共有するときは GPU と glibc の互換性を確認する。作り直すには `AUDIO_DB_REBUILD_MAMBA=1 make setup-env ROLES=se` を使う。
+- 通常環境で使う FFT は `build/df-rfft/release/libdf_rfft.so` にビルドする。追跡中のライブラリをロードできないときに、この成果物が使われる。選ばれたファイルと ABI は `make doctor` の `df_rfft` に出る。実行時に指定するなら `DF_RFFT_LIBRARY` を使う。
+- 公式 DeepFilterNet の `libdf` と `libdfdata` は、構築したホストで使う Linux wheel としてビルドする。`build/libdf-src` に作るビルド用コピーではデモとプラグインを対象から外す。残りの Rust 依存のバージョンとチェックサムは、公式の `Cargo.lock` で検証する。
 
-`.venvs/se` は NumPy 2.1.3、numba 0.61.0、llvmlite 0.44.0 である。NeMo 2.2.1 がこの Numba を要求し、その Numba は NumPy 2.2 以降を拒む。scipy 1.18.1、librosa 1.0.0、nnAudio 0.3.3 はこの NumPy に合わせる。以前の NumPy 2.5.4 と numba 0.68.1 は、NeMo と同じプロセスでは使わない。`mamba-ssm` と `causal-conv1d` は lock に入らない。`openai-whisper==20240930` も lock の外で、sync のあと `--no-build-isolation` で入れる。
-
-```bash
-make setup-env PLATFORM=shinoda_lab ROLES=se
-```
-
-`scripts/setup/with_env.sh` は `.venvs/se` の Python を起動するときだけ、未設定の `CUDA_HOME` をその環境の `nvidia/cuda_nvcc` にする。起動のたびに `lib64/libcudart.so.12` を `nvidia/cuda_runtime` の実体へ張り直す。`uv pip sync` はこのリンクを消すが lock の stamp は変わらないので、セットアップ時の一度だけでは残らない。`nvvm/lib64`、`lib64`、`nvidia/cuda_runtime/lib` を `LD_LIBRARY_PATH` の先頭に置く。呼び出し側が `CUDA_HOME` を置いていればそれを使う。公式役割には渡さない。この wheel は `libnvvm.so` と `ptxas` を含み、`nvcc` 本体は含まない。Numba は版付きの `libnvvm.so.*` を探すので wheel を見つけられないことがあり、そのときはこの `LD_LIBRARY_PATH` の `libnvvm.so` を読む。リンクが無いと Numba はローダの `libcudart.so`（この研究室のホストでは CUDA 11.0）を読み、対応アーキテクチャが空になって TDT を拒否する。手で同じ変数を置く手順は [ASR](ASR.md)。
-
-SE 学習ログを TensorBoard で確認できるよう、`.venvs/se` に `tensorboard==2.20.0` を含める。TSUBAME と SHINODA-LAB のどちらも `make setup PLATFORM=...` で構築される同じ lock を使う。
-
-## 部分実行
-
-```bash
-make setup-env PLATFORM=tsubame ROLES=se
-make assets MODELS=mp_senet
-make assets-check
-make db-link DRY_RUN=1
-make db-link ONLY=LibriSpeech ALLOW_PARTIAL=1
-make test-setup
-```
-
-`make setup` は `db-init`、`db-ingest`、`db-bootstrap` を呼ばない。役割の導入のあと `build_df_rfft` が `make df-rfft` と同じ Cargo ロックで `build/df-rfft/release/libdf_rfft.so` を作り、続けて `python -m src.data.link_corpora --allow-partial` と `scripts/setup/doctor.py` を実行する。`link_corpora` は `data/corpora` へのシンボリックリンクだけで、無いソースは記録して残りを結び、既存のリンクは上書きしない。DuckDB は作らない。最後の診断を、別の `make doctor` で再実行してよい。
-
-追跡中の `src/models/deepfilternet3/libdf_rfft.so` と内容が違うときは置き換えない。環境変数 `DF_RFFT_LIBRARY` が空で追跡ファイルがこのホストで読めないときは、そのローカル成果物が ABI 1 なら実行時にそれを使う。ファイル自体が無いときの戻り先は [DeepFilterNet3](../se/MODELS.md)。`make doctor` の `df_rfft` は、選ばれたファイルの source、ABI、SHA-256 を出す。
-
-`scripts/setup/platforms/tsubame.sh` は cargo が無いと準備を打ち切る。両プラットフォームのメッセージが求めるのは Rust 1.76 以上である。`make df-rfft` が通った記録は rustc 1.99.1 で、他の版での再コンパイルは記録が無い。`libdf` の wheel を Rust 1.76.0 で作った記録は [VALIDATION.md](../se/VALIDATION.md)。依存の版は `src/models/deepfilternet3/rfft_kernel/Cargo.lock` の `realfft` 3.3.0 と `rustfft` 6.4.1。
-
-## 融合カーネル
-
-`.venvs/se` の `mamba-ssm` と `causal-conv1d` は、`requirements/official-assets.toml` のピンしたソースからビルドする。lock には入っていない。インストール後、`scripts/apply_mamba_init_patch.py` が `patches/mamba_ssm-2.3.2.post1-init.patch` を当てる。対象は `mamba_ssm/__init__.py` の Mamba2、Mamba3、言語モデルヘッドの import だけである。selective scan のソースと CUDA 拡張は変えない。再実行は何もしない。
-
-`AUDIO_DB_REBUILD_MAMBA=1` は、入っている拡張と `build/native-src` の中間ビルドを消してから作り直す。`TORCH_CUDA_ARCH_LIST` はプラットフォームスクリプトが設定する。ピンした causal-conv1d 1.7.0 と mamba-ssm 2.3.2.post1 の `setup.py` は CUDA 12.1 で `sm_75`、`sm_80`、`sm_87`、`sm_90` を `-gencode` に固定し、この環境変数では cubin の一覧を変えない。`sm_86` は含まれない。あるホストでビルドした `.so` を、別のアーキテクチャのホストへコピーしない。`uv` がホームのキャッシュへ `.so` を書けないときは、`UV_CACHE_DIR` を書けるローカルディレクトリにしてから同じビルドをやり直す。`build_mamba` に渡す Python は仮想環境の `bin/python` を絶対パスにする。そのシンボリックリンクを辿った先の uv 管理 Python へは入れない。
-
-## 公式アセット
-
-取得元・commit・SHA-256 は `requirements/official-assets.toml`。配置先は既存テストが読むパスである。
-
-| モデル | ソース | 重み |
-|---|---|---|
-| MP-SENet | `src/official/mp-senet` @ `89932cfe` | `data/checkpoints/mp-senet/g_best_vb` と `g_best_dns`（リポジトリ内の `best_ckpt`） |
-| DeepFilterNet3 | `src/official/deepfilternet` @ `d375b2d83` | `data/checkpoints/deepfilternet3/DeepFilterNet3/`（ピンした commit の公式 zip） |
-| SEMamba++ | `src/official/semambapp` @ `cd369c89` | `data/checkpoints/semambapp/semambapp.pth` |
-| MossFormerGAN | `src/official/clearervoice-studio` @ `6b3774dc` | `data/checkpoints/mossformergan/last_best_checkpoint.pt` |
-| TF-GridNet | `src/official/espnet` @ `0d136c54`（新規 clone は `espnet2` のみ） | `data/checkpoints/tf-gridnet/urgent24/.../21epoch.pth` と `ms-snsd/valid.loss.best.pth` |
-| TF-Locoformer | `src/official/tf-locoformer` @ `7a615460` | `data/checkpoints/tf-locoformer/dns/valid.loss.ave_5best.pth` |
-
-既にピンした commit のツリーがあれば再取得しない。別 commit や手元の変更は上書きしない。チェックサムが違う既存ファイルも置き換えない。
-
-TF-GridNet の重みカードは、コードの Apache-2.0 とは別に利用条件を書いていない。SEMamba++ の重みカードは GPL-2.0 と表示されている。ソースツリーにライセンスファイルは無い。
-
-## 失敗したとき
-
-同じ `make setup PLATFORM=...` を再実行する。成功済みの仮想環境（lock のハッシュが一致し、import できるもの）と、チェックサムが一致するファイルはやり直さない。`FORCE_SETUP=1` は lock の同期からやり直すが、仮想環境ディレクトリは消さない。
-
-公式 `libdfdata` は HDF5 が必要である。TSUBAME では `hdf5-parallel/1.14.3/gcc11.4.1` を読む。モジュールが無い場合、`libdf` 本体の成否と `libdfdata` の未構築は分けて表示する。
-
-`libdf` のビルドは `src/official/deepfilternet` を書き換えない。Cargo 1.99 はピンした `Cargo.lock`（version 3）を `--locked` のまま読めず、ロックの更新を拒否する。再ビルドが必要なときは `build/libdf-src` の共有 clone だけでロックを更新し、`--offline` で maturin する。既に `build/libdf-cargo/wheels` にある wheel が import できるときは、それを入れ直して再コンパイルしない。
+公式コードと重みの配置先、commit、SHA-256 は [アセット一覧](../../requirements/official-assets.toml) にある。取得時に、編集済みの checkout や検証に失敗した既存ファイルが見つかるとエラーになる。

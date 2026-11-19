@@ -32,6 +32,7 @@ from src.experiments.runtime import ProcessRuntime
 from tests.numerics.reference.semamba_task import SEMambaTask
 
 _ROOT = Path(__file__).resolve().parents[2]
+_SNAPSHOTS = _ROOT / "data/db/snapshots"
 _ARCH = {
     "d_conv": 2,
     "d_state": 4,
@@ -378,8 +379,9 @@ class SEMambaPPAlgorithmTests(unittest.TestCase):
             self.assertNotEqual(completed.returncode, 0)
             self.assertIn("rejected its micro-batch", completed.stderr + completed.stdout)
 
+    @unittest.skipUnless(_SNAPSHOTS.is_dir(), "NOT_RUN: SEMamba++ smoke snapshots are required")
     def test_smoke_snapshot_contract(self) -> None:
-        source = SnapshotSource("semambapp.gsr.smoke@1", _ROOT / "data/db/snapshots", "train")
+        source = SnapshotSource("semambapp.gsr.smoke@1", _SNAPSHOTS, "train")
         protocol = SemambaProtocol(source)
         from tests.experiments.pipeline_args import order_sampler
 
@@ -419,7 +421,7 @@ class SEMambaPPAlgorithmTests(unittest.TestCase):
             self.assertEqual(tuple(first.targets.shape), (1, 48000))
             self.assertEqual(first.teacher_kind, "dry_clean")
             self.assertEqual(data.update_index, 0)
-            valid = SnapshotSource("semambapp.gsr.smoke@1", _ROOT / "data/db/snapshots", "valid")
+            valid = SnapshotSource("semambapp.gsr.smoke@1", _SNAPSHOTS, "valid")
             from tests.experiments.pipeline_args import order_sampler as _order_sampler
 
             valid_protocol = SemambaProtocol(valid)
@@ -440,8 +442,9 @@ class SEMambaPPAlgorithmTests(unittest.TestCase):
             data.close()
             runtime.shutdown()
 
+    @unittest.skipUnless(_SNAPSHOTS.is_dir(), "NOT_RUN: SEMamba++ smoke snapshots are required")
     def test_one_smoke_microbatch_updates(self) -> None:
-        source = SnapshotSource("semambapp.gsr.smoke@1", _ROOT / "data/db/snapshots", "train")
+        source = SnapshotSource("semambapp.gsr.smoke@1", _SNAPSHOTS, "train")
         protocol = SemambaProtocol(source)
         from tests.experiments.pipeline_args import order_sampler
 

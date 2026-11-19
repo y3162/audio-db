@@ -5,8 +5,7 @@
 ## Make
 
 ```bash
-make setup PLATFORM=shinoda_lab
-make setup PLATFORM=tsubame
+make setup
 make doctor
 make db-link DRY_RUN=1
 make db-init

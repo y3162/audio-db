@@ -71,7 +71,7 @@ CUDA_VISIBLE_DEVICES=<空きGPU> \
   make experiment CONFIG=<子YAML> NPROC=1
 ```
 
-2026-11-17 に tensor の空いている A100 80GB で、公式幅（`hid_feature` 48、`num_tfmamba` 4、reference scan）の 8 つのスイッチ組み合わせを 1 logical step ずつ完了した。TDT を含む step の損失は、preflight を省いた再実行と一致した。NCCL の 2 プロセスは未実行である。
+2026-11-17 に単一 GPU で、公式幅（`hid_feature` 48、`num_tfmamba` 4、reference scan）の 8 つのスイッチ組み合わせを 1 logical step ずつ完了した。TDT を含む step の損失は、preflight を省いた再実行と一致した。NCCL の 2 プロセスは未実行である。
 
 DDP は `--nproc` を world size にする。学習する module の `prepare` に `distribute: ddp` が要る。`runtime.kwargs.world_size` を書いた設定は、その値と `--nproc` が違うと拒否する。CUDA では rank ごとに GPU を 1 枚使い、2 つの rank が同じ GPU を使う起動は拒否する。`CUDA_VISIBLE_DEVICES` で隠すと、見える番号は 0 から振り直される。実験 runtime は、指定された CUDA デバイスを他プロセスの使用率や使用メモリでは拒否しない。CUDA が使えない、見えるデバイスが無い、`LOCAL_RANK` が範囲外、world size がデバイス数を超える起動は拒否する。実際の CUDA OOM はエラーとして記録する。Launcher はデバイス全体の使用メモリを `gpu_memory.jsonl` に追記する。これは起動の可否には使わない。
 

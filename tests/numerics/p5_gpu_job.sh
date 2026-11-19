@@ -1,7 +1,7 @@
 #!/bin/bash
 # One P5 DDP smoke. Arguments: profile (gridnet|locoformer) and GPU count.
 set -u
-cd /gs/bs/tga-shinoda/seki/exp/audio-db
+cd -- "$(dirname -- "${BASH_SOURCE[0]}")/../.." || exit 1
 PROFILE="${1:?profile}"
 NEED="${2:?gpu count}"
 LOG="data/results/training/p5-smoke/${PROFILE}-job.log"

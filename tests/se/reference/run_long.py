@@ -1,7 +1,7 @@
 """Longer official-vs-independent comparisons.
 
-Run with ``.venvs/ref`` for MossFormerGAN or ``.venvs/lab``
-for the independent API alone. Official imports are not used by the library.
+Run with ``.venvs/official`` for MossFormerGAN or ``.venvs/se``
+for the independent API alone.
 """
 import argparse
 import sys

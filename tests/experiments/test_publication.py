@@ -50,6 +50,11 @@ RESAMPLE = {
 }
 
 
+def _require_voicebank_snapshots() -> None:
+    if not FLOAT_ROOT.is_dir():
+        raise unittest.SkipTest("NOT_RUN: VoiceBank float snapshots are required")
+
+
 class _Claim:
     def __init__(self, claim: str | None, data: object, label: str | None = None) -> None:
         self.experiment_claim = claim
@@ -90,20 +95,22 @@ class PublicationTests(unittest.TestCase):
         self.assertNotIn("max_epoch_samples", PUBLICATION_KEYS)
         self.assertNotIn("max_validation_batches", PUBLICATION_KEYS)
         for trainer_path, documents in paths.items():
-            condition = OFFICIAL_CONDITIONS[trainer_path]
-            snapshot = FLOAT_ROOT / condition["dataset_id"]
-            document = json.loads((snapshot / "dataset.json").read_text(encoding="utf-8"))
-            manifest = json.loads((snapshot / "manifest.json").read_text(encoding="utf-8"))
-            self.assertEqual(document["dataset_id"], condition["dataset_id"])
-            self.assertEqual(document["protocol_id"], condition["protocol_id"])
-            self.assertEqual(document["claim_label"], condition["claim_label"])
-            self.assertEqual(document["profile"], condition["profile"])
-            self.assertEqual(document["selection_uses_test"], condition["selection_uses_test"])
-            self.assertEqual(manifest["snapshot_hash"], condition["snapshot_hash"])
             for path in documents:
                 config = load_experiment(path)
                 trainer = _blank(_trainer_type(trainer_path))
                 require_declared_publication(trainer, config.publication)
+            condition = OFFICIAL_CONDITIONS[trainer_path]
+            snapshot = FLOAT_ROOT / condition["dataset_id"]
+            with self.subTest(snapshot=snapshot.name):
+                _require_voicebank_snapshots()
+                document = json.loads((snapshot / "dataset.json").read_text(encoding="utf-8"))
+                manifest = json.loads((snapshot / "manifest.json").read_text(encoding="utf-8"))
+                self.assertEqual(document["dataset_id"], condition["dataset_id"])
+                self.assertEqual(document["protocol_id"], condition["protocol_id"])
+                self.assertEqual(document["claim_label"], condition["claim_label"])
+                self.assertEqual(document["profile"], condition["profile"])
+                self.assertEqual(document["selection_uses_test"], condition["selection_uses_test"])
+                self.assertEqual(manifest["snapshot_hash"], condition["snapshot_hash"])
 
     def test_live_official_snapshots_are_accepted(self) -> None:
         opened = (
@@ -438,6 +445,7 @@ class PublicationTests(unittest.TestCase):
         source: Path,
         replacements: tuple[tuple[str, str], ...] = (),
     ) -> Path:
+        _require_voicebank_snapshots()
         directory = self.base / name
         directory.mkdir()
         text = source.read_text(encoding="utf-8")
@@ -518,6 +526,7 @@ def _open(
     profile: str,
     world_size: int = 1,
 ) -> SnapshotDataModule:
+    _require_voicebank_snapshots()
     source = SnapshotSource(
         snapshot=snapshot,
         snapshot_root=FLOAT_ROOT,

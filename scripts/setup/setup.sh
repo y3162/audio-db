@@ -3,29 +3,35 @@
 set -euo pipefail
 root=$(CDPATH= cd -- "$(dirname "$0")/../.." && pwd)
 cd "$root"
-platform=${1:-}
+platform=${1:-local}
 case "$platform" in
-  tsubame|shinoda_lab) ;;
+  local|tsubame) ;;
   *)
-    echo "PLATFORM must be tsubame or shinoda_lab (got '${platform:-}')." >&2
+    echo "Unknown setup platform '$platform'. See docs/envs/SETUP.md." >&2
     exit 2
     ;;
 esac
+if ! command -v uv >/dev/null 2>&1; then
+  echo "uv is not on PATH. Install it before running setup." >&2
+  exit 1
+fi
 # shellcheck disable=SC1091
 source "$root/scripts/setup/platforms/${platform}.sh"
 platform_prepare
 # shellcheck disable=SC1091
 source "$root/scripts/setup/env_roles.sh"
 
+if [[ "${2:-}" == --env-only ]]; then
+  install_roles "${ROLES:-se,official,deepfilternet}"
+  exit
+fi
+
 status=0
-py=$(uv python find 3.12)
-if [[ -x .venvs/se/bin/python ]]; then
-  py=".venvs/se/bin/python"
+py=".venvs/se/bin/python"
+if [[ ! -x "$py" ]]; then
+  py=$(uv python find 3.12)
 fi
 "$py" "$root/scripts/setup/assets.py" fetch --models "${MODELS:-}" || status=1
-if [[ -x .venvs/se/bin/python ]]; then
-  py=".venvs/se/bin/python"
-fi
 install_roles "${ROLES:-se,official,deepfilternet}" || status=1
 if [[ -x .venvs/se/bin/python ]]; then
   py=".venvs/se/bin/python"
