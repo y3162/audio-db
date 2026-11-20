@@ -80,6 +80,7 @@ make test-cpu
 ## テスト
 
 - `make test-cpu` は CPU だけ。`make test` は、空いている GPU があるときだけ GPU レーンも実行する。CPU の成功を GPU の PASS にしない。
+- 同じテスト実行で並行するワーカーには別々の物理 GPU を割り当てる。中断・再開や preflight 有効・無効の比較では、両側の GPU 割当を揃える。
 - テストは `data/` の下に書かない。書き込みは一時ディレクトリで行う。本番の DB やスナップショットを作る処理をテストに入れない。
 - ランナーは `data/` とコーパスのリンク先を読み取り専用にしてからテストを起動する（`tests/suite_guard.py`）。保護できない環境では起動を拒否する。`AUDIO_DB_TEST_UNGUARDED=1` は、ユーザーが保護なしの実行を明示したときだけ使う。
 - 単体の `unittest` に保護を付けるときは `python -m tests.suite_guard COMMAND` を前に置く。

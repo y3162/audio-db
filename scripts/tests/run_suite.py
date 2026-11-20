@@ -18,6 +18,7 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import shutil
 import signal
 import socket
 import subprocess
@@ -26,6 +27,7 @@ import tempfile
 import threading
 import time
 import traceback
+from datetime import datetime, timezone
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -64,18 +66,42 @@ SUITES = (
     "tests/research",
 )
 
-# Real-model and CUDA paths. They also appear in the CPU lane, where CUDA is
-# hidden and the CUDA-only cases are NOT_RUN. This lane runs them again with
-# a visible device. One module per GPU slot; the default slot count is 1.
-GPU_TARGETS = (
-    "tests.se.test_tf_locoformer.TFLocoformerMatchTests.test_cuda_enhance_when_a_gpu_is_free",
-    "tests.numerics.test_df_reference_spectral.DeepFilterNetReferenceSpectralTest.test_cuda_deterministic_fallback_remains_finite",
-    "tests.numerics.test_moss_probe_accumulation.MossProbeAccumulationTest.test_cuda_stft_uses_official_cpu_window",
-    "tests.numerics.test_model_tasks",
-    "tests.experiments.test_cuda_amp",
-    "tests.experiments.test_launcher.LauncherCudaTests",
-    "tests.experiments.test_mp_senet_completion",
-)
+# Physical GPUs per worker. Mixed modules still run with one GPU on a
+# one-GPU host so their single-device cases run and their NCCL cases report NOT_RUN.
+_REAL = "tests.research.test_asr_guided_real"
+_STABILITY = "tests.research.test_asr_guided_stability"
+_FUSED_SCAN_TEST = "tests.se.test_semamba_length.SemambaLengthTest.test_fused_scan_forward_backward_cuda"
+GPU_TARGETS = {
+    "tests.experiments.test_cuda_amp": 2,
+    f"{_STABILITY}.OfficialWidthTest.test_all_off_matches_the_official_trainer": 1,
+    f"{_REAL}.ResearchTrainerOneStepTest.test_tdt": 1,
+    "tests.experiments.test_launcher.LauncherCudaTests": 2,
+    f"{_STABILITY}.NCCLResumeTest": 2,
+    "tests.experiments.test_mp_senet_completion": 2,
+    "tests.experiments.test_research_cuda": 2,
+    **{
+        f"{_REAL}.ResearchTrainerOneStepTest.test_{name}": 1
+        for name in ("all_off", "features", "error", "all_on", "features_error", "features_tdt", "error_tdt")
+    },
+    f"{_STABILITY}.OfficialWidthTest.test_fused_all_off_matches_when_it_runs": 1,
+    **{
+        f"{_STABILITY}.NarrowResumeTest.test_{name}": 1
+        for name in ("all_on", "tdt", "preflight_on_and_off", "features", "error", "all_off")
+    },
+    "tests.asr.test_parakeet_tdt_gpu": 1,
+    "tests.research.test_tdt_determinism": 1,
+    f"{_REAL}.RealGeneratorGPUTest": 1,
+    f"{_REAL}.RealParakeetGPUTest": 1,
+    "tests.se.test_tf_locoformer.TFLocoformerMatchTests.test_cuda_enhance_when_a_gpu_is_free": 1,
+    "tests.numerics.test_df_reference_spectral.DeepFilterNetReferenceSpectralTest.test_cuda_deterministic_fallback_remains_finite": 1,
+    "tests.numerics.test_moss_probe_accumulation.MossProbeAccumulationTest.test_cuda_stft_uses_official_cpu_window": 1,
+    "tests.numerics.test_model_tasks": 1,
+    _FUSED_SCAN_TEST: 1,
+    "tests.numerics.test_semamba_stft_joint_grad.SemambaStftJointGradCudaTest": 1,
+    "tests.numerics.test_semambapp_feature_matching_gpu": 1,
+    "tests.numerics.test_shared_fork.SharedForkTest.test_semamba_checkpoint_state_transfers_both_ways": 1,
+    "tests.numerics.test_shared_fork.SharedForkTest.test_semamba_cross_implementation_optimizer_needs_name_remap": 1,
+}
 
 # Long subprocess-heavy modules start first to avoid leaving one worker busy
 # after the rest of the suite has finished. Discovery still determines coverage.
@@ -154,11 +180,11 @@ def _timeout_seconds() -> float:
     return value
 
 
-def _gpu_slots() -> int:
+def _gpu_slots(device_count: int) -> int:
     raw = os.environ.get("AUDIO_DB_TEST_GPU_SLOTS", "").strip()
     if not raw:
-        return 1
-    return _positive_int(raw, "AUDIO_DB_TEST_GPU_SLOTS")
+        return device_count
+    return min(device_count, _positive_int(raw, "AUDIO_DB_TEST_GPU_SLOTS"))
 
 
 def _parent_visible() -> str | None:
@@ -269,6 +295,7 @@ def _run_named(name: str, result_path: str) -> None:
                     {
                         "id": test.id(),
                         "status": status,
+                        "finished_at": datetime.now(timezone.utc).isoformat(),
                         "seconds": time.perf_counter() - getattr(self, "_t0", started),
                         "message": message,
                     }
@@ -304,6 +331,7 @@ def _run_named(name: str, result_path: str) -> None:
                     cases.append(
                         {
                             "id": subtest.id(),
+                            "finished_at": datetime.now(timezone.utc).isoformat(),
                             "status": status,
                             "seconds": 0.0,
                             "message": "".join(traceback.format_exception(*err)),
@@ -382,6 +410,19 @@ def _print_module(label: str, payload: dict[str, object]) -> None:
         )
 
 
+def _next_job(
+    pending: list[str], devices: list[int] | None, busy: set[int],
+) -> tuple[str, list[int]] | None:
+    if devices is None:  # CPU lane
+        return pending[0], []
+    free = [device for device in devices if device not in busy]
+    for name in pending:
+        needed = min(GPU_TARGETS[name], len(devices))
+        if len(free) >= needed:
+            return name, free[:needed]
+    return None
+
+
 def run_lane(
     names: list[str],
     *,
@@ -389,25 +430,41 @@ def run_lane(
     slots: int,
     env: dict[str, str],
     timeout: float,
+    devices: list[int] | None = None,
+    log_dir: Path | None = None,
 ) -> tuple[list[dict[str, object]], float]:
     started = time.perf_counter()
     priority = {name: index for index, name in enumerate(SLOW_CPU_MODULES)} if label == "cpu" else {}
     pending = sorted(names, key=lambda name: priority.get(name, len(priority)))
     running: list[dict[str, object]] = []
     finished: list[dict[str, object]] = []
+    busy: set[int] = set()
     directory = tempfile.TemporaryDirectory(prefix=f"audio-db-{label}-")
     root = Path(directory.name)
     try:
         while pending or running:
             while pending and len(running) < slots:
-                name = pending.pop(0)
+                assignment = _next_job(pending, devices, busy)
+                if assignment is None:
+                    break
+                name, assigned = assignment
+                pending.remove(name)
+                worker_env = env
+                if assigned:
+                    worker_env = {**env, **gpu_test_environment(assigned)}
+                    if name == _FUSED_SCAN_TEST:
+                        worker_env["SEMAMBA_TEST_FUSED_CUDA"] = "1"
+                busy.update(assigned)
                 token = str(len(finished) + len(running))
                 result_path = root / f"{token}.json"
                 log_path = root / f"{token}.log"
-                proc, log = _spawn(name, result_path, log_path, env)
+                started_at = datetime.now(timezone.utc).isoformat()
+                proc, log = _spawn(name, result_path, log_path, worker_env)
                 running.append(
                     {
                         "name": name,
+                        "devices": assigned,
+                        "started_at": started_at,
                         "proc": proc,
                         "log": log,
                         "result": result_path,
@@ -434,6 +491,12 @@ def run_lane(
                 _untrack(proc)
                 job["log"].close()
                 payload = _read_job(job, timed_out=timed_out, code=code, timeout=timeout)
+                busy.difference_update(job["devices"])
+                payload["devices"] = job["devices"]
+                payload["started_at"] = job["started_at"]
+                payload["finished_at"] = datetime.now(timezone.utc).isoformat()
+                if log_dir is not None:
+                    _save_worker_log(log_dir, label, Path(job["log_path"]), payload)
                 finished.append(payload)
                 _print_module(label, payload)
             running = still
@@ -476,6 +539,18 @@ def _problems(rows: list[dict[str, object]]) -> list[str]:
     return found
 
 
+def _save_worker_log(directory: Path, label: str, source: Path, payload: dict[str, object]) -> None:
+    problems = _problems([payload])
+    if label == "cpu" and not problems:
+        return
+    destination = directory / f"{label}-{payload['name']}.log"
+    shutil.copyfile(source, destination)
+    if problems:
+        with destination.open("a", encoding="utf-8") as log:
+            print("", *problems, sep="\n", file=log)
+    payload["log"] = str(destination)
+
+
 def _tally(rows: list[dict[str, object]]) -> dict[str, int]:
     totals: dict[str, int] = {}
     for payload in rows:
@@ -492,6 +567,10 @@ def _lane_summary(rows: list[dict[str, object]], seconds: float, *, extra: dict[
             {
                 "name": payload["name"],
                 "seconds": payload.get("seconds"),
+                "started_at": payload["started_at"],
+                "finished_at": payload["finished_at"],
+                "devices": payload["devices"],
+                **({"log": payload["log"]} if "log" in payload else {}),
                 "counts": _counts(payload),
                 "load_error": payload.get("load_error"),
                 "cases": [
@@ -499,6 +578,7 @@ def _lane_summary(rows: list[dict[str, object]], seconds: float, *, extra: dict[
                         "id": case["id"],
                         "status": _kind(case),
                         "seconds": case.get("seconds"),
+                        "finished_at": case["finished_at"],
                         **(
                             {}
                             if _kind(case) == "ok"
@@ -571,7 +651,7 @@ def main(argv: list[str] | None = None) -> int:
     gpu_reason = "cpu-only"
     if not args.cpu_only:
         gpu_devices, gpu_reason = _query_gpus()
-    slots = _gpu_slots()
+    slots = _gpu_slots(len(gpu_devices))
     threads = process_threads(workers, slots if gpu_devices else 0)
     parent_visible = _parent_visible_label(_parent_visible())
     os.environ[suite_guard.STATE_ENV] = guard
@@ -596,12 +676,17 @@ def main(argv: list[str] | None = None) -> int:
     else:
         print(f"gpu_lane=NOT_RUN {gpu_reason} parent_cuda_visible_devices={parent_visible}", flush=True)
 
+    log_dir = None
+    if args.summary:
+        summary_path = Path(args.summary).resolve()
+        log_dir = Path(tempfile.mkdtemp(prefix=f"{summary_path.stem}-logs-", dir=summary_path.parent))
+
     cpu_box: dict[str, object] = {}
     gpu_box: dict[str, object] = {}
 
     def run_cpu() -> None:
         try:
-            rows, seconds = run_lane(names, label="cpu", slots=workers, env=cpu_env, timeout=timeout)
+            rows, seconds = run_lane(names, label="cpu", slots=workers, env=cpu_env, timeout=timeout, log_dir=log_dir)
         except BaseException:
             cpu_box["error"] = traceback.format_exc()
             return
@@ -611,10 +696,12 @@ def main(argv: list[str] | None = None) -> int:
     def run_gpu() -> None:
         env = os.environ.copy()
         env.update(thread_environment(threads))
-        env.update(gpu_test_environment(gpu_devices))
         env.setdefault("CUBLAS_WORKSPACE_CONFIG", ":4096:8")
         try:
-            rows, seconds = run_lane(list(GPU_TARGETS), label="gpu", slots=slots, env=env, timeout=timeout)
+            rows, seconds = run_lane(
+                list(GPU_TARGETS), label="gpu", slots=slots, env=env, timeout=timeout,
+                devices=gpu_devices, log_dir=log_dir,
+            )
         except BaseException:
             gpu_box["error"] = traceback.format_exc()
             return

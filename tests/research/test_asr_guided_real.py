@@ -26,8 +26,6 @@ if str(_ROOT) not in sys.path:
 _SPEECH = _ROOT / "data/corpora/VCTK/wav48/p225/p225_001.wav"
 _NOISE = _ROOT / "data/corpora/DNS2020/datasets/noise/---1_cCGK4M.wav"
 _CONFIGS = _ROOT / "configs/research/asr_guided_se/semambapp/v1"
-_PRIORITY = ("all_off", "features", "error", "tdt", "all_on")
-_REMAINING = ("features_error", "features_tdt", "error_tdt")
 _NEMO_MARKERS = ("preprocessor", "joint.", "decoder.prediction", "fastconformer")
 
 
@@ -479,47 +477,50 @@ def _step_report(name: str, launched: dict) -> dict:
 
 @unittest.skipIf(_GPU_SKIP is not None, _GPU_SKIP or "")
 class ResearchTrainerOneStepTest(unittest.TestCase):
-    def test_official_width_one_logical_step(self) -> None:
-        reports = []
-        failed = False
-        for name in _PRIORITY:
-            with tempfile.TemporaryDirectory(prefix=f"asr-guided-{name}-") as directory:
-                launched = _launch(name, Path(directory), preflight=True)
-                report = _step_report(name, launched)
-            reports.append(report)
-            _emit("ASR_GUIDED_STEP", report)
-            if report.get("status") != "COMPLETED" or report.get("logical_step") != 1 or report.get("nemo_keys"):
-                failed = True
-                break
-        if not failed:
-            for name in _REMAINING:
-                with tempfile.TemporaryDirectory(prefix=f"asr-guided-{name}-") as directory:
-                    launched = _launch(name, Path(directory), preflight=True)
-                    report = _step_report(name, launched)
-                reports.append(report)
-                _emit("ASR_GUIDED_STEP", report)
-                if report.get("status") != "COMPLETED" or report.get("logical_step") != 1 or report.get("nemo_keys"):
-                    failed = True
-        preflight = None
-        if any(item.get("name") == "tdt" and item.get("status") == "COMPLETED" for item in reports):
-            with tempfile.TemporaryDirectory(prefix="asr-guided-tdt-noprobe-") as directory:
-                launched = _launch("tdt", Path(directory), preflight=False)
-                preflight = _step_report("tdt_preflight_off", launched)
-            _emit("ASR_GUIDED_PREFLIGHT", preflight)
-            probed = next(item for item in reports if item["name"] == "tdt")
-            if preflight.get("loss") is not None and probed.get("loss") is not None:
-                preflight["loss_abs_diff_vs_preflight_on"] = abs(float(preflight["loss"]) - float(probed["loss"]))
-                _emit("ASR_GUIDED_PREFLIGHT", preflight)
-        self.assertFalse(failed, json.dumps(reports, default=str)[-4000:])
-        self.assertEqual([item["name"] for item in reports], list(_PRIORITY + _REMAINING))
-        for report in reports:
-            self.assertEqual(report["format"], "audio-db-experiment-v1")
-            self.assertEqual(report["nemo_keys"], [])
-            self.assertTrue(report["optimizer_updates"])
-            self.assertTrue(all(int(value) >= 1 for value in report["optimizer_updates"].values()))
-            self.assertIsNotNone(report["loss"])
-        if preflight is not None:
-            self.assertEqual(preflight.get("status"), "COMPLETED")
+    def _one_step(self, name: str) -> dict:
+        with tempfile.TemporaryDirectory(prefix=f"asr-guided-{name}-") as directory:
+            launched = _launch(name, Path(directory), preflight=True)
+            report = _step_report(name, launched)
+        _emit("ASR_GUIDED_STEP", report)
+        self.assertEqual(report.get("status"), "COMPLETED", report)
+        self.assertEqual(report["logical_step"], 1)
+        self.assertEqual(report["format"], "audio-db-experiment-v1")
+        self.assertEqual(report["nemo_keys"], [])
+        self.assertTrue(report["optimizer_updates"])
+        self.assertTrue(all(int(value) >= 1 for value in report["optimizer_updates"].values()))
+        self.assertIsNotNone(report["loss"])
+        return report
+
+    def test_all_off(self) -> None:
+        self._one_step("all_off")
+
+    def test_features(self) -> None:
+        self._one_step("features")
+
+    def test_error(self) -> None:
+        self._one_step("error")
+
+    def test_tdt(self) -> None:
+        probed = self._one_step("tdt")
+        with tempfile.TemporaryDirectory(prefix="asr-guided-tdt-noprobe-") as directory:
+            launched = _launch("tdt", Path(directory), preflight=False)
+            preflight = _step_report("tdt_preflight_off", launched)
+        if preflight.get("loss") is not None:
+            preflight["loss_abs_diff_vs_preflight_on"] = abs(float(preflight["loss"]) - float(probed["loss"]))
+        _emit("ASR_GUIDED_PREFLIGHT", preflight)
+        self.assertEqual(preflight.get("status"), "COMPLETED", preflight)
+
+    def test_all_on(self) -> None:
+        self._one_step("all_on")
+
+    def test_features_error(self) -> None:
+        self._one_step("features_error")
+
+    def test_features_tdt(self) -> None:
+        self._one_step("features_tdt")
+
+    def test_error_tdt(self) -> None:
+        self._one_step("error_tdt")
 
 
 if __name__ == "__main__":

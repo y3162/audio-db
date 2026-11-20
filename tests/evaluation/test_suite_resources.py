@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import os
 import subprocess
+import sys
 import tempfile
 import unittest
 from pathlib import Path
@@ -83,6 +84,75 @@ class SuiteResourceTests(unittest.TestCase):
         self.assertFalse(any(".reference." in name for name in names))
         for target in run_suite.GPU_TARGETS:
             self.assertIsNotNone(run_suite.module_file(ROOT, target), target)
+
+    def test_gpu_jobs_wait_for_their_width_and_keep_the_parent_order(self) -> None:
+        from scripts.tests import run_suite
+
+        pair = "tests.experiments.test_cuda_amp"
+        single = "tests.asr.test_parakeet_tdt_gpu"
+        pending = [pair, single]
+        devices = [7, 2, 5]
+        self.assertEqual(run_suite._next_job(pending, devices, set()), (pair, [7, 2]))
+        self.assertEqual(run_suite._next_job(pending, devices, {7, 2}), (single, [5]))
+        self.assertIsNone(run_suite._next_job([pair], devices, {7, 2}))
+        self.assertIsNone(run_suite._next_job(pending, devices, set(devices)))
+        self.assertEqual(run_suite._next_job([pair], devices, {2}), (pair, [7, 5]))
+        # On a one-GPU host the mixed module itself reports which cases need two.
+        self.assertEqual(run_suite._next_job([pair], [2], set()), (pair, [2]))
+        with patch.dict(os.environ, {"AUDIO_DB_TEST_GPU_SLOTS": ""}):
+            self.assertEqual(run_suite._gpu_slots(3), 3)
+        with patch.dict(os.environ, {"AUDIO_DB_TEST_GPU_SLOTS": "1"}):
+            self.assertEqual(run_suite._gpu_slots(3), 1)
+        with patch.dict(os.environ, {"AUDIO_DB_TEST_GPU_SLOTS": "8"}):
+            self.assertEqual(run_suite._gpu_slots(3), 3)
+
+    def test_each_one_step_recipe_is_a_single_gpu_target(self) -> None:
+        from scripts.tests import run_suite
+
+        configs = ROOT / "configs/research/asr_guided_se/semambapp/v1"
+        prefix = "tests.research.test_asr_guided_real.ResearchTrainerOneStepTest.test_"
+        scheduled = {name: width for name, width in run_suite.GPU_TARGETS.items() if name.startswith(prefix)}
+        self.assertEqual(scheduled, {prefix + path.stem: 1 for path in configs.glob("*.yaml")})
+
+    def test_failed_worker_releases_only_its_own_devices(self) -> None:
+        from scripts.tests import run_suite
+
+        targets = {"first_pair": 2, "next_pair": 2, "single": 1}
+        masks = {}
+        device_keys = ("CUDA_VISIBLE_DEVICES", "AUDIO_DB_CUDA_GPU0", "AUDIO_DB_CUDA_GPU1")
+
+        def spawn(name, result, log_path, env):
+            masks[name] = tuple(env[key] for key in device_keys)
+            log = log_path.open("w")
+            if name == "first_pair":
+                command = [sys.executable, "-c", "raise SystemExit(1)"]
+            else:
+                result.write_text('{"cases": [], "seconds": 0}')
+                command = [sys.executable, "-c", "pass"]
+            return subprocess.Popen(command, stdout=log, start_new_session=True), log
+
+        with patch.object(run_suite, "GPU_TARGETS", targets), patch.object(run_suite, "_spawn", spawn):
+            rows, _ = run_suite.run_lane(list(targets), label="gpu", slots=3, env={}, timeout=10, devices=[7, 2, 5])
+        self.assertEqual(masks, {
+            "first_pair": ("7,2", "7", "2"),
+            "single": ("5", "5", "5"),
+            "next_pair": ("7,2", "7", "2"),
+        })
+        by_name = {row["name"]: row for row in rows}
+        self.assertIn("exited 1", by_name["first_pair"]["load_error"])
+        self.assertLessEqual(by_name["first_pair"]["finished_at"], by_name["next_pair"]["started_at"])
+
+    def test_saved_failure_log_includes_worker_output_and_full_assertion(self) -> None:
+        from scripts.tests import run_suite
+
+        message = "checkpoint mismatch: " + "x" * 2500
+        payload = {"name": "comparison", "cases": [{"id": "reference", "status": "fail", "message": message}]}
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            output = root / "worker.log"
+            output.write_text("training completed\n", encoding="utf-8")
+            run_suite._save_worker_log(root, "gpu", output, payload)
+            self.assertEqual(Path(payload["log"]).read_text(), f"training completed\n\nreference\n{message}\n")
 
     def test_gpu_lane_keeps_child_processes_on_the_selected_devices(self) -> None:
         env = gpu_test_environment([1, 2])

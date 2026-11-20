@@ -22,7 +22,12 @@ CUDA_VISIBLE_DEVICES="" scripts/setup/with_env.sh .venvs/se/bin/python -m tests.
   .venvs/se/bin/python -m unittest tests.experiments.test_checkpoint -v
 ```
 
-実 Parakeet TDT の `tests.asr.test_parakeet_tdt_gpu`、決定性の `tests.research.test_tdt_determinism`、再開と NCCL の `tests.research.test_asr_guided_stability` は個別に GPU で実行する。上のモジュール指定の例でテスト名を変更し、`CUDA_VISIBLE_DEVICES` に使う GPU を設定する。CPU レーンではこれらは `NOT_RUN` になる。
+実 Parakeet TDT、TDT の決定性、ASR ガイド付き学習の 1-step・再開・公式 Trainer 比較も `make test` の GPU レーンで実行する。8 通りの 1-step 設定は個別に起動できる。たとえば TDT の preflight 有効・無効を同じ GPU で比較するには、空きを確認した物理番号を指定する。
+
+```bash
+CUDA_VISIBLE_DEVICES="$GPU_ID" scripts/setup/with_env.sh .venvs/se/bin/python -m tests.suite_guard \
+  .venvs/se/bin/python -m unittest -v tests.research.test_asr_guided_real.ResearchTrainerOneStepTest.test_tdt
+```
 
 ## 本番データの保護
 
@@ -44,9 +49,9 @@ data_guard=read-only guarded_paths=15
 
 CPU のモジュールは `CUDA_VISIBLE_DEVICES=""` で走る。CPU の成功は GPU の成功ではない。
 
-GPU レーンは、親プロセスの `CUDA_VISIBLE_DEVICES` の範囲で、使用メモリ 1024 MiB 未満かつ計算プロセスの無い GPU があるときだけ走る。変数が未設定なら全物理 GPU が範囲で、空文字なら GPU レーンは NOT_RUN になる。対象は、CUDA / NCCL の `tests/experiments/test_cuda_amp.py`、`tests.experiments.test_launcher.LauncherCudaTests`、`tests/numerics/test_model_tasks.py`、および GPU が要る実モデルの少数のテストである。2 枚必要なテストは、見える GPU が 1 枚なら NOT_RUN である。
+GPU レーンは、親プロセスの `CUDA_VISIBLE_DEVICES` の範囲で、使用メモリ 1024 MiB 未満かつ計算プロセスの無い GPU を選ぶ。変数が未設定なら全物理 GPU が範囲で、空文字なら GPU レーンは NOT_RUN になる。
 
-ランナーは選んだ物理番号を `CUDA_VISIBLE_DEVICES` と `AUDIO_DB_CUDA_GPU0` / `AUDIO_DB_CUDA_GPU1` に入れる。CUDA の子プロセスは後者を自分の `CUDA_VISIBLE_DEVICES` に書き戻す。
+ランナーは各ワーカーに GPU を 1 枚、NCCL を含むワーカーには 2 枚割り当てる。同じ実行内で、並行するワーカーの割当は重複しない。割当先の物理番号をワーカーごとの `CUDA_VISIBLE_DEVICES` と `AUDIO_DB_CUDA_GPU0` / `AUDIO_DB_CUDA_GPU1` に渡す。GPU が 1 枚のときも単一 GPU のケースを実行し、2 枚を必要とするケースは NOT_RUN と記録する。中断・再開や preflight 有効・無効の比較は、比較の両側が同じ割当になるよう 1 ワーカーで実行する。
 
 GPU を明示した場合も、一部のテストが開始時に空きメモリを確認する。指定した GPU が使用中なら、そのテストは `NOT_RUN` となる。
 
@@ -57,15 +62,17 @@ GPU を明示した場合も、一部のテストが開始時に空きメモリ�
 | `AUDIO_DB_TEST_WORKERS` / `--workers` | 同時に走らせるモジュール数 | affinity と cgroup の CPU 上限の小さい方から決める |
 | `AUDIO_DB_TEST_THREADS` / `--threads` | 1 プロセスのスレッド数 | 同上。上限 8 |
 | `AUDIO_DB_TEST_GPUS` / `--gpus` | 使う GPU の物理番号。親の可視範囲の外は選ばない。明示したときは空き確認を省く | 空いている GPU |
-| `AUDIO_DB_TEST_GPU_SLOTS` | 同じ GPU 群で同時に走らせる GPU モジュール数 | 1 |
+| `AUDIO_DB_TEST_GPU_SLOTS` | GPU ワーカーの同時実行数の上限。1 で順次実行 | 選んだ GPU の枚数 |
 | `AUDIO_DB_TEST_TIMEOUT` / `--timeout` | 1 モジュールの上限秒 | 1800 |
 | `AUDIO_DB_DFN3_WORKERS` | DeepFilterNet3 の分布確認のプロセス数 | 利用可能な CPU をワーカー数で割った数 |
 | `AUDIO_DB_TEST_UNGUARDED=1` | 本番データの保護を外す | 保護する |
-| `--summary PATH` | 要約 JSON の出力先 | 書かない |
+| `--summary PATH` | 要約 JSON の出力先。GPU ワーカーと失敗した CPU ワーカーのログも隣の実行別ディレクトリに保存する | 書かない |
 
 明示したワーカー数とスレッド数はそのまま使う。`os.cpu_count()` は、affinity も cgroup も取れないときの代替である。GPU レーンも走るときは、CPU ワーカーと GPU スロットでスレッド幅を分ける。`deterministic: true` の実験は `torch.set_num_threads(1)` にする。`AUDIO_DB_TEST_GPUS` の整数と `GPU-` UUID は物理 GPU として扱う。MIG やそれ以外の表記は別の GPU に読み替えず、GPU レーンを NOT_RUN にする。
 
 ## 結果の読み方
+
+所要時間を残すには `scripts/setup/with_env.sh .venvs/se/bin/python scripts/tests/run_suite.py --summary /tmp/audio-db-summary.json` を使う。`wall_seconds` は CPU・GPU を含む全体の経過秒数である。`cpu.modules` と `gpu.modules` にはワーカーごとの開始・終了時刻（UTC）、割当 GPU、ケースごとの所要秒数と終了時刻が入る。保存したログのパスは各ワーカーの `log` に入る。
 
 | 表示 | 意味 |
 |---|---|
