@@ -64,7 +64,7 @@ make experiment CONFIG=configs/reproduction/experiments/official/mp_senet_gan.ya
 CUDA_VISIBLE_DEVICES=0,1 .venvs/se/bin/python -m src.experiments.launcher --config CONFIG --nproc 2
 ```
 
-`make experiment` の Python は、`AUDIO_DB_PYTHON` があればそれ、無ければ `.venvs/se` である。ASR-guided SEMamba++ も同じである。同梱 YAML の `device` は `cpu` である。CUDA の 1 step は、そのファイルを `extends` し、`runtime.kwargs.device` を `cuda` に、`output.directory` を別のディレクトリにした子 YAML で行う。
+`make experiment` の Python は、`AUDIO_DB_PYTHON` があればそれ、無ければ `.venvs/se` である。ASR-guided SEMamba++ も同じである。v1 直下のスモーク用 YAML の `device` は `cpu` である。CUDA の 1 step は、そのファイルを `extends` し、`runtime.kwargs.device` を `cuda` に、`output.directory` を別のディレクトリにした子 YAML で行う。
 
 ```bash
 CUDA_VISIBLE_DEVICES=<空きGPU> \
@@ -72,6 +72,8 @@ CUDA_VISIBLE_DEVICES=<空きGPU> \
 ```
 
 2026-11-17 に単一 GPU で、公式幅（`hid_feature` 48、`num_tfmamba` 4、reference scan）の 8 つのスイッチ組み合わせを 1 logical step ずつ完了した。TDT を含む step の損失は、preflight を省いた再実行と一致した。NCCL の 2 プロセスは未実行である。
+
+VoiceBank の A0〜A7 は CUDA 用で、1条件につき GPU 1枚を使う。分割・モデル選択・出力先は[学習中の評価仕様](EVALUATION.md#asr-guided-semamba-v1-の-voicebank-実験)を参照する。
 
 VoiceBank+DEMAND の SNR shift を変えるには、`configs/research/asr_guided_se/semambapp/v1/ablation/` の条件 YAML を継承し、子 YAML の `components.source.kwargs.snapshot` に目的の Dataset 名を指定する。`output.directory` と `components.trainer.kwargs.experiment_id` は新しい条件用の値を指定する。登録済みの名前は [Dataset の配置記録](../db/INVENTORY.md#2026-11-19-voicebank-snr-shift) にある。
 

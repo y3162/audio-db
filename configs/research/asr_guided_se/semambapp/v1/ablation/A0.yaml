@@ -1,5 +1,5 @@
 # A0: ASR features off, TDT off, error weighting off.
-# Model id asr_guided_se.semambapp.v1, experiment voicebank_m15db_ablation.
+# Model id asr_guided_se.semambapp.v1, experiment voicebank_m15db_test_selection.
 # Shared training condition for A1–A7. Those files change the three switches,
 # the frozen-ASR wiring, the condition id, and the output directory.
 # valid_frame_aggregation makes this research A0 use the same valid-frame
@@ -12,7 +12,7 @@ runtime:
     device: cuda
     precision: fp32
 output:
-  directory: data/results/research/asr_guided_se/semambapp/v1/voicebank_m15db_ablation/A0
+  directory: data/results/research/asr_guided_se/semambapp/v1/voicebank_m15db_test_selection/A0
 checkpoint:
   selector:
     class: src.experiments.selectors.TopKSelector
@@ -45,8 +45,7 @@ components:
     class: src.research.asr_guided_se.semambapp.v1.voicebank.VoicebankAblationSource
     kwargs:
       snapshot: voicebank.snr_shift.minus_15db@1
-      split_seed: 42
-      valid_count: 3
+      allow_test_selection: true
   protocol:
     class: src.research.asr_guided_se.semambapp.v1.voicebank.VoicebankAblationProtocol
   sampler:
@@ -59,7 +58,7 @@ components:
     kwargs:
       micro_batch_size: 1
       group_size: 8
-      keep_partial: false
+      keep_partial: true
   asr:
     role: other
     class: src.research.asr_guided_se.asr.FrozenParakeet
@@ -135,7 +134,7 @@ components:
       experiment_claim: research
       valid_frame_aggregation: true
       model_id: asr_guided_se.semambapp.v1
-      experiment_id: voicebank_m15db_ablation
+      experiment_id: voicebank_m15db_test_selection
       condition_id: A0
     inject:
       evaluators: {ref: validation_eval}

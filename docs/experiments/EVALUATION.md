@@ -55,6 +55,12 @@ DeepFilterNet3 の波形は `DeepFilterNet3Trainer.research_predict` が返す�
 
 `official_faithful` またはデータの `official_reproduction` と、研究用の metric、evaluator、selection の併用は構築時に拒否する。`experiment_claim: official` という表記で任意の選択が公式再現になることはない。
 
+## ASR-guided SEMamba++ v1 の VoiceBank 実験
+
+`ablation/A0.yaml`〜`A7.yaml` は、VoiceBank+DEMAND の公式学習側28話者・11,572発話を勾配更新に使う。各 epoch の `validation` は公式テストの p232 と p257 の全824発話で、音声は発話全長を使う。両方に −15 dB の SNR シフトを適用する。
+
+最小の `validation.wer`（`wer-norm-v1`、micro）でモデルを選び、10 epoch 連続で改善がなければ停止する。この WER はテストを使った選択時の値で、来歴は `selection_uses_test: true`、`independent: false` となる。分割は学習プロセス内で構成し、`run_identity.json` の `speakers` に元のデータセット ID と使用話者・件数を記録する。来歴の `dataset_id` はこの分割の ID である。`repro.runs` に登録する場合は、この分割を先に `repro.datasets` に登録する必要がある。結果は v1 の `voicebank_m15db_test_selection/A0`〜`A7` に保存する。
+
 ## 例
 
 公式の検証損失で研究用の best を選ぶ。追加の損失指標は置かない。

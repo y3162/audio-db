@@ -1,67 +1,31 @@
-"""VoiceBank-DEMAND SNR-shift snapshots for the ablation runs.
-
-The published snapshot keeps p286 and p287 as validation. These runs reassign
-the 28 training speakers in memory: a SHA-256 ranking of the speaker id at
-seed 42 puts 3 speakers in validation and the other 25 in train. Test speakers
-stay on the snapshot's test list. The snapshot files are not rewritten.
-"""
+"""VoiceBank-DEMAND SNR-shift ablations with the official test set used for selection."""
 
 from __future__ import annotations
 
-import hashlib
 from collections import OrderedDict
-from collections.abc import Sequence
 from dataclasses import dataclass
 from pathlib import Path
 
 import numpy as np
 
 from src.experiments.calc.dataset import resampled_frame_count
+from src.experiments.data.errors import ReproductionError
 from src.experiments.data.fixed_pair import SnapshotSource
+from src.experiments.data.ids import case_set_id_for, dataset_id_for, material_members_key, material_set_id_for
 from src.experiments.data.mix.voicebank_snr import dataset_shift, render_case
 from src.experiments.data.render.transform import apply_window
 from src.experiments.data.render.types import CropSpec
 from src.experiments.data.sample import Crop, SampleRef
 from src.experiments.data.sampling.planner import fixed_pair_crop
 from src.experiments.errors import DataError
-from src.experiments.data.errors import ReproductionError
 
 _SOURCE_RATE = 48000
 _TARGET_RATE = 16000
 _WINDOW = 48000
 
 
-def ablation_holdout(
-    speakers: Sequence[str],
-    *,
-    seed: int = 42,
-    valid_count: int = 3,
-) -> tuple[tuple[str, ...], tuple[str, ...]]:
-    """Rank speakers by SHA-256 and hold out the first ``valid_count``."""
-
-    if isinstance(seed, bool) or not isinstance(seed, int) or seed < 0:
-        raise DataError("split seed must be a non-negative integer")
-    if isinstance(valid_count, bool) or not isinstance(valid_count, int) or valid_count < 1:
-        raise DataError("valid_count must be a positive integer")
-    labels = [str(speaker) for speaker in speakers]
-    unique = tuple(sorted(set(labels)))
-    if len(unique) != len(labels) or len(unique) != 28:
-        raise DataError(f"VoiceBank ablation expects 28 distinct speakers, got {len(unique)}")
-    if valid_count >= len(unique):
-        raise DataError("valid_count leaves no training speakers")
-    ranked = sorted(
-        unique,
-        key=lambda speaker: hashlib.sha256(
-            f"voicebank-ablation-v1:{seed}:{speaker}".encode("utf-8")
-        ).hexdigest(),
-    )
-    valid = tuple(sorted(ranked[:valid_count]))
-    train = tuple(sorted(ranked[valid_count:]))
-    return train, valid
-
-
 class VoicebankAblationSource(SnapshotSource):
-    """Snapshot source whose train and valid case lists follow ``ablation_holdout``."""
+    """Train on the 28-speaker release and bind validation to the published test list."""
 
     def __init__(
         self,
@@ -69,8 +33,7 @@ class VoicebankAblationSource(SnapshotSource):
         snapshot_root: str | Path,
         split: str,
         *,
-        split_seed: int = 42,
-        valid_count: int = 3,
+        allow_test_selection: bool,
         derived: str | Path | None = None,
         corpora: str | Path | None = None,
         generated: str | Path | None = None,
@@ -83,57 +46,114 @@ class VoicebankAblationSource(SnapshotSource):
             corpora=corpora,
             generated=generated,
         )
-        if isinstance(split_seed, bool) or not isinstance(split_seed, int) or split_seed < 0:
-            raise ValueError("split_seed must be a non-negative integer")
-        if isinstance(valid_count, bool) or not isinstance(valid_count, int) or valid_count < 1:
-            raise ValueError("valid_count must be a positive integer")
-        self.split_seed = int(split_seed)
-        self.valid_count = int(valid_count)
+        if allow_test_selection is not True:
+            raise ValueError("VoiceBank v1 requires allow_test_selection: true")
+        if split != "train":
+            raise ValueError("VoiceBank v1 requires the training split for updates")
         self.ablation_record: dict[str, object] | None = None
 
     def open(self) -> None:
         if self._store is not None:
             return
         super().open()
-        self._apply_split()
+        try:
+            self._apply_split()
+        except Exception:
+            self.close()
+            raise
 
     def _apply_split(self) -> None:
         store = self.store
-        train_set = _binding(store, "train.cases")
-        valid_set = _binding(store, "valid.cases")
-        test_set = _binding(store, "test.cases")
-        pooled = [row["case_id"] for row in store.items[train_set]] + [
-            row["case_id"] for row in store.items[valid_set]
-        ]
-        test_ids = [row["case_id"] for row in store.items[test_set]]
-        by_speaker: dict[str, list[str]] = {}
-        for case_id in pooled:
-            speaker = str(store.case(case_id)["speaker_id"])
-            by_speaker.setdefault(speaker, []).append(case_id)
-        test_speakers = {str(store.case(case_id)["speaker_id"]) for case_id in test_ids}
-        if test_speakers & set(by_speaker):
-            raise DataError("VoiceBank train/valid speakers overlap the test speakers")
-        train_speakers, valid_speakers = ablation_holdout(
-            tuple(by_speaker),
-            seed=self.split_seed,
-            valid_count=self.valid_count,
+        base = store.dataset
+        if base["algorithm"] != "pregenerated.voicebank_snr_shift":
+            raise DataError("VoiceBank ablations require a VoiceBank SNR-shift snapshot")
+        train_ids = store.case_ids("train.cases") + store.case_ids("valid.cases")
+        test_ids = store.case_ids("test.cases")
+        train_speakers = {store.case(case_id)["speaker_id"] for case_id in train_ids}
+        test_speakers = {store.case(case_id)["speaker_id"] for case_id in test_ids}
+        if len(train_ids) != 11_572 or len(set(train_ids)) != len(train_ids) or len(train_speakers) != 28:
+            raise DataError("expected 11572 distinct training cases from 28 VoiceBank speakers")
+        if len(test_ids) != 824 or len(set(test_ids)) != 824 or test_speakers != {"p232", "p257"}:
+            raise DataError("expected 824 distinct test cases from p232 and p257")
+        if train_speakers & test_speakers:
+            raise DataError("VoiceBank training speakers overlap the official test set")
+
+        # Build new sets for the pooled training data. Validation can use the
+        # original test bindings verbatim, including material ids and ordering.
+        bindings = {row["slot"]: dict(row) for row in base["bindings"]}
+        train_set = case_set_id_for(
+            name="voicebank28.train.cases",
+            version=1,
+            split_role="train",
+            rule={"rule": "explicit"},
+            case_ids=train_ids,
         )
-        train_ids = _ordered(store, by_speaker, train_speakers)
-        valid_ids = _ordered(store, by_speaker, valid_speakers)
-        if set(train_ids) & set(valid_ids) or set(train_ids) & set(test_ids) or set(valid_ids) & set(test_ids):
-            raise DataError("VoiceBank ablation split repeats a case")
-        if len(train_ids) + len(valid_ids) != len(pooled):
-            raise DataError("VoiceBank ablation split dropped a training case")
-        store.items[train_set] = _items(train_set, train_ids)
-        store.items[valid_set] = _items(valid_set, valid_ids)
-        self.ablation_record = {
-            "algorithm": "sha256-rank-v1",
-            "seed": self.split_seed,
-            "test_speakers": sorted(test_speakers),
-            "train_speakers": list(train_speakers),
-            "valid_count": self.valid_count,
-            "valid_speakers": list(valid_speakers),
+        bindings["train.cases"]["case_set_id"] = train_set
+        store.items[train_set] = [
+            {"case_set_id": train_set, "position": i, "case_id": case_id}
+            for i, case_id in enumerate(train_ids)
+        ]
+        for role in ("speech", "noise"):
+            bindings[f"train.{role}"]["material_set_id"] = self._pool_training_materials(role)
+        for role in ("cases", "speech", "noise"):
+            slot = f"valid.{role}"
+            bindings[slot] = {**bindings[f"test.{role}"], "slot": slot}
+
+        effective = {
+            **base,
+            "name": f"{base['name']}.test_selection",
+            "bindings": list(bindings.values()),
+            "selection_uses_test": True,
+            "selection_note": "The official test set supplies validation WER for checkpoint selection and stopping.",
         }
+        effective["dataset_id"] = dataset_id_for(
+            protocol_id=base["protocol_id"],
+            bindings=effective["bindings"],
+            profile=base["profile"],
+            material_origin=base["material_origin"],
+            claim_label=base["claim_label"],
+            selection_uses_test=True,
+            declared_status=base["declared_status"],
+        )
+        # The base deviations describe construction of the immutable snapshot.
+        # Qualify them so its original split is not presented as the run split.
+        effective["deviations_json"] = [
+            {**row, "text": f"Base snapshot: {row['text']}"} for row in base["deviations_json"]
+        ]
+        store.dataset = effective
+        store.bindings = {slot: row["case_set_id"] for slot, row in bindings.items()}
+        self.ablation_record = {
+            "algorithm": "voicebank28-official-test-selection-v1",
+            "base_dataset_id": base["dataset_id"],
+            "selection_uses_test": True,
+            "train_speakers": sorted(train_speakers),
+            "valid_speakers": sorted(test_speakers),
+            "test_speakers": sorted(test_speakers),
+            "train_cases": len(train_ids),
+            "valid_cases": len(test_ids),
+            "test_cases": len(test_ids),
+        }
+
+    def _pool_training_materials(self, role: str) -> str:
+        store = self.store
+        asset_ids = sorted(set(self.material_ids(f"train.{role}")) | set(self.material_ids(f"valid.{role}")))
+        members = []
+        for asset_id in asset_ids:
+            asset = store.asset(asset_id)
+            members.append(material_members_key(asset_id, asset.get("sha256"), asset.get("size_bytes")))
+        material_set = material_set_id_for(
+            name=f"voicebank28.train.{role}",
+            version=1,
+            role=role,
+            split_role="train",
+            rule={"rule": "explicit"},
+            members=members,
+        )
+        store.members.extend(
+            {"material_set_id": material_set, "position": position, "asset_id": asset_id}
+            for position, asset_id in enumerate(asset_ids)
+        )
+        return material_set
 
 
 class VoicebankAblationProtocol:
@@ -322,29 +342,6 @@ class _Utterance:
     example: _CropExample
     full_clean: np.ndarray
     full_length: int
-
-
-def _binding(store: object, slot: str) -> str:
-    bindings = getattr(store, "bindings", None)
-    if not isinstance(bindings, dict) or slot not in bindings:
-        raise DataError(f"snapshot has no {slot} binding")
-    return str(bindings[slot])
-
-
-def _ordered(store: object, by_speaker: dict[str, list[str]], speakers: tuple[str, ...]) -> list[str]:
-    chosen: list[str] = []
-    for speaker in speakers:
-        rows = by_speaker[speaker]
-        rows.sort(key=lambda case_id: (str(store.case(case_id)["utterance_key"]), case_id))
-        chosen.extend(rows)
-    return chosen
-
-
-def _items(case_set_id: str, case_ids: list[str]) -> list[dict[str, object]]:
-    return [
-        {"case_set_id": case_set_id, "position": index, "case_id": case_id}
-        for index, case_id in enumerate(case_ids)
-    ]
 
 
 def _shared_noisy_peak(clean: np.ndarray, noisy: np.ndarray) -> tuple[np.ndarray, np.ndarray]:

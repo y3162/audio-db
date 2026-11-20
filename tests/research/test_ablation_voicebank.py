@@ -15,7 +15,7 @@ from src.experiments.losses import MagnitudeMSE, WeightedObjective
 from src.experiments.stopping import MetricEvent, PatienceStopPolicy
 from src.research.asr_guided_se.semambapp.v1.config import MODEL_ID, GuidanceV1
 from src.research.asr_guided_se.semambapp.v1.loss import frame_weight_and_valid, guided_generator_loss
-from src.research.asr_guided_se.semambapp.v1.voicebank import ablation_holdout
+from src.research.asr_guided_se.semambapp.v1.voicebank import VoicebankAblationProtocol, VoicebankAblationSource
 
 _ROOT = Path(__file__).resolve().parents[2]
 _ABLATION = _ROOT / "configs/research/asr_guided_se/semambapp/v1/ablation"
@@ -68,12 +68,12 @@ class AblationConfigTest(unittest.TestCase):
             self.assertEqual(spec.components["trainer"].kwargs["global_batch_size"], 8)
             self.assertEqual(spec.components["trainer"].kwargs["micro_batch_size"], 1)
             self.assertEqual(spec.components["trainer"].kwargs["model_id"], MODEL_ID)
-            self.assertEqual(spec.components["trainer"].kwargs["experiment_id"], "voicebank_m15db_ablation")
+            self.assertEqual(spec.components["trainer"].kwargs["experiment_id"], "voicebank_m15db_test_selection")
             self.assertEqual(spec.components["trainer"].kwargs["condition_id"], name)
             self.assertIs(spec.components["trainer"].kwargs["valid_frame_aggregation"], True)
             self.assertTrue(
                 str(spec.output_directory).endswith(
-                    f"data/results/research/asr_guided_se/semambapp/v1/voicebank_m15db_ablation/{name}"
+                    f"data/results/research/asr_guided_se/semambapp/v1/voicebank_m15db_test_selection/{name}"
                 )
             )
             self.assertEqual(spec.components["trainer"].kwargs["max_epochs"], 100)
@@ -83,8 +83,10 @@ class AblationConfigTest(unittest.TestCase):
             self.assertEqual(spec.components["stopping"].kwargs["min_delta"], 0.0)
             self.assertEqual(spec.components["stopping"].kwargs["metric"], "validation.wer")
             self.assertEqual(spec.components["selection"].kwargs["metric"], "validation.wer")
-            self.assertEqual(spec.components["source"].kwargs["split_seed"], 42)
-            self.assertEqual(spec.components["source"].kwargs["valid_count"], 3)
+            self.assertIs(spec.components["source"].kwargs["allow_test_selection"], True)
+            self.assertIs(spec.components["batcher"].kwargs["keep_partial"], True)
+            self.assertNotIn("max_validation_batches", spec.components["data"].kwargs)
+            self.assertNotIn("max_epoch_samples", spec.components["sampler"].kwargs)
             self.assertEqual(
                 spec.components["protocol"].class_path,
                 "src.research.asr_guided_se.semambapp.v1.voicebank.VoicebankAblationProtocol",
@@ -199,52 +201,102 @@ class FrameAggregationTest(unittest.TestCase):
 
 
 class VoicebankSplitTest(unittest.TestCase):
-    def test_seed_42_holds_out_three_speakers_without_overlap(self) -> None:
-        speakers = [f"p{index:03d}" for index in range(226, 254)]
-        train, valid = ablation_holdout(speakers, seed=42, valid_count=3)
-        self.assertEqual(len(train), 25)
-        self.assertEqual(len(valid), 3)
-        self.assertFalse(set(train) & set(valid))
-        again, held = ablation_holdout(list(reversed(speakers)), seed=42, valid_count=3)
-        self.assertEqual(train, again)
-        self.assertEqual(valid, held)
+    def test_source_requires_explicit_test_selection(self) -> None:
+        with self.assertRaisesRegex(ValueError, "allow_test_selection"):
+            VoicebankAblationSource("snapshot", ".", "train", allow_test_selection=False)
+        with self.assertRaisesRegex(ValueError, "training split"):
+            VoicebankAblationSource("snapshot", ".", "test", allow_test_selection=True)
 
-    def test_snapshot_split_labels_and_noise_scale(self) -> None:
+
+class VoicebankSnapshotTest(unittest.TestCase):
+    @classmethod
+    def setUpClass(cls) -> None:
         snapshot = _ROOT / "data/db/snapshots"
         if not snapshot.is_dir():
-            self.skipTest("voicebank snapshot root is not on disk")
-        from src.experiments.data.mix.voicebank_snr import noise_scale, render_case
-        from src.research.asr_guided_se.semambapp.v1.voicebank import (
-            VoicebankAblationProtocol,
-            VoicebankAblationSource,
-        )
+            raise unittest.SkipTest("voicebank snapshot root is not on disk")
+        from src.experiments.data.fixed_pair import MicroBatcher, OrderSampler, SnapshotDataModule
+        from src.experiments.errors import DataError
 
         source = VoicebankAblationSource(
             "voicebank.snr_shift.minus_15db@1",
             snapshot,
             "train",
-            split_seed=42,
-            valid_count=3,
+            allow_test_selection=True,
         )
         try:
             source.open()
-        except Exception as exc:
-            if "matched 0" in str(exc) or "missing" in str(exc).lower():
-                self.skipTest(f"voicebank snapshot is not available: {exc}")
+        except DataError as exc:
+            if "matched 0" in str(exc):
+                raise unittest.SkipTest(f"voicebank snapshot is not available: {exc}") from exc
             raise
+        cls.source = source
+        cls.protocol = VoicebankAblationProtocol(source)
+        sampler = OrderSampler(
+            source, cls.protocol, seed=42, order="per_rank_independent_v1", validation_scope="rank0"
+        )
+        batcher = MicroBatcher(micro_batch=1, group_size=8, keep_partial=True)
+        cls.data = SnapshotDataModule(source, sampler, cls.protocol, batcher)
+        cls.addClassCleanup(cls.data.close)
+        cls.data.setup(object())
+
+    def test_official_file_lists_match_in_order(self) -> None:
+        official = _ROOT / "src/official/mp-senet/VoiceBank+DEMAND"
+        if not all((official / name).is_file() for name in ("training.txt", "test.txt")):
+            self.skipTest("MP-SENet file lists are not on disk")
+        for split, filename in (("train", "training.txt"), ("valid", "test.txt")):
+            case_ids = self.source.case_ids(f"{split}.cases")
+            utterances = [self.source.store.case(case_id)["utterance_key"] for case_id in case_ids]
+            listed = (official / filename).read_text().splitlines()
+            self.assertEqual(utterances, [line.split("|", 1)[0] for line in listed])
+
+    def test_epoch_covers_training_speakers_and_validation_matches_test(self) -> None:
+        source = self.source
         record = source.ablation_record
         self.assertIsNotNone(record)
         assert record is not None
         train_speakers = set(record["train_speakers"])
         valid_speakers = set(record["valid_speakers"])
         test_speakers = set(record["test_speakers"])
-        self.assertEqual(len(train_speakers), 25)
-        self.assertEqual(len(valid_speakers), 3)
-        self.assertEqual(len(test_speakers), 2)
-        self.assertFalse(train_speakers & valid_speakers)
+        self.assertEqual(len(train_speakers), 28)
+        self.assertEqual(valid_speakers, {"p232", "p257"})
+        self.assertEqual(valid_speakers, test_speakers)
         self.assertFalse(train_speakers & test_speakers)
-        self.assertFalse(valid_speakers & test_speakers)
-        store = source.store
+        self.assertEqual(source.case_ids("valid.cases"), source.case_ids("test.cases"))
+        self.assertEqual(len(source.case_ids("valid.cases")), 824)
+        train = source.case_ids("train.cases")
+        self.assertEqual(len(train), 11572)
+        data = self.data
+        self.assertIs(data.identity()["selection_uses_test"], True)
+        self.assertNotEqual(data.identity()["dataset_id"], record["base_dataset_id"])
+        batches = data.batcher.groups(data.sampler.all_ranks(0, 1)[0])
+        self.assertCountEqual([sample.case_id for batch in batches for sample in batch], train)
+        self.assertEqual(data.batcher.dropped_samples, 0)
+
+    def test_provenance_uses_the_materials_from_each_effective_split(self) -> None:
+        source = self.source
+        lineage = self.data.lineage()
+        self.assertIs(lineage["selection_uses_test"], True)
+        sets = {row["role"]: row for row in lineage["sets"]}
+        self.assertEqual(sets["train"]["member_count"], 11572)
+        self.assertEqual(sets["selection"]["member_count"], 824)
+        self.assertEqual(sets["selection"]["case_ids_sha256"], sets["test"]["case_ids_sha256"])
+        self.assertEqual(sets["selection"]["case_set_id"], sets["test"]["case_set_id"])
+        for split, role in (("train", "train"), ("valid", "selection"), ("test", "test")):
+            case_ids = source.case_ids(f"{split}.cases")
+            for kind in ("speech", "noise"):
+                slot = f"{split}.{kind}"
+                expected = {source.store.docs[c]["sources"][kind]["asset"] for c in case_ids}
+                self.assertEqual(set(source.material_ids(slot)), expected)
+                recorded = {
+                    row["asset_id"] for row in lineage["materials"] if row["slot"] == slot and row["role"] == role
+                }
+                self.assertEqual(recorded, expected)
+
+    def test_snapshot_split_labels_and_noise_scale(self) -> None:
+        from src.experiments.data.mix.voicebank_snr import noise_scale, render_case
+
+        store = self.source.store
+        protocol = self.protocol
         labels = {"train": set(), "valid": set(), "test": set()}
         shortest = None
         for slot, name in (("train.cases", "train"), ("valid.cases", "valid"), ("test.cases", "test")):
@@ -255,7 +307,7 @@ class VoicebankSplitTest(unittest.TestCase):
                 if name == "train" and (shortest is None or length < shortest[0]):
                     shortest = (length, case_id)
         self.assertEqual(labels["train"], _TRAIN_SNR)
-        self.assertEqual(labels["valid"], _TRAIN_SNR)
+        self.assertEqual(labels["valid"], _TEST_SNR)
         self.assertEqual(labels["test"], _TEST_SNR)
         self.assertIsNotNone(shortest)
         assert shortest is not None
@@ -271,9 +323,6 @@ class VoicebankSplitTest(unittest.TestCase):
         self.assertGreater(int(usable.sum()), 0)
         ratio = float((moved[usable] / base[usable]).mean())
         self.assertAlmostEqual(ratio, noise_scale(-15.0), places=6)
-        protocol = VoicebankAblationProtocol(source)
-        protocol.prepare()
-        protocol.seed = 42
         text = protocol.reference_transcript(case_id)
         self.assertIsInstance(text, str)
         assert text is not None
