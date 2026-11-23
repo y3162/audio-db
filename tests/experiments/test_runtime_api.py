@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import unittest
+from types import SimpleNamespace
+from unittest.mock import patch
 
 import torch
 
@@ -12,6 +14,26 @@ from src.experiments.execution.runtime import PreparePolicy, ProcessRuntime
 
 
 class RuntimeApiTests(unittest.TestCase):
+    def test_cuda_rng_resume_requires_the_exact_device_mapping(self) -> None:
+        runtime = SimpleNamespace(device=torch.device("cuda:0"))
+        source = "83642f2c-8d7b-4539-90b7-458b28f05cd5"
+        target = "81d8d934-7403-43cc-9998-082cf17e1e79"
+        state = {"cuda_device_identity": {"uuid": source, "index": 0}}
+        mapping = f"GPU-{source}=GPU-{target}"
+        with (
+            patch("torch.cuda.get_device_properties", return_value=SimpleNamespace(uuid=target)),
+            patch("src.experiments.execution.runtime.restore_rank_rng") as restore,
+        ):
+            for wrong in (None, "", f"GPU-{target}=GPU-{source}"):
+                with self.subTest(mapping=wrong), self.assertRaisesRegex(RuntimeFailure, "checkpoint CUDA device"):
+                    ProcessRuntime.restore_rng(runtime, state, cuda_uuid_map=wrong)
+            wrong_index = {"cuda_device_identity": {"uuid": source, "index": 1}}
+            with self.assertRaisesRegex(RuntimeFailure, "checkpoint CUDA device"):
+                ProcessRuntime.restore_rng(runtime, wrong_index, cuda_uuid_map=mapping)
+            restore.assert_not_called()
+            ProcessRuntime.restore_rng(runtime, state, cuda_uuid_map=mapping)
+            restore.assert_called_once_with(state, cuda=True)
+
     def test_prepared_model_is_callable_and_keeps_parameter_identity(self) -> None:
         runtime = ProcessRuntime(device="cpu", precision="fp32")
         self.addCleanup(runtime.shutdown)

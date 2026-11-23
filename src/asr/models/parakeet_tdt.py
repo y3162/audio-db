@@ -484,7 +484,16 @@ class ParakeetTDT(nn.Module):
     def _timed_recognition(self, prediction: Any, encoded_length: int) -> Recognition:
         token_ids = _as_ints(getattr(prediction, "y_sequence", None))
         starts = _as_ints(getattr(prediction, "timestamp", None))
-        durations = _as_ints(getattr(prediction, "token_duration", None))
+        raw_durations = getattr(prediction, "token_duration", None)
+        durations = _as_ints(raw_durations)
+        # NeMo 2.2.1 batched_hyps_to_hypotheses encodes an all-zero row as [].
+        if (
+            isinstance(raw_durations, list)
+            and not raw_durations
+            and self.effective_decoding["tdt_include_token_duration"]
+            and len(token_ids) == len(starts)
+        ):
+            durations = [0] * len(token_ids)
         if not (len(token_ids) == len(starts) == len(durations)):
             raise RuntimeError(
                 "y_sequence/timestamp/token_duration lengths differ: "

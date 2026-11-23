@@ -15,6 +15,7 @@ all ranks. ``end_step`` commits the scaler. It is not a training-unit counter.
 
 from __future__ import annotations
 
+import logging
 import math
 import os
 from collections.abc import Iterable, Iterator, Mapping
@@ -722,8 +723,7 @@ class ProcessRuntime:
     def capture_rng(self) -> dict[str, object]:
         """Capture this rank's Python, NumPy, Torch, and current CUDA generators.
 
-        The CUDA blob also records the device index and UUID. A later resume
-        on a different GPU is refused.
+        The CUDA blob also records the device index and UUID for restore.
         """
 
         cuda = self.device.type == "cuda"
@@ -737,11 +737,13 @@ class ProcessRuntime:
             }
         return state
 
-    def restore_rng(self, state: dict[str, object]) -> None:
+    def restore_rng(self, state: dict[str, object], *, cuda_uuid_map: str | None = None) -> None:
         """Restore one rank blob. The caller selects ``rng_by_rank[rank]``."""
 
-        restore_rank_rng(state, cuda=self.device.type == "cuda")
         if self.device.type != "cuda":
+            if cuda_uuid_map is not None:
+                raise RuntimeFailure("a CUDA UUID mapping requires a CUDA device")
+            restore_rank_rng(state, cuda=False)
             return
         identity = state.get("cuda_device_identity")
         if not isinstance(identity, dict):
@@ -751,12 +753,21 @@ class ProcessRuntime:
         saved_uuid = identity.get("uuid")
         if not isinstance(saved_index, int) or isinstance(saved_index, bool):
             raise RuntimeFailure("checkpoint CUDA device index is invalid")
-        if saved_uuid != str(props.uuid) or saved_index != int(self.device.index):
+        if not isinstance(saved_uuid, str) or not saved_uuid:
+            raise RuntimeFailure("checkpoint CUDA device UUID is missing")
+        if cuda_uuid_map is None:
+            matches = saved_uuid == str(props.uuid)
+        else:
+            matches = cuda_uuid_map == f"GPU-{saved_uuid}=GPU-{props.uuid}"
+        if not matches or saved_index != int(self.device.index):
             raise RuntimeFailure(
                 "checkpoint CUDA device "
                 f"{saved_uuid} index {saved_index} does not match "
                 f"{props.uuid} index {int(self.device.index)}"
             )
+        restore_rank_rng(state, cuda=True)
+        if cuda_uuid_map is not None:
+            logging.getLogger(__name__).info("Restored checkpoint CUDA RNG on mapped devices %s", cuda_uuid_map)
 
     def agree(self, flag: bool, *, policy: str = "identical") -> bool:
         """Combine one boolean from every rank.

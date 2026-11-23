@@ -1109,6 +1109,9 @@ def _yaml_value(value: Any) -> Any:
 
 
 def _apply_resume(payload: dict[str, Any], states: StateRegistry, runtime: Any, selector: Selector) -> None:
+    cuda_uuid_map = os.environ.get("AUDIO_DB_RESUME_CUDA_UUID_MAP")
+    if cuda_uuid_map is not None and (payload["world_size"] != 1 or runtime.world_size != 1):
+        raise CheckpointError("an explicit CUDA UUID mapping requires a single-rank resume")
     blobs: dict[str, Any] = payload["states"]
     for kind in _LOAD_ORDER:
         for state_id in states.ids():
@@ -1142,7 +1145,10 @@ def _apply_resume(payload: dict[str, Any], states: StateRegistry, runtime: Any, 
     if saved_rank is not None and saved_rank != index:
         raise CheckpointError(f"rng_by_rank[{index}] belongs to rank {saved_rank}")
     try:
-        runtime.restore_rng(rank)
+        if cuda_uuid_map is None:
+            runtime.restore_rng(rank)
+        else:
+            runtime.restore_rng(rank, cuda_uuid_map=cuda_uuid_map)
     except (KeyError, RuntimeError, TypeError, ValueError, TrainingError, ExperimentError) as exc:
         raise CheckpointError(f"failed to restore RNG: {exc}") from exc
 

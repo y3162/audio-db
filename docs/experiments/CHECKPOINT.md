@@ -128,6 +128,8 @@ checkpoint:
 - `complete.json` がある。完了した実験は再開しない。
 - `latest.pt` より前の step の Archive から続けようとした。続けると、その先の記録と Latest を黙って捨てることになるためである。古い状態から始めるときは、次節の新しい実験にする。
 
+CUDA の RNG は既定で保存時と同じ物理 GPU・論理 index に復元する。単一 rank の実験を別の GPU へ移す場合は、再開する Launcher の環境に `AUDIO_DB_RESUME_CUDA_UUID_MAP=GPU-<保存元UUID>=GPU-<再開先UUID>` を指定し、`CUDA_VISIBLE_DEVICES` で再開先を選ぶ。保存元・再開先の UUID と論理 index を照合してから、保存された RNG 状態をそのまま復元する。次の checkpoint には再開先の UUID が入る。
+
 Trainer の検証履歴と Selector・停止ポリシーの状態は checkpoint から復元する。記録された評価状態に整合させるため、停止した logical step より後の `metrics.jsonl` の行は再開時に巻き戻す。巻き戻したあと、`tensorboard/` はその JSONL から作り直す。イベントファイルは読まない。
 
 ## 新しい実験の初期化

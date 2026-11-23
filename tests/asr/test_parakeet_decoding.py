@@ -35,6 +35,43 @@ class _Decode(SimpleNamespace):
 
 
 class ParakeetDecodingTest(unittest.TestCase):
+    def test_timed_tokens_preserve_nemo_all_zero_durations(self) -> None:
+        from src.asr.models.parakeet_tdt import ParakeetTDT
+
+        adapter = SimpleNamespace(
+            effective_decoding=dict(TDT_V2_DECODING),
+            blank_id=1024,
+            samples_per_encoder_frame=1280,
+            model=SimpleNamespace(decoding=SimpleNamespace(decode_ids_to_tokens=lambda ids: list(map(str, ids)))),
+        )
+        prediction = SimpleNamespace(y_sequence=[81, 25], timestamp=[3, 6], text="fixture")
+        valid_rows = (
+            ([], [4, 7]),
+            (torch.tensor([0, 0]), [4, 7]),
+            (torch.tensor([0, 2]), [4, 8]),
+        )
+        for raw, expected_ends in valid_rows:
+            with self.subTest(raw=raw):
+                prediction.token_duration = raw
+                result = ParakeetTDT._timed_recognition(adapter, prediction, encoded_length=10)
+                self.assertEqual([t.token_id for t in result.tokens], [81, 25])
+                self.assertEqual([t.start_offset for t in result.tokens], [3, 6])
+                self.assertEqual([t.end_offset for t in result.tokens], expected_ends)
+
+        invalid_rows = (
+            ([3, 6], None, True),
+            ([3, 6], [1], True),
+            ([3], [], True),
+            ([3, 6], [], False),
+        )
+        for starts, raw, enabled in invalid_rows:
+            with self.subTest(starts=starts, raw=raw, enabled=enabled):
+                prediction.timestamp = starts
+                prediction.token_duration = raw
+                adapter.effective_decoding["tdt_include_token_duration"] = enabled
+                with self.assertRaisesRegex(RuntimeError, "lengths differ"):
+                    ParakeetTDT._timed_recognition(adapter, prediction, encoded_length=10)
+
     def test_tdt_v2_writes_the_fixed_decode_and_calls_the_model(self) -> None:
         model = _Decode()
         observed = apply_tdt_v2_decoding(model)
