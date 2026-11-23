@@ -3,6 +3,10 @@ extends: A0.yaml
 output:
   directory: data/results/research/asr_guided_se/semambapp/v1/voicebank_m15db_test_selection/A5
 components:
+  batcher:
+    kwargs:
+      micro_batch_size: 4
+      group_size: 2
   guidance:
     kwargs:
       asr_features_enabled: true
@@ -13,5 +17,6 @@ components:
   trainer:
     kwargs:
       condition_id: A5
+      micro_batch_size: 4
     inject:
       asr: {ref: asr}

@@ -15,11 +15,9 @@ output:
   directory: data/results/research/asr_guided_se/semambapp/v1/voicebank_m15db_test_selection/A0
 checkpoint:
   selector:
-    class: src.experiments.selectors.TopKSelector
+    class: src.experiments.selectors.PeriodicArchiveSelector
     kwargs:
-      metric: validation.wer
-      mode: min
-      k: 1
+      archive_every: 1447
       latest_every: 1000000
 components:
   guidance:
@@ -56,8 +54,8 @@ components:
       validation_batch: 1
   batcher:
     kwargs:
-      micro_batch_size: 1
-      group_size: 8
+      micro_batch_size: 8
+      group_size: 1
       keep_partial: true
   asr:
     role: other
@@ -114,20 +112,12 @@ components:
       tie_break: earlier
     state:
       save: true
-  stopping:
-    role: stopping
-    class: src.experiments.stopping.PatienceStopPolicy
-    kwargs:
-      metric: validation.wer
-      mode: min
-      patience: 10
-      min_delta: 0.0
   trainer:
     kwargs:
       max_logical_steps: 10000000
       max_epochs: 100
       global_batch_size: 8
-      micro_batch_size: 1
+      micro_batch_size: 8
       validation_interval: 0
       best_checkpoint_start_epoch: 0
       claim_label: research
